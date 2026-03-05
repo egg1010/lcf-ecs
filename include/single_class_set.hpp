@@ -57,9 +57,9 @@ public:
             sparse_.resize(e.index_+1, 0);
         }
         auto index=sparse_[e.index_];
-        if(index!=0)
-        {
 
+        if (index!=0)
+        {
             object_v_[index]=Void_any(std::forward<T>(object),option);
             return message;
         }
