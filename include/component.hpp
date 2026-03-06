@@ -219,6 +219,8 @@ public:
     Operating_message add(entity entitys,T&& component)
     {
         
+
+
         using DecayedT = std::decay_t<T>;
         int type_id = type_id::get_type_id<DecayedT>();
         if(option_==oem::On_a_piece_of_memory)
@@ -257,11 +259,6 @@ public:
     T *get_ptr(entity entitys)
     {   
         
-        if(!entity_manager_.is_version_valid(entitys))
-        {
-            component_message.write_message(0,"Invalid ID forbidden from accessing", "Invalid ID forbidden from accessing");
-            return component_message;
-        }
         using DecayedT = std::decay_t<T>;
         int type_id = type_id::get_type_id<DecayedT>();
         if(option_==oem::On_a_piece_of_memory)
@@ -290,11 +287,6 @@ public:
     template <typename T>
     Operating_message remove(entity entitys)
     {
-        if(!entity_manager_.is_version_valid(entitys))
-        {
-            component_message.write_message(0,"Invalid ID duplicate deletion","Invalid ID duplicate deletion");
-            return component_message;
-        }
         using DecayedT = std::decay_t<T>;
         int type_id = type_id::get_type_id<DecayedT>();
 

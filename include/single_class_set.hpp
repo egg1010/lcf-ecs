@@ -11,10 +11,19 @@ class manager;
 }
 
 
+struct sparse_entry 
+{
+    sparse_entry():dense_index_(0),version_(0) {}
+    sparse_entry(entity entitys):dense_index_(entitys.index_),version_(entitys.version_) {}
+    uint32_t dense_index_{0};   
+    uint32_t version_{0};      
+    bool is_valid() const { return version_ != 0; }
+};
+
 class Single_class_set
 {
 private:
-    std::vector<uint32_t> sparse_;
+    std::vector<sparse_entry> sparse_;
     std::vector<uint32_t> dense_;
     std::vector<Void_any> object_v_;
     int type_id_{-1};
@@ -37,6 +46,8 @@ public:
     template <typename T>
     Operating_message add(entity e,T&& object,Void_any_option option=vao::Absolute_heap_memory)
     {   
+        
+
         if(type_id_==-1)
         {
             using DT= std::decay_t<T>;
@@ -54,18 +65,37 @@ public:
         }
         if(sparse_.size()<=e.index_)
         {
-            sparse_.resize(e.index_+1, 0);
+            sparse_.resize(e.index_+1);
         }
-        auto index=sparse_[e.index_];
+        
+        sparse_entry& entry = sparse_[e.index_];
+        bool exists = entry.is_valid() && (entry.version_ == e.version_);
 
-        if (index!=0)
+        if (exists) 
         {
-            object_v_[index]=Void_any(std::forward<T>(object),option);
-            return message;
+            uint32_t idx = entry.dense_index_;
+            if (idx < object_v_.size()) 
+            {
+                object_v_[idx] = Void_any(std::forward<T>(object), option);
+            } 
+            else 
+            {
+                message.write_message(0, "error ", "Single_class_set::add(): Dense index out of range", ";");
+                return message;
+            }
+        } 
+        else 
+        {
+
+            dense_.emplace_back(e.index_);
+            uint32_t new_dense_index = static_cast<uint32_t>(dense_.size() - 1);
+
+
+            entry.dense_index_ = new_dense_index;
+            entry.version_ = e.version_; 
+
+            object_v_.emplace_back(std::forward<T>(object), option);
         }
-        dense_.emplace_back(e.index_);
-        sparse_[e.index_]=dense_.size()-1;
-        object_v_.emplace_back(std::forward<T>(object),option); 
         return message;       
     }
     template <typename T>
@@ -83,8 +113,13 @@ public:
             return nullptr;
         }
 
-       
-        auto index = sparse_[e.index_];
+        if(sparse_[e.index_].version_!=e.version_)
+        {
+            message.write_message(0,"error ","Single_class_set::get():Entity version mismatch", ";");
+            return nullptr;
+        }
+
+        auto index = sparse_[e.index_].dense_index_;
 
         if(!e.is_valid())
         {
@@ -110,35 +145,33 @@ public:
             message.write_message(0, "error ", "Single_class_set::remove(): Container is empty", ";");
             return message;
         }
-        if(e.index_ >= sparse_.size())
+        if(e.index_ >= sparse_.size()|| !sparse_[e.index_].is_valid())
         {   
 
             message.write_message(0,"error ","Single_class_set::remove():ID is invalid "+std::to_string(e.index_),";");
             return message;
         }
         
-        auto index = sparse_[e.index_];
-
-        if(!e.is_valid())
+        if(sparse_[e.index_].version_!=e.version_)
         {
-
-            message.write_message(0,"error ","Single_class_set::remove():ID is invalid "+std::to_string(e.index_),";");
+            message.write_message(0,"error ","Single_class_set::remove():Entity version mismatch", ";");
             return message;
-        } 
+        }
 
+        auto index = sparse_[e.index_].dense_index_;
 
         auto moved_entity_id = dense_.back();
         dense_[index] = dense_.back();
         if (moved_entity_id != e.index_) 
         {
-            sparse_[moved_entity_id] = index;
+            sparse_[moved_entity_id].dense_index_ = index;
         }
         dense_.pop_back();
 
         object_v_[index]=std::move(object_v_.back());
         object_v_.pop_back();
 
-        sparse_[e.index_] = 0;
+        sparse_[e.index_] = sparse_entry{};
         return message;
     }
 
