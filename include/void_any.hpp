@@ -1,11 +1,6 @@
 #pragma once
-#include <type_traits>
-#include <cstdint>
 #include <typeinfo>
-#include <cstring>
-#include <atomic>
 #include "type_id.hpp"
-#include <optional>
 #include "void_any_config.hpp"
 #include <new>
 

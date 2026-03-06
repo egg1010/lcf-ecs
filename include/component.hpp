@@ -1,17 +1,13 @@
 #pragma once
 #include <unordered_map>
-#include <cxxabi.h>
-#include <algorithm>
 #include <memory>
-#include <unordered_set>
-#include <utility>
-#include <functional>
 #include <string_view>
 #include <concepts> 
 #include "single_class_set.hpp"
 #include "type_id.hpp"
 #include <shared_mutex>
 #include "entity_manager.hpp" 
+
 
 template <typename T>
 concept entitysss = std::same_as<T, entity>;
