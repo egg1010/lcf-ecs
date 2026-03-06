@@ -9,7 +9,6 @@
 #include "include/component.hpp"
 #include <iostream>
 
-
 /*
 namespace ecs
 {
@@ -55,11 +54,17 @@ struct pos
     int x,y;    
 };
 
-
+int f(int as)
+{
+    return 1;
+}
 
 
 int main()
 {   
+
+
+
     auto ecs = ecs::manager::create(vao::Enable_stack_memory,ecs::ecs_option::On_different_memory_blocks);
 
     auto entity1=ecs->create_entity();
