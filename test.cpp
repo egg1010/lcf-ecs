@@ -1,217 +1,215 @@
 #include "include/component.hpp"
 #include <iostream>
-#include <chrono>
 #include <vector>
-#include <random>
-#include <algorithm>
+#include <chrono>
+#include <thread>
+#include <iomanip>
 
 // 测试组件定义
 struct Position {
-    float x, y, z;
-    Position() : x(0.0f), y(0.0f), z(0.0f) {}
-    Position(float x, float y, float z) : x(x), y(y), z(z) {}
+    int x, y;
+    Position(int x = 0, int y = 0) : x(x), y(y) {}
 };
 
 struct Velocity {
-    float vx, vy, vz;
-    Velocity() : vx(0.0f), vy(0.0f), vz(0.0f) {}
-    Velocity(float vx, float vy, float vz) : vx(vx), vy(vy), vz(vz) {}
+    int dx, dy;
+    Velocity(int dx = 0, int dy = 0) : dx(dx), dy(dy) {}
 };
 
 struct Health {
-    int current;
-    int maxss;
-    Health() : current(100), maxss(100) {}
-    Health(int current, int maxs) : current(current), maxss(maxs) {}
+    int hp;
+    Health(int hp = 100) : hp(hp) {}
 };
 
 // 性能测试工具类
 class PerformanceTester {
+private:
+    std::chrono::high_resolution_clock::time_point start_time;
+    
 public:
-    static void print_time(const std::string& operation, const std::chrono::high_resolution_clock::time_point& start, 
-                          const std::chrono::high_resolution_clock::time_point& end, size_t count = 0) {
-        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-        double seconds = duration.count() / 1000000.0;
-        std::cout << operation << ": " << duration.count() << " microseconds";
-        if (count > 0) {
-            std::cout << " (" << static_cast<size_t>(count / seconds) << " ops/sec, " << (seconds / count * 1000000) << " us/op)";
-        }
-        std::cout << std::endl;
+    void start() {
+        start_time = std::chrono::high_resolution_clock::now();
+    }
+    
+    double elapsed_ms() {
+        auto end_time = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+        return duration.count() / 1000.0;
+    }
+    
+    double elapsed_us() {
+        auto end_time = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time);
+        return duration.count() / 1000.0;
     }
 };
 
+// 打印分隔线
+void print_separator(const std::string& title = "") {
+    if (!title.empty()) {
+        std::cout << "\n" << std::string(60, '=') << std::endl;
+        std::cout << " " << title << std::endl;
+        std::cout << std::string(60, '=') << std::endl;
+    } else {
+        std::cout << std::string(60, '-') << std::endl;
+    }
+}
+
+// 格式化输出性能数据
+void print_performance_stats(const std::string& operation, 
+                           double total_time_ms, 
+                           size_t count, 
+                           const std::string& unit = "entity") {
+    double avg_time_us = (total_time_ms * 1000.0) / count;
+    double ops_per_second = count / (total_time_ms / 1000.0);
+    
+    std::cout << std::fixed << std::setprecision(3);
+    std::cout << "操作: " << std::setw(30) << std::left << operation << std::endl;
+    std::cout << "  总耗时:        " << std::setw(12) << total_time_ms << " ms" << std::endl;
+    std::cout << "  操作数量:      " << std::setw(12) << count << " " << unit << "s" << std::endl;
+    std::cout << "  平均耗时:      " << std::setw(12) << avg_time_us << " μs/" << unit << std::endl;
+    std::cout << "  吞吐量:        " << std::setw(12) << std::scientific << ops_per_second << " " << unit << "s/秒" << std::endl;
+    std::cout << std::defaultfloat;
+}
+
 // 百万级实体测试
 void test_million_entities() {
-    const size_t entity_count = 1000000; // 100万实体
-    std::cout << "=== 百万级ECS性能测试 ===" << std::endl;
-    std::cout << "测试实体数量: " << entity_count << std::endl;
+    print_separator("百万级实体性能测试");
     
-    // 使用独立内存块模式进行测试（避免全局状态影响）
+    // 创建ECS管理器（使用独立内存块模式，更适合大规模测试）
     auto ecs = ecs::manager::create(vao::Enable_stack_memory, ecs::ecs_option::On_different_memory_blocks);
     
-    // 1. 创建百万实体
-    std::cout << "\n1. 创建 " << entity_count << " 个实体..." << std::endl;
-    auto start = std::chrono::high_resolution_clock::now();
+    const size_t entity_count = 1000000; // 100万实体
     std::vector<entity> entities;
     entities.reserve(entity_count);
     
+    PerformanceTester timer;
+    
+    // 1. 创建百万实体
+    std::cout << "正在创建 " << entity_count << " 个实体..." << std::endl;
+    timer.start();
     for (size_t i = 0; i < entity_count; ++i) {
         entities.push_back(ecs->create_entity());
     }
-    auto end = std::chrono::high_resolution_clock::now();
-    PerformanceTester::print_time("实体创建", start, end, entity_count);
+    double create_time = timer.elapsed_ms();
+    print_performance_stats("创建实体", create_time, entity_count);
     
     // 2. 为所有实体添加Position组件
-    std::cout << "\n2. 为所有实体添加Position组件..." << std::endl;
-    start = std::chrono::high_resolution_clock::now();
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_real_distribution<float> pos_dist(-1000.0f, 1000.0f);
-    
+    std::cout << "\n正在为所有实体添加Position组件..." << std::endl;
+    timer.start();
     for (size_t i = 0; i < entity_count; ++i) {
-        ecs->add(entities[i], Position(pos_dist(gen), pos_dist(gen), pos_dist(gen)));
+        ecs->add(entities[i], Position(static_cast<int>(i), static_cast<int>(i * 2)));
     }
-    end = std::chrono::high_resolution_clock::now();
-    PerformanceTester::print_time("Position组件添加", start, end, entity_count);
+    double add_position_time = timer.elapsed_ms();
+    print_performance_stats("添加Position组件", add_position_time, entity_count, "component");
     
-    // 3. 为50%的实体添加Velocity组件
-    std::cout << "\n3. 为 " << (entity_count / 2) << " 个实体添加Velocity组件..." << std::endl;
-    start = std::chrono::high_resolution_clock::now();
-    std::uniform_real_distribution<float> vel_dist(-10.0f, 10.0f);
-    
-    for (size_t i = 0; i < entity_count / 2; ++i) {
-        ecs->add(entities[i], Velocity(vel_dist(gen), vel_dist(gen), vel_dist(gen)));
+    // 3. 为所有实体添加Velocity组件
+    std::cout << "\n正在为所有实体添加Velocity组件..." << std::endl;
+    timer.start();
+    for (size_t i = 0; i < entity_count; ++i) {
+        ecs->add(Velocity(static_cast<int>(i % 10), static_cast<int>((i + 1) % 10)), entities[i]);
     }
-    end = std::chrono::high_resolution_clock::now();
-    PerformanceTester::print_time("Velocity组件添加", start, end, entity_count / 2);
+    double add_velocity_time = timer.elapsed_ms();
+    print_performance_stats("添加Velocity组件", add_velocity_time, entity_count, "component");
     
-    // 4. 为25%的实体添加Health组件
-    std::cout << "\n4. 为 " << (entity_count / 4) << " 个实体添加Health组件..." << std::endl;
-    start = std::chrono::high_resolution_clock::now();
-    std::uniform_int_distribution<int> health_dist(1, 100);
-    
-    for (size_t i = 0; i < entity_count / 4; ++i) {
-        ecs->add(entities[i], Health(health_dist(gen), 100));
+    // 4. 验证操作消息
+    auto msg = ecs->get_operating_message();
+    if (msg) {
+        std::cout << "\n✓ 所有操作成功完成！" << std::endl;
+    } else {
+        std::cout << "\n✗ 操作出现错误: " << msg.read_messge() << std::endl;
+        return;
     }
-    end = std::chrono::high_resolution_clock::now();
-    PerformanceTester::print_time("Health组件添加", start, end, entity_count / 4);
     
-    // 5. 随机查询组件性能测试
-    std::cout << "\n5. 随机查询 " << (entity_count / 10) << " 次Position组件..." << std::endl;
-    start = std::chrono::high_resolution_clock::now();
-    std::uniform_int_distribution<size_t> index_dist(0, entity_count - 1);
-    size_t successful_queries = 0;
-    
-    for (size_t i = 0; i < entity_count / 10; ++i) {
-        size_t idx = index_dist(gen);
-        Position* pos = ecs->get_ptr<Position>(entities[idx]);
-        if (pos != nullptr) {
-            successful_queries++;
-            // 简单使用组件数据
-            pos->x += 0.1f;
-        }
-    }
-    end = std::chrono::high_resolution_clock::now();
-    PerformanceTester::print_time("Position组件查询", start, end, entity_count / 10);
-    std::cout << "成功查询次数: " << successful_queries << std::endl;
-    
-    // 6. 遍历所有Position组件
-    std::cout << "\n6. 遍历所有Position组件..." << std::endl;
-    auto pos_set = ecs->get_single_class_set<Position>();
-    if (pos_set) {
-        start = std::chrono::high_resolution_clock::now();
-        size_t processed = 0;
-        for (auto& obj : *pos_set) {
-            Position* pos = obj.get_ptr<Position>();
-            if (pos) {
-                pos->x *= 1.01f; // 简单处理
-                processed++;
+    // 5. 测试组件访问性能
+    std::cout << "\n正在测试组件访问性能..." << std::endl;
+    timer.start();
+    size_t valid_components = 0;
+    for (size_t i = 0; i < entity_count; ++i) {
+        auto pos = ecs->get_ptr<Position>(entities[i]);
+        auto vel = ecs->get_ptr<Velocity>(entities[i]);
+        if (pos && vel) {
+            valid_components++;
+            // 验证数据正确性
+            if (pos->x != static_cast<int>(i) || pos->y != static_cast<int>(i * 2)) {
+                std::cout << "✗ Position数据验证失败！索引: " << i << std::endl;
+                break;
+            }
+            if (vel->dx != static_cast<int>(i % 10) || vel->dy != static_cast<int>((i + 1) % 10)) {
+                std::cout << "✗ Velocity数据验证失败！索引: " << i << std::endl;
+                break;
             }
         }
-        end = std::chrono::high_resolution_clock::now();
-        PerformanceTester::print_time("Position组件遍历", start, end, processed);
-        std::cout << "处理组件数量: " << processed << std::endl;
+    }
+    double access_time = timer.elapsed_ms();
+    print_performance_stats("组件访问与验证", access_time, entity_count, "entity");
+    std::cout << "  有效组件对数量: " << valid_components << " / " << entity_count 
+              << " (" << (valid_components * 100.0 / entity_count) << "%)" << std::endl;
+    
+    // 6. 测试批量删除部分实体
+    const size_t delete_count = 100000;
+    std::cout << "\n正在测试批量删除性能（删除前" << delete_count << "个实体）..." << std::endl;
+    timer.start();
+    for (size_t i = 0; i < delete_count; ++i) {
+        ecs->delete_entitys(entities[i]);
+    }
+    double delete_time = timer.elapsed_ms();
+    print_performance_stats("删除实体", delete_time, delete_count);
+    
+    // 7. 测试组件容器获取
+    std::cout << "\n正在测试组件容器获取..." << std::endl;
+    timer.start();
+    auto position_set = ecs->get_single_class_set<Position>();
+    auto velocity_set = ecs->get_single_class_set<Velocity>();
+    auto position_vector = ecs->get_component_vector<Position>();
+    auto velocity_vector = ecs->get_component_vector<Velocity>();
+    double container_time = timer.elapsed_ms();
+    
+    std::cout << std::fixed << std::setprecision(3);
+    std::cout << "获取组件容器耗时: " << container_time << " ms" << std::endl;
+    std::cout << std::defaultfloat;
+    
+    if (position_set && velocity_set && position_vector && velocity_vector) {
+        std::cout << "Position容器大小: " << position_vector->size() << std::endl;
+        std::cout << "Velocity容器大小: " << velocity_vector->size() << std::endl;
+        std::cout << "剩余实体数量: " << (entity_count - delete_count) << std::endl;
     }
     
-    // 7. 删除部分实体和组件
-    std::cout << "\n7. 删除 " << (entity_count / 10) << " 个实体的Health组件..." << std::endl;
-    start = std::chrono::high_resolution_clock::now();
-    for (size_t i = 0; i < entity_count / 10; ++i) {
-        ecs->remove<Health>(entities[i]);
-    }
-    end = std::chrono::high_resolution_clock::now();
-    PerformanceTester::print_time("Health组件删除", start, end, entity_count / 10);
+    // 8. 内存清理测试
+    std::cout << "\n正在测试内存清理..." << std::endl;
+    timer.start();
+    ecs->delete_type_container<Position>();
+    ecs->delete_type_container<Velocity>();
+    double cleanup_time = timer.elapsed_ms();
+    std::cout << std::fixed << std::setprecision(3);
+    std::cout << "清理组件类型容器耗时: " << cleanup_time << " ms" << std::endl;
+    std::cout << std::defaultfloat;
     
-    // 8. 完全删除部分实体
-    std::cout << "\n8. 完全删除 " << (entity_count / 100) << " 个实体..." << std::endl;
-    start = std::chrono::high_resolution_clock::now();
-    for (size_t i = 0; i < entity_count / 100; ++i) {
-        ecs->hard_delete_entitys(entities[i]);
-    }
-    end = std::chrono::high_resolution_clock::now();
-    PerformanceTester::print_time("实体完全删除", start, end, entity_count / 100);
-    
-    // 9. 内存使用情况（通过容器大小估算）
-    std::cout << "\n9. 内存使用情况估算:" << std::endl;
-    if (auto pos_vec = ecs->get_component_vector<Position>()) {
-        std::cout << "Position组件数量: " << pos_vec->size() << std::endl;
-    }
-    if (auto vel_vec = ecs->get_component_vector<Velocity>()) {
-        std::cout << "Velocity组件数量: " << vel_vec->size() << std::endl;
-    }
-    if (auto health_vec = ecs->get_component_vector<Health>()) {
-        std::cout << "Health组件数量: " << health_vec->size() << std::endl;
-    }
-    
-    std::cout << "\n=== 测试完成 ===" << std::endl;
+    print_separator("百万级测试完成");
 }
 
-// 压力测试：大量实体的创建和销毁循环
+// 压力测试：频繁添加/删除组件
 void stress_test() {
-    const size_t batch_size = 100000; // 每批10万实体
-    const size_t iterations = 10;     // 10轮
-    
-    std::cout << "\n=== 压力测试 ===" << std::endl;
-    std::cout << "每批实体数量: " << batch_size << ", 轮数: " << iterations << std::endl;
+    print_separator("压力测试（频繁添加/删除）");
     
     auto ecs = ecs::manager::create(vao::Enable_stack_memory, ecs::ecs_option::On_different_memory_blocks);
     
-    auto start = std::chrono::high_resolution_clock::now();
+    const size_t iterations = 100000; // 10万次迭代
+    auto entity = ecs->create_entity();
     
-    for (int iter = 0; iter < iterations; ++iter) {
-        // 创建一批实体并添加组件
-        std::vector<entity> entities;
-        entities.reserve(batch_size);
-        
-        for (size_t i = 0; i < batch_size; ++i) {
-            entity e = ecs->create_entity();
-            entities.push_back(e);
-            ecs->add(e, Position(static_cast<float>(i), static_cast<float>(i * 2), static_cast<float>(i * 3)));
-            if (i % 2 == 0) {
-                ecs->add(e, Velocity(1.0f, 2.0f, 3.0f));
-            }
-        }
-        
-        // 查询一些组件
-        for (size_t i = 0; i < batch_size; i += 1000) {
-            Position* pos = ecs->get_ptr<Position>(entities[i]);
-            if (pos) {
-                pos->x += iter;
-            }
-        }
-        
-        // 完全删除这批实体
-        for (auto& e : entities) {
-            ecs->hard_delete_entitys(e);
-        }
-        
-        std::cout << "完成第 " << (iter + 1) << " 轮" << std::endl;
+    PerformanceTester timer;
+    
+    std::cout << "正在进行 " << iterations << " 次组件添加/删除循环..." << std::endl;
+    timer.start();
+    for (size_t i = 0; i < iterations; ++i) {
+        ecs->add(entity, Health(static_cast<int>(i % 1000)));
+        ecs->soft_remove<Health>(entity);
     }
+    double stress_time = timer.elapsed_ms();
+    print_performance_stats("组件添加/删除循环", stress_time, iterations * 2, "operation");
     
-    auto end = std::chrono::high_resolution_clock::now();
-    PerformanceTester::print_time("压力测试总时间", start, end);
     
-    std::cout << "=== 压力测试完成 ===" << std::endl;
+    print_separator("压力测试完成");
 }
 
 int main() 
@@ -219,8 +217,13 @@ int main()
 #ifdef _WIN32
     SetConsoleOutputCP(CP_UTF8);
 #endif
+
     try {
-        std::cout << "开始ECS百万级性能测试..." << std::endl;
+        print_separator("ECS框架百万级性能测试");
+        std::cout << "编译标准: C++20" << std::endl;
+        std::cout << "内存模式: Enable_stack_memory" << std::endl;
+        std::cout << "ECS模式: On_different_memory_blocks" << std::endl;
+        std::cout << "测试时间: " << __DATE__ << " " << __TIME__ << std::endl;
         
         // 运行百万级实体测试
         test_million_entities();
@@ -228,15 +231,15 @@ int main()
         // 运行压力测试
         stress_test();
         
-        std::cout << "\n所有测试完成！" << std::endl;
+        print_separator("所有测试完成");
         return 0;
     }
     catch (const std::exception& e) {
-        std::cerr << "测试过程中发生异常: " << e.what() << std::endl;
+        std::cerr << "\n✗ 测试过程中发生异常: " << e.what() << std::endl;
         return 1;
     }
     catch (...) {
-        std::cerr << "测试过程中发生未知异常" << std::endl;
+        std::cerr << "\n✗ 测试过程中发生未知异常！" << std::endl;
         return 1;
     }
 }

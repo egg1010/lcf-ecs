@@ -97,7 +97,7 @@ public:
 
         for(auto &i:map_)
         {
-            i.second.remove(entitys);
+            i.second.soft_remove(entitys);
         }
     }
 
@@ -278,10 +278,8 @@ public:
 
     }
 
-
-
     template <typename T>
-    operating_message remove(entity entitys)
+    operating_message soft_remove(entity entitys)
     {
         using DecayedT = std::decay_t<T>;
         int type_id = type_id::get_type_id<DecayedT>();
@@ -293,7 +291,7 @@ public:
                 component_message.write_message(0,"error:On_a_piece_of_memory ", "Object does not exist");
                 return component_message;
             }
-            component_message=global_components_map_[type_id].remove(entitys);
+            component_message=global_components_map_[type_id].soft_remove(entitys);
             return component_message;
         }
         else
@@ -303,19 +301,54 @@ public:
                 component_message.write_message(0,"error:On_different_memory_blocks ", "Object does not exist");
                 return component_message;
             }
-            component_message=components_map_[type_id].remove(entitys);
+            component_message=components_map_[type_id].soft_remove(entitys);
+            return component_message;
+        }
+        return component_message;
+    }
+
+    template <typename T>
+    operating_message hard_remove(entity entitys)
+    {
+        using DecayedT = std::decay_t<T>;
+        int type_id = type_id::get_type_id<DecayedT>();
+
+        if(option_==oem::On_a_piece_of_memory)
+        {
+            if(!global_components_map_.contains(type_id))
+            {
+                component_message.write_message(0,"error:On_a_piece_of_memory ", "Object does not exist");
+                return component_message;
+            }
+            component_message=global_components_map_[type_id].hard_remove(entitys);
+            return component_message;
+        }
+        else
+        {
+            if(!components_map_.contains(type_id))
+            {   
+                component_message.write_message(0,"error:On_different_memory_blocks ", "Object does not exist");
+                return component_message;
+            }
+            component_message=components_map_[type_id].hard_remove(entitys);
             return component_message;
         }
         return component_message;
     }
 
     template <typename T,entitysss ee>
-    manager& removec(ee args)
+    manager& hard_removec(ee args)
     {
-        remove<T>(args);
+        hard_remove<T>(args);
         return *this;
     }
 
+    template <typename T,entitysss ee>
+    manager& soft_removec(ee args)
+    {
+        soft_remove<T>(args);
+        return *this;
+    }
 
     template <typename T>
     Single_class_set*get_single_class_set()
@@ -391,7 +424,7 @@ public:
 
     // 删除实体。
     // Delete entity.
-    void soft_delete_entitys(entity &entitys)
+    void delete_entitys(entity &entitys)
     {
         if(!entitys.is_valid())
         {
@@ -401,27 +434,6 @@ public:
     }
 
 
-    // 完全删除实体和组件。
-    // Completely delete the entity and component.
-    void hard_delete_entitys(entity &entitys)
-    {
-        if(!entitys.is_valid())
-        {
-            return;
-        }
-        if(option_==oem::On_a_piece_of_memory)
-        {
-            global_components_map_.for_each_safe_mutable_delet_id(entitys);
-        }
-        else
-        {
-            for(auto &i:components_map_)
-            {
-                i.second.remove(entitys);
-            }
-        }
-        entity_manager_.destroy_entity(entitys);
-    }
     ~manager()=default;    
 
 };  

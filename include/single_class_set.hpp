@@ -135,37 +135,36 @@ public:
         return object_v_[index].get_ptr<T>();
     }
 
-    operating_message remove(entity e)
+    operating_message hard_remove(entity e)
     {
-
         if (!e.is_valid()) 
         {
-            message.write_message(0, "error ", "Single_class_set::remove(): Invalid entity", ";");
+            message.write_message(0, "error ", "Single_class_set::hard_remove(): Invalid entity", ";");
             return message;
         }
 
         if (dense_.empty() || object_v_.empty()) 
         {
-            message.write_message(0, "error ", "Single_class_set::remove(): Container is empty", ";");
+            message.write_message(0, "error ", "Single_class_set::hard_remove(): Container is empty", ";");
             return message;
         }
         if(e.index_ >= sparse_.size()|| !sparse_[e.index_].is_valid())
         {   
 
-            message.write_message(0,"error ","Single_class_set::remove():ID is invalid "+std::to_string(e.index_),";");
+            message.write_message(0,"error ","Single_class_set::hard_remove():ID is invalid "+std::to_string(e.index_),";");
             return message;
         }
         
         if(sparse_[e.index_].version_!=e.version_)
         {
-            message.write_message(0,"error ","Single_class_set::remove():Entity version mismatch", ";");
+            message.write_message(0,"error ","Single_class_set::hard_remove():Entity version mismatch", ";");
             return message;
         }
 
         auto index = sparse_[e.index_].dense_index_;
         if(index >= object_v_.size())
         {
-            message.write_message(0,"error ","Single_class_set::remove():Index out of range "+std::to_string(e.index_),";");
+            message.write_message(0,"error ","Single_class_set::hard_remove():Index out of range "+std::to_string(e.index_),";");
             return message;
         }
 
@@ -181,6 +180,37 @@ public:
         object_v_.pop_back();
 
         sparse_[e.index_] = sparse_entry{};
+        return message;
+    }
+    operating_message soft_remove(entity e)
+    {
+
+        if (!e.is_valid()) 
+        {
+            message.write_message(0, "error ", "Single_class_set::soft_remove(): Invalid entity", ";");
+            return message;
+        }
+
+        if (dense_.empty() || object_v_.empty()) 
+        {
+            message.write_message(0, "error ", "Single_class_set::soft_remove(): Container is empty", ";");
+            return message;
+        }
+        if(e.index_ >= sparse_.size()|| !sparse_[e.index_].is_valid())
+        {   
+
+            message.write_message(0,"error ","Single_class_set::soft_remove():ID is invalid "+std::to_string(e.index_),";");
+            return message;
+        }
+        
+        if(sparse_[e.index_].version_!=e.version_)
+        {
+            message.write_message(0,"error ","Single_class_set::soft_remove():Entity version mismatch", ";");
+            return message;
+        }
+
+        sparse_[e.index_]=sparse_entry{}; 
+
         return message;
     }
 

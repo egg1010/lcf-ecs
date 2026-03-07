@@ -15,6 +15,8 @@ struct entity
             uint32_t version_;
         };
     };
+
+
     bool operator==(const entity& other) const { return handle_ == other.handle_; }
     bool operator!=(const entity& other) const { return handle_ != other.handle_; }
     

@@ -10,20 +10,16 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # 原有的usagec可执行文件
 add_executable(usagec usagec.cpp)
 
-if(MSVC)
-    target_compile_options(usagec PRIVATE /W0)
-else()
-    target_compile_options(usagec PRIVATE -w)
-endif()
+target_compile_options(usagec PRIVATE)
+
+
 
 # 百万级性能测试可执行文件
 add_executable(test test.cpp)
 
-if(MSVC)
-    target_compile_options(test PRIVATE /W0)
-else()
-    target_compile_options(test PRIVATE -w)
-endif()
+
+target_compile_options(test PRIVATE)
+
 
 if(WIN32)
     add_custom_command(

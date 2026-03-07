@@ -19,7 +19,7 @@ public:
     }
     void destroy_entity(entity &entitys)
     {
-        if(!is_version_valid(entitys))
+        if(!is_version_valid(entitys))return;
         id_manager_.free_id(entitys.index_);
         version_v_[entitys.index_]++;
     }

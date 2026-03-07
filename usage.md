@@ -10,7 +10,6 @@
 #include "include/component.hpp"
 #include <iostream>
 
-
 /*
 namespace ecs
 {
@@ -56,11 +55,17 @@ struct pos
     int x,y;    
 };
 
-
+int f(int as)
+{
+    return 1;
+}
 
 
 int main()
 {   
+
+
+
     auto ecs = ecs::manager::create(vao::Enable_stack_memory,ecs::ecs_option::On_different_memory_blocks);
 
     auto entity1=ecs->create_entity();
@@ -165,11 +170,11 @@ int main()
         
     }
     
-    ecs->remove<info>(entity1);
+    ecs->soft_remove<info>(entity1);
 
-    ecs->removec<info>(entity2)
-        .removec<info>(entity3)
-        .removec<info>(entity4);
+    ecs->soft_removec<info>(entity2)
+        .soft_removec<info>(entity3)
+        .soft_removec<info>(entity4);
 
     //删除某类型容器
     //Remove the container instance of type [X].
@@ -177,17 +182,12 @@ int main()
     
     // 删除实体。
     // Delete entity.
-    ecs->soft_delete_entitys(entity4);
-
-    // 完全删除实体和组件。
-    // Completely delete the entity and component.
-    ecs->hard_delete_entitys(entity2);
+    ecs->delete_entitys(entity4);
 
 
     std::cout<<"endl"<<std::endl;
     return 0;
 }
-
 
 ```
 
