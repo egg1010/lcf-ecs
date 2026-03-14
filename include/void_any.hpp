@@ -5,6 +5,7 @@
 #include <new>
 #include <type_traits>
 #include <cstddef>
+#include <cstring>
 
 #ifdef _WIN32
     #include <windows.h>
@@ -72,6 +73,7 @@ private:
     void (*inplace_destructor_)(std::byte*){nullptr};
     void_any_option option_=void_any_option::Absolute_heap_memory;
 public:
+
     void_any() 
     : 
         ptr_(nullptr), 
@@ -107,23 +109,38 @@ public:
         type_size_=sizeof(DecayedT);
         any_type_id_=type_id::get_type_id<DecayedT>();
 
-        if (
-            type_size_ <= index_max &&
-            std::is_trivially_copyable_v<DecayedT> &&
-            stack_monitor::is_stack_safe(type_size_) &&
-            option_==vao::Enable_stack_memory) 
+        if constexpr (sizeof(DecayedT) <= index_max && std::is_trivially_copyable_v<DecayedT>)
         {
-            new (buff_) DecayedT(std::forward<T>(object));
-            is_in_buff_ = true;
-            if constexpr (!std::is_trivially_destructible_v<DecayedT>) 
+            if(option_==vao::Enable_stack_memory)
             {
-                inplace_destructor_ = [](std::byte* p)
+                if(!stack_monitor::is_stack_safe(type_size_)) return;
+
+                new (buff_) DecayedT(std::forward<T>(object));
+                is_in_buff_ = true;
+                if constexpr (!std::is_trivially_destructible_v<DecayedT>) 
                 {
-                    static_cast<DecayedT*>(static_cast<void*>(p))->~DecayedT();
-                };
-            } 
-            else 
+                    inplace_destructor_ = [](std::byte* p) 
+                    {
+                        static_cast<DecayedT*>(static_cast<void*>(p))->~DecayedT();
+                    };
+                } 
+                else 
+                {
+                    inplace_destructor_ = nullptr;
+                }
+
+
+            }
+            else
             {
+                is_in_buff_ = false;
+                ptr_ = ::operator new(sizeof(DecayedT));        
+                ptr_ = new (ptr_) DecayedT(std::forward<T>(object));
+                deleter_ = [](void* p) 
+                {
+                    static_cast<DecayedT*>(p)->~DecayedT();
+                    ::operator delete(p);
+                };
                 inplace_destructor_ = nullptr;
             }
         }
@@ -179,22 +196,38 @@ public:
         type_size_=sizeof(DecayedT);
         any_type_id_=type_id::get_type_id<DecayedT>();
 
-        if (type_size_ <= index_max &&
-            std::is_trivially_copyable_v<DecayedT> &&
-            stack_monitor::is_stack_safe(type_size_) &&
-            option_==vao::Enable_stack_memory) 
+        if constexpr (sizeof(DecayedT) <= index_max && std::is_trivially_copyable_v<DecayedT>)
         {
-            new (buff_) DecayedT(std::forward<T>(object));
-            is_in_buff_ = true;
-            if constexpr (!std::is_trivially_destructible_v<DecayedT>) 
+            if(option_==vao::Enable_stack_memory)
             {
-                inplace_destructor_ = [](std::byte* p) 
+                if(!stack_monitor::is_stack_safe(type_size_)) return;
+
+                new (buff_) DecayedT(std::forward<T>(object));
+                is_in_buff_ = true;
+                if constexpr (!std::is_trivially_destructible_v<DecayedT>) 
                 {
-                    static_cast<DecayedT*>(static_cast<void*>(p))->~DecayedT();
-                };
-            } 
-            else 
+                    inplace_destructor_ = [](std::byte* p) 
+                    {
+                        static_cast<DecayedT*>(static_cast<void*>(p))->~DecayedT();
+                    };
+                } 
+                else 
+                {
+                    inplace_destructor_ = nullptr;
+                }
+
+
+            }
+            else
             {
+                is_in_buff_ = false;
+                ptr_ = ::operator new(sizeof(DecayedT));        
+                ptr_ = new (ptr_) DecayedT(std::forward<T>(object));
+                deleter_ = [](void* p) 
+                {
+                    static_cast<DecayedT*>(p)->~DecayedT();
+                    ::operator delete(p);
+                };
                 inplace_destructor_ = nullptr;
             }
         }
@@ -251,7 +284,8 @@ public:
     {
         return any_type_id_;
     }
-    void_any(const void_any&) = delete;
+    void_any(const void_any& other)= delete;
+    
     void_any& operator=(const void_any&) = delete;
     
 
@@ -266,10 +300,7 @@ public:
     {
         if (other.is_in_buff_) 
         {
-            for (size_t i = 0; i < type_size_; ++i) 
-            {
-                buff_[i] = other.buff_[i];
-            }
+            std::copy(other.buff_, other.buff_ + type_size_, buff_);
         }
 
         other.ptr_ = nullptr;
@@ -301,10 +332,7 @@ public:
             
             if (other.is_in_buff_) 
             {
-                for (size_t i = 0; i < type_size_; ++i) 
-                {
-                    buff_[i] = other.buff_[i];
-                }
+                std::copy(other.buff_, other.buff_ + type_size_, buff_);
             }
             
             other.ptr_ = nullptr;
@@ -322,7 +350,7 @@ public:
 
 };
 
-inline void_any& null_any() 
+ inline void_any& null_any() 
 {
     static void_any instance;
     return instance;

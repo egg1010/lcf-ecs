@@ -29,6 +29,14 @@ private:
     int type_id_{-1};
     operating_message message;
     void_any_option option_{vao::Absolute_heap_memory};
+    int type_size_{0};
+    void predistribution(size_t r_size=500*1000)
+    {
+        sparse_.reserve(sparse_.size()+r_size);
+        dense_.reserve(dense_.size()+r_size);
+        object_v_.reserve(object_v_.size()+r_size);
+    }
+
 public:
     void clear()
     {
@@ -38,9 +46,10 @@ public:
     }
     
     template <typename T>
-
-    Single_class_set(entity e,T&& object,void_any_option option=vao::Absolute_heap_memory)
+    Single_class_set(entity e,T&& object,void_any_option option=vao::Absolute_heap_memory,size_t r_size=500*1000)
     {
+        type_size_=sizeof(T);
+        predistribution(r_size);
         add(e,std::forward<T>(object),option);
     }
     template <typename T>
@@ -50,6 +59,7 @@ public:
 
         if(type_id_==-1)
         {
+            type_size_=sizeof(T);
             using DT= std::decay_t<T>;
             type_id_=type_id::get_type_id<DT>();
             option_ = option;
@@ -230,6 +240,7 @@ public:
     , object_v_(std::move(other.object_v_))
     , message(std::move(other.message))
     , type_id_(other.type_id_)
+    , type_size_(0)
     {other.type_id_= -1;}
     
 
@@ -243,6 +254,7 @@ public:
             message = std::move(other.message);
             type_id_ = other.type_id_;
             other.type_id_= -1;
+            type_size_ = 0;
         }
         
         return *this;

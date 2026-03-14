@@ -77,7 +77,7 @@ void test_million_entities() {
     print_separator("百万级实体性能测试");
     
 
-    auto ecs = ecs::manager::create(vao::Enable_stack_memory, ecs::ecs_option::On_different_memory_blocks);
+    auto ecs = ecs::manager::create(vao::Absolute_heap_memory, ecs::ecs_option::On_different_memory_blocks);
     
     const size_t entity_count = 1000000; // 100万实体
     std::vector<entity> entities;
