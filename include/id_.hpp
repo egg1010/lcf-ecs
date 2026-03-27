@@ -6,7 +6,7 @@ template <typename T=size_t>
 class id_allocation
 {
 private:
-    T next_id_{1};
+    T next_id_{0};
     std::stack<T, std::vector<T>> recycled_ids_;
 public:
     T get_id()
@@ -18,15 +18,12 @@ public:
             return id;
         }
         
-        return ++next_id_;
+        return next_id_++;
     }
     
     void free_id(T id)
     {
-        if (id != 0) 
-        {
-            recycled_ids_.push(id);
-        }
+        recycled_ids_.push(id);
     }
     
     T total_number_of_ids() const 

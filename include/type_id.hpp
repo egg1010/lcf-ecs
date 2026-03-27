@@ -4,7 +4,7 @@
 class type_id
 {
 private:
-    inline static id_allocation type_id_allocator{};
+    id_allocation<int> type_id_allocator{};
 public:
     type_id()=default;
     
