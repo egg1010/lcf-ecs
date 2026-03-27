@@ -48,12 +48,8 @@ public:
     template <typename T>
     operating_message add(entity entitys,T&& component)
     {
-        
-
-
         using DecayedT = std::decay_t<T>;
         int type_id = type_id::get_type_id<DecayedT>();
-
         component_message=components_map_[type_id].add(entitys,std::forward<T>(component));
         return component_message;
         

@@ -28,14 +28,6 @@ private:
     std::vector<void_any> object_v_;
     int type_id_{-1};
     operating_message message;
-    int type_size_{0};
-    void predistribution(size_t r_size=500*1000)
-    {
-        sparse_.reserve(sparse_.size()+r_size);
-        dense_.reserve(dense_.size()+r_size);
-        object_v_.reserve(object_v_.size()+r_size);
-    }
-
 public:
     void clear()
     {
@@ -47,21 +39,16 @@ public:
     template <typename T>
     Single_class_set(entity e,T&& object,size_t r_size=500*1000)
     {
-        type_size_=sizeof(T);
-        predistribution(r_size);
+        sparse_.resize(r_size);
         add(e,std::forward<T>(object));
     }
     template <typename T>
     operating_message add(entity e,T&& object)
     {   
-        
-
         if(type_id_==-1)
         {
-            type_size_=sizeof(T);
             using DT= std::decay_t<T>;
             type_id_=type_id::get_type_id<DT>();
-
         }
         if(!e.is_valid())
         {
@@ -70,7 +57,7 @@ public:
         }
         if(sparse_.size()<=e.index_)
         {
-            sparse_.resize(e.index_+1);
+            sparse_.resize(std::max(sparse_.size() * 2, static_cast<size_t>(e.index_) + 1));
         }
         
         sparse_entry& entry = sparse_[e.index_];
@@ -90,14 +77,10 @@ public:
         } 
         else 
         {
-
             dense_.emplace_back(e.index_);
             uint32_t new_dense_index = static_cast<uint32_t>(dense_.size() - 1);
-
-
             entry.dense_index_ = new_dense_index;
             entry.version_ = e.version_; 
-
             object_v_.emplace_back(std::forward<T>(object));
         }
         return message;       
@@ -105,8 +88,6 @@ public:
     template <typename T>
     T* get_ptr(entity e)
     {        
-        
-        
         if(!e.is_valid())
         {
             message.write_message(0,"error ","Single_class_set::get():Invalid index "+std::to_string(e.index_),";");
@@ -132,15 +113,12 @@ public:
 
         auto index = sparse_[e.index_].dense_index_;
 
-
-
         if(index >= object_v_.size())
         {
             message.write_message(0,"error ","Single_class_set::get():Index out of range "+std::to_string(e.index_),";");
             return nullptr;  
         }
 
-    
         return object_v_[index].get_ptr<T>();
     }
 
@@ -159,7 +137,6 @@ public:
         }
         if(e.index_ >= sparse_.size()|| !sparse_[e.index_].is_valid())
         {   
-
             message.write_message(0,"error ","Single_class_set::hard_remove():ID is invalid "+std::to_string(e.index_),";");
             return message;
         }
@@ -193,7 +170,6 @@ public:
     }
     operating_message soft_remove(entity e)
     {
-
         if (!e.is_valid()) 
         {
             message.write_message(0, "error ", "Single_class_set::soft_remove(): Invalid entity", ";");
@@ -207,7 +183,6 @@ public:
         }
         if(e.index_ >= sparse_.size()|| !sparse_[e.index_].is_valid())
         {   
-
             message.write_message(0,"error ","Single_class_set::soft_remove():ID is invalid "+std::to_string(e.index_),";");
             return message;
         }
@@ -219,13 +194,8 @@ public:
         }
 
         sparse_[e.index_]=sparse_entry{}; 
-
         return message;
     }
-
-   
-    
-
 
     int &get_type_id()
     {
@@ -239,7 +209,6 @@ public:
     , object_v_(std::move(other.object_v_))
     , message(std::move(other.message))
     , type_id_(other.type_id_)
-    , type_size_(0)
     {other.type_id_= -1;}
     
 
@@ -253,9 +222,7 @@ public:
             message = std::move(other.message);
             type_id_ = other.type_id_;
             other.type_id_= -1;
-            type_size_ = 0;
         }
-        
         return *this;
     }
     
@@ -263,7 +230,6 @@ public:
     {
         return message;
     }
-
 
     using iterator = typename std::vector<void_any>::iterator;
     using const_iterator = typename std::vector<void_any>::const_iterator;
@@ -275,7 +241,6 @@ public:
     const_iterator cbegin() const { return object_v_.cbegin(); }
     const_iterator cend() const { return object_v_.cend(); }
     Single_class_set(const Single_class_set&) = delete;
-
     Single_class_set& operator=(const Single_class_set&) = delete;
 
     size_t size() const
