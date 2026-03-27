@@ -17,8 +17,7 @@ public:
             recycled_ids_.pop();
             return id;
         }
-        
-        return next_id_++;
+        return ++next_id_;
     }
     
     void free_id(T id)
