@@ -151,7 +151,25 @@ public:
     }
 
     template <typename T>
-    std::vector <void_any>*get_component_vector()
+    void reserve_component_capacity(size_t capacity)
+    {
+        using DecayedT = std::decay_t<T>;
+        int type_id = type_id::get_type_id<DecayedT>();
+        if(!components_map_.contains(type_id))
+        {
+
+            components_map_.try_emplace(type_id);
+            components_map_[type_id].reserve(capacity);
+        }
+        else
+        {
+
+            components_map_[type_id].reserve(capacity);
+        }
+    }
+
+    template <typename T>
+    class_pool<void_any>* get_component_vector()
     {         
         using DecayedT = std::decay_t<T>;
         int type_id = type_id::get_type_id<DecayedT>();

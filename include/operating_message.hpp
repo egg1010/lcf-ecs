@@ -11,57 +11,72 @@ private:
 public:
     ~operating_message()=default;
 
-    operating_message(bool line_break=false)
+    constexpr operating_message(bool line_break=false)
     :
         line_break_(line_break)
     {}
     
-    operator bool()const 
+    constexpr operator bool()const 
     { 
         return switch_; 
     }
+    
     void reset()
     {
         switch_=true;
         message_="";
     }
+    
     void clear_message()
     {
         message_="";
     }
+    
     void set_switch_bool(bool switchs)
     { 
         switch_=switchs; 
     }
+    
     bool &get_switch_bool()
     {
         return switch_;
     }
-    operating_message operator+=(operating_message&& other)
+    
+    operating_message& operator+=(operating_message&& other)
     {
-        message_ += other.message_;
-        if(!switch_){switch_=false;}
-        line_break_=other.line_break_;
+        message_ += std::move(other.message_);
+        if (!switch_) {} 
+        else 
+        {
+            switch_ = other.switch_;
+        }
+        line_break_ = other.line_break_;
         return *this;
     }
 
     operating_message& operator+=(const operating_message& other)
     {
         message_ += other.message_;
-        if(!switch_){switch_=false;}
-        line_break_=other.line_break_;
+        if (!switch_) {}
+        else 
+        {
+            switch_ = other.switch_;
+        }
+        line_break_ = other.line_break_;
         return *this;
     }
+    
     friend std::ostream& operator<<(std::ostream& os, const operating_message& str)
     { 
         os << str.message_;
         return os;
     }
 
-    std::string_view read_messge()
+    std::string_view read_messge() const
     {
         return message_;
     } 
+    
     template<typename... Args>
     void write_message(bool bool_, Args&&... args_)
     {

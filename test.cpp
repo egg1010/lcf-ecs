@@ -90,6 +90,12 @@ int main()
     double create_time = timer.elapsed_ms();
     print_performance_result("实体创建", entity_count, create_time);
     
+    // 预分配组件容器容量（关键性能优化）
+    ecss.reserve_component_capacity<Position>(entity_count);
+    ecss.reserve_component_capacity<Velocity>(entity_count / 2); // Velocity只添加50万次
+    ecss.reserve_component_capacity<Health>(entity_count);
+    ecss.reserve_component_capacity<Name>(entity_count / 10);   // Name只添加10万次
+
     // 添加 Position 组件
     timer.reset();
     std::random_device rd;

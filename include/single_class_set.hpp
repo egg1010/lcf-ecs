@@ -3,7 +3,7 @@
 #include "operating_message.hpp"
 #include "void_any.hpp"
 #include "entity.hpp"
-
+#include "class_pool.hpp"
 
 namespace ecs
 {
@@ -23,9 +23,9 @@ struct sparse_entry
 class Single_class_set
 {
 private:
-    std::vector<sparse_entry> sparse_;
-    std::vector<uint32_t> dense_;
-    std::vector<void_any> object_v_;
+    class_pool<sparse_entry> sparse_;
+    class_pool<uint32_t> dense_;
+    class_pool<void_any> object_v_;
     int type_id_{-1};
     operating_message message;
 public:
@@ -39,7 +39,9 @@ public:
     template <typename T>
     Single_class_set(entity e,T&& object,size_t r_size=500*1000)
     {
-        sparse_.resize(r_size);
+        sparse_.reserve(r_size);  // 预分配容量，避免频繁扩容
+        dense_.reserve(r_size);
+        object_v_.reserve(r_size);
         add(e,std::forward<T>(object));
     }
     template <typename T>
@@ -231,13 +233,13 @@ public:
         return message;
     }
 
-    using iterator = typename std::vector<void_any>::iterator;
-    using const_iterator = typename std::vector<void_any>::const_iterator;
+    using iterator = typename class_pool<void_any>::iterator;
+    using const_iterator = typename class_pool<void_any>::const_iterator;
     
-    iterator begin() {return object_v_.begin(); }
-    iterator end() { return object_v_.end();}
-    const_iterator begin() const { return object_v_.begin();}
-    const_iterator end() const { return object_v_.end();}
+    iterator begin() { return object_v_.begin(); }
+    iterator end() { return object_v_.end(); }
+    const_iterator begin() const { return object_v_.begin(); }
+    const_iterator end() const { return object_v_.end(); }
     const_iterator cbegin() const { return object_v_.cbegin(); }
     const_iterator cend() const { return object_v_.cend(); }
     Single_class_set(const Single_class_set&) = delete;
@@ -247,7 +249,15 @@ public:
     {
         return dense_.size();
     }
-    std::vector <void_any>&get_component_vector()
+    
+    void reserve(size_t capacity)
+    {
+        sparse_.reserve(capacity);
+        dense_.reserve(capacity);
+        object_v_.reserve(capacity);
+    }
+    
+    class_pool<void_any>& get_component_vector()
     {
         return object_v_;
     }
