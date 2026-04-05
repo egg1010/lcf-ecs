@@ -1,6 +1,8 @@
 #pragma once
 #include "id_.hpp"
 
+#define FORCE_INLINE inline
+
 class type_id
 {
 private:
@@ -9,7 +11,8 @@ public:
     type_id() noexcept = default;
     
     template<typename T>
-    [[nodiscard]] static int get_type_id() noexcept
+    [[nodiscard]] static FORCE_INLINE
+    int get_type_id() noexcept
     {
         static int id = type_id_allocator.get_id();
         return id;

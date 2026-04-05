@@ -6,6 +6,8 @@
 #include "type_id.hpp"
 #include "void_any_config.hpp"
 
+#define FORCE_INLINE inline
+
 #if defined(VOID_ANY_ENABLE_MEMORY_POOL)
 #include "memory_pool.hpp"
 
@@ -50,6 +52,7 @@ private:
     void (*copier_)(void*, const void*){nullptr};
 
     template<typename T>
+    FORCE_INLINE
     void construct_from(T&& object) noexcept
     {
         using DecayedT = std::decay_t<T>;
@@ -136,7 +139,8 @@ private:
     }
     
     template<typename T>
-    [[nodiscard]] T* get_ptr_internal() noexcept
+    [[nodiscard]] FORCE_INLINE
+    T* get_ptr_internal() noexcept
     {
 #if defined(VOID_ANY_ENABLE_SSO)
         if (use_sso_) [[likely]]
@@ -150,7 +154,8 @@ private:
     }
     
     template<typename T>
-    [[nodiscard]] const T* get_ptr_internal() const noexcept
+    [[nodiscard]] FORCE_INLINE
+    const T* get_ptr_internal() const noexcept
     {
 #if defined(VOID_ANY_ENABLE_SSO)
         if (use_sso_) [[likely]]
@@ -167,6 +172,7 @@ public:
     void_any() noexcept = default;
     
     template<typename T>
+    FORCE_INLINE
     void_any(T&& object) noexcept
     {
         construct_from(std::forward<T>(object));
@@ -192,6 +198,7 @@ public:
     }
 
     template<typename T>
+    FORCE_INLINE
     void set(T&& object) noexcept
     {
         if (deleter_) [[likely]]
@@ -221,6 +228,7 @@ public:
         construct_from(std::forward<T>(object));
     }
 
+    FORCE_INLINE
     void_any(const void_any& other) noexcept
         : any_type_id_(other.any_type_id_)
         , deleter_(other.deleter_)
@@ -250,6 +258,7 @@ public:
 #endif
     }
 
+    FORCE_INLINE
     void_any(void_any&& other) noexcept
 #if defined(VOID_ANY_ENABLE_SSO)
         : storage_(other.storage_)
@@ -278,6 +287,7 @@ public:
         other.copier_ = nullptr;
     }
 
+    FORCE_INLINE
     void_any& operator=(const void_any& other) noexcept
     {
         if (this != &other) [[likely]]
@@ -326,6 +336,7 @@ public:
         return *this;
     }
 
+    FORCE_INLINE
     void_any& operator=(void_any&& other) noexcept
     {
         if (this != &other) [[likely]]
@@ -367,13 +378,15 @@ public:
         return *this;
     }
 
-    [[nodiscard]] int type_id() const noexcept
+    [[nodiscard]] FORCE_INLINE
+    int type_id() const noexcept
     {
         return any_type_id_;
     }
 
     template<typename T>
-    [[nodiscard]] T* get_ptr() noexcept
+    [[nodiscard]] FORCE_INLINE
+    T* get_ptr() noexcept
     {
         if (any_type_id_ != type_id::get_type_id<T>()) [[unlikely]]
         {
@@ -383,7 +396,8 @@ public:
     }
 
     template<typename T>
-    [[nodiscard]] const T* get_ptr() const noexcept
+    [[nodiscard]] FORCE_INLINE
+    const T* get_ptr() const noexcept
     {
         if (any_type_id_ != type_id::get_type_id<T>()) [[unlikely]]
         {
@@ -393,19 +407,22 @@ public:
     }
 
     template<typename T>
-    [[nodiscard]] T* fast_get_ptr() noexcept
+    [[nodiscard]] FORCE_INLINE
+    T* fast_get_ptr() noexcept
     {
         return get_ptr_internal<T>();
     }
 
     template<typename T>
-    [[nodiscard]] const T* fast_get_ptr() const noexcept
+    [[nodiscard]] FORCE_INLINE
+    const T* fast_get_ptr() const noexcept
     {
         return get_ptr_internal<T>();
     }
 
     template<typename T>
-    [[nodiscard]] T* get_ptr_unchecked() noexcept
+    [[nodiscard]] FORCE_INLINE
+    T* get_ptr_unchecked() noexcept
     {
         using DecayedT = std::decay_t<T>;
 #if defined(VOID_ANY_ENABLE_SSO)
@@ -424,7 +441,8 @@ public:
     }
 
     template<typename T>
-    [[nodiscard]] const T* get_ptr_unchecked() const noexcept
+    [[nodiscard]] FORCE_INLINE
+    const T* get_ptr_unchecked() const noexcept
     {
         using DecayedT = std::decay_t<T>;
 #if defined(VOID_ANY_ENABLE_SSO)
@@ -443,14 +461,16 @@ public:
     }
 
     template<typename T>
-    [[nodiscard]] T get() noexcept
+    [[nodiscard]] FORCE_INLINE
+    T get() noexcept
     { 
         T* p = get_ptr<T>();
         if (!p) [[unlikely]] return T{};
         else [[likely]] return *p;
     }
 
-    [[nodiscard]] bool has_value() const noexcept
+    [[nodiscard]] FORCE_INLINE
+    bool has_value() const noexcept
     {
 #if defined(VOID_ANY_ENABLE_SSO)
         return use_sso_ || (storage_.ptr_ != nullptr);
@@ -459,6 +479,7 @@ public:
 #endif
     }
 
+    FORCE_INLINE
     void reset() noexcept
     {
         if (deleter_) [[likely]]

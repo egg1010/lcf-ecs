@@ -4,14 +4,17 @@
 #include <new>
 #include <type_traits>
 #include <array>
+#include <bit>
 #include "class_pool.hpp"
+
+#define FORCE_INLINE inline
 
 struct memory_block
 {
     uint8_t* data_;
     size_t size_;
 
-    memory_block() noexcept : data_(nullptr), size_(0) {}
+    constexpr memory_block() noexcept : data_(nullptr), size_(0) {}
     
     memory_block(uint8_t* data, size_t size) noexcept : data_(data), size_(size) {}
     
@@ -71,7 +74,7 @@ private:
     static constexpr size_t HEADER_SIZE = sizeof(block_header);
     static constexpr size_t DEFAULT_CHUNK_SIZE = 4096;
 
-    static constexpr size_t get_bucket_index(size_t size) noexcept
+    [[nodiscard]] static constexpr size_t get_bucket_index(size_t size) noexcept
     {
         if (size <= 8) return 0;
         if (size <= 12) return 1;
@@ -107,7 +110,8 @@ private:
         return 31;
     }
 
-    void remove_from_free_list(block_header* block, size_t bucket)
+    FORCE_INLINE
+    void remove_from_free_list(block_header* block, size_t bucket) noexcept
     {
         if (free_lists_[bucket] == block) [[likely]]
         {
@@ -125,7 +129,8 @@ private:
         block->prev_ = nullptr;
     }
 
-    void add_to_free_list(block_header* block, size_t bucket)
+    FORCE_INLINE
+    void add_to_free_list(block_header* block, size_t bucket) noexcept
     {
         block->next_ = free_lists_[bucket];
         block->prev_ = nullptr;
@@ -136,7 +141,7 @@ private:
         free_lists_[bucket] = block;
     }
 
-    void merge_adjacent_blocks(block_header* block)
+    void merge_adjacent_blocks(block_header* block) noexcept
     {
         uint8_t* block_ptr = reinterpret_cast<uint8_t*>(block);
         
@@ -181,7 +186,7 @@ private:
         add_to_free_list(block, new_bucket);
     }
 
-    void add_new_chunk(size_t min_size)
+    void add_new_chunk(size_t min_size) noexcept
     {
         size_t new_chunk_size = (min_size + HEADER_SIZE + chunk_size_ - 1) / chunk_size_ * chunk_size_;
         
@@ -200,7 +205,8 @@ private:
         total_allocated_ += new_chunk_size;
     }
 
-    void split_block(block_header* block, size_t needed_size, size_t bucket)
+    FORCE_INLINE
+    void split_block(block_header* block, size_t needed_size, size_t bucket) noexcept
     {
         if (block->size_ < needed_size + HEADER_SIZE + 8) [[unlikely]]
         {
@@ -237,7 +243,8 @@ public:
     memory_pool(memory_pool&&) noexcept = default;
     memory_pool& operator=(memory_pool&&) noexcept = default;
 
-    [[nodiscard]] void* allocate(size_t size)
+    [[nodiscard]] FORCE_INLINE
+    void* allocate(size_t size) noexcept
     {
         if (size == 0) [[unlikely]]
         {
@@ -278,7 +285,8 @@ public:
         return allocate(size);
     }
 
-    void deallocate(void* ptr)
+    FORCE_INLINE
+    void deallocate(void* ptr) noexcept
     {
         if (!ptr) [[unlikely]]
         {
@@ -300,7 +308,8 @@ public:
     }
 
     template <typename T, typename... Args>
-    [[nodiscard]] T* construct(Args&&... args)
+    [[nodiscard]] FORCE_INLINE
+    T* construct(Args&&... args) noexcept
     {
         void* ptr = allocate(sizeof(T));
         if (!ptr) [[unlikely]]
@@ -311,7 +320,8 @@ public:
     }
 
     template <typename T>
-    void destroy(T* ptr)
+    FORCE_INLINE
+    void destroy(T* ptr) noexcept
     {
         if (!ptr) [[unlikely]]
         {
@@ -326,7 +336,8 @@ public:
     [[nodiscard]] constexpr size_t chunk_size() const noexcept { return chunk_size_; }
     [[nodiscard]] constexpr bool empty() const noexcept { return total_used_ == 0; }
 
-    void resize(size_t size)
+    FORCE_INLINE
+    void resize(size_t size) noexcept
     {
         if (size == 0 || size <= total_allocated_) [[likely]]
         {
@@ -335,6 +346,7 @@ public:
         add_new_chunk(size);
     }
 
+    FORCE_INLINE
     void reset() noexcept
     {
         memory_chunks_.clear();
