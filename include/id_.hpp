@@ -1,5 +1,5 @@
 #pragma once
-#include <vector>
+#include "class_pool.hpp"
 #include <stack>
 
 template <typename T=size_t>
@@ -7,7 +7,7 @@ class id_allocation
 {
 private:
     T next_id_{0};
-    std::stack<T, std::vector<T>> recycled_ids_;
+    std::stack<T, class_pool<T>> recycled_ids_;
 public:
     [[nodiscard]] T get_id() noexcept
     {
@@ -22,7 +22,7 @@ public:
     
     void free_id(T id) noexcept
     {
-        recycled_ids_.push(id);
+        recycled_ids_.emplace(id);
     }
     
     [[nodiscard]] T total_number_of_ids() const noexcept
