@@ -1,7 +1,8 @@
 #pragma once
 #include <string>   
 #include <sstream>
- 
+#include <format>
+
 class operating_message
 {
 private:
@@ -47,6 +48,12 @@ public:
         return switch_;
     }
     
+    operating_message& operator+=(std::string_view sv) noexcept
+    {
+        message_ += sv;
+        return *this;
+    }
+
     operating_message& operator+=(operating_message&& other) noexcept
     {
         message_ += std::move(other.message_);
@@ -88,6 +95,29 @@ public:
         std::ostringstream oss;
         ((oss << std::forward<Args>(args_)), ...);
         message_ += oss.str();
+
+        if(line_break_) [[unlikely]]
+        {
+           message_ += '\n';
+        }
+        switch_ = bool_;
+    }
+
+    void write_message(bool bool_, std::string_view sv)
+    {
+        message_ += sv;
+
+        if(line_break_) [[unlikely]]
+        {
+           message_ += '\n';
+        }
+        switch_ = bool_;
+    }
+
+    template<typename... Args>
+    void write_message_fmt(bool bool_, std::format_string<Args...> fmt, Args&&... args_)
+    {
+        message_ += std::format(fmt, std::forward<Args>(args_)...);
 
         if(line_break_) [[unlikely]]
         {

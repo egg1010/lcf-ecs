@@ -21,7 +21,7 @@ struct sparse_entry
     [[nodiscard]] constexpr bool is_valid() const noexcept { return version_ != 0; }
 };
 
-class Single_class_set
+class single_class_set
 {
 private:
     class_pool<sparse_entry> sparse_;
@@ -29,6 +29,35 @@ private:
     class_pool<void_any> object_v_;
     int type_id_{-1};
     operating_message message;
+
+    friend class ecs::manager;
+
+    template <typename T>
+    [[nodiscard]] T* fast_get_ptr_by_index(size_t index) noexcept
+    {
+        if (index >= object_v_.size()) [[unlikely]] return nullptr;
+        return object_v_[index].template fast_get_ptr<T>();
+    }
+
+    template <typename T>
+    [[nodiscard]] const T* fast_get_ptr_by_index(size_t index) const noexcept
+    {
+        if (index >= object_v_.size()) [[unlikely]] return nullptr;
+        return object_v_[index].template fast_get_ptr<T>();
+    }
+
+    template <typename T>
+    [[nodiscard]] T* get_ptr_unchecked_by_index(size_t index) noexcept
+    {
+        return object_v_[index].template get_ptr_unchecked<T>();
+    }
+
+    template <typename T>
+    [[nodiscard]] const T* get_ptr_unchecked_by_index(size_t index) const noexcept
+    {
+        return object_v_[index].template get_ptr_unchecked<T>();
+    }
+
 public:
     void clear() noexcept
     {
@@ -36,14 +65,14 @@ public:
         dense_.clear();
         object_v_.clear();
     }
-    Single_class_set() noexcept
+    single_class_set() noexcept
     {
         sparse_.reserve(500*1000); 
         dense_.reserve(500*1000);
         object_v_.reserve(500*1000);
     }
     template <typename T>
-    Single_class_set(entity e, T&& object, size_t r_size=500*1000) noexcept
+    single_class_set(entity e, T&& object, size_t r_size=500*1000) noexcept
     {
         sparse_.reserve(r_size); 
         dense_.reserve(r_size);
@@ -60,7 +89,7 @@ public:
         }
         if(!e.is_valid()) [[unlikely]]
         {
-            message.write_message(0, "error ", "Single_class_set::add():ID is invalid " + std::to_string(e.index_), ";");
+            message.write_message(0, "error ", "single_class_set::add():ID is invalid " + std::to_string(e.index_), ";");
             return message;
         }
         
@@ -75,7 +104,7 @@ public:
             } 
             else [[unlikely]]
             {
-                message.write_message(0, "error ", "Single_class_set::add(): Dense index out of range", ";");
+                message.write_message(0, "error ", "single_class_set::add(): Dense index out of range", ";");
                 return message;
             }
         } 
@@ -95,7 +124,7 @@ public:
     {
         if (entities.size() != components.size()) [[unlikely]]
         {
-            message.write_message(0, "error ", "Single_class_set::add_batch(): Entities and components size mismatch", ";");
+            message.write_message(0, "error ", "single_class_set::add_batch(): Entities and components size mismatch", ";");
             return message;
         }
         
@@ -113,7 +142,7 @@ public:
         {
             if (!e.is_valid()) [[unlikely]]
             {
-                message.write_message(0, "error ", "Single_class_set::add_batch(): Invalid entity index " + std::to_string(e.index_), ";");
+                message.write_message(0, "error ", "single_class_set::add_batch(): Invalid entity index " + std::to_string(e.index_), ";");
                 return message;
             }
             if (e.index_ < current_dense_size)
@@ -168,7 +197,7 @@ public:
                     }
                     else [[unlikely]]
                     {
-                        message.write_message(0, "error ", "Single_class_set::add_batch(): Dense index out of range", ";");
+                        message.write_message(0, "error ", "single_class_set::add_batch(): Dense index out of range", ";");
                         return message;
                     }
                 }
@@ -197,7 +226,7 @@ public:
     {
         if (entities.size() != components.size()) [[unlikely]]
         {
-            message.write_message(0, "error ", "Single_class_set::add_batch(): Entities and components size mismatch", ";");
+            message.write_message(0, "error ", "single_class_set::add_batch(): Entities and components size mismatch", ";");
             return message;
         }
         
@@ -212,7 +241,7 @@ public:
         {
             if (!e.is_valid()) [[unlikely]]
             {
-                message.write_message(0, "error ", "Single_class_set::add_batch(): Invalid entity index " + std::to_string(e.index_), ";");
+                message.write_message(0, "error ", "single_class_set::add_batch(): Invalid entity index " + std::to_string(e.index_), ";");
                 return message;
             }
             if (e.index_ > max_index)
@@ -245,7 +274,7 @@ public:
                 }
                 else [[unlikely]]
                 {
-                    message.write_message(0, "error ", "Single_class_set::add_batch(): Dense index out of range", ";");
+                    message.write_message(0, "error ", "single_class_set::add_batch(): Dense index out of range", ";");
                     return message;
                 }
             }
@@ -267,24 +296,24 @@ public:
     {        
         if(!e.is_valid()) [[unlikely]]
         {
-            message.write_message(0, "error ", "Single_class_set::get():Invalid index " + std::to_string(e.index_), ";");
+            message.write_message(0, "error ", "single_class_set::get():Invalid index " + std::to_string(e.index_), ";");
             return nullptr;
         }
         if(type_id_ != type_id::get_type_id<T>()) [[unlikely]]
         {
-            message.write_message(0, "error ", "Single_class_set::get():Type mismatch", ";");
+            message.write_message(0, "error ", "single_class_set::get():Type mismatch", ";");
             return nullptr;
         }
 
         if(e.index_ >= sparse_.size()) [[unlikely]]
         {
-            message.write_message(0, "error ", "Single_class_set::get():Index out of range " + std::to_string(e.index_), ";");
+            message.write_message(0, "error ", "single_class_set::get():Index out of range " + std::to_string(e.index_), ";");
             return nullptr;
         }
 
         if(sparse_[e.index_].version_ != e.version_) [[unlikely]]
         {
-            message.write_message(0, "error ", "Single_class_set::get():Entity version mismatch", ";");
+            message.write_message(0, "error ", "single_class_set::get():Entity version mismatch", ";");
             return nullptr;
         }
 
@@ -292,7 +321,7 @@ public:
 
         if(index >= object_v_.size()) [[unlikely]]
         {
-            message.write_message(0, "error ", "Single_class_set::get():Index out of range " + std::to_string(e.index_), ";");
+            message.write_message(0, "error ", "single_class_set::get():Index out of range " + std::to_string(e.index_), ";");
             return nullptr;  
         }
 
@@ -303,31 +332,31 @@ public:
     {
         if (!e.is_valid()) [[unlikely]]
         {
-            message.write_message(0, "error ", "Single_class_set::hard_remove(): Invalid entity", ";");
+            message.write_message(0, "error ", "single_class_set::hard_remove(): Invalid entity", ";");
             return message;
         }
 
         if (dense_.empty() || object_v_.empty()) [[unlikely]]
         {
-            message.write_message(0, "error ", "Single_class_set::hard_remove(): Container is empty", ";");
+            message.write_message(0, "error ", "single_class_set::hard_remove(): Container is empty", ";");
             return message;
         }
         if(e.index_ >= sparse_.size() || !sparse_[e.index_].is_valid()) [[unlikely]]
         {   
-            message.write_message(0, "error ", "Single_class_set::hard_remove():ID is invalid " + std::to_string(e.index_), ";");
+            message.write_message(0, "error ", "single_class_set::hard_remove():ID is invalid " + std::to_string(e.index_), ";");
             return message;
         }
         
         if(sparse_[e.index_].version_ != e.version_) [[unlikely]]
         {
-            message.write_message(0, "error ", "Single_class_set::hard_remove():Entity version mismatch", ";");
+            message.write_message(0, "error ", "single_class_set::hard_remove():Entity version mismatch", ";");
             return message;
         }
 
         auto index = sparse_[e.index_].dense_index_;
         if(index >= object_v_.size()) [[unlikely]]
         {
-            message.write_message(0, "error ", "Single_class_set::hard_remove():Index out of range " + std::to_string(e.index_), ";");
+            message.write_message(0, "error ", "single_class_set::hard_remove():Index out of range " + std::to_string(e.index_), ";");
             return message;
         }
 
@@ -349,24 +378,24 @@ public:
     {
         if (!e.is_valid()) [[unlikely]]
         {
-            message.write_message(0, "error ", "Single_class_set::soft_remove(): Invalid entity", ";");
+            message.write_message(0, "error ", "single_class_set::soft_remove(): Invalid entity", ";");
             return message;
         }
 
         if (dense_.empty() || object_v_.empty()) [[unlikely]]
         {
-            message.write_message(0, "error ", "Single_class_set::soft_remove(): Container is empty", ";");
+            message.write_message(0, "error ", "single_class_set::soft_remove(): Container is empty", ";");
             return message;
         }
         if(e.index_ >= sparse_.size() || !sparse_[e.index_].is_valid()) [[unlikely]]
         {   
-            message.write_message(0, "error ", "Single_class_set::soft_remove():ID is invalid " + std::to_string(e.index_), ";");
+            message.write_message(0, "error ", "single_class_set::soft_remove():ID is invalid " + std::to_string(e.index_), ";");
             return message;
         }
         
         if(sparse_[e.index_].version_ != e.version_) [[unlikely]]
         {
-            message.write_message(0, "error ", "Single_class_set::soft_remove():Entity version mismatch", ";");
+            message.write_message(0, "error ", "single_class_set::soft_remove():Entity version mismatch", ";");
             return message;
         }
 
@@ -401,7 +430,7 @@ public:
     }
     
 
-    Single_class_set(Single_class_set&& other) noexcept
+    single_class_set(single_class_set&& other) noexcept
     : sparse_(std::move(other.sparse_))
     , dense_(std::move(other.dense_))
     , object_v_(std::move(other.object_v_))
@@ -412,7 +441,7 @@ public:
     }
     
 
-    Single_class_set& operator=(Single_class_set&& other) noexcept
+    single_class_set& operator=(single_class_set&& other) noexcept
     {
         if (this != &other) [[likely]]
         {
@@ -440,8 +469,8 @@ public:
     [[nodiscard]] const_iterator end() const noexcept { return object_v_.end(); }
     [[nodiscard]] const_iterator cbegin() const noexcept { return object_v_.cbegin(); }
     [[nodiscard]] const_iterator cend() const noexcept { return object_v_.cend(); }
-    Single_class_set(const Single_class_set&) = delete;
-    Single_class_set& operator=(const Single_class_set&) = delete;
+    single_class_set(const single_class_set&) = delete;
+    single_class_set& operator=(const single_class_set&) = delete;
 
     [[nodiscard]] constexpr size_t size() const noexcept
     {
@@ -475,5 +504,5 @@ public:
         return dense_;
     }
 
-    ~Single_class_set() = default;
+    ~single_class_set() = default;
 };

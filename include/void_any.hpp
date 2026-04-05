@@ -165,6 +165,7 @@ private:
 
 public:
     void_any() noexcept = default;
+    
     template<typename T>
     void_any(T&& object) noexcept
     {
@@ -347,7 +348,6 @@ public:
             
 #if defined(VOID_ANY_ENABLE_SSO)
             storage_ = other.storage_;
-            use_sso_ = other.use_sso_;
             other.storage_.ptr_ = nullptr;
             other.use_sso_ = false;
 #else

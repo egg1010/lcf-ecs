@@ -23,10 +23,14 @@ struct get {};
 template <typename... Types>
 struct ordered {};
 
+template <typename T>
+concept Component = std::is_copy_constructible_v<std::decay_t<T>> 
+                  || std::is_move_constructible_v<std::decay_t<T>>;
+
 class manager
 {
 private:
-    class_pool<Single_class_set> components_c_;
+    class_pool<single_class_set> components_c_;
     operating_message component_message;
     entity_manager entity_manager_;
     
@@ -190,7 +194,7 @@ public:
     }
 
     template <typename T>
-    [[nodiscard]] Single_class_set*get_single_class_set() noexcept
+    [[nodiscard]] single_class_set*get_single_class_set() noexcept
     {
         using DecayedT = std::decay_t<T>;
         int type_id = type_id::get_type_id<DecayedT>();
@@ -261,11 +265,11 @@ public:
     class single_view_with_exclude
     {
     private:
-        Single_class_set* set_;
+        single_class_set* set_;
         manager* mgr_;
 
     public:
-        single_view_with_exclude(Single_class_set* set, manager* mgr) noexcept : set_(set), mgr_(mgr) {}
+        single_view_with_exclude(single_class_set* set, manager* mgr) noexcept : set_(set), mgr_(mgr) {}
 
         [[nodiscard]] size_t size() const noexcept { return set_ ? set_->size() : 0; }
         [[nodiscard]] bool empty() const noexcept { return set_ ? set_->empty() : true; }
@@ -276,6 +280,8 @@ public:
             if (!set_) [[unlikely]] return;
 
             auto& indices = set_->get_entity_indices();
+            auto& object_pool = set_->template get_object_pool<T>();
+            
             for (size_t i = 0; i < indices.size(); ++i)
             {
                 entity e(indices[i], 1);
@@ -283,10 +289,8 @@ public:
                 
                 if (!should_exclude) [[likely]]
                 {
-                    if (auto* comp = set_->template get_ptr<T>(e)) [[likely]]
-                    {
-                        std::forward<Func>(func)(*comp);
-                    }
+                    auto* comp = object_pool[i].template get_ptr_unchecked<T>();
+                    std::forward<Func>(func)(*comp);
                 }
             }
         }
@@ -297,6 +301,8 @@ public:
             if (!set_) [[unlikely]] return;
 
             auto& indices = set_->get_entity_indices();
+            auto& object_pool = set_->template get_object_pool<T>();
+            
             for (size_t i = 0; i < indices.size(); ++i)
             {
                 entity e(indices[i], 1);
@@ -304,10 +310,8 @@ public:
                 
                 if (!should_exclude) [[likely]]
                 {
-                    if (auto* comp = set_->template get_ptr<T>(e)) [[likely]]
-                    {
-                        std::forward<Func>(func)(e, *comp);
-                    }
+                    auto* comp = object_pool[i].template get_ptr_unchecked<T>();
+                    std::forward<Func>(func)(e, *comp);
                 }
             }
         }
@@ -317,11 +321,11 @@ public:
     class single_view_with_get
     {
     private:
-        Single_class_set* set_;
+        single_class_set* set_;
         manager* mgr_;
 
     public:
-        single_view_with_get(Single_class_set* set, manager* mgr) noexcept : set_(set), mgr_(mgr) {}
+        single_view_with_get(single_class_set* set, manager* mgr) noexcept : set_(set), mgr_(mgr) {}
 
         [[nodiscard]] size_t size() const noexcept { return set_ ? set_->size() : 0; }
         [[nodiscard]] bool empty() const noexcept { return set_ ? set_->empty() : true; }
@@ -332,17 +336,17 @@ public:
             if (!set_) [[unlikely]] return;
 
             auto& indices = set_->get_entity_indices();
+            auto& object_pool = set_->template get_object_pool<T>();
+            
             for (size_t i = 0; i < indices.size(); ++i)
             {
                 entity e(indices[i], 1);
-                if (auto* comp = set_->template get_ptr<T>(e)) [[likely]]
+                auto* comp = object_pool[i].template get_ptr_unchecked<T>();
+                auto get_ptrs = std::make_tuple(mgr_->get_ptr<GetTypes>(e)...);
+                std::apply([&](auto*... pts) 
                 {
-                    auto get_ptrs = std::make_tuple(mgr_->get_ptr<GetTypes>(e)...);
-                    std::apply([&](auto*... pts) 
-                    {
-                        std::forward<Func>(func)(*comp, pts...);
-                    }, get_ptrs);
-                }
+                    std::forward<Func>(func)(*comp, pts...);
+                }, get_ptrs);
             }
         }
 
@@ -352,16 +356,16 @@ public:
             if (!set_) [[unlikely]] return;
 
             auto& indices = set_->get_entity_indices();
+            auto& object_pool = set_->template get_object_pool<T>();
+            
             for (size_t i = 0; i < indices.size(); ++i)
             {
                 entity e(indices[i], 1);
-                if (auto* comp = set_->template get_ptr<T>(e)) [[likely]]
-                {
-                    auto get_ptrs = std::make_tuple(mgr_->get_ptr<GetTypes>(e)...);
-                    std::apply([&](auto*... pts) {
-                        std::forward<Func>(func)(e, *comp, pts...);
-                    }, get_ptrs);
-                }
+                auto* comp = object_pool[i].template get_ptr_unchecked<T>();
+                auto get_ptrs = std::make_tuple(mgr_->get_ptr<GetTypes>(e)...);
+                std::apply([&](auto*... pts) {
+                    std::forward<Func>(func)(e, *comp, pts...);
+                }, get_ptrs);
             }
         }
     };
@@ -370,11 +374,11 @@ public:
     class single_view
     {
     private:
-        Single_class_set* set_;
+        single_class_set* set_;
         manager* mgr_;
 
     public:
-        single_view(Single_class_set* set, manager* mgr) noexcept : set_(set), mgr_(mgr) {}
+        single_view(single_class_set* set, manager* mgr) noexcept : set_(set), mgr_(mgr) {}
 
         class iterator
         {
@@ -401,6 +405,59 @@ public:
                 return index_ != other.index_;
             }
         };
+
+        class component_iterator
+        {
+        private:
+            void_any* ptr_;
+        public:
+            explicit component_iterator(void_any* ptr) noexcept : ptr_(ptr) {}
+
+            [[nodiscard]] T& operator*() const noexcept 
+            { 
+                return *ptr_->template get_ptr_unchecked<T>(); 
+            }
+            
+            [[nodiscard]] T* operator->() const noexcept 
+            { 
+                return ptr_->template get_ptr_unchecked<T>(); 
+            }
+
+            component_iterator& operator++() noexcept
+            {
+                ++ptr_;
+                return *this;
+            }
+
+            component_iterator operator++(int) noexcept
+            {
+                component_iterator temp = *this;
+                ++ptr_;
+                return temp;
+            }
+
+            [[nodiscard]] bool operator==(const component_iterator& other) const noexcept
+            {
+                return ptr_ == other.ptr_;
+            }
+
+            [[nodiscard]] bool operator!=(const component_iterator& other) const noexcept
+            {
+                return ptr_ != other.ptr_;
+            }
+        };
+
+        [[nodiscard]] component_iterator component_begin() noexcept 
+        { 
+            if (!set_) [[unlikely]] return component_iterator(nullptr);
+            return component_iterator(set_->template get_object_pool<T>().data()); 
+        }
+        
+        [[nodiscard]] component_iterator component_end() noexcept 
+        { 
+            if (!set_) [[unlikely]] return component_iterator(nullptr);
+            return component_iterator(set_->template get_object_pool<T>().data() + set_->template get_object_pool<T>().size()); 
+        }
 
         [[nodiscard]] iterator begin() noexcept { return iterator(this, 0); }
         [[nodiscard]] iterator end() noexcept { return iterator(this, set_ ? set_->size() : 0); }
@@ -440,7 +497,7 @@ public:
             for (size_t i = 0; i < indices.size(); ++i)
             {
                 entity e(indices[i], 1);
-                auto* comp = object_pool[i].template fast_get_ptr<T>();
+                auto* comp = object_pool[i].template get_ptr_unchecked<T>();
                 std::forward<Func>(func)(e, *comp);
             }
         }
@@ -462,12 +519,12 @@ public:
     class dual_view
     {
     private:
-        Single_class_set* set1_;
-        Single_class_set* set2_;
+        single_class_set* set1_;
+        single_class_set* set2_;
         manager* mgr_;
 
     public:
-        dual_view(Single_class_set* set1, Single_class_set* set2, manager* mgr) noexcept 
+        dual_view(single_class_set* set1, single_class_set* set2, manager* mgr) noexcept 
             : set1_(set1), set2_(set2), mgr_(mgr) {}
 
         [[nodiscard]] size_t size() const noexcept { return set1_ ? set1_->size() : 0; }
@@ -485,16 +542,32 @@ public:
         {
             if (!set1_ || !set2_) [[unlikely]] return;
 
-            auto& indices = set1_->get_entity_indices();
+            bool use_set1_as_primary = set1_->size() <= set2_->size();
+            single_class_set* primary_set = use_set1_as_primary ? set1_ : set2_;
+            single_class_set* secondary_set = use_set1_as_primary ? set2_ : set1_;
+
+            auto& indices = primary_set->get_entity_indices();
             for (size_t i = 0; i < indices.size(); ++i)
             {
                 entity e(indices[i], 1);
-                auto* comp1 = set1_->template get_ptr<T1>(e);
-                auto* comp2 = set2_->template get_ptr<T2>(e);
                 
-                if (comp1 && comp2) [[likely]]
+                if (use_set1_as_primary)
                 {
-                    std::forward<Func>(func)(*comp1, *comp2);
+                    auto* comp1 = primary_set->template get_ptr_unchecked_by_index<T1>(i);
+                    auto* comp2 = secondary_set->template get_ptr<T2>(e);
+                    if (comp2) [[likely]]
+                    {
+                        std::forward<Func>(func)(*comp1, *comp2);
+                    }
+                }
+                else
+                {
+                    auto* comp1 = secondary_set->template get_ptr<T1>(e);
+                    auto* comp2 = primary_set->template get_ptr_unchecked_by_index<T2>(i);
+                    if (comp1) [[likely]]
+                    {
+                        std::forward<Func>(func)(*comp1, *comp2);
+                    }
                 }
             }
         }
@@ -504,16 +577,32 @@ public:
         {
             if (!set1_ || !set2_) [[unlikely]] return;
 
-            auto& indices = set1_->get_entity_indices();
+            bool use_set1_as_primary = set1_->size() <= set2_->size();
+            single_class_set* primary_set = use_set1_as_primary ? set1_ : set2_;
+            single_class_set* secondary_set = use_set1_as_primary ? set2_ : set1_;
+
+            auto& indices = primary_set->get_entity_indices();
             for (size_t i = 0; i < indices.size(); ++i)
             {
                 entity e(indices[i], 1);
-                auto* comp1 = set1_->template get_ptr<T1>(e);
-                auto* comp2 = set2_->template get_ptr<T2>(e);
                 
-                if (comp1 && comp2) [[likely]]
+                if (use_set1_as_primary)
                 {
-                    std::forward<Func>(func)(e, *comp1, *comp2);
+                    auto* comp1 = primary_set->template get_ptr_unchecked_by_index<T1>(i);
+                    auto* comp2 = secondary_set->template get_ptr<T2>(e);
+                    if (comp2) [[likely]]
+                    {
+                        std::forward<Func>(func)(e, *comp1, *comp2);
+                    }
+                }
+                else
+                {
+                    auto* comp1 = secondary_set->template get_ptr<T1>(e);
+                    auto* comp2 = primary_set->template get_ptr_unchecked_by_index<T2>(i);
+                    if (comp1) [[likely]]
+                    {
+                        std::forward<Func>(func)(e, *comp1, *comp2);
+                    }
                 }
             }
         }

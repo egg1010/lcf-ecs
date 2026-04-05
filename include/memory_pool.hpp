@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <new>
 #include <type_traits>
+#include <array>
 #include "class_pool.hpp"
 
 struct memory_block
@@ -61,14 +62,124 @@ private:
         block_header* prev_;
     };
 
-    class_pool<memory_block> memory_chunks_;  // 所有内存块的容器
-    block_header* free_list_;                   // 空闲块链表头指针
-    size_t total_allocated_;                    // 总共分配的字节数
-    size_t total_used_;                         // 当前使用的字节数
-    size_t chunk_size_;                         // 单个内存块的默认大小
+    class_pool<memory_block> memory_chunks_;
+    std::array<block_header*, 32> free_lists_;
+    size_t total_allocated_;
+    size_t total_used_;
+    size_t chunk_size_;
 
     static constexpr size_t HEADER_SIZE = sizeof(block_header);
     static constexpr size_t DEFAULT_CHUNK_SIZE = 4096;
+
+    static constexpr size_t get_bucket_index(size_t size) noexcept
+    {
+        if (size <= 8) return 0;
+        if (size <= 12) return 1;
+        if (size <= 16) return 2;
+        if (size <= 24) return 3;
+        if (size <= 32) return 4;
+        if (size <= 48) return 5;
+        if (size <= 64) return 6;
+        if (size <= 96) return 7;
+        if (size <= 128) return 8;
+        if (size <= 192) return 9;
+        if (size <= 256) return 10;
+        if (size <= 384) return 11;
+        if (size <= 512) return 12;
+        if (size <= 768) return 13;
+        if (size <= 1024) return 14;
+        if (size <= 1536) return 15;
+        if (size <= 2048) return 16;
+        if (size <= 3072) return 17;
+        if (size <= 4096) return 18;
+        if (size <= 6144) return 19;
+        if (size <= 8192) return 20;
+        if (size <= 12288) return 21;
+        if (size <= 16384) return 22;
+        if (size <= 24576) return 23;
+        if (size <= 32768) return 24;
+        if (size <= 49152) return 25;
+        if (size <= 65536) return 26;
+        if (size <= 98304) return 27;
+        if (size <= 131072) return 28;
+        if (size <= 196608) return 29;
+        if (size <= 262144) return 30;
+        return 31;
+    }
+
+    void remove_from_free_list(block_header* block, size_t bucket)
+    {
+        if (free_lists_[bucket] == block) [[likely]]
+        {
+            free_lists_[bucket] = block->next_;
+        }
+        if (block->prev_) [[likely]]
+        {
+            block->prev_->next_ = block->next_;
+        }
+        if (block->next_) [[likely]]
+        {
+            block->next_->prev_ = block->prev_;
+        }
+        block->next_ = nullptr;
+        block->prev_ = nullptr;
+    }
+
+    void add_to_free_list(block_header* block, size_t bucket)
+    {
+        block->next_ = free_lists_[bucket];
+        block->prev_ = nullptr;
+        if (free_lists_[bucket]) [[likely]]
+        {
+            free_lists_[bucket]->prev_ = block;
+        }
+        free_lists_[bucket] = block;
+    }
+
+    void merge_adjacent_blocks(block_header* block)
+    {
+        uint8_t* block_ptr = reinterpret_cast<uint8_t*>(block);
+        
+        block_header* next_block = reinterpret_cast<block_header*>(block_ptr + HEADER_SIZE + block->size_);
+        
+        uint8_t* chunk_start = nullptr;
+        for (size_t i = 0; i < memory_chunks_.size(); ++i)
+        {
+            uint8_t* chunk_data = memory_chunks_[i].data_;
+            size_t chunk_size = memory_chunks_[i].size_;
+            if (block_ptr >= chunk_data && block_ptr < chunk_data + chunk_size)
+            {
+                chunk_start = chunk_data;
+                break;
+            }
+        }
+        
+        if (!chunk_start) [[unlikely]] return;
+        
+        if (next_block && !next_block->in_use_) [[likely]]
+        {
+            size_t next_bucket = get_bucket_index(next_block->size_);
+            remove_from_free_list(next_block, next_bucket);
+            
+            block->size_ += HEADER_SIZE + next_block->size_;
+        }
+        
+        if (block_ptr > chunk_start) [[likely]]
+        {
+            block_header* prev_block_candidate = reinterpret_cast<block_header*>(block_ptr - HEADER_SIZE);
+            if (!prev_block_candidate->in_use_) [[likely]]
+            {
+                size_t prev_bucket = get_bucket_index(prev_block_candidate->size_);
+                remove_from_free_list(prev_block_candidate, prev_bucket);
+                
+                prev_block_candidate->size_ += HEADER_SIZE + block->size_;
+                block = prev_block_candidate;
+            }
+        }
+        
+        size_t new_bucket = get_bucket_index(block->size_);
+        add_to_free_list(block, new_bucket);
+    }
 
     void add_new_chunk(size_t min_size)
     {
@@ -79,22 +190,19 @@ private:
         block_header* header = reinterpret_cast<block_header*>(chunk_ptr);
         header->size_ = new_chunk_size - HEADER_SIZE;
         header->in_use_ = false;
-        header->next_ = free_list_;
+        header->next_ = nullptr;
         header->prev_ = nullptr;
         
-        if (free_list_) [[likely]]
-        {
-            free_list_->prev_ = header;
-        }
-        free_list_ = header;
+        size_t bucket = get_bucket_index(header->size_);
+        add_to_free_list(header, bucket);
         
         memory_chunks_.emplace_back(chunk_ptr, new_chunk_size);
         total_allocated_ += new_chunk_size;
     }
 
-    void split_block(block_header* block, size_t needed_size)
+    void split_block(block_header* block, size_t needed_size, size_t bucket)
     {
-        if (block->size_ < needed_size + HEADER_SIZE + 16) [[unlikely]]
+        if (block->size_ < needed_size + HEADER_SIZE + 8) [[unlikely]]
         {
             return;
         }
@@ -105,37 +213,18 @@ private:
         block_header* new_block = reinterpret_cast<block_header*>(block_ptr + HEADER_SIZE + needed_size);
         new_block->size_ = remaining_size;
         new_block->in_use_ = false;
-        new_block->next_ = block->next_;
-        new_block->prev_ = block;
+        new_block->next_ = nullptr;
+        new_block->prev_ = nullptr;
         
-        if (block->next_) [[likely]]
-        {
-            block->next_->prev_ = new_block;
-        }
-        block->next_ = new_block;
+        size_t new_bucket = get_bucket_index(remaining_size);
+        add_to_free_list(new_block, new_bucket);
+        
         block->size_ = needed_size;
-    }
-
-    void merge_with_next(block_header* block)
-    {
-        if (!block->next_ || block->next_->in_use_) [[unlikely]]
-        {
-            return;
-        }
-
-        block_header* next_block = block->next_;
-        block->size_ += HEADER_SIZE + next_block->size_;
-        block->next_ = next_block->next_;
-        
-        if (block->next_) [[likely]]
-        {
-            block->next_->prev_ = block;
-        }
     }
 
 public:
     explicit memory_pool(size_t chunk_size = DEFAULT_CHUNK_SIZE) noexcept
-        : free_list_(nullptr)
+        : free_lists_{}
         , total_allocated_(0)
         , total_used_(0)
         , chunk_size_(chunk_size)
@@ -156,32 +245,33 @@ public:
         }
 
         size = (size + 7) & ~7;
+        size_t bucket = get_bucket_index(size);
 
-        block_header* current = free_list_;
-        while (current)
+        if (free_lists_[bucket]) [[likely]]
         {
-            if (!current->in_use_ && current->size_ >= size) [[likely]]
+            block_header* block = free_lists_[bucket];
+            remove_from_free_list(block, bucket);
+
+            split_block(block, size, bucket);
+
+            block->in_use_ = true;
+            total_used_ += block->size_ + HEADER_SIZE;
+            return reinterpret_cast<uint8_t*>(block) + HEADER_SIZE;
+        }
+
+        for (size_t b = bucket + 1; b < free_lists_.size(); ++b)
+        {
+            if (free_lists_[b]) [[likely]]
             {
-                split_block(current, size);
-                current->in_use_ = true;
-                
-                if (current == free_list_) [[unlikely]]
-                {
-                    free_list_ = current->next_;
-                }
-                else if (current->prev_) [[likely]]
-                {
-                    current->prev_->next_ = current->next_;
-                }
-                if (current->next_) [[likely]]
-                {
-                    current->next_->prev_ = current->prev_;
-                }
-                
-                total_used_ += current->size_ + HEADER_SIZE;
-                return reinterpret_cast<uint8_t*>(current) + HEADER_SIZE;
+                block_header* block = free_lists_[b];
+                remove_from_free_list(block, b);
+
+                split_block(block, size, b);
+
+                block->in_use_ = true;
+                total_used_ += block->size_ + HEADER_SIZE;
+                return reinterpret_cast<uint8_t*>(block) + HEADER_SIZE;
             }
-            current = current->next_;
         }
 
         add_new_chunk(size);
@@ -206,19 +296,7 @@ public:
         block->in_use_ = false;
         total_used_ -= block->size_ + HEADER_SIZE;
 
-        block->next_ = free_list_;
-        block->prev_ = nullptr;
-        if (free_list_) [[likely]]
-        {
-            free_list_->prev_ = block;
-        }
-        free_list_ = block;
-
-        merge_with_next(block);
-        if (block->prev_) [[likely]]
-        {
-            merge_with_next(block->prev_);
-        }
+        merge_adjacent_blocks(block);
     }
 
     template <typename T, typename... Args>
@@ -260,7 +338,7 @@ public:
     void reset() noexcept
     {
         memory_chunks_.clear();
-        free_list_ = nullptr;
+        free_lists_.fill(nullptr);
         total_allocated_ = 0;
         total_used_ = 0;
     }

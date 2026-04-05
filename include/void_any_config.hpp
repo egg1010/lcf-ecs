@@ -27,7 +27,7 @@
 
 // SSO 缓冲区大小（字节）
 // 只有在启用 SSO 时才有效
-// 默认值: 32 字节
+// 默认值: 32 字节（平衡性能和内存）
 #if !defined(VOID_ANY_SSO_BUFFER_SIZE)
 #define VOID_ANY_SSO_BUFFER_SIZE 32
 #endif

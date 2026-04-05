@@ -63,7 +63,6 @@ int main()
     std::cout << "开始 ECS 性能测试，实体数量: " << entity_count << std::endl;
     
     ecs::manager ecss;
-    
     Timer timer;
     ecss.append_preallocated_entities(entity_count);
     double prealloc_time = timer.elapsed_ms();
