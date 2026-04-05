@@ -8,6 +8,7 @@
 #include <iterator>
 #include <limits>
 #include <stdexcept>
+#include <span>
 
 
 
@@ -41,7 +42,9 @@ public:
     }
 
     class_pool(size_t count, const T& value) noexcept
-        : maximum_quantity_(count > 0 ? count : 8)
+        : data_ptr_(nullptr)
+        , maximum_quantity_(count > 0 ? count : 8)
+        , usage_(0)
     {
         if (maximum_quantity_ > 0) 
         {
@@ -60,7 +63,9 @@ public:
 
     template <typename InputIt>
     class_pool(InputIt first, InputIt last) noexcept
-    : usage_(0)
+    : data_ptr_(nullptr)
+    , maximum_quantity_(0)
+    , usage_(0)
     {
         size_t count = std::distance(first, last);
         maximum_quantity_ = count > 0 ? count : 8;
@@ -82,7 +87,8 @@ public:
     }
 
     explicit class_pool(size_t capacity) noexcept
-        : maximum_quantity_(capacity)
+        : data_ptr_(nullptr)
+        , maximum_quantity_(capacity)
         , usage_(0)
     {
         if (capacity > 0) 
@@ -93,7 +99,8 @@ public:
     }
 
     class_pool(const class_pool& other) noexcept
-        : maximum_quantity_(other.maximum_quantity_)
+        : data_ptr_(nullptr)
+        , maximum_quantity_(other.maximum_quantity_)
         , usage_(other.usage_)
     {
         if (maximum_quantity_ > 0) 
@@ -204,10 +211,10 @@ public:
         static_assert(std::is_constructible_v<T, Args...>, 
                      "T must be constructible from the provided arguments");
         
-        if (usage_ >= maximum_quantity_)
+        if (usage_ >= maximum_quantity_) [[unlikely]]
         {
-            size_t new_capacity = maximum_quantity_ * 4;
-            if (new_capacity == maximum_quantity_) 
+            size_t new_capacity = maximum_quantity_ * 2;
+            if (new_capacity <= maximum_quantity_) [[unlikely]]
             { 
                 new_capacity = maximum_quantity_ + 1;
             }
@@ -246,28 +253,27 @@ public:
     }
     
 
-    T* get(size_t index) noexcept 
+    constexpr T* get(size_t index) noexcept 
     { 
         return &data_ptr_[index];
     }
     
-    size_t capacity() const noexcept { return maximum_quantity_; }
+    [[nodiscard]] constexpr size_type capacity() const noexcept { return maximum_quantity_; }
 
-    size_t max_size() const noexcept 
-    { 
-        return std::numeric_limits<size_t>::max() / sizeof(T); 
-    }
+    // 对于稀疏容器，提供获取实际分配容量的方法
+    [[nodiscard]] constexpr size_type sparse_capacity() const noexcept { return maximum_quantity_; }
     
-    size_t size() const noexcept { return usage_; }
+    // 注意：size() 仍然返回 usage_，表示连续使用的大小
+    [[nodiscard]] constexpr size_type size() const noexcept { return usage_; }
 
-    bool empty() const noexcept { return usage_ == 0; }
+    [[nodiscard]] constexpr bool empty() const noexcept { return usage_ == 0; }
 
-    T* data() noexcept { return data_ptr_; }
-    const T* data() const noexcept { return data_ptr_; }
+    [[nodiscard]] constexpr pointer data() noexcept { return data_ptr_; }
+    [[nodiscard]] constexpr const_pointer data() const noexcept { return data_ptr_; }
 
     void reserve(size_t new_capacity) noexcept
     {
-        if (new_capacity > maximum_quantity_)
+        if (new_capacity > maximum_quantity_) [[unlikely]]
         {
             resize(new_capacity);
         }
@@ -275,7 +281,16 @@ public:
 
     void shrink_to_fit() noexcept
     {
-        if (usage_ < maximum_quantity_ && usage_ > 0) 
+        if (usage_ == 0 && data_ptr_ != nullptr) [[unlikely]]
+        {
+            size_t old_total_bytes = maximum_quantity_ * sizeof(T);
+            ::operator delete(data_ptr_, old_total_bytes, std::align_val_t{alignof(T)});
+            data_ptr_ = nullptr;
+            maximum_quantity_ = 0;
+            return;
+        }
+        
+        if (usage_ < maximum_quantity_ && usage_ > 0) [[likely]]
         {
             T* new_ptr = nullptr;
             size_t new_total_bytes = usage_ * sizeof(T);
@@ -301,7 +316,7 @@ public:
 
     T& at(size_t index)
     {
-        if (index >= usage_) 
+        if (index >= usage_) [[unlikely]]
         {
             throw std::out_of_range("class_pool::at: index out of range");
         }
@@ -310,7 +325,7 @@ public:
     
     const T& at(size_t index) const
     {
-        if (index >= usage_) 
+        if (index >= usage_) [[unlikely]]
         {
             throw std::out_of_range("class_pool::at: index out of range");
         }
@@ -339,7 +354,7 @@ public:
 
     void resize(size_t new_capacity) noexcept
     {
-        if (new_capacity <= maximum_quantity_) 
+        if (new_capacity <= maximum_quantity_) [[likely]]
         {
             return;
         }
@@ -348,7 +363,7 @@ public:
         size_t new_total_bytes = new_capacity * sizeof(T);
         new_ptr = static_cast<T*>(::operator new(new_total_bytes, std::align_val_t{alignof(T)}));
         
-        if (data_ptr_ != nullptr) 
+        if (data_ptr_ != nullptr) [[likely]]
         {
             if constexpr (std::is_trivially_copyable_v<T>) 
             {
@@ -371,17 +386,17 @@ public:
     T* insert(T* pos, const T& value) noexcept
     {
         size_t index = static_cast<size_t>(pos - data_ptr_);
-        if (usage_ >= maximum_quantity_) 
+        if (usage_ >= maximum_quantity_) [[unlikely]]
         {
-            size_t new_capacity = maximum_quantity_ * 4;
-            if (new_capacity == maximum_quantity_) 
+            size_t new_capacity = maximum_quantity_ * 2;
+            if (new_capacity <= maximum_quantity_) [[unlikely]]
             {
                 new_capacity = maximum_quantity_ + 1;
             }
             resize(new_capacity);
         }
         
-        if (index < usage_) 
+        if (index < usage_) [[likely]]
         {
             std::move_backward(data_ptr_ + index, data_ptr_ + usage_, data_ptr_ + usage_ + 1);
             (data_ptr_ + index)->~T(); 
@@ -395,20 +410,20 @@ public:
     T* insert(T* pos, T&& value) noexcept
     {
         size_t index = static_cast<size_t>(pos - data_ptr_);
-        if (usage_ >= maximum_quantity_) 
+        if (usage_ >= maximum_quantity_) [[unlikely]]
         {
-            size_t new_capacity = maximum_quantity_ * 4;
-            if (new_capacity == maximum_quantity_) 
+            size_t new_capacity = maximum_quantity_ * 2;
+            if (new_capacity <= maximum_quantity_) [[unlikely]]
             {
                 new_capacity = maximum_quantity_ + 1;
             }
             resize(new_capacity);
         }
         
-        if (index < usage_) 
+        if (index < usage_) [[likely]]
         {
             std::move_backward(data_ptr_ + index, data_ptr_ + usage_, data_ptr_ + usage_ + 1);
-            (data_ptr_ + index)->~T();
+            (data_ptr_ + index)->~T(); 
         }
         
         new (data_ptr_ + index) T(std::move(value));
@@ -420,20 +435,20 @@ public:
     T* emplace(T* pos, Args&&... args) noexcept
     {
         size_t index = static_cast<size_t>(pos - data_ptr_);
-        if (usage_ >= maximum_quantity_) 
+        if (usage_ >= maximum_quantity_) [[unlikely]]
         {
-            size_t new_capacity = maximum_quantity_ * 4;
-            if (new_capacity == maximum_quantity_) 
+            size_t new_capacity = maximum_quantity_ * 2;
+            if (new_capacity <= maximum_quantity_) [[unlikely]]
             {
                 new_capacity = maximum_quantity_ + 1;
             }
             resize(new_capacity);
         }
         
-        if (index < usage_) 
+        if (index < usage_) [[likely]]
         {
             std::move_backward(data_ptr_ + index, data_ptr_ + usage_, data_ptr_ + usage_ + 1);
-            (data_ptr_ + index)->~T();
+            (data_ptr_ + index)->~T(); 
         }
         
         new (data_ptr_ + index) T(std::forward<Args>(args)...);
@@ -444,10 +459,10 @@ public:
     T* erase(T* pos) noexcept
     {
         size_t index = static_cast<size_t>(pos - data_ptr_);
-        if (index < usage_) 
+        if (index < usage_) [[likely]]
         {
             pos->~T();
-            if (usage_ > 1 && index < usage_ - 1) 
+            if (usage_ > 1 && index < usage_ - 1) [[likely]]
             {
                 std::move(data_ptr_ + index + 1, data_ptr_ + usage_, data_ptr_ + index);
                 (data_ptr_ + usage_ - 1)->~T();
@@ -463,17 +478,17 @@ public:
         size_t start_index = static_cast<size_t>(first - data_ptr_);
         size_t end_index = static_cast<size_t>(last - data_ptr_);
         
-        if (start_index >= usage_) 
+        if (start_index >= usage_) [[unlikely]]
         {
             return data_ptr_ + usage_;
         }
         
-        if (end_index > usage_) 
+        if (end_index > usage_) [[unlikely]]
         {
             end_index = usage_;
         }
         
-        if (start_index >= end_index) 
+        if (start_index >= end_index) [[unlikely]]
         {
             return data_ptr_ + start_index;
         }
@@ -483,7 +498,7 @@ public:
             (data_ptr_ + i)->~T();
         }
         
-        if (end_index < usage_) 
+        if (end_index < usage_) [[likely]]
         {
             std::move(data_ptr_ + end_index, data_ptr_ + usage_, data_ptr_ + start_index);
             size_t new_usage = usage_ - (end_index - start_index);
@@ -539,6 +554,12 @@ public:
     }
 
     bool valid() const noexcept { return data_ptr_ != nullptr; }
+    
+    [[nodiscard]] constexpr size_type size_bytes() const noexcept { return usage_ * sizeof(T); }
+    [[nodiscard]] constexpr size_type capacity_bytes() const noexcept { return maximum_quantity_ * sizeof(T); }
+    
+    [[nodiscard]] std::span<T> span() noexcept { return std::span<T>(data_ptr_, usage_); }
+    [[nodiscard]] std::span<const T> span() const noexcept { return std::span<const T>(data_ptr_, usage_); }
     
     T& operator[](size_t index) noexcept
     {
@@ -598,16 +619,12 @@ public:
         
         if (index >= usage_) [[unlikely]] 
         {
-
             if (index >= maximum_quantity_) 
             {
                 resize(index + 1);
             }
-
             new (&data_ptr_[index]) T(std::forward<Args>(args)...);
-            if (index >= usage_) {
-                usage_ = index + 1;
-            }
+            usage_ = index + 1;
         } 
         else 
         {
@@ -615,6 +632,27 @@ public:
             new (&data_ptr_[index]) T(std::forward<Args>(args)...);
         }
         return data_ptr_[index];
+    }
+    
+    // 新增：专门用于稀疏访问的emplace方法，不会更新usage_
+    template <typename... Args>
+    T& sparse_emplace_at(size_t index, Args&&... args) noexcept
+    {
+        static_assert(std::is_constructible_v<T, Args...>,
+            "T must be constructible from the provided arguments");
+        
+        if (index >= maximum_quantity_) [[unlikely]]
+        {
+            resize(index + 1);
+        }
+        
+        new (&data_ptr_[index]) T(std::forward<Args>(args)...);
+        return data_ptr_[index];
+    }
+    
+    bool is_constructed_at(size_t index) const noexcept
+    {
+        return index < usage_;
     }
 };
 

@@ -13,8 +13,9 @@ private:
     std::vector<entity> preallocated_entities_;
     size_t current_preallocated_index_ = 0;
 public:
-    entity_manager(){append_preallocated_entities(500*1000);}
-    void append_preallocated_entities(size_t count)
+    entity_manager() noexcept { append_preallocated_entities(500*1000); }
+    
+    void append_preallocated_entities(size_t count) noexcept
     {
         size_t initial_size = preallocated_entities_.size();
         preallocated_entities_.reserve(initial_size + count);
@@ -22,43 +23,44 @@ public:
         for (size_t i = 0; i < count; ++i)
         {
             uint32_t idx = id_manager_.get_id();
-            if (idx >= version_v_.size()) 
+            if (idx >= version_v_.size()) [[unlikely]]
             {
-                version_v_.resize(idx + 1, 0);
+                version_v_.resize(idx + 1, 1);
             }
             preallocated_entities_.emplace_back(entity(idx, version_v_[idx]));
         }
     }
-    entity_manager(size_t count)
+    
+    explicit entity_manager(size_t count) noexcept
     {
         append_preallocated_entities(count);
     }
 
-    bool is_version_valid(entity entitys)
+    [[nodiscard]] bool is_version_valid(entity entitys) const noexcept
     {
-        if(entitys.index_ >= version_v_.size()) return false;
+        if(entitys.index_ >= version_v_.size()) [[unlikely]] return false;
         return entitys.version_ == version_v_[entitys.index_];
     }
     
-    void destroy_entity(entity &entitys)
+    void destroy_entity(entity &entitys) noexcept
     {
-        if(!is_version_valid(entitys)) return;
+        if(!is_version_valid(entitys)) [[unlikely]] return;
         id_manager_.free_id(entitys.index_);
         version_v_[entitys.index_]++;
     }
     
-    entity get_entity()
+    [[nodiscard]] entity get_entity() noexcept
     {
-        if (current_preallocated_index_ < preallocated_entities_.size())
+        if (current_preallocated_index_ < preallocated_entities_.size()) [[likely]]
         {
             return preallocated_entities_[current_preallocated_index_++];
         }
-        else
+        else [[unlikely]]
         {
             uint32_t idx = id_manager_.get_id();
-            if (idx >= version_v_.size()) 
+            if (idx >= version_v_.size()) [[unlikely]]
             {
-                version_v_.resize(idx + 1, 0);
+                version_v_.resize(idx + 1, 1);
             }
             return entity(idx, version_v_[idx]);
         }

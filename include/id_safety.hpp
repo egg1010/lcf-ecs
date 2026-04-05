@@ -13,11 +13,11 @@ private:
     mutable std::mutex recycled_mutex_;
     std::stack<T, std::vector<T>> recycled_ids_;
 public:
-    T get_id()
+    [[nodiscard]] T get_id()
     {
         {
             std::lock_guard<std::mutex> lock(recycled_mutex_);
-            if (!recycled_ids_.empty()) 
+            if (!recycled_ids_.empty()) [[likely]]
             {
                 T id = recycled_ids_.top();
                 recycled_ids_.pop();
@@ -28,22 +28,22 @@ public:
         return next_id_.fetch_add(1);
     }
     
-    void free_id(T id)
+    void free_id(T id) noexcept
     {
-        if (id != 0) 
+        if (id != 0) [[likely]]
         {
             std::lock_guard<std::mutex> lock(recycled_mutex_);
             recycled_ids_.push(id);
         }
     }
     
-    T total_number_of_ids() const 
+    [[nodiscard]] T total_number_of_ids() const 
     { 
         std::lock_guard<std::mutex> lock(recycled_mutex_);
         return recycled_ids_.size(); 
     }
     
-    T maximum_id() const 
+    [[nodiscard]] T maximum_id() const noexcept
     { 
         return next_id_.load() - 1; 
     }

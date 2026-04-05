@@ -9,9 +9,9 @@ private:
     T next_id_{0};
     std::stack<T, std::vector<T>> recycled_ids_;
 public:
-    T get_id()
+    [[nodiscard]] T get_id() noexcept
     {
-        if (!recycled_ids_.empty()) 
+        if (!recycled_ids_.empty()) [[likely]]
         {
             T id = recycled_ids_.top();
             recycled_ids_.pop();
@@ -20,17 +20,17 @@ public:
         return ++next_id_;
     }
     
-    void free_id(T id)
+    void free_id(T id) noexcept
     {
         recycled_ids_.push(id);
     }
     
-    T total_number_of_ids() const 
+    [[nodiscard]] T total_number_of_ids() const noexcept
     { 
         return recycled_ids_.size(); 
     }
     
-    T maximum_id() const 
+    [[nodiscard]] T maximum_id() const noexcept
     { 
         return next_id_; 
     }

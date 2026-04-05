@@ -17,6 +17,15 @@ struct pos
     int x,y;    
 };
 
+#include <functional>
+
+struct CallbackComponent
+{
+    std::function<void(int)> callback;
+    
+    CallbackComponent(std::function<void(int)> cb) : callback(std::move(cb)) {}
+};
+
 int f(int as)
 {
     return 1;
@@ -134,6 +143,83 @@ int main()
         }
         
     }
+
+    // --- EnTT 风格视图系统 ---
+    // --- EnTT style view system ---
+
+    std::cout << "\n--- View (EnTT style) ---" << std::endl;
+    // 获取单组件视图
+    // Get single-component view
+    auto pos_view = ecss.view<pos>();
+    std::cout << "pos_view.size(): " << pos_view.size() << std::endl;
+    std::cout << "pos_view.empty(): " << (pos_view.empty() ? "true" : "false") << std::endl;
+
+    std::cout << "\n--- Range-based for loop ---" << std::endl;
+    // 使用范围 for 循环遍历视图中的所有实体
+    // Use range-based for loop to iterate all entities in the view
+    for (auto entity : pos_view)
+    {
+        std::cout << "Entity: " << entity.index_ << std::endl;
+    }
+
+    std::cout << "\n--- each() ---" << std::endl;
+    // 使用 each() 遍历组件（不需要 entity）
+    // Use each() to iterate components (no entity needed)
+    pos_view.each([](pos& p) {
+        std::cout << "pos: " << p.x << " " << p.y << std::endl;
+    });
+
+    std::cout << "\n--- use() (with entity) ---" << std::endl;
+    // 使用 use() 同时访问 entity 和组件
+    // Use use() to access both entity and component
+    pos_view.use([](entity e, pos& p) {
+        std::cout << "Entity " << e.index_ << ": " << p.x << " " << p.y << std::endl;
+    });
+
+    std::cout << "\n--- contains() ---" << std::endl;
+    // 检查 entity 是否在视图中
+    // Check if entity is in the view
+    std::cout << "pos_view.contains(entity1): " << (pos_view.contains(entity1) ? "true" : "false") << std::endl;
+    std::cout << "pos_view.contains(entity2): " << (pos_view.contains(entity2) ? "true" : "false") << std::endl;
+
+    std::cout << "\n--- Dual View (pos + info) ---" << std::endl;
+    // 获取双组件视图（交集：同时拥有 pos 和 info 的实体）
+    // Get dual-component view (intersection: entities with both pos and info)
+    auto dual_view = ecss.view<pos, info>();
+    std::cout << "dual_view.size(): " << dual_view.size() << std::endl;
+    std::cout << "dual_view.empty(): " << (dual_view.empty() ? "true" : "false") << std::endl;
+
+    std::cout << "\n--- Dual View each() ---" << std::endl;
+    // 使用 each() 遍历两个组件
+    // Use each() to iterate both components
+    dual_view.each([](pos& p, info& i) {
+        std::cout << "pos: " << p.x << " " << p.y << ", info: " << i.name << " " << i.age << std::endl;
+    });
+
+    std::cout << "\n--- Dual View use() ---" << std::endl;
+    // 使用 use() 同时访问 entity 和两个组件
+    // Use use() to access entity and both components
+    dual_view.use([](entity e, pos& p, info& i) {
+        std::cout << "Entity " << e.index_ << ": pos(" << p.x << "," << p.y << "), info(" << i.name << "," << i.age << ")" << std::endl;
+    });
+
+    std::cout << "\n--- View with exclude<info> ---" << std::endl;
+    // 排除拥有 info 组件的实体（只遍历有 pos 但没有 info 的实体）
+    // Exclude entities with info component (only iterate entities with pos but no info)
+    auto view_exclude = ecss.view<pos>(ecs::exclude<info>{});
+    view_exclude.each([](pos& p) {
+        std::cout << "pos (no info): " << p.x << " " << p.y << std::endl;
+    });
+
+    std::cout << "\n--- View with get<info> ---" << std::endl;
+    // 获取可选组件（info 是可选的，可能为 nullptr）
+    // Get optional component (info is optional, may be nullptr)
+    auto view_get = ecss.view<pos>(ecs::get<info>{});
+    view_get.each([](pos& p, info* i) {
+        std::cout << "pos: " << p.x << " " << p.y;
+        if (i) std::cout << ", info: " << i->name << " " << i->age;
+        std::cout << std::endl;
+    });
     
     ecss.soft_remove<info>(entity1);
 
@@ -150,6 +236,24 @@ int main()
     ecss.delete_entity(entity4);
 
 
+    std::cout << "\n--- Test Function Storage ---" << std::endl;
+    std::cout << "--- Testing function storage ---" << std::endl;
+    
+    auto entity_cb = ecss.create_entity();
+    
+    // 添加 lambda 函数作为组件
+    ecss.add(entity_cb, CallbackComponent([](int x) {
+        std::cout << "Lambda called with x=" << x << std::endl;
+    }));
+    
+    // 获取并调用
+    auto* cb_comp = ecss.get_ptr<CallbackComponent>(entity_cb);
+    if (cb_comp)
+    {
+        std::cout << "Calling lambda callback..." << std::endl;
+        cb_comp->callback(42);
+    }
+    
     std::cout<<"endl"<<std::endl;
     return 0;
 }

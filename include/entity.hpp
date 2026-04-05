@@ -3,8 +3,8 @@
 
 struct entity
 {
-    entity() : handle_(0) {}
-    entity(uint32_t idx, uint32_t v) : index_(idx), version_(v) {}
+    constexpr entity() noexcept : handle_(0) {}
+    constexpr entity(uint32_t idx, uint32_t v) noexcept : index_(idx), version_(v) {}
 
     union 
     {
@@ -17,10 +17,10 @@ struct entity
     };
 
 
-    bool operator==(const entity& other) const { return handle_ == other.handle_; }
-    bool operator!=(const entity& other) const { return handle_ != other.handle_; }
+    constexpr bool operator==(const entity& other) const noexcept { return handle_ == other.handle_; }
+    constexpr bool operator!=(const entity& other) const noexcept { return handle_ != other.handle_; }
     
-    bool is_valid() const { return handle_!=0; }
+    constexpr bool is_valid() const noexcept { return handle_ != 0; }
 };
 
 
