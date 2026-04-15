@@ -172,6 +172,7 @@ public:
     void_any() noexcept = default;
     
     template<typename T>
+        requires (!std::is_same_v<std::decay_t<T>, void_any>)
     FORCE_INLINE
     void_any(T&& object) noexcept
     {
@@ -198,6 +199,7 @@ public:
     }
 
     template<typename T>
+        requires (!std::is_same_v<std::decay_t<T>, void_any>)
     FORCE_INLINE
     void set(T&& object) noexcept
     {

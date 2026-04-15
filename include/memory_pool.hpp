@@ -145,9 +145,8 @@ private:
     {
         uint8_t* block_ptr = reinterpret_cast<uint8_t*>(block);
         
-        block_header* next_block = reinterpret_cast<block_header*>(block_ptr + HEADER_SIZE + block->size_);
-        
         uint8_t* chunk_start = nullptr;
+        uint8_t* chunk_end = nullptr;
         for (size_t i = 0; i < memory_chunks_.size(); ++i)
         {
             uint8_t* chunk_data = memory_chunks_[i].data_;
@@ -155,30 +154,49 @@ private:
             if (block_ptr >= chunk_data && block_ptr < chunk_data + chunk_size)
             {
                 chunk_start = chunk_data;
+                chunk_end = chunk_data + chunk_size;
                 break;
             }
         }
         
         if (!chunk_start) [[unlikely]] return;
         
-        if (next_block && !next_block->in_use_) [[likely]]
+        uint8_t* next_block_ptr = block_ptr + HEADER_SIZE + block->size_;
+        if (next_block_ptr + HEADER_SIZE <= chunk_end) [[likely]]
         {
-            size_t next_bucket = get_bucket_index(next_block->size_);
-            remove_from_free_list(next_block, next_bucket);
-            
-            block->size_ += HEADER_SIZE + next_block->size_;
+            block_header* next_block = reinterpret_cast<block_header*>(next_block_ptr);
+            if (!next_block->in_use_) [[likely]]
+            {
+                size_t next_bucket = get_bucket_index(next_block->size_);
+                remove_from_free_list(next_block, next_bucket);
+                
+                block->size_ += HEADER_SIZE + next_block->size_;
+            }
         }
         
         if (block_ptr > chunk_start) [[likely]]
         {
-            block_header* prev_block_candidate = reinterpret_cast<block_header*>(block_ptr - HEADER_SIZE);
-            if (!prev_block_candidate->in_use_) [[likely]]
+            block_header* prev_block = nullptr;
+            uint8_t* current_ptr = chunk_start;
+            while (current_ptr < block_ptr)
             {
-                size_t prev_bucket = get_bucket_index(prev_block_candidate->size_);
-                remove_from_free_list(prev_block_candidate, prev_bucket);
+                block_header* current_block = reinterpret_cast<block_header*>(current_ptr);
+                uint8_t* next_ptr = current_ptr + HEADER_SIZE + current_block->size_;
+                if (next_ptr == block_ptr)
+                {
+                    prev_block = current_block;
+                    break;
+                }
+                current_ptr = next_ptr;
+            }
+            
+            if (prev_block && !prev_block->in_use_) [[likely]]
+            {
+                size_t prev_bucket = get_bucket_index(prev_block->size_);
+                remove_from_free_list(prev_block, prev_bucket);
                 
-                prev_block_candidate->size_ += HEADER_SIZE + block->size_;
-                block = prev_block_candidate;
+                prev_block->size_ += HEADER_SIZE + block->size_;
+                block = prev_block;
             }
         }
         
