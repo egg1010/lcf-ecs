@@ -47,6 +47,12 @@ int main()
     auto entity3=ecss.create_entity(); 
     auto entity4=ecss.create_entity(); 
 
+
+    //检查实体是否有效    
+    //Check if the entity is valid
+    bool bool_=ecss.is_entity_valid(entity1);
+
+
     //获取运行信息
     //Get running information
     auto msg1=ecss.add(entity4,pos{15555,2222});

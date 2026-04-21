@@ -37,6 +37,11 @@ private:
 public:   
     manager() noexcept {}   
     
+    bool is_entity_valid(entity entitys) const noexcept
+    {
+        return entity_manager_.is_version_valid(entitys);
+    }
+    
     void append_preallocated_entities(size_t count) noexcept
     {
         entity_manager_.append_preallocated_entities(count);
