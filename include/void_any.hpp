@@ -72,15 +72,19 @@ private:
                 static_cast<DecayedT*>(p)->~DecayedT();
             };
             
-            cloner_ = [](const void* /*p*/) -> void*
-            {
-                return nullptr;
-            };
+            cloner_ = nullptr;
             
-            copier_ = [](void* dst, const void* src) noexcept
+            if constexpr (std::is_copy_constructible_v<DecayedT>)
             {
-                new (dst) DecayedT(*static_cast<const DecayedT*>(src));
-            };
+                copier_ = [](void* dst, const void* src) noexcept
+                {
+                    new (dst) DecayedT(*static_cast<const DecayedT*>(src));
+                };
+            }
+            else
+            {
+                copier_ = nullptr;
+            }
             return;
         }
         else
@@ -113,26 +117,40 @@ private:
             static_cast<DecayedT*>(p)->~DecayedT();
             void_any_memory_pool_.deallocate(p);
         };
-        cloner_ = [](const void* p) -> void*  
+        if constexpr (std::is_copy_constructible_v<DecayedT>)
         {
-            void* new_ptr = void_any_memory_pool_.allocate(sizeof(DecayedT));
-            if (!new_ptr) [[unlikely]] return nullptr;
-            new (new_ptr) DecayedT(*static_cast<const DecayedT*>(p));
-            return new_ptr;
-        };
+            cloner_ = [](const void* p) -> void*  
+            {
+                void* new_ptr = void_any_memory_pool_.allocate(sizeof(DecayedT));
+                if (!new_ptr) [[unlikely]] return nullptr;
+                new (new_ptr) DecayedT(*static_cast<const DecayedT*>(p));
+                return new_ptr;
+            };
+        }
+        else
+        {
+            cloner_ = nullptr;
+        }
 #else
         deleter_ = [](void* p) noexcept 
         {
             static_cast<DecayedT*>(p)->~DecayedT();
             ::operator delete(p);
         };
-        cloner_ = [](const void* p) -> void*  
+        if constexpr (std::is_copy_constructible_v<DecayedT>)
         {
-            void* new_ptr = ::operator new(sizeof(DecayedT), std::nothrow);
-            if (!new_ptr) [[unlikely]] return nullptr;
-            new (new_ptr) DecayedT(*static_cast<const DecayedT*>(p));
-            return new_ptr;
-        };
+            cloner_ = [](const void* p) -> void*  
+            {
+                void* new_ptr = ::operator new(sizeof(DecayedT), std::nothrow);
+                if (!new_ptr) [[unlikely]] return nullptr;
+                new (new_ptr) DecayedT(*static_cast<const DecayedT*>(p));
+                return new_ptr;
+            };
+        }
+        else
+        {
+            cloner_ = nullptr;
+        }
 #endif
         
         copier_ = nullptr;
