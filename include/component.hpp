@@ -1,47 +1,146 @@
 #pragma once
-#include <unordered_map>
-#include <memory>
-#include <concepts> 
+#include <concepts>
+#include <tuple>
+#include <array>
+#include <limits>
+#include <type_traits>
 #include "single_class_set.hpp"
 #include "type_id.hpp"
-#include "entity_manager.hpp" 
-
+#include "entity_manager.hpp"
+#include "group.hpp"
+#include "runtime_view.hpp"
 
 template <typename T>
-concept entitysss = std::same_as<T, entity>;
-
+concept IsEntity = std::same_as<T, entity>;
 
 namespace ecs
 {
 
 template <typename... Types>
-struct exclude {};
+struct without_t {};
 
 template <typename... Types>
-struct get {};
+struct with_t {};
+
+template <typename... Types>
+inline constexpr without_t<Types...> without{};
+
+template <typename... Types>
+inline constexpr with_t<Types...> with{};
+
+template <typename... Types>
+using exclude = without_t<Types...>;
+
+template <typename... Types>
+using get = with_t<Types...>;
+
+template <typename... Types>
+struct owned_t {};
+
+template <typename... Types>
+inline constexpr owned_t<Types...> owned{};
 
 template <typename... Types>
 struct ordered {};
 
 template <typename T>
-concept Component = std::is_copy_constructible_v<std::decay_t<T>> 
+concept Component = std::is_copy_constructible_v<std::decay_t<T>>
                   || std::is_move_constructible_v<std::decay_t<T>>;
+
+class manager;
+
+struct component_meta
+{
+    size_t   size{0};
+    uint64_t bit{0};
+};
 
 class manager
 {
 private:
     class_pool<single_class_set> components_c_;
+    class_pool<component_meta> component_metas_;
     operating_message component_message;
     entity_manager entity_manager_;
-    
-public:   
-    manager() noexcept {}   
-    
+
+    struct component_signal_event
+    {
+        uint32_t type;
+        uint32_t entity_idx;
+        uint32_t component_id;
+    };
+    static constexpr size_t comp_signal_buffer_size = 256;
+    component_signal_event comp_signal_buffer_[comp_signal_buffer_size]{};
+    uint32_t comp_signal_write_{0};
+    uint32_t comp_signal_read_{0};
+
+    void push_comp_signal(uint32_t type, uint32_t entity_idx, uint32_t component_id) noexcept
+    {
+        uint32_t next = (comp_signal_write_ + 1) % comp_signal_buffer_size;
+        if (next == comp_signal_read_) [[unlikely]]
+        {
+            return;
+        }
+        comp_signal_buffer_[comp_signal_write_].type = type;
+        comp_signal_buffer_[comp_signal_write_].entity_idx = entity_idx;
+        comp_signal_buffer_[comp_signal_write_].component_id = component_id;
+        comp_signal_write_ = next;
+    }
+
+    void ensure_type_exists(int type_id) noexcept
+    {
+        if (type_id >= static_cast<int>(components_c_.size())) [[unlikely]]
+        {
+            for (int i = static_cast<int>(components_c_.size()); i <= type_id; ++i)
+            {
+                components_c_.emplace_back();
+            }
+        }
+        if (type_id >= static_cast<int>(component_metas_.size())) [[unlikely]]
+        {
+            for (int i = static_cast<int>(component_metas_.size()); i <= type_id; ++i)
+            {
+                component_metas_.emplace_back();
+            }
+        }
+    }
+
+    template <typename T>
+    void register_component_meta() noexcept
+    {
+        int type_id = type_id::get_type_id<T>();
+        ensure_type_exists(type_id);
+        if (component_metas_[type_id].bit == 0) [[unlikely]]
+        {
+            component_metas_[type_id].size = sizeof(T);
+            component_metas_[type_id].bit = 1ULL << (type_id - 1);
+        }
+    }
+
+    void set_entity_mask_bit(entity entitys, uint64_t bit) noexcept
+    {
+        if (entitys.is_valid()) [[likely]]
+        {
+            entity_manager_.set_mask_bit(entitys.parts_.index_, bit);
+        }
+    }
+
+    void clear_entity_mask_bit(entity entitys, uint64_t bit) noexcept
+    {
+        if (entitys.is_valid()) [[likely]]
+        {
+            entity_manager_.clear_mask_bit(entitys.parts_.index_, bit);
+        }
+    }
+
+public:
+    manager() noexcept = default;
+
     bool is_entity_valid(entity entitys) const noexcept
     {
         return entity_manager_.is_version_valid(entitys);
     }
-    
+
     void append_preallocated_entities(size_t count) noexcept
     {
         entity_manager_.append_preallocated_entities(count);
@@ -50,170 +149,183 @@ public:
     {
         return entity_manager_.get_entity();
     }
-    [[nodiscard]] operating_message &get_operating_message() noexcept
+    [[nodiscard]] operating_message& get_operating_message() noexcept
     {
         return component_message;
     }
 
-    manager(manager&&) = delete;
+    manager(manager&&) noexcept = default;
     manager(manager const&) = delete;
-    manager& operator=(manager&&) = delete;
+    manager& operator=(manager&&) noexcept = default;
     manager& operator=(manager const&) = delete;
 
     template <typename T>
-    operating_message add(entity entitys,T&& component) noexcept
+    operating_message add(entity entitys, T&& component) noexcept
     {
         using DecayedT = std::decay_t<T>;
         int type_id = type_id::get_type_id<DecayedT>();
-        
-        if (type_id >= components_c_.size()) [[unlikely]]
-        {
-            for (int i = components_c_.size(); i <= type_id; ++i)
-            {
-                components_c_.emplace_back();
-            }
-        }
-        
+        register_component_meta<DecayedT>();
+        ensure_type_exists(type_id);
         component_message = components_c_[type_id].add(entitys, std::forward<T>(component));
+        set_entity_mask_bit(entitys, component_metas_[type_id].bit);
+        push_comp_signal(0, entitys.parts_.index_, static_cast<uint32_t>(type_id));
         return component_message;
-        
     }
-    
+
     template <typename T>
     operating_message add_batch(std::span<const entity> entities, std::span<const T> components) noexcept
     {
         using DecayedT = std::decay_t<T>;
         int type_id = type_id::get_type_id<DecayedT>();
-        
-        if (type_id >= components_c_.size()) [[unlikely]]
-        {
-            for (int i = components_c_.size(); i <= type_id; ++i)
-            {
-                components_c_.emplace_back();
-            }
-        }
-        
+        register_component_meta<DecayedT>();
+        ensure_type_exists(type_id);
         component_message = components_c_[type_id].add_batch(entities, components);
+        uint64_t bit = component_metas_[type_id].bit;
+        for (const auto& e : entities)
+        {
+            set_entity_mask_bit(e, bit);
+        }
         return component_message;
     }
-    
+
     template <typename T>
-    operating_message add_batch(const std::vector<entity>& entities, const std::vector<T>& components) noexcept
+    operating_message add_batch(const class_pool<entity>& entities, const class_pool<T>& components) noexcept
     {
-        return add_batch(std::span<const entity>(entities), std::span<const T>(components));
+        return add_batch(std::span<const entity>(entities.data(), entities.size()),
+                         std::span<const T>(components.data(), components.size()));
     }
-    
+
     template <typename T>
-    operating_message add_batch(std::vector<entity>&& entities, std::vector<T>&& components) noexcept
+    operating_message add_batch(class_pool<entity>&& entities, class_pool<T>&& components) noexcept
     {
         using DecayedT = std::decay_t<T>;
         int type_id = type_id::get_type_id<DecayedT>();
-        
-        if (type_id >= components_c_.size()) [[unlikely]]
-        {
-            for (int i = components_c_.size(); i <= type_id; ++i)
-            {
-                components_c_.emplace_back();
-            }
-        }
-        
+        register_component_meta<DecayedT>();
+        ensure_type_exists(type_id);
         component_message = components_c_[type_id].add_batch(std::move(entities), std::move(components));
+        uint64_t bit = component_metas_[type_id].bit;
+        for (size_t i = 0; i < entities.size(); ++i)
+        {
+            set_entity_mask_bit(entities[i], bit);
+        }
         return component_message;
     }
 
-    template <entitysss ee,typename T>
-    operating_message add(T&& component,ee entitys) noexcept
+    template <IsEntity EE, typename T>
+    operating_message add(T&& component, EE entitys) noexcept
     {
-        add(entitys, std::forward<T>(component));      
+        add(entitys, std::forward<T>(component));
         return component_message;
     }
-    template <entitysss ee,typename T>
-    manager &addc(T&& component,ee entitys) noexcept
-    {
-        add(entitys, std::forward<T>(component));   
-        return *this;
-    }
-
-    template <typename T>
-    manager& addc(entity entitys,T&& component) noexcept
+    template <IsEntity EE, typename T>
+    manager& addc(T&& component, EE entitys) noexcept
     {
         add(entitys, std::forward<T>(component));
         return *this;
     }
-    template <typename T> 
-    [[nodiscard]] T *get_ptr(entity entitys) noexcept
-    {   
-        
-        using DecayedT = std::decay_t<T>;
-        int type_id = type_id::get_type_id<DecayedT>();
-        if(type_id >= components_c_.size()) [[unlikely]]
-        {
-            component_message.write_message(0,"error: ", "Object does not exist");
-            return nullptr;
-        }
-        return components_c_[type_id].get_ptr<T>(entitys);
 
+    template <typename T>
+    manager& addc(entity entitys, T&& component) noexcept
+    {
+        add(entitys, std::forward<T>(component));
+        return *this;
+    }
+    template <typename T>
+    [[nodiscard]] T* get_ptr(entity entitys) noexcept
+    {
+        single_class_set* set = get_single_class_set<T>();
+        return set ? set->get_ptr<T>(entitys) : nullptr;
+    }
+
+    template <typename T>
+    [[nodiscard]] const T* get_ptr(entity entitys) const noexcept
+    {
+        const single_class_set* set = get_single_class_set<T>();
+        return set ? set->get_ptr<T>(entitys) : nullptr;
+    }
+
+    template <typename T>
+    [[nodiscard]] T* get_ptr_fast(entity entitys) noexcept
+    {
+        single_class_set* set = get_single_class_set<T>();
+        return set ? set->get_ptr_fast<T>(entitys) : nullptr;
+    }
+
+    template <typename T>
+    [[nodiscard]] const T* get_ptr_fast(entity entitys) const noexcept
+    {
+        const single_class_set* set = get_single_class_set<T>();
+        return set ? set->get_ptr_fast<T>(entitys) : nullptr;
     }
 
     template <typename T>
     operating_message soft_remove(entity entitys) noexcept
     {
-        using DecayedT = std::decay_t<T>;
-        int type_id = type_id::get_type_id<DecayedT>();
-        if(type_id >= components_c_.size()) [[unlikely]]
-        {   
-            component_message.write_message(0,"error: ", "Object does not exist");
-            return component_message;
+        single_class_set* set = get_single_class_set<T>();
+        if (set)
+        {
+            int type_id = type_id::get_type_id<T>();
+            if (type_id < static_cast<int>(component_metas_.size()))
+            {
+                clear_entity_mask_bit(entitys, component_metas_[type_id].bit);
+            }
+            push_comp_signal(1, entitys.parts_.index_, static_cast<uint32_t>(type_id));
+            return set->soft_remove(entitys);
         }
-        component_message=components_c_[type_id].soft_remove(entitys);
         return component_message;
-
     }
 
     template <typename T>
     operating_message hard_remove(entity entitys) noexcept
     {
-        using DecayedT = std::decay_t<T>;
-        int type_id = type_id::get_type_id<DecayedT>();
-        if(type_id >= components_c_.size()) [[unlikely]]
-        {   
-            component_message.write_message(0,"error: ", "Object does not exist");
-            return component_message;
+        single_class_set* set = get_single_class_set<T>();
+        if (set)
+        {
+            int type_id = type_id::get_type_id<T>();
+            if (type_id < static_cast<int>(component_metas_.size()))
+            {
+                clear_entity_mask_bit(entitys, component_metas_[type_id].bit);
+            }
+            push_comp_signal(1, entitys.parts_.index_, static_cast<uint32_t>(type_id));
+            return set->hard_remove(entitys);
         }
-        component_message=components_c_[type_id].hard_remove(entitys);
         return component_message;
     }
 
-    template <typename T,entitysss ee>
-    manager& hard_removec(ee args) noexcept
+    template <typename T, IsEntity EE>
+    manager& hard_removec(EE args) noexcept
     {
         hard_remove<T>(args);
         return *this;
     }
 
-    template <typename T,entitysss ee>
-    manager& soft_removec(ee args) noexcept
+    template <typename T, IsEntity EE>
+    manager& soft_removec(EE args) noexcept
     {
         soft_remove<T>(args);
         return *this;
     }
 
     template <typename T>
-    [[nodiscard]] single_class_set*get_single_class_set() noexcept
+    [[nodiscard]] single_class_set* get_single_class_set() noexcept
     {
         using DecayedT = std::decay_t<T>;
         int type_id = type_id::get_type_id<DecayedT>();
-
-        if(type_id >= components_c_.size()) [[unlikely]]
+        if (type_id >= static_cast<int>(components_c_.size())) [[unlikely]]
         {
-            component_message.write_message(0,"error: ", "Component Set not exist:");
+            component_message.write_message(false, "manager::get_single_class_set(): component set does not exist for type_id=", std::to_string(type_id));
             return nullptr;
         }
-        else [[likely]]
-        {
-            return &components_c_[type_id];
-        }
+        return &components_c_[type_id];
+    }
 
+    template <typename T>
+    [[nodiscard]] const single_class_set* get_single_class_set() const noexcept
+    {
+        using DecayedT = std::decay_t<T>;
+        int type_id = type_id::get_type_id<DecayedT>();
+        if (type_id >= static_cast<int>(components_c_.size())) [[unlikely]] return nullptr;
+        return &components_c_[type_id];
     }
 
     template <typename T>
@@ -221,27 +333,41 @@ public:
     {
         using DecayedT = std::decay_t<T>;
         int type_id = type_id::get_type_id<DecayedT>();
-        if(type_id >= components_c_.size()) [[unlikely]]
-        {
-            for (int i = components_c_.size(); i <= type_id; ++i)
-            {
-                components_c_.emplace_back();
-            }
-        }
-        components_c_[type_id].reserve(capacity);
+        ensure_type_exists(type_id);
+        components_c_[type_id].increase_capacity(capacity);
     }
 
     template <typename T>
-    [[nodiscard]] class_pool<void_any>* get_component_vector() noexcept
-    {         
-        using DecayedT = std::decay_t<T>;
-        int type_id = type_id::get_type_id<DecayedT>();
-        if(type_id >= components_c_.size()) [[unlikely]]
-        {
-            component_message.write_message(0,"error: ", "Component does not exist:");
+    [[nodiscard]] class_pool<T>* get_component_vector() noexcept
+    {
+        single_class_set* set = get_single_class_set<T>();
+        return set ? set->get_typed_pool_ptr<T>() : nullptr;
+    }
+
+    [[nodiscard]] uint64_t get_entity_mask(entity entitys) const noexcept
+    {
+        return entity_manager_.get_mask(entitys.parts_.index_);
+    }
+
+    [[nodiscard]] const component_meta* get_component_meta(int type_id) const noexcept
+    {
+        if (type_id < 0 || type_id >= static_cast<int>(component_metas_.size())) [[unlikely]]
             return nullptr;
-        }
-        return &components_c_[type_id].get_component_vector();
+        return &component_metas_[type_id];
+    }
+
+    template <typename T>
+    [[nodiscard]] uint64_t get_component_bit() const noexcept
+    {
+        int type_id = type_id::get_type_id<T>();
+        if (type_id >= static_cast<int>(component_metas_.size())) [[unlikely]]
+            return 0;
+        return component_metas_[type_id].bit;
+    }
+
+    [[nodiscard]] entity_manager& get_entity_manager() noexcept
+    {
+        return entity_manager_;
     }
 
     template <typename T>
@@ -249,141 +375,25 @@ public:
     {
         using DecayedT = std::decay_t<T>;
         int type_id = type_id::get_type_id<DecayedT>();
-        if(type_id < components_c_.size()) [[likely]]
-        {
+        if (type_id < static_cast<int>(components_c_.size())) [[likely]]
             components_c_[type_id].clear();
-        }
     }
 
-    // 删除实体。
-    // Delete entity.
-    void delete_entity(entity &entitys) noexcept
+    void delete_entity(entity& entitys) noexcept
     {
-        if(!entitys.is_valid()) [[unlikely]]
-        {
-            return;
-        }
-        entity_manager_.destroy_entity(entitys);
+        if (entitys.is_valid()) [[likely]]
+            entity_manager_.destroy_entity(entitys);
     }
 
-    template <typename T, typename... ExcludeTypes>
-    class single_view_with_exclude
-    {
-    private:
-        single_class_set* set_;
-        manager* mgr_;
-
-    public:
-        single_view_with_exclude(single_class_set* set, manager* mgr) noexcept : set_(set), mgr_(mgr) {}
-
-        [[nodiscard]] size_t size() const noexcept { return set_ ? set_->size() : 0; }
-        [[nodiscard]] bool empty() const noexcept { return set_ ? set_->empty() : true; }
-
-        template <typename Func>
-        void each(Func&& func) noexcept
-        {
-            if (!set_) [[unlikely]] return;
-
-            auto& indices = set_->get_entity_indices();
-            auto& object_pool = set_->template get_object_pool<T>();
-            
-            for (size_t i = 0; i < indices.size(); ++i)
-            {
-                entity e(indices[i], 1);
-                bool should_exclude = (... || (mgr_->get_ptr<ExcludeTypes>(e) != nullptr));
-                
-                if (!should_exclude) [[likely]]
-                {
-                    auto* comp = object_pool[i].template get_ptr_unchecked<T>();
-                    std::forward<Func>(func)(*comp);
-                }
-            }
-        }
-
-        template <typename Func>
-        void use(Func&& func) noexcept
-        {
-            if (!set_) [[unlikely]] return;
-
-            auto& indices = set_->get_entity_indices();
-            auto& object_pool = set_->template get_object_pool<T>();
-            
-            for (size_t i = 0; i < indices.size(); ++i)
-            {
-                entity e(indices[i], 1);
-                bool should_exclude = (... || (mgr_->get_ptr<ExcludeTypes>(e) != nullptr));
-                
-                if (!should_exclude) [[likely]]
-                {
-                    auto* comp = object_pool[i].template get_ptr_unchecked<T>();
-                    std::forward<Func>(func)(e, *comp);
-                }
-            }
-        }
-    };
-
-    template <typename T, typename... GetTypes>
-    class single_view_with_get
-    {
-    private:
-        single_class_set* set_;
-        manager* mgr_;
-
-    public:
-        single_view_with_get(single_class_set* set, manager* mgr) noexcept : set_(set), mgr_(mgr) {}
-
-        [[nodiscard]] size_t size() const noexcept { return set_ ? set_->size() : 0; }
-        [[nodiscard]] bool empty() const noexcept { return set_ ? set_->empty() : true; }
-
-        template <typename Func>
-        void each(Func&& func) noexcept
-        {
-            if (!set_) [[unlikely]] return;
-
-            auto& indices = set_->get_entity_indices();
-            auto& object_pool = set_->template get_object_pool<T>();
-            
-            for (size_t i = 0; i < indices.size(); ++i)
-            {
-                entity e(indices[i], 1);
-                auto* comp = object_pool[i].template get_ptr_unchecked<T>();
-                auto get_ptrs = std::make_tuple(mgr_->get_ptr<GetTypes>(e)...);
-                std::apply([&](auto*... pts) 
-                {
-                    std::forward<Func>(func)(*comp, pts...);
-                }, get_ptrs);
-            }
-        }
-
-        template <typename Func>
-        void use(Func&& func) noexcept
-        {
-            if (!set_) [[unlikely]] return;
-
-            auto& indices = set_->get_entity_indices();
-            auto& object_pool = set_->template get_object_pool<T>();
-            
-            for (size_t i = 0; i < indices.size(); ++i)
-            {
-                entity e(indices[i], 1);
-                auto* comp = object_pool[i].template get_ptr_unchecked<T>();
-                auto get_ptrs = std::make_tuple(mgr_->get_ptr<GetTypes>(e)...);
-                std::apply([&](auto*... pts) {
-                    std::forward<Func>(func)(e, *comp, pts...);
-                }, get_ptrs);
-            }
-        }
-    };
-
+    // ======================== single_view ========================
     template <typename T>
     class single_view
     {
     private:
         single_class_set* set_;
-        manager* mgr_;
 
     public:
-        single_view(single_class_set* set, manager* mgr) noexcept : set_(set), mgr_(mgr) {}
+        single_view(single_class_set* set) noexcept : set_(set) {}
 
         class iterator
         {
@@ -396,72 +406,24 @@ public:
             [[nodiscard]] entity operator*() const noexcept
             {
                 auto& indices = view_->set_->get_entity_indices();
-                return entity(indices[index_], 1);
+                return entity(indices[index_], view_->set_->get_version_unchecked(indices[index_]));
             }
 
-            iterator& operator++() noexcept
-            {
-                ++index_;
-                return *this;
-            }
-
-            [[nodiscard]] bool operator!=(const iterator& other) const noexcept
-            {
-                return index_ != other.index_;
-            }
+            iterator& operator++() noexcept { ++index_; return *this; }
+            [[nodiscard]] bool operator!=(const iterator& other) const noexcept { return index_ != other.index_; }
         };
 
-        class component_iterator
+        using component_iterator = T*;
+
+        [[nodiscard]] component_iterator component_begin() noexcept
         {
-        private:
-            void_any* ptr_;
-        public:
-            explicit component_iterator(void_any* ptr) noexcept : ptr_(ptr) {}
-
-            [[nodiscard]] T& operator*() const noexcept 
-            { 
-                return *ptr_->template get_ptr_unchecked<T>(); 
-            }
-            
-            [[nodiscard]] T* operator->() const noexcept 
-            { 
-                return ptr_->template get_ptr_unchecked<T>(); 
-            }
-
-            component_iterator& operator++() noexcept
-            {
-                ++ptr_;
-                return *this;
-            }
-
-            component_iterator operator++(int) noexcept
-            {
-                component_iterator temp = *this;
-                ++ptr_;
-                return temp;
-            }
-
-            [[nodiscard]] bool operator==(const component_iterator& other) const noexcept
-            {
-                return ptr_ == other.ptr_;
-            }
-
-            [[nodiscard]] bool operator!=(const component_iterator& other) const noexcept
-            {
-                return ptr_ != other.ptr_;
-            }
-        };
-
-        [[nodiscard]] component_iterator component_begin() noexcept 
-        { 
-            if (!set_) [[unlikely]] return component_iterator(nullptr);
-            return component_iterator(set_->template get_object_pool<T>().data()); 
+            auto* pool = set_->template get_typed_pool_ptr<T>();
+            return pool ? pool->data() : nullptr;
         }
-        
-        [[nodiscard]] component_iterator component_end() noexcept 
-        { 
-            if (!set_) [[unlikely]] return component_iterator(nullptr);
-            return component_iterator(set_->template get_object_pool<T>().data() + set_->template get_object_pool<T>().size()); 
+        [[nodiscard]] component_iterator component_end() noexcept
+        {
+            auto* pool = set_->template get_typed_pool_ptr<T>();
+            return pool ? pool->data() + pool->size() : nullptr;
         }
 
         [[nodiscard]] iterator begin() noexcept { return iterator(this, 0); }
@@ -472,229 +434,761 @@ public:
 
         [[nodiscard]] bool contains(entity e) const noexcept
         {
-            if (!set_) [[unlikely]] return false;
-            return set_->template get_ptr<T>(e) != nullptr;
+            return set_ && set_->template get_ptr<T>(e) != nullptr;
         }
 
         template <typename Func>
-        void each(Func&& func) noexcept
+        void for_each(Func&& func) noexcept
         {
             if (!set_) [[unlikely]] return;
+            auto* pool = set_->template get_typed_pool_ptr<T>();
+            if (!pool) [[unlikely]] return;
 
-            auto& object_pool = set_->template get_object_pool<T>();
-            void_any* begin = object_pool.data();
-            void_any* end = begin + object_pool.size();
-            
-            for (void_any* it = begin; it != end; ++it)
+            if constexpr (std::is_invocable_v<Func, entity, T&>)
             {
-                auto* comp = it->template get_ptr_unchecked<T>();
-                std::forward<Func>(func)(*comp);
+                auto& indices = set_->get_entity_indices();
+                const size_t n = indices.size();
+                for (size_t i = 0; i < n; ++i)
+                {
+                    entity e(indices[i], set_->get_version_unchecked(indices[i]));
+                    func(e, (*pool)[i]);
+                }
             }
-        }
-
-        template <typename Func>
-        void use(Func&& func) noexcept
-        {
-            if (!set_) [[unlikely]] return;
-
-            auto& indices = set_->get_entity_indices();
-            auto& object_pool = set_->template get_object_pool<T>();
-            for (size_t i = 0; i < indices.size(); ++i)
+            else
             {
-                entity e(indices[i], 1);
-                auto* comp = object_pool[i].template get_ptr_unchecked<T>();
-                std::forward<Func>(func)(e, *comp);
+                T* it = pool->data();
+                T* end = it + pool->size();
+                for (; it != end; ++it)
+                    func(*it);
             }
         }
     };
 
-    template <typename T>
-    [[nodiscard]] single_view<T> view() noexcept
-    {
-        return single_view<T>(get_single_class_set<T>(), this);
-    }
-
-    template <typename T, typename Func>
-    void view(Func&& func) noexcept
-    {
-        view<T>().each(std::forward<Func>(func));
-    }
-
-    template <typename T1, typename T2>
-    class dual_view
+    // ======================== multi_view ========================
+    template <typename First, typename... Rest>
+    class multi_view
     {
     private:
-        single_class_set* set1_;
-        single_class_set* set2_;
-        manager* mgr_;
+        static constexpr size_t N = 1 + sizeof...(Rest);
+        std::array<single_class_set*, N> sets_;
+        size_t primary_idx_{0};
+
+        using AllTypes = std::tuple<First, Rest...>;
+
+        void find_smallest() noexcept
+        {
+            size_t min_size = std::numeric_limits<size_t>::max();
+            primary_idx_ = 0;
+            for (size_t i = 0; i < N; ++i)
+            {
+                if (sets_[i] && sets_[i]->size() < min_size)
+                {
+                    min_size = sets_[i]->size();
+                    primary_idx_ = i;
+                }
+            }
+        }
+
+        [[nodiscard]] bool all_sets_valid() const noexcept
+        {
+            for (size_t i = 0; i < N; ++i)
+            {
+                if (!sets_[i]) return false;
+            }
+            return true;
+        }
+
+        template <size_t I>
+        [[nodiscard]] auto* get_component(entity e, size_t primary_i) const noexcept
+        {
+            using T = std::tuple_element_t<I, AllTypes>;
+            return I == primary_idx_
+                ? sets_[I]->template get_ptr_unchecked_by_index<T>(primary_i)
+                : sets_[I]->template get_ptr_fast<T>(e);
+        }
+
+        template <typename Func, size_t... Is>
+        void for_each_impl(Func&& func, std::index_sequence<Is...>) noexcept
+        {
+            if (!all_sets_valid()) [[unlikely]] return;
+
+            auto* primary = sets_[primary_idx_];
+            auto& indices = primary->get_entity_indices();
+            const size_t n = indices.size();
+
+            for (size_t i = 0; i < n; ++i)
+            {
+                entity e(indices[i], primary->get_version_unchecked(indices[i]));
+                auto comps = std::make_tuple(get_component<Is>(e, i)...);
+
+                if ((... && (std::get<Is>(comps) != nullptr))) [[likely]]
+                {
+                    std::apply([&](auto*... ptrs) {
+                        if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
+                            func(e, *ptrs...);
+                        else
+                            func(*ptrs...);
+                    }, comps);
+                }
+            }
+        }
+
+        template <size_t... Is>
+        [[nodiscard]] bool contains_impl(entity e, std::index_sequence<Is...>) const noexcept
+        {
+            return (... && (sets_[Is] && sets_[Is]->template get_ptr_fast<std::tuple_element_t<Is, AllTypes>>(e) != nullptr));
+        }
 
     public:
-        dual_view(single_class_set* set1, single_class_set* set2, manager* mgr) noexcept 
-            : set1_(set1), set2_(set2), mgr_(mgr) {}
+        multi_view(std::array<single_class_set*, N> sets) noexcept
+            : sets_(sets)
+        {
+            find_smallest();
+        }
 
-        [[nodiscard]] size_t size() const noexcept { return set1_ ? set1_->size() : 0; }
-        [[nodiscard]] bool empty() const noexcept { return set1_ ? set1_->empty() : true; }
+        [[nodiscard]] size_t size() const noexcept
+        {
+            auto* p = sets_[primary_idx_];
+            return p ? p->size() : 0;
+        }
+
+        [[nodiscard]] bool empty() const noexcept
+        {
+            return !all_sets_valid() || sets_[primary_idx_]->empty();
+        }
 
         [[nodiscard]] bool contains(entity e) const noexcept
         {
-            if (!set1_ || !set2_) [[unlikely]] return false;
-            return set1_->template get_ptr<T1>(e) != nullptr 
-                && set2_->template get_ptr<T2>(e) != nullptr;
+            return all_sets_valid() && contains_impl(e, std::index_sequence_for<First, Rest...>{});
         }
 
         template <typename Func>
-        void each(Func&& func) noexcept
+        void for_each(Func&& func) noexcept
         {
-            if (!set1_ || !set2_) [[unlikely]] return;
+            for_each_impl(std::forward<Func>(func), std::index_sequence_for<First, Rest...>{});
+        }
+    };
 
-            bool use_set1_as_primary = set1_->size() <= set2_->size();
-            single_class_set* primary_set = use_set1_as_primary ? set1_ : set2_;
-            single_class_set* secondary_set = use_set1_as_primary ? set2_ : set1_;
+    // ======================== single_view_without ========================
+    template <typename T, typename... ExcludeTypes>
+    class single_view_without
+    {
+    private:
+        single_class_set* set_;
+        manager* mgr_;
 
-            auto& indices = primary_set->get_entity_indices();
-            for (size_t i = 0; i < indices.size(); ++i)
+    public:
+        single_view_without(single_class_set* set, manager* mgr) noexcept : set_(set), mgr_(mgr) {}
+
+        [[nodiscard]] size_t size() const noexcept { return set_ ? set_->size() : 0; }
+        [[nodiscard]] bool empty() const noexcept { return set_ ? set_->empty() : true; }
+
+        template <typename Func>
+        void for_each(Func&& func) noexcept
+        {
+            if (!set_) [[unlikely]] return;
+            auto* pool = set_->template get_typed_pool_ptr<T>();
+            if (!pool) [[unlikely]] return;
+            auto& indices = set_->get_entity_indices();
+            const size_t n = indices.size();
+
+            for (size_t i = 0; i < n; ++i)
             {
-                entity e(indices[i], 1);
-                
-                if (use_set1_as_primary)
+                entity e(indices[i], set_->get_version_unchecked(indices[i]));
+                bool should_exclude = (... || (mgr_->get_ptr_fast<ExcludeTypes>(e) != nullptr));
+
+                if (!should_exclude) [[likely]]
                 {
-                    auto* comp1 = primary_set->template get_ptr_unchecked_by_index<T1>(i);
-                    auto* comp2 = secondary_set->template get_ptr<T2>(e);
-                    if (comp2) [[likely]]
-                    {
-                        std::forward<Func>(func)(*comp1, *comp2);
-                    }
-                }
-                else
-                {
-                    auto* comp1 = secondary_set->template get_ptr<T1>(e);
-                    auto* comp2 = primary_set->template get_ptr_unchecked_by_index<T2>(i);
-                    if (comp1) [[likely]]
-                    {
-                        std::forward<Func>(func)(*comp1, *comp2);
-                    }
+                    if constexpr (std::is_invocable_v<Func, entity, T&>)
+                        func(e, (*pool)[i]);
+                    else
+                        func((*pool)[i]);
                 }
             }
         }
+    };
+
+    // ======================== single_view_with ========================
+    template <typename T, typename... GetTypes>
+    class single_view_with
+    {
+    private:
+        single_class_set* set_;
+        manager* mgr_;
+
+    public:
+        single_view_with(single_class_set* set, manager* mgr) noexcept : set_(set), mgr_(mgr) {}
+
+        [[nodiscard]] size_t size() const noexcept { return set_ ? set_->size() : 0; }
+        [[nodiscard]] bool empty() const noexcept { return set_ ? set_->empty() : true; }
 
         template <typename Func>
-        void use(Func&& func) noexcept
+        void for_each(Func&& func) noexcept
         {
-            if (!set1_ || !set2_) [[unlikely]] return;
+            if (!set_) [[unlikely]] return;
+            auto* pool = set_->template get_typed_pool_ptr<T>();
+            if (!pool) [[unlikely]] return;
+            auto& indices = set_->get_entity_indices();
+            const size_t n = indices.size();
 
-            bool use_set1_as_primary = set1_->size() <= set2_->size();
-            single_class_set* primary_set = use_set1_as_primary ? set1_ : set2_;
-            single_class_set* secondary_set = use_set1_as_primary ? set2_ : set1_;
-
-            auto& indices = primary_set->get_entity_indices();
-            for (size_t i = 0; i < indices.size(); ++i)
+            for (size_t i = 0; i < n; ++i)
             {
-                entity e(indices[i], 1);
-                
-                if (use_set1_as_primary)
+                entity e(indices[i], set_->get_version_unchecked(indices[i]));
+                auto& comp = (*pool)[i];
+                auto get_ptrs = std::make_tuple(mgr_->get_ptr_fast<GetTypes>(e)...);
+                std::apply([&](auto*... pts) {
+                    if constexpr (std::is_invocable_v<Func, entity, T&, GetTypes*...>)
+                        func(e, comp, pts...);
+                    else
+                        func(comp, pts...);
+                }, get_ptrs);
+            }
+        }
+    };
+
+    // ======================== or_view ========================
+    template <typename A, typename B>
+    class or_view
+    {
+        single_class_set* set_a_;
+        single_class_set* set_b_;
+    public:
+        or_view(single_class_set* a, single_class_set* b) noexcept : set_a_(a), set_b_(b) {}
+
+        template <typename Func>
+        void for_each(Func&& func) noexcept
+        {
+            if (set_a_)
+            {
+                auto* pool_a = set_a_->template get_typed_pool_ptr<A>();
+                if (pool_a)
                 {
-                    auto* comp1 = primary_set->template get_ptr_unchecked_by_index<T1>(i);
-                    auto* comp2 = secondary_set->template get_ptr<T2>(e);
-                    if (comp2) [[likely]]
+                    auto& idx_a = set_a_->get_entity_indices();
+                    for (size_t i = 0; i < idx_a.size(); ++i)
                     {
-                        std::forward<Func>(func)(e, *comp1, *comp2);
+                        entity e(idx_a[i], set_a_->get_version_unchecked(idx_a[i]));
+                        B* b = set_b_ ? set_b_->template get_ptr_fast<B>(e) : nullptr;
+                        if constexpr (std::is_invocable_v<Func, entity, A*, B*>)
+                        {
+                            func(e, &(*pool_a)[i], b);
+                        }
+                        else
+                        {
+                            func(&(*pool_a)[i], b);
+                        }
                     }
                 }
-                else
+            }
+            if (set_b_)
+            {
+                auto* pool_b = set_b_->template get_typed_pool_ptr<B>();
+                if (pool_b)
                 {
-                    auto* comp1 = secondary_set->template get_ptr<T1>(e);
-                    auto* comp2 = primary_set->template get_ptr_unchecked_by_index<T2>(i);
-                    if (comp1) [[likely]]
+                    auto& idx_b = set_b_->get_entity_indices();
+                    for (size_t i = 0; i < idx_b.size(); ++i)
                     {
-                        std::forward<Func>(func)(e, *comp1, *comp2);
+                        entity e(idx_b[i], set_b_->get_version_unchecked(idx_b[i]));
+                        if (set_a_ && set_a_->template get_ptr_fast<A>(e)) continue;
+                        if constexpr (std::is_invocable_v<Func, entity, A*, B*>)
+                        {
+                            func(e, nullptr, &(*pool_b)[i]);
+                        }
+                        else
+                        {
+                            func(nullptr, &(*pool_b)[i]);
+                        }
                     }
                 }
             }
         }
     };
 
-    template <typename T1, typename T2>
-    [[nodiscard]] dual_view<T1, T2> view() noexcept
+    // ======================== filter_view ========================
+    template <typename T, typename Pred>
+    class filter_view
     {
-        return dual_view<T1, T2>(get_single_class_set<T1>(), get_single_class_set<T2>(), this);
+        manager*       mgr_;
+        Pred           pred_;
+        class_pool<size_t> filtered_;
+
+        void rebuild_impl() noexcept
+        {
+            filtered_.clear();
+            auto* set = mgr_->template get_single_class_set<T>();
+            if (!set) return;
+            auto* pool = set->template get_typed_pool_ptr<T>();
+            if (!pool) return;
+            for (size_t i = 0; i < pool->size(); ++i)
+            {
+                if (pred_((*pool)[i]))
+                    filtered_.emplace_back(i);
+            }
+        }
+
+    public:
+        filter_view(manager* mgr, Pred&& pred) noexcept
+            : mgr_(mgr), pred_(std::forward<Pred>(pred))
+        {
+            rebuild_impl();
+        }
+
+        void rebuild() noexcept { rebuild_impl(); }
+
+        [[nodiscard]] size_t size() const noexcept { return filtered_.size(); }
+        [[nodiscard]] bool   empty() const noexcept { return filtered_.empty(); }
+
+        template <typename Func>
+        void for_each(Func&& func) noexcept
+        {
+            auto* set = mgr_->template get_single_class_set<T>();
+            if (!set) return;
+            auto* pool = set->template get_typed_pool_ptr<T>();
+            auto& indices = set->get_entity_indices();
+
+            for (size_t i = 0; i < filtered_.size(); ++i)
+            {
+                size_t dense_index = filtered_[i];
+                if constexpr (std::is_invocable_v<Func, entity, T&>)
+                {
+                    entity e(indices[dense_index], set->get_version_unchecked(indices[dense_index]));
+                    func(e, (*pool)[dense_index]);
+                }
+                else
+                {
+                    func((*pool)[dense_index]);
+                }
+            }
+        }
+
+        template <typename B> auto and_() noexcept;
+        template <typename B> auto or_() noexcept;
+    };
+
+    // ======================== filter_and_view ========================
+    template <typename T, typename B, typename Pred>
+    class filter_and_view
+    {
+        manager*       mgr_;
+        Pred           pred_;
+        class_pool<size_t> filtered_;
+
+        void rebuild_impl() noexcept
+        {
+            filtered_.clear();
+            auto* set_a = mgr_->template get_single_class_set<T>();
+            auto* set_b = mgr_->template get_single_class_set<B>();
+            if (!set_a || !set_b) return;
+            auto* pool_a = set_a->template get_typed_pool_ptr<T>();
+            if (!pool_a) return;
+            auto& indices = set_a->get_entity_indices();
+            for (size_t i = 0; i < pool_a->size(); ++i)
+            {
+                if (!pred_((*pool_a)[i])) continue;
+                entity e(indices[i], set_a->get_version_unchecked(indices[i]));
+                if (set_b->template get_ptr_fast<B>(e))
+                    filtered_.emplace_back(i);
+            }
+        }
+
+    public:
+        filter_and_view(manager* mgr, Pred&& pred) noexcept
+            : mgr_(mgr), pred_(std::forward<Pred>(pred))
+        {
+            rebuild_impl();
+        }
+
+        void rebuild() noexcept { rebuild_impl(); }
+
+        [[nodiscard]] size_t size() const noexcept { return filtered_.size(); }
+        [[nodiscard]] bool   empty() const noexcept { return filtered_.empty(); }
+
+        template <typename Func>
+        void for_each(Func&& func) noexcept
+        {
+            auto* set_a = mgr_->template get_single_class_set<T>();
+            auto* set_b = mgr_->template get_single_class_set<B>();
+            if (!set_a || !set_b) return;
+            auto* pool_a = set_a->template get_typed_pool_ptr<T>();
+            auto& indices = set_a->get_entity_indices();
+
+            for (size_t i = 0; i < filtered_.size(); ++i)
+            {
+                size_t dense_index = filtered_[i];
+                entity e(indices[dense_index], set_a->get_version_unchecked(indices[dense_index]));
+                B* b = set_b->template get_ptr_fast<B>(e);
+                if (!b) continue;
+                if constexpr (std::is_invocable_v<Func, entity, T&, B&>)
+                {
+                    func(e, (*pool_a)[dense_index], *b);
+                }
+                else
+                {
+                    func((*pool_a)[dense_index], *b);
+                }
+            }
+        }
+    };
+
+    // ======================== filter_or_view ========================
+    template <typename T, typename B, typename Pred>
+    class filter_or_view
+    {
+        manager*       mgr_;
+        Pred           pred_;
+        class_pool<size_t> filtered_;
+
+        void rebuild_impl() noexcept
+        {
+            filtered_.clear();
+            auto* set_a = mgr_->template get_single_class_set<T>();
+            if (!set_a) return;
+            auto* pool_a = set_a->template get_typed_pool_ptr<T>();
+            if (!pool_a) return;
+            for (size_t i = 0; i < pool_a->size(); ++i)
+            {
+                if (pred_((*pool_a)[i]))
+                    filtered_.emplace_back(i);
+            }
+        }
+
+    public:
+        filter_or_view(manager* mgr, Pred&& pred) noexcept
+            : mgr_(mgr), pred_(std::forward<Pred>(pred))
+        {
+            rebuild_impl();
+        }
+
+        void rebuild() noexcept { rebuild_impl(); }
+
+        [[nodiscard]] size_t size() const noexcept { return filtered_.size(); }
+        [[nodiscard]] bool   empty() const noexcept { return filtered_.empty(); }
+
+        template <typename Func>
+        void for_each(Func&& func) noexcept
+        {
+            auto* set_a = mgr_->template get_single_class_set<T>();
+            auto* set_b = mgr_->template get_single_class_set<B>();
+
+            if (set_a)
+            {
+                auto* pool_a = set_a->template get_typed_pool_ptr<T>();
+                if (pool_a)
+                {
+                    auto& idx_a = set_a->get_entity_indices();
+                    for (size_t i = 0; i < filtered_.size(); ++i)
+                    {
+                        size_t dense_index = filtered_[i];
+                        entity e(idx_a[dense_index], set_a->get_version_unchecked(idx_a[dense_index]));
+                        B* b = set_b ? set_b->template get_ptr_fast<B>(e) : nullptr;
+                        if constexpr (std::is_invocable_v<Func, entity, T*, B*>)
+                        {
+                            func(e, &(*pool_a)[dense_index], b);
+                        }
+                        else
+                        {
+                            func(&(*pool_a)[dense_index], b);
+                        }
+                    }
+                }
+            }
+
+            if (set_b)
+            {
+                auto* pool_b = set_b->template get_typed_pool_ptr<B>();
+                if (pool_b)
+                {
+                    auto& idx_b = set_b->get_entity_indices();
+                    for (size_t i = 0; i < idx_b.size(); ++i)
+                    {
+                        entity e(idx_b[i], set_b->get_version_unchecked(idx_b[i]));
+                        if (set_a)
+                        {
+                            T* a = set_a->template get_ptr_fast<T>(e);
+                            if (a && pred_(*a)) continue;
+                        }
+                        if constexpr (std::is_invocable_v<Func, entity, T*, B*>)
+                        {
+                            func(e, nullptr, &(*pool_b)[i]);
+                        }
+                        else
+                        {
+                            func(nullptr, &(*pool_b)[i]);
+                        }
+                    }
+                }
+            }
+        }
+    };
+
+    // ======================== view() 工厂方法 ========================
+    template <typename T>
+    [[nodiscard]] single_view<T> view() noexcept
+    {
+        return single_view<T>(get_single_class_set<T>());
+    }
+
+    template <typename First, typename Second, typename... Rest>
+    [[nodiscard]] multi_view<First, Second, Rest...> view() noexcept
+    {
+        return multi_view<First, Second, Rest...>(
+            std::array<single_class_set*, 2 + sizeof...(Rest)>{
+                get_single_class_set<First>(),
+                get_single_class_set<Second>(),
+                get_single_class_set<Rest>()...
+            });
     }
 
     template <typename T, typename... ExcludeTypes>
-    [[nodiscard]] single_view_with_exclude<T, ExcludeTypes...> view(exclude<ExcludeTypes...>) noexcept
+    [[nodiscard]] single_view_without<T, ExcludeTypes...> view(without_t<ExcludeTypes...>) noexcept
     {
-        return single_view_with_exclude<T, ExcludeTypes...>(get_single_class_set<T>(), this);
+        return single_view_without<T, ExcludeTypes...>(get_single_class_set<T>(), this);
     }
 
     template <typename T, typename... GetTypes>
-    [[nodiscard]] single_view_with_get<T, GetTypes...> view(get<GetTypes...>) noexcept
+    [[nodiscard]] single_view_with<T, GetTypes...> view(with_t<GetTypes...>) noexcept
     {
-        return single_view_with_get<T, GetTypes...>(get_single_class_set<T>(), this);
+        return single_view_with<T, GetTypes...>(get_single_class_set<T>(), this);
     }
 
-    ~manager()=default;    
-
-};  
-
-
-
-
-
-}
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               
-
-namespace type
-{
-
-    class Component
+    // ======================== view_or / view_filtered 工厂方法 ========================
+    template <typename A, typename B>
+    [[nodiscard]] or_view<A, B> view_or() noexcept
     {
-    private:
-        std::unordered_map<size_t,void_any> components_map_;
-        std::unordered_map<size_t,std::string>components_name_map_;
-        
+        return or_view<A, B>(get_single_class_set<A>(), get_single_class_set<B>());
+    }
 
-        template <typename T>
-        void add_components(T &&component)
-        {
-            using DecayedT = std::decay_t<T>;
-            size_t type_hs = typeid(DecayedT).hash_code();
-            components_map_.insert_or_assign(type_hs, void_any(std::forward<T>(component)));
-            components_name_map_.insert_or_assign(type_hs, typeid(DecayedT).name());
-        }
+    template <typename T, typename Pred>
+    [[nodiscard]] filter_view<T, Pred> view_filtered(Pred&& pred) noexcept
+    {
+        return filter_view<T, Pred>(this, std::forward<Pred>(pred));
+    }
 
-        
-        
-    public: 
-        Component(){}
-        ~Component()=default;
-        template <typename ...args>
-        Component &add(args&&... argss) 
-        {
-            ((add_components(std::forward<args>(argss))), ...);
-            return *this;
-        }        
-        
-        template <typename T>
-        T* get_ptr()
-        {
-            using DecayedT = std::decay_t<T>;
-            size_t type_hs = typeid(DecayedT).hash_code();
-            if(components_map_.contains(type_hs))
-            {
-                return components_map_[type_hs].get_ptr<T>();
-            }
+    // ======================== group() 工厂方法 ========================
+    template <typename First, typename... Rest>
+    [[nodiscard]] ecs::group<First, Rest...> group() noexcept
+    {
+        return ecs::group<First, Rest...>(this, std::array<single_class_set*, 1 + sizeof...(Rest)>{
+            get_single_class_set<First>(),
+            get_single_class_set<Rest>()...
+        });
+    }
+
+    template <typename First, typename... Rest>
+    [[nodiscard]] ecs::owning_group<First, Rest...> group(owned_t<First>) noexcept
+    {
+        return ecs::owning_group<First, Rest...>(this, std::array<single_class_set*, 1 + sizeof...(Rest)>{
+            get_single_class_set<First>(),
+            get_single_class_set<Rest>()...
+        });
+    }
+
+    // ======================== runtime_view 工厂方法 ========================
+    [[nodiscard]] ecs::runtime_view runtime_view_create(class_pool<int> required_ids,
+                                                    class_pool<int> excluded_ids = {}) noexcept
+    {
+        return ecs::runtime_view(this, ecs::runtime_query(this, std::move(required_ids), std::move(excluded_ids)));
+    }
+
+    [[nodiscard]] single_class_set* get_single_class_set_by_id(int type_id) noexcept
+    {
+        if (type_id < 0 || type_id >= static_cast<int>(components_c_.size())) [[unlikely]]
             return nullptr;
+        return &components_c_[type_id];
+    }
+
+    // ======================== 生命周期信号 API ========================
+
+    void set_on_entity_created(void (*fn)(entity, void*) noexcept, void* user_data = nullptr) noexcept
+    {
+        entity_manager_.on_entity_created_ = fn;
+        entity_manager_.on_entity_created_data_ = user_data;
+    }
+    void set_on_entity_destroyed(void (*fn)(entity, void*) noexcept, void* user_data = nullptr) noexcept
+    {
+        entity_manager_.on_entity_destroyed_ = fn;
+        entity_manager_.on_entity_destroyed_data_ = user_data;
+    }
+
+    template <typename T>
+    void set_on_add(void (*fn)(entity, void*, void*) noexcept, void* user_data = nullptr) noexcept
+    {
+        ensure_type_exists(type_id::get_type_id<T>());
+        single_class_set* set = get_single_class_set<T>();
+        if (set)
+        {
+            set->on_add_ = fn;
+            set->on_add_data_ = user_data;
+        }
+    }
+    template <typename T>
+    void set_on_remove(void (*fn)(entity, void*, void*) noexcept, void* user_data = nullptr) noexcept
+    {
+        ensure_type_exists(type_id::get_type_id<T>());
+        single_class_set* set = get_single_class_set<T>();
+        if (set)
+        {
+            set->on_remove_ = fn;
+            set->on_remove_data_ = user_data;
+        }
+    }
+
+    template <typename Func>
+    void flush_entity_signals(Func&& handler) noexcept
+    {
+        entity_manager_.flush_signals(std::forward<Func>(handler));
+    }
+    [[nodiscard]] bool has_pending_entity_signals() const noexcept
+    {
+        return entity_manager_.has_pending_signals();
+    }
+
+    template <typename Func>
+    void flush_component_signals(Func&& handler) noexcept
+    {
+        while (comp_signal_read_ != comp_signal_write_)
+        {
+            auto& ev = comp_signal_buffer_[comp_signal_read_];
+            handler(ev.type, ev.entity_idx, ev.component_id);
+            comp_signal_read_ = (comp_signal_read_ + 1) % comp_signal_buffer_size;
+        }
+    }
+    [[nodiscard]] bool has_pending_component_signals() const noexcept
+    {
+        return comp_signal_read_ != comp_signal_write_;
+    }
+
+    ~manager() = default;
+};
+
+// ======================== runtime_query / runtime_view out-of-line 定义 ========================
+
+inline runtime_query::runtime_query(manager* mgr, class_pool<int> required_ids,
+                                     class_pool<int> excluded_ids) noexcept
+    : required_ids_(std::move(required_ids))
+{
+    if (required_ids_.empty()) [[unlikely]] return;
+
+    size_t min_size = std::numeric_limits<size_t>::max();
+    for (int tid : required_ids_)
+    {
+        const auto* meta = mgr->get_component_meta(tid);
+        if (meta && meta->bit != 0)
+        {
+            req_mask_ |= meta->bit;
+        }
+        auto* set = mgr->get_single_class_set_by_id(tid);
+        if (set && set->size() < min_size)
+        {
+            min_size = set->size();
+            primary_set_ = set;
+        }
+    }
+
+    for (int tid : excluded_ids)
+    {
+        const auto* meta = mgr->get_component_meta(tid);
+        if (meta && meta->bit != 0)
+        {
+            exc_mask_ |= meta->bit;
+        }
+    }
+}
+
+inline bool runtime_view::all_sets_valid() const noexcept
+{
+    for (int tid : query_.required_ids_)
+    {
+        if (!mgr_->get_single_class_set_by_id(tid)) return false;
+    }
+    return true;
+}
+
+inline bool runtime_view::contains(entity e) noexcept
+{
+    ensure_fresh();
+    if (!all_sets_valid()) [[unlikely]] return false;
+    uint64_t mask = mgr_->get_entity_mask(e);
+    if ((mask & query_.req_mask_) != query_.req_mask_) return false;
+    if (query_.exc_mask_ != 0 && (mask & query_.exc_mask_) != 0) return false;
+    return true;
+}
+
+inline void runtime_view::rebuild() noexcept
+{
+    size_t min_size = std::numeric_limits<size_t>::max();
+    query_.primary_set_ = nullptr;
+    for (int tid : query_.required_ids_)
+    {
+        auto* set = mgr_->get_single_class_set_by_id(tid);
+        if (set && set->size() < min_size)
+        {
+            min_size = set->size();
+            query_.primary_set_ = set;
+        }
+    }
+    if (query_.primary_set_)
+    {
+        cached_primary_version_ = query_.primary_set_->get_pool_version();
+    }
+}
+
+template <typename T>
+inline T* runtime_view::get_ptr(entity e) noexcept
+{
+    ensure_fresh();
+    return mgr_->template get_ptr_fast<T>(e);
+}
+
+template <typename Func>
+inline void runtime_view::for_each(Func&& func) noexcept
+{
+    ensure_fresh();
+    if (query_.primary_set_ == nullptr || !all_sets_valid()) [[unlikely]] return;
+
+    auto* primary = query_.primary_set_;
+    auto& indices = primary->get_entity_indices();
+    const size_t n = indices.size();
+
+    for (size_t i = 0; i < n; ++i)
+    {
+        uint32_t idx = indices[i];
+        uint64_t mask = mgr_->get_entity_mask(entity(idx, primary->get_version_unchecked(idx)));
+
+        if ((mask & query_.req_mask_) != query_.req_mask_)
+        {
+            continue;
+        }
+        if (query_.exc_mask_ != 0 && (mask & query_.exc_mask_) != 0)
+        {
+            continue;
         }
 
-        template <typename... Types>
-        void remove()
+        entity e(idx, primary->get_version_unchecked(idx));
+
+        if constexpr (std::is_invocable_v<Func, entity>)
         {
-            (([this](){
-                using DecayedT = std::decay_t<Types>;
-                size_t type_hs = typeid(DecayedT).hash_code();
-                this->components_map_.erase(type_hs);
-                this->components_name_map_.erase(type_hs);
-            })(), ...); 
+            func(e);
         }
-                
-    };
+        else
+        {
+            func();
+        }
+    }
 }
+
+// ======================== filter_view 的 and_ / or_ 方法 ========================
+template <typename T, typename Pred>
+template <typename B>
+auto manager::filter_view<T, Pred>::and_() noexcept
+{
+    return filter_and_view<T, B, Pred>(mgr_, std::move(pred_));
+}
+
+template <typename T, typename Pred>
+template <typename B>
+auto manager::filter_view<T, Pred>::or_() noexcept
+{
+    return filter_or_view<T, B, Pred>(mgr_, std::move(pred_));
+}
+
+} // namespace ecs

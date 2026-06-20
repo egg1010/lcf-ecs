@@ -1,7 +1,6 @@
 #pragma once
 #include "id_.hpp"
-
-#define FORCE_INLINE inline
+#include "force_inline.hpp"
 
 class type_id
 {

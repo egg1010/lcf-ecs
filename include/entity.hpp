@@ -4,27 +4,22 @@
 struct entity
 {
     constexpr entity() noexcept : handle_(0) {}
-    constexpr entity(uint32_t idx, uint32_t v) noexcept : index_(idx), version_(v) {}
+    constexpr entity(uint32_t idx, uint32_t v) noexcept : parts_{idx, v} {}
 
-    union 
+    union
     {
-        uint64_t  handle_;
-        struct 
+        uint64_t handle_;
+        struct
         {
             uint32_t index_;
             uint32_t version_;
-        };
+        } parts_;
     };
-
 
     constexpr bool operator==(const entity& other) const noexcept { return handle_ == other.handle_; }
     constexpr bool operator!=(const entity& other) const noexcept { return handle_ != other.handle_; }
-    
     constexpr bool is_valid() const noexcept { return handle_ != 0; }
 };
-
-
-
 
 namespace std 
 {
