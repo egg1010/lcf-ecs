@@ -865,6 +865,8 @@ fov.for_each([](entity e, Position* p, Velocity* v) {
 
 ### 10.9 性能对比
 
+> 测试环境：AMD Ryzen 9700X / DDR5 6000MHz CL28
+
 | 场景 | 当前做法 | 升级后 | 分配 |
 |------|----------|--------|------|
 | A OR B (各 10K) | 两次 view + 手动去重 | 一次 `or_<B>` 遍历 | 0 |
@@ -874,21 +876,11 @@ fov.for_each([](entity e, Position* p, Velocity* v) {
 ---
 ## 11. Group系统
 
-Group 是 ECS 中性能最高的多组件遍历机制。与 View 每次迭代检查实体是否拥有所有组件不同，Group 在构造时预先计算匹配实体集，迭代时零分支、零版本检查。
+Group 在构造时预先计算匹配实体集，迭代时零分支、零版本检查。
 
-### 11.1 设计理念
+### 11.1 Non-OwningGroup (`group`)
 
-| 特性 | Non-OwningGroup (`group`) | OwningGroup (`group` + `owned`) |
-|------|--------------------------|-------------------------------|
-| 存储 | 缓存主集 dense 索引到 `class_pool<size_t>` | 重排主集 dense 数组，匹配实体连续排列 |
-| 迭代 | 遍历缓存的索引，通过 sparse 直取其他集合的 dense 下标 | 纯线性扫描 [0, owned_size_) |
-| 分配 | 构造时一次 `class_pool` 分配 | 零分配 |
-| 副作用 | 无 | 重排主集组件数据（组件顺序改变） |
-| 适用场景 | 组件频繁增删，需要 `rebuild()` | 组件稳定，追求极致迭代性能 |
-
-### 11.2 Non-OwningGroup (`group`)
-
-通过 `mgr.group<First, Rest...>()` 创建，缓存匹配实体的 dense 索引。迭代时零分支、零版本检查，性能远超 `multi_view`。
+通过 `mgr.group<First, Rest...>()` 创建，缓存匹配实体的 dense 索引。
 
 **接口：**
 
@@ -930,9 +922,9 @@ g3.for_each([](entity e, Position& p, Velocity& v, Health& h) {
 });
 ```
 
-### 11.3 OwningGroup (`group` + `owned`)
+### 11.2 OwningGroup (`group` + `owned`)
 
-通过 `mgr.group<First, Rest...>(ecs::owned<First>)` 创建，重排主集 `First` 的 dense 数组，使匹配实体在数组前部连续排列。迭代时纯线性扫描 `[0, owned_size_)`，无分支，无额外间接访问，性能达到理论极限。
+通过 `mgr.group<First, Rest...>(ecs::owned<First>)` 创建，重排主集 `First` 的 dense 数组，使匹配实体在数组前部连续排列。迭代时纯线性扫描 `[0, owned_size_)`。
 
 **注意：** `owned` 标签标记的组件类型会被重排，组件数据顺序会改变。如果其他代码依赖该组件的 dense 顺序，需谨慎使用。
 
@@ -960,7 +952,9 @@ og3.for_each([](entity e, Position& p, Velocity& v, Health& h) {
 });
 ```
 
-### 11.4 性能对比
+### 11.3 性能对比
+
+> 测试环境：AMD Ryzen 9700X / DDR5 6000MHz CL28
 
 | 场景 | `multi_view` | `group` (Non-Owning) | `group` + `owned` (Owning) |
 |------|-------------|---------------------|---------------------------|
@@ -974,20 +968,9 @@ og3.for_each([](entity e, Position& p, Velocity& v, Health& h) {
 
 ## 12. runtime_view — 运行时视图
 
-`runtime_view` 是运行时视图系统，支持在运行时动态指定组件类型组合进行查询。通过实体组件位掩码（`uint64_t`）实现 O(1) 匹配，迭代时单条 `AND` 指令完成匹配判断，零分支，性能接近编译期视图。
+在运行时动态指定组件类型组合进行查询。通过实体组件位掩码（`uint64_t`）实现匹配。
 
-### 12.1 设计理念
-
-| 特性 | 说明 |
-|------|------|
-| 组件匹配 | 每个实体维护一个 `uint64_t` 位掩码，添加/删除组件时自动更新 |
-| 查询构造 | 运行时传入 `type_id` 列表，预计算查询掩码，找最小集合驱动迭代 |
-| 迭代 | 遍历最小集合的 dense 数组，对每个实体执行 `(mask & query_mask) == query_mask` 判断 |
-| 组件访问 | 通过 `get_ptr<T>(entity)` 获取组件指针（编译期类型恢复） |
-| 排除语义 | 支持 `excluded_ids` 排除特定组件 |
-| 热更新 | 掩码自动维护，无需手动 `rebuild()` |
-
-### 12.2 实体掩码
+### 12.1 实体掩码
 
 每个实体在添加/删除组件时自动维护组件位掩码：
 
@@ -1004,7 +987,7 @@ uint64_t pos_bit = mgr.get_component_bit<Position>();
 bool has_pos = (mask & pos_bit) != 0;  // true
 ```
 
-### 12.3 运行时视图
+### 12.2 运行时视图
 
 ```cpp
 // 双组件运行时视图
@@ -1020,7 +1003,7 @@ rv.for_each([](entity e) {
 });
 ```
 
-### 12.4 排除视图
+### 12.3 排除视图
 
 ```cpp
 // 有 Position 但无 Velocity 的实体
@@ -1034,7 +1017,7 @@ rv.for_each([](entity e) {
 });
 ```
 
-### 12.5 接口
+### 12.4 接口
 
 | 接口 | 说明 |
 |------|------|
@@ -1049,7 +1032,9 @@ rv.for_each([](entity e) {
 | `get_entity_mask(entity)` | 获取实体组件位掩码 |
 | `get_component_bit<T>()` | 获取组件类型的位掩码位 |
 
-### 12.6 性能对比
+### 12.5 性能对比
+
+> 测试环境：AMD Ryzen 9700X / DDR5 6000MHz CL28
 
 | 视图 | 50万实体迭代 | 匹配方式 |
 |------|------------|---------|
@@ -1058,19 +1043,11 @@ rv.for_each([](entity e) {
 | **`runtime_view<Pos+Vel>` (运行时)** | **2.14ms** | **单条 AND 指令** |
 | `group<Pos,Vel>` (Non-Owning) | 4.18ms | 缓存索引遍历 |
 
-> 运行时视图比 Non-OwningGroup 快约 2x，因为位掩码匹配（1 条 AND）比稀疏索引查找（多次间接访问）更高效。
-
 ---
 
 ## 13. 函数存储（回调作为组件）
 
-ECS 组件可以是任意类型，包括可调用对象（lambda、`std::function`、函数指针）。将函数/回调封装为组件后，可通过 `ecs::manager` 的标准组件接口存储与调用。
-
-核心特性：
-
-- **任意可调用对象**：lambda、`std::function`、仿函数均可作为组件
-- **复用 ECS 接口**：直接使用 `add` / `get_ptr` / `view` 等
-- **类型安全**：每种回调签名对应一个独立组件类型
+将函数/回调封装为组件，通过 `ecs::manager` 的标准组件接口存储与调用。
 
 ### 用法
 
@@ -1119,16 +1096,9 @@ mgr.view<CallbackComponent>().for_each([](entity e, CallbackComponent& c) {
 
 ## 14. 生命周期信号
 
-两层架构：**即时信号**（函数指针回调，零开销） + **延迟信号**（环形缓冲区，批量处理）。平衡性能与灵活性，避免重入问题。
+两层架构：**即时信号**（函数指针回调） + **延迟信号**（环形缓冲区，批量处理）。
 
-### 14.1 设计理念
-
-| 层级 | 机制 | 延迟 | 内存 | 适用场景 |
-|------|------|------|------|----------|
-| **即时信号** | 函数指针 + `void* user_data` | 同步触发，零延迟 | 每个信号 2 个指针（16 字节） | 需要立即响应的场景（如日志、调试） |
-| **延迟信号** | 环形缓冲区（256 条） | `flush` 时批量处理 | 约 3KB（实体级 + 组件级） | 批量处理、避免重入、性能敏感路径 |
-
-### 14.2 实体级即时信号
+### 14.1 实体级即时信号
 
 实体创建/销毁时立即触发回调。通过 `void* user_data` 传递上下文，兼容 C 风格函数指针和无捕获 lambda。
 
@@ -1165,7 +1135,7 @@ mgr.delete_entity(e1);           // destroyed == 1
 
 > **注意：** 回调必须是 `void (*)(entity, void*) noexcept` 签名。使用 `+` 将无捕获 lambda 转为函数指针。需要上下文时通过 `user_data` 传递。
 
-### 14.3 组件级即时信号
+### 14.2 组件级即时信号
 
 组件添加/移除时立即触发回调。回调接收实体、组件指针和 `user_data`，可在回调中直接修改组件数据。
 
@@ -1205,7 +1175,7 @@ mgr.hard_remove<Position>(e);      // remove_count == 1
 
 > **注意：** 组件指针在回调期间有效，可用于读取或修改组件数据。`soft_remove` 和 `hard_remove` 均会触发 `on_remove`。
 
-### 14.4 实体级延迟信号
+### 14.3 实体级延迟信号
 
 实体创建/销毁事件被推入环形缓冲区，调用 `flush_entity_signals` 时批量处理。适合批量同步、避免重入的场景。
 
@@ -1247,7 +1217,7 @@ assert(!mgr.has_pending_entity_signals());
 
 > **缓冲区容量：** 256 条。缓冲区满时丢弃新事件（生产环境可改为先 flush 再插入）。
 
-### 14.5 组件级延迟信号
+### 14.4 组件级延迟信号
 
 组件添加/移除事件被推入环形缓冲区，调用 `flush_component_signals` 时批量处理。
 
@@ -1287,7 +1257,7 @@ mgr.flush_component_signals([&](uint32_t type, uint32_t entity_idx, uint32_t com
 assert(!mgr.has_pending_component_signals());
 ```
 
-### 14.6 即时信号 vs 延迟信号 选择指南
+### 14.5 即时信号 vs 延迟信号 选择指南
 
 | 场景 | 推荐方案 | 原因 |
 |------|----------|------|
@@ -1298,7 +1268,7 @@ assert(!mgr.has_pending_component_signals());
 | 文件持久化 | 延迟信号 | 批量写入，减少 I/O |
 | 第三方集成 | 延迟信号 | 解耦 ECS 内部状态与外部系统 |
 
-### 14.7 性能特征
+### 14.6 性能特征
 
 | 操作 | 开销 |
 |------|------|
