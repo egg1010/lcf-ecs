@@ -983,6 +983,7 @@ public:
                 bitmap_reset(sparse_bits_, i);
             }
             usage_ = new_capacity;
+            update_dense_status();
         }
 
         T* new_data = allocate_data(new_capacity);
@@ -1337,6 +1338,7 @@ public:
         }
 
         --usage_;
+        update_dense_status();
         return iterator(data_ptr_ + index, data_ptr_ + usage_,
                         dense ? nullptr : sparse_bits_, data_ptr_);
     }
@@ -1426,6 +1428,7 @@ public:
             usage_ -= gap;
         }
 
+        update_dense_status();
         return iterator(data_ptr_ + start_index, data_ptr_ + usage_,
                         dense ? nullptr : sparse_bits_, data_ptr_);
     }
@@ -1453,6 +1456,7 @@ public:
             }
             --usage_;
         }
+        update_dense_status();
     }
 
     [[nodiscard]] constexpr bool valid() const noexcept { return data_ptr_ != nullptr; }
@@ -1533,10 +1537,7 @@ public:
 
         new (&data_ptr_[index]) T(std::forward<Args>(args)...);
         bitmap_set(sparse_bits_, index);
-        if (extended && is_dense_) [[unlikely]]
-        {
-            recompute_is_dense();
-        }
+        update_dense_status();
         return data_ptr_[index];
     }
 
@@ -1565,10 +1566,7 @@ public:
 
         new (&data_ptr_[index]) T(std::forward<Args>(args)...);
         bitmap_set(sparse_bits_, index);
-        if (extended && is_dense_) [[unlikely]]
-        {
-            recompute_is_dense();
-        }
+        update_dense_status();
         return data_ptr_[index];
     }
 
@@ -1594,6 +1592,7 @@ public:
         return is_dense_;
     }
 
+private:
     void recompute_is_dense() noexcept
     {
         if (usage_ == 0) { is_dense_ = true; return; }
@@ -1609,6 +1608,14 @@ public:
             if ((sparse_bits_[full_words] & mask) != mask) { is_dense_ = false; return; }
         }
         is_dense_ = true;
+    }
+
+    void update_dense_status() noexcept
+    {
+        if (!is_dense_)
+        {
+            recompute_is_dense();
+        }
     }
 };
 

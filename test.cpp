@@ -432,9 +432,6 @@ int main()
         cp.sparse_erase_at(1);
         print_item("is_dense() 有空洞", !cp.is_dense());
 
-        cp.recompute_is_dense();
-        print_item("recompute_is_dense()", !cp.is_dense());
-
         size_t cnt_before = cp.count();
         cp.invalidate_count_cache();
         size_t cnt_after = cp.count();
@@ -1796,7 +1793,6 @@ int main()
                   << "  exclude 匹配数: " << exclude_count << " (有 Position 无 Velocity)\n"
                   << "  get 匹配数: " << get_count << " (有 Position，Health 可选)\n";
     }
-
     std::cout << "\n══════════════════════════════════════════════════════\n"
               << "  全部接口测试完成\n"
               << "══════════════════════════════════════════════════════\n";

@@ -116,14 +116,23 @@ msg += msg2;  // switch_ = msg.switch_ && msg2.switch_
 
 ## 3. class_pool\<T> — 核心容器
 
-基于 bitmap 稀疏集的高性能容器，替代 `std::vector`。核心特性：
+基于 bitmap 稀疏集的高性能容器，替代 `std::vector`。
 
-- **稀疏集**：bitmap 跟踪已构造位置，支持任意位置构造/删除
-- **dense 缓存**：`is_dense_` 缓存避免热路径扫描 bitmap
-- **count 缓存**：`count()` 结果缓存，避免重复 popcount
-- **word 级操作**：bitmap shift 使用 64-bit word 级批量移动
-- **对齐内存**：`std::assume_aligned` 优化
-- **禁止异常**：失败时 `std::terminate()`
+**两种模式：**
+
+| 模式 | 触发条件 | 迭代行为 |
+|------|---------|---------|
+| **dense（密集）** | `usage_` 范围内所有位均为 1（无空洞） | 零开销线性扫描 `[0, usage_)`，无 bitmap 跳转 |
+| **sparse（稀疏）** | `usage_` 范围内存在空洞（有未构造的槽位） | 自动跳过未构造槽位，仅遍历已构造元素 |
+
+**模式切换：** 自动判断，无需手动干预。每次修改操作后自动更新 `is_dense_` 缓存（O(usage_/64) bitmap 扫描，仅当模式可能变化时触发）。
+
+**性能特征：**
+
+- 对齐内存（`std::assume_aligned`）
+- `count()` 带缓存，避免重复 popcount
+- bitmap 操作使用 word 级批量移动
+- 禁止异常：分配失败时 `std::terminate()`
 
 ### 构造与赋值
 
@@ -192,9 +201,26 @@ msg += msg2;  // switch_ = msg.switch_ && msg2.switch_
 | 接口 | 说明 |
 |------|------|
 | `is_constructed_at(index)` | 检查指定位置是否已构造 |
-| `is_dense()` | 前 `usage_` 位是否全部为 1（O(1) 缓存） |
-| `recompute_is_dense()` | 重新计算 `is_dense_` 缓存 |
+| `is_dense()` | 前 `usage_` 位是否全部为 1（O(1) 缓存，每次修改操作自动更新） |
+| `recompute_is_dense()` | 强制重新扫描 bitmap 并更新 `is_dense_`（通常无需手动调用） |
 | `invalidate_count_cache()` | 使 count 缓存失效 |
+
+### 各操作对 contiguity 的影响
+
+| 操作 | 对 contiguity 的影响 | `is_dense_` 更新 |
+|------|---------------------|-----------------|
+| `emplace_back()` | 保持连续 | 无需更新 |
+| `emplace(pos)` / `insert(pos)` | 保持连续（元素右移） | 无需更新 |
+| `erase(pos)` / `erase(first,last)` | 保持连续（元素左移） | 无需更新 |
+| `pop_back()` | 保持连续 | 无需更新 |
+| `clear()` | 重置为连续 | 直接设为 `true` |
+| `sparse_erase_at(index)` | **产生空洞** → 变稀疏 | 直接设为 `false` |
+| `emplace_at(index)` | **可能填充空洞** → 可能变连续 | 自动调用 `recompute_is_dense()` |
+| `sparse_emplace_at(index)` | **可能填充空洞** → 可能变连续 | 自动调用 `recompute_is_dense()` |
+| `resize()` 缩小 | **可能消除空洞** → 可能变连续 | 自动调用 `recompute_is_dense()` |
+| `reduce_capacity()` 缩小 | **可能消除空洞** → 可能变连续 | 自动调用 `recompute_is_dense()` |
+
+> **关键规则：** 连续的操作保持连续，产生空洞的操作变稀疏，填满空洞的操作自动切回连续。无需手动管理 `is_dense_`。
 
 ### 插入/删除
 
@@ -235,6 +261,11 @@ pool.sparse_emplace_at(100, 777);  // 覆盖
 
 // 稀疏删除
 pool.sparse_erase_at(100);
+pool.is_dense();                   // false（索引 100 处产生空洞）
+
+// 填满空洞后自动切回连续
+pool.emplace_at(100, 123);         // 填充空洞
+pool.is_dense();                   // true（空洞消失，自动切回）
 
 // 位置插入
 pool.emplace(std::next(pool.begin(), 1), 42);  // 在位置 1 插入
@@ -246,9 +277,27 @@ for (auto v : pool) { /* ... */ }
 std::span<int> s = pool.span();
 
 // 稀疏集查询
-pool.is_constructed_at(100);  // false（已删除）
+pool.is_constructed_at(100);  // true
 pool.is_dense();              // 检查是否连续
 ```
+
+### 应该用什么操作？
+
+| 场景 | 推荐操作 | 原因 |
+|------|---------|------|
+| 尾部追加元素 | `emplace_back()` | O(1)，保持连续，最快 |
+| 任意位置插入/删除并保持连续 | `emplace(pos)` / `erase(pos)` | 移动后续元素，O(n)，保持连续 |
+| 稀疏数组（大索引跳跃） | `emplace_at()` / `sparse_erase_at()` | O(1)，不移动其他元素，但产生空洞 |
+| 批量填充已知索引 | `emplace_at()` | 填充空洞后自动切回连续 |
+| 删除整个容器 | `clear()` | 重置为连续，O(1) |
+
+### 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| `sparse_erase_at()` 后仍期望连续迭代 | 产生空洞，迭代变稀疏模式 | 用 `emplace_at()` 填充空洞，或用 `erase()` 替代 |
+| 频繁 `sparse_erase_at()` + `emplace_at()` 来回切换 | 每次切换触发 O(usage_/64) 扫描 | 批量操作，或统一使用 `erase()`/`emplace()` 保持连续 |
+| `emplace_at()` 在远超 `usage_` 的索引上构造 | 中间留大量未初始化槽位，`size()` 暴增（`usage_` = index+1） | 用 `resize()` 预填充，或改用 `sparse_emplace_at()` |
 
 ---
 

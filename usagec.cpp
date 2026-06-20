@@ -355,11 +355,9 @@ static void demo_class_pool()
     pool10.emplace_back(3);
     print_kv("\u8fde\u7eed\u6dfb\u52a0\u540e is_dense()", pool10.is_dense());
     pool10.sparse_erase_at(1);
-    print_kv("sparse_erase_at(1) \u540e is_dense()", pool10.is_dense());
+    print_kv("sparse_erase_at(1) 后 is_dense()", pool10.is_dense());
     print_kv("is_constructed_at(0)", pool10.is_constructed_at(0));
     print_kv("is_constructed_at(1)", pool10.is_constructed_at(1));
-    pool10.recompute_is_dense();
-    print_kv("recompute_is_dense() \u540e", pool10.is_dense());
     pool10.invalidate_count_cache();
     print_kv("invalidate_count_cache() \u540e count()", pool10.count());
 
