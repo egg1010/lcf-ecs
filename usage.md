@@ -1,5 +1,7 @@
 # lcf-ecs 库完整接口文档
 
+# 包含component.hpp 即可使用
+
 ## 目录
 
 1. [entity — 实体](#1-entity--实体)
