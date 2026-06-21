@@ -22,8 +22,10 @@ private:
     manager*                       mgr_;
     std::array<single_class_set*, N> sets_;
     size_t                         primary_idx_{0};
-    class_pool<size_t>             cached_;
+    class_pool<uint32_t>              cached_;
+    class_pool<std::array<uint32_t, N>> dense_mappings_;
     std::array<uint64_t, N>        cached_versions_{};
+    uint64_t                       required_mask_{0};
 
     void find_smallest() noexcept
     {
@@ -60,20 +62,43 @@ private:
         }
     }
 
-    template <size_t I>
-    [[nodiscard]] auto& get_component_unchecked(entity e, size_t primary_dense_idx) const noexcept
+    template <typename Func>
+    void for_each_impl_2(Func&& func) noexcept
     {
-        using T = std::tuple_element_t<I, AllTypes>;
-        if constexpr (I == 0 && N == 1)
+        if (cached_.empty()) return;
+
+        using T0 = std::tuple_element_t<0, AllTypes>;
+        using T1 = std::tuple_element_t<1, AllTypes>;
+        auto* pool0 = sets_[0]->template get_typed_pool_ptr<T0>();
+        auto* pool1 = sets_[1]->template get_typed_pool_ptr<T1>();
+
+        const size_t n = cached_.size();
+        auto* mappings = dense_mappings_.data();
+        auto* primary = sets_[primary_idx_];
+        auto& indices = primary->get_entity_indices();
+        auto* primary_sparse = primary->get_sparse_combined().data();
+
+        for (size_t i = 0; i < n; ++i)
         {
-            return (*sets_[I]->template get_typed_pool_ptr<T>())[primary_dense_idx];
-        }
-        else
-        {
-            size_t dense_idx = (I == primary_idx_)
-                ? primary_dense_idx
-                : sets_[I]->get_sparse()[e.parts_.index_].dense_index_;
-            return (*sets_[I]->template get_typed_pool_ptr<T>())[dense_idx];
+            if (i + 8 < n) [[likely]]
+            {
+                auto& next = mappings[i + 8];
+                PREFETCH_R(&(*pool0)[next[0]]);
+                PREFETCH_R(&(*pool1)[next[1]]);
+            }
+
+            auto& m = mappings[i];
+
+            if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
+            {
+                uint32_t eid = indices[m[primary_idx_]];
+                entity e(eid, static_cast<uint32_t>(primary_sparse[eid]));
+                func(e, (*pool0)[m[0]], (*pool1)[m[1]]);
+            }
+            else
+            {
+                func((*pool0)[m[0]], (*pool1)[m[1]]);
+            }
         }
     }
 
@@ -82,21 +107,34 @@ private:
     {
         if (cached_.empty()) return;
 
+        auto pools = std::make_tuple(
+            sets_[Is]->template get_typed_pool_ptr<std::tuple_element_t<Is, AllTypes>>()...
+        );
+
+        const size_t n = cached_.size();
+        auto* mappings = dense_mappings_.data();
         auto* primary = sets_[primary_idx_];
         auto& indices = primary->get_entity_indices();
+        auto* primary_sparse = primary->get_sparse_combined().data();
 
-        for (size_t i = 0; i < cached_.size(); ++i)
+        for (size_t i = 0; i < n; ++i)
         {
-            size_t dense_idx = cached_[i];
-            entity e(indices[dense_idx], primary->get_version_unchecked(indices[dense_idx]));
+            if (i + 8 < n) [[likely]]
+            {
+                auto& next = mappings[i + 8];
+                ((void)PREFETCH_R(&(*std::get<Is>(pools))[next[Is]]), ...);
+            }
 
+            auto& m = mappings[i];
             auto comps = std::forward_as_tuple(
-                get_component_unchecked<Is>(e, dense_idx)...
+                (*std::get<Is>(pools))[m[Is]]...
             );
 
             std::apply([&](auto&... refs) {
                 if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
                 {
+                    uint32_t eid = indices[m[primary_idx_]];
+                    entity e(eid, static_cast<uint32_t>(primary_sparse[eid]));
                     func(e, refs...);
                 }
                 else
@@ -115,35 +153,9 @@ private:
     }
 
 public:
-    group(manager* mgr, std::array<single_class_set*, N> sets) noexcept
-        : mgr_(mgr), sets_(sets)
-    {
-        find_smallest();
-        rebuild();
-    }
+    group(manager* mgr, std::array<single_class_set*, N> sets) noexcept;
 
-    void rebuild() noexcept
-    {
-        cached_.clear();
-        if (!all_sets_valid()) [[unlikely]] return;
-
-        auto* primary = sets_[primary_idx_];
-        auto& indices = primary->get_entity_indices();
-        const size_t n = indices.size();
-
-        for (size_t i = 0; i < n; ++i)
-        {
-            entity e(indices[i], primary->get_version_unchecked(indices[i]));
-            if (contains_impl(e, std::index_sequence_for<First, Rest...>{}))
-            {
-                cached_.emplace_back(i);
-            }
-        }
-        for (size_t i = 0; i < N; ++i)
-        {
-            if (sets_[i]) cached_versions_[i] = sets_[i]->get_pool_version();
-        }
-    }
+    void rebuild() noexcept;
 
     [[nodiscard]] size_t size() noexcept { ensure_fresh(); return cached_.size(); }
     [[nodiscard]] bool   empty() noexcept { ensure_fresh(); return cached_.empty(); }
@@ -177,8 +189,8 @@ public:
         ensure_fresh();
         auto* primary = sets_[primary_idx_];
         auto& indices = primary->get_entity_indices();
-        size_t dense_idx = cached_[0];
-        return entity(indices[dense_idx], primary->get_version_unchecked(indices[dense_idx]));
+        uint32_t eid = indices[cached_[0]];
+        return entity(eid, primary->get_version_unchecked(eid));
     }
 
     [[nodiscard]] entity back() noexcept
@@ -186,15 +198,18 @@ public:
         ensure_fresh();
         auto* primary = sets_[primary_idx_];
         auto& indices = primary->get_entity_indices();
-        size_t dense_idx = cached_[cached_.size() - 1];
-        return entity(indices[dense_idx], primary->get_version_unchecked(indices[dense_idx]));
+        uint32_t eid = indices[cached_[cached_.size() - 1]];
+        return entity(eid, primary->get_version_unchecked(eid));
     }
 
     template <typename Func>
     void for_each(Func&& func) noexcept
     {
         ensure_fresh();
-        for_each_impl(std::forward<Func>(func), std::index_sequence_for<First, Rest...>{});
+        if constexpr (N == 2)
+            for_each_impl_2(std::forward<Func>(func));
+        else
+            for_each_impl(std::forward<Func>(func), std::index_sequence_for<First, Rest...>{});
     }
 };
 
@@ -211,6 +226,7 @@ private:
     size_t                         primary_idx_{0};
     size_t                         owned_size_{0};
     std::array<uint64_t, N>        cached_versions_{};
+    uint64_t                       required_mask_{0};
 
     void find_smallest() noexcept
     {
@@ -247,21 +263,60 @@ private:
         }
     }
 
-    template <size_t I>
-    [[nodiscard]] auto& get_component_unchecked(entity e, size_t primary_dense_idx) const noexcept
+    template <typename Func>
+    void for_each_impl_2(Func&& func) noexcept
     {
-        using T = std::tuple_element_t<I, AllTypes>;
-        size_t dense_idx = (I == primary_idx_)
-            ? primary_dense_idx
-            : sets_[I]->get_sparse()[e.parts_.index_].dense_index_;
-        return (*sets_[I]->template get_typed_pool_ptr<T>())[dense_idx];
-    }
+        if (owned_size_ == 0) return;
 
-    template <size_t... Is>
-    [[nodiscard]] bool has_all_impl(entity e, std::index_sequence<Is...>) const noexcept
-    {
-        return (... && (sets_[Is] && sets_[Is]->template get_ptr_fast<
-            std::tuple_element_t<Is, AllTypes>>(e) != nullptr));
+        using T0 = std::tuple_element_t<0, AllTypes>;
+        using T1 = std::tuple_element_t<1, AllTypes>;
+        auto* pool0_data = sets_[0]->template get_typed_pool_ptr<T0>()->data();
+        auto* pool1_data = sets_[1]->template get_typed_pool_ptr<T1>()->data();
+        auto* primary = sets_[primary_idx_];
+        auto& indices = primary->get_entity_indices();
+        const size_t other_idx = (primary_idx_ == 0) ? 1 : 0;
+        auto* other_set = sets_[other_idx];
+        auto* other_sparse = other_set->get_sparse_combined().data();
+        auto* primary_sparse = primary->get_sparse_combined().data();
+
+        if (primary_idx_ == 0)
+        {
+            for (size_t i = 0; i < owned_size_; ++i)
+            {
+                if (i + 8 < owned_size_) [[likely]]
+                    PREFETCH_R(&other_sparse[indices[i + 8]]);
+                uint32_t eid = indices[i];
+                uint32_t od = static_cast<uint32_t>(other_sparse[eid] >> 32);
+                if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
+                {
+                    entity e(eid, static_cast<uint32_t>(primary_sparse[eid]));
+                    func(e, pool0_data[i], pool1_data[od]);
+                }
+                else
+                {
+                    func(pool0_data[i], pool1_data[od]);
+                }
+            }
+        }
+        else
+        {
+            for (size_t i = 0; i < owned_size_; ++i)
+            {
+                if (i + 8 < owned_size_) [[likely]]
+                    PREFETCH_R(&other_sparse[indices[i + 8]]);
+                uint32_t eid = indices[i];
+                uint32_t od = static_cast<uint32_t>(other_sparse[eid] >> 32);
+                if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
+                {
+                    entity e(eid, static_cast<uint32_t>(primary_sparse[eid]));
+                    func(e, pool0_data[od], pool1_data[i]);
+                }
+                else
+                {
+                    func(pool0_data[od], pool1_data[i]);
+                }
+            }
+        }
     }
 
     template <typename Func, size_t... Is>
@@ -269,20 +324,40 @@ private:
     {
         if (owned_size_ == 0) return;
 
+        auto pools = std::make_tuple(
+            sets_[Is]->template get_typed_pool_ptr<std::tuple_element_t<Is, AllTypes>>()->data()...
+        );
+
         auto* primary = sets_[primary_idx_];
         auto& indices = primary->get_entity_indices();
+        auto* primary_sparse = primary->get_sparse_combined().data();
+
+        std::array<const uint64_t*, N> sparse_arrays{};
+        for (size_t k = 0; k < N; ++k)
+            sparse_arrays[k] = sets_[k]->get_sparse_combined().data();
 
         for (size_t i = 0; i < owned_size_; ++i)
         {
-            entity e(indices[i], primary->get_version_unchecked(indices[i]));
+            if (i + 8 < owned_size_) [[likely]]
+            {
+                uint32_t next = indices[i + 8];
+                for (size_t k = 0; k < N; ++k)
+                {
+                    if (k != primary_idx_)
+                        PREFETCH_R(&sparse_arrays[k][next]);
+                }
+            }
 
             auto comps = std::forward_as_tuple(
-                get_component_unchecked<Is>(e, i)...
+                (Is == primary_idx_)
+                    ? std::get<Is>(pools)[i]
+                    : std::get<Is>(pools)[static_cast<uint32_t>(sparse_arrays[Is][indices[i]] >> 32)]...
             );
 
             std::apply([&](auto&... refs) {
                 if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
                 {
+                    entity e(indices[i], static_cast<uint32_t>(primary_sparse[indices[i]]));
                     func(e, refs...);
                 }
                 else
@@ -294,6 +369,13 @@ private:
     }
 
     template <size_t... Is>
+    [[nodiscard]] bool has_all_impl(entity e, std::index_sequence<Is...>) const noexcept
+    {
+        return (... && (sets_[Is] && sets_[Is]->template get_ptr_fast<
+            std::tuple_element_t<Is, AllTypes>>(e) != nullptr));
+    }
+
+    template <size_t... Is>
     [[nodiscard]] bool contains_impl(entity e, std::index_sequence<Is...>) const noexcept
     {
         return (... && (sets_[Is] && sets_[Is]->template get_ptr_fast<
@@ -301,44 +383,9 @@ private:
     }
 
 public:
-    owning_group(manager* mgr, std::array<single_class_set*, N> sets) noexcept
-        : mgr_(mgr), sets_(sets)
-    {
-        find_smallest();
-        rebuild();
-    }
+    owning_group(manager* mgr, std::array<single_class_set*, N> sets) noexcept;
 
-    void rebuild() noexcept
-    {
-        if (!all_sets_valid()) [[unlikely]]
-        {
-            owned_size_ = 0;
-            return;
-        }
-
-        auto* primary = sets_[primary_idx_];
-        auto& indices = primary->get_entity_indices();
-        size_t n = primary->size();
-
-        size_t write = 0;
-        for (size_t read = 0; read < n; ++read)
-        {
-            entity e(indices[read], primary->get_version_unchecked(indices[read]));
-            if (has_all_impl(e, std::index_sequence_for<First, Rest...>{}))
-            {
-                if (read != write)
-                {
-                    primary->swap_dense_and_pool(read, write);
-                }
-                ++write;
-            }
-        }
-        owned_size_ = write;
-        for (size_t i = 0; i < N; ++i)
-        {
-            if (sets_[i]) cached_versions_[i] = sets_[i]->get_pool_version();
-        }
-    }
+    void rebuild() noexcept;
 
     [[nodiscard]] size_t size() noexcept { ensure_fresh(); return owned_size_; }
     [[nodiscard]] bool   empty() noexcept { ensure_fresh(); return owned_size_ == 0; }
@@ -387,7 +434,10 @@ public:
     void for_each(Func&& func) noexcept
     {
         ensure_fresh();
-        for_each_impl(std::forward<Func>(func), std::index_sequence_for<First, Rest...>{});
+        if constexpr (N == 2)
+            for_each_impl_2(std::forward<Func>(func));
+        else
+            for_each_impl(std::forward<Func>(func), std::index_sequence_for<First, Rest...>{});
     }
 };
 

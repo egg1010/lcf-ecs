@@ -271,7 +271,9 @@ public:
         }
 
         size = (size + ALIGNMENT - 1) & ~(ALIGNMENT - 1);
+
         size_t fl, sl;
+    retry:
         size_to_index(size, fl, sl);
 
         uint32_t sl_mask = sl_bitmaps_[fl] >> sl;
@@ -290,7 +292,7 @@ public:
             else
             {
                 add_new_chunk(size);
-                return allocate(size);
+                goto retry;
             }
         }
 

@@ -403,6 +403,31 @@ static void demo_class_pool()
     std::cout << "    \u79fb\u52a8\u8d4b\u503c: ";
     for (auto v : pool16) std::cout << v << " ";
     std::cout << "\n";
+
+    print_sub("性能特性: count() dense 短路 / pop_back() dense 快路径 / 稀疏迭代器字级跳跃");
+    {
+        // Dense count() 短路: O(1) 而非 O(usage_/64)
+        class_pool<int> p1 = {1, 2, 3, 4, 5};
+        print_kv("dense count() == size()", p1.count() == p1.size() && p1.is_dense());
+
+        // Dense pop_back() 快路径: 跳过 bitmap_test
+        p1.pop_back();
+        print_kv("dense pop_back 后 count()", p1.count());
+
+        // 稀疏迭代器字级跳跃: 按 64-bit 字跳跃而非逐位
+        class_pool<int> p2;
+        p2.resize(1000, 0);  // 密集填充 1000 个元素
+        p2.sparse_erase_at(500);  // 制造空洞
+        p2.sparse_erase_at(600);
+        size_t sparse_cnt = 0;
+        for (auto it = p2.begin(); it != p2.end(); ++it) { ++sparse_cnt; }
+        print_kv("稀疏迭代 998 元素 (countr_zero 跳跃)", sparse_cnt == 998);
+
+        // 空洞填充后自动切回 dense
+        p2.emplace_at(500, 42);
+        p2.emplace_at(600, 42);
+        print_kv("空洞填充后 is_dense()", p2.is_dense());
+    }
 }
 
 // =============================================================================
@@ -597,11 +622,8 @@ static void demo_single_class_set()
     single_class_set set_eo(e0, Position{5, 5});
     print_kv("\u5b9e\u4f53+\u5bf9\u8c61\u6784\u9020 size()", set_eo.size());
 
-    print_sub("sparse_entry");
-    sparse_entry entry;
-    print_kv("sparse_entry() is_valid()", entry.is_valid());
-    print_kv("sparse_entry() dense_index_", entry.dense_index_);
-    print_kv("sparse_entry() version_", entry.version_);
+    print_sub("sparse SOA");
+    print_kv("sparse_combined_ empty", set_default.get_sparse_combined().empty());
 
     single_class_set set;
     entity e1(1, 1), e2(2, 1), e3(3, 1);
@@ -648,9 +670,18 @@ static void demo_single_class_set()
     const Position* cpf = cset.get_ptr_fast<Position>(e2);
     print_kv("get_ptr_fast<Position>(e2) const", (cpf ? std::to_string(cpf->x) + "," + std::to_string(cpf->y) : "null"));
 
+    print_sub("get_ptr_raw<T> / get_ptr_raw<T> const");
+    Position* pr = set.get_ptr_raw<Position>(e3);
+    print_kv("get_ptr_raw<Position>(e3)", (pr ? std::to_string(pr->x) + "," + std::to_string(pr->y) : "null"));
+    const Position* cpr = cset.get_ptr_raw<Position>(e3);
+    print_kv("get_ptr_raw<Position>(e3) const", (cpr ? std::to_string(cpr->x) + "," + std::to_string(cpr->y) : "null"));
+
     print_sub("get_version / get_version_unchecked");
     print_kv("get_version(1)", set.get_version(1));
     print_kv("get_version_unchecked(1)", set.get_version_unchecked(1));
+
+    print_sub("get_sparse_combined");
+    print_kv("get_sparse_combined().size()", (int)set.get_sparse_combined().size());
 
     print_sub("hard_remove / soft_remove");
     set.soft_remove(e1);
@@ -742,6 +773,20 @@ static void demo_manager()
     print_kv("get_ptr_fast<Velocity>(e1)", (vel ? std::to_string(vel->dx) + "," + std::to_string(vel->dy) : "null"));
     const Velocity* cvel = cmgr.get_ptr_fast<Velocity>(e1);
     print_kv("get_ptr_fast<Velocity>(e1) const", (cvel ? std::to_string(cvel->dx) + "," + std::to_string(cvel->dy) : "null"));
+
+    print_sub("get_ptr_batch<T> / prefetch_ptr<T>");
+    class_pool<entity> q_ents = {e1, e2};
+    class_pool<Position*> q_results;
+    q_results.resize(q_ents.size());
+    mgr.get_ptr_batch<Position>(q_ents.data(), q_results.data(), q_ents.size());
+    std::cout << "    get_ptr_batch<Position>({e1,e2}):";
+    for (size_t i = 0; i < q_ents.size(); ++i)
+        std::cout << " " << (q_results[i] ? "ok" : "null");
+    std::cout << "\n";
+
+    mgr.prefetch_ptr<Position>(e1);
+    auto* p2 = mgr.get_ptr<Position>(e1);
+    print_kv("prefetch_ptr<Position>(e1) + get_ptr", (p2 ? std::to_string(p2->x) + "," + std::to_string(p2->y) : "null"));
 
     print_sub("add_batch \u4e09\u79cd\u91cd\u8f7d");
     class_pool<entity> batch_ents = {mgr.create_entity(), mgr.create_entity()};
@@ -854,6 +899,19 @@ static void demo_views()
     mgr.view<Position>().for_each([](Position& p) { std::cout << p.x << " "; });
     std::cout << "\n";
 
+    print_sub("single_view<T>: get_component_for_entity / get_first_entity / get_last_entity / get_entity_at_index / get_component_at_index");
+    entity e0 = *pos_view.begin();
+    Position* pp = pos_view.get_component_for_entity(e0);
+    if (pp) print_kv("get_component_for_entity(e0)", std::to_string(pp->x) + "," + std::to_string(pp->y));
+    entity first = pos_view.get_first_entity();
+    print_kv("get_first_entity() index", first.parts_.index_);
+    entity last = pos_view.get_last_entity();
+    print_kv("get_last_entity() index", last.parts_.index_);
+    entity nth = pos_view.get_entity_at_index(1);
+    std::cout << "    get_entity_at_index(1) index=" << nth.parts_.index_ << "\n";
+    Position* cp = pos_view.get_component_at_index(0);
+    if (cp) std::cout << "    get_component_at_index(0) = (" << cp->x << "," << cp->y << ")\n";
+
     print_sub("multi_view<T1, T2, ...>: size / empty / contains / for_each");
     auto dual_view = mgr.view<Position, Velocity>();
     print_kv("view<Position,Velocity>.size()", dual_view.size());
@@ -882,6 +940,31 @@ static void demo_views()
         std::cout << "    [" << e.parts_.index_ << "] name=" << n.name << "\n";
     });
 
+    print_sub("multi_view: get_component_for_entity<T> / get_first_entity / get_last_entity / get_entity_at_index");
+    auto* pp2 = dual_view.get_component_for_entity<Position>(e0);
+    auto* vp2 = dual_view.get_component_for_entity<Velocity>(e0);
+    if (pp2 && vp2) print_kv("get_component_for_entity<Pos>(e0)", std::to_string(pp2->x) + "," + std::to_string(pp2->y));
+    if (pp2 && vp2) print_kv("get_component_for_entity<Vel>(e0)", std::to_string(vp2->dx) + "," + std::to_string(vp2->dy));
+    entity mfirst = dual_view.get_first_entity();
+    print_kv("get_first_entity() index", mfirst.parts_.index_);
+    entity mlast = dual_view.get_last_entity();
+    print_kv("get_last_entity() index", mlast.parts_.index_);
+    entity mnth = dual_view.get_entity_at_index(1);
+    std::cout << "    get_entity_at_index(1) index=" << mnth.parts_.index_ << "\n";
+
+    print_sub("multi_view: include_optional_component 追加可选组件");
+    auto opt_view = mgr.view<Position, Velocity>()
+        .include_optional_component<Health>()
+        .include_optional_component<Name>();
+    std::cout << "    for_each [ent+comp+opt]: ";
+    opt_view.for_each([](entity e, Position& p, Velocity& v, Health* h, Name* n) {
+        std::cout << "[" << e.parts_.index_ << "]P(" << p.x << ")V(" << v.dx << ")";
+        if (h) std::cout << " H(hp=" << h->hp << ")";
+        if (n) std::cout << " N(" << n->name << ")";
+        std::cout << " ";
+    });
+    std::cout << "\n";
+
     print_sub("single_view_without: size / empty / for_each");
     auto excl_view = mgr.view<Position>(ecs::without<Health>);
     print_kv("view<Pos>(without<Health>).size()", excl_view.size());
@@ -900,6 +983,14 @@ static void demo_views()
     print_sub("\u6392\u9664\u591a\u4e2a\u7c7b\u578b");
     auto excl_multi = mgr.view<Position>(ecs::without<Health, Name>);
     print_kv("view<Pos>(without<Health,Name>).size()", excl_multi.size());
+
+    print_sub("single_view_without: contains / get_component_for_entity / get_first_entity");
+    entity e_excl = excl_view.get_first_entity();
+    print_kv("contains(e_first)", excl_view.contains(e_excl));
+    Position* ep = excl_view.get_component_for_entity(e_excl);
+    if (ep) print_kv("get_component_for_entity(e_first)", std::to_string(ep->x) + "," + std::to_string(ep->y));
+    entity efirst = excl_view.get_first_entity();
+    print_kv("get_first_entity() index", efirst.parts_.index_);
 
     print_sub("single_view_with: size / empty / for_each");
     auto get_view = mgr.view<Position>(ecs::with<Health>);
@@ -929,6 +1020,16 @@ static void demo_views()
         if (n) std::cout << " N(" << n->name << ")";
         std::cout << "\n";
     });
+
+    print_sub("single_view_with: contains / get_component_for_entity / get_optional_component_for_entity / get_first_entity");
+    entity e_get = get_view.get_first_entity();
+    print_kv("contains(e_first)", get_view.contains(e_get));
+    Position* gp = get_view.get_component_for_entity(e_get);
+    if (gp) print_kv("get_component_for_entity", std::to_string(gp->x) + "," + std::to_string(gp->y));
+    Health* gh = get_view.get_optional_component_for_entity<Health>(e_get);
+    if (gh) print_kv("get_optional_component_for_entity<Health>", std::to_string(gh->hp));
+    entity gfirst = get_view.get_first_entity();
+    print_kv("get_first_entity() index", gfirst.parts_.index_);
 }
 
 // =============================================================================
@@ -955,6 +1056,12 @@ static void demo_advanced_views()
 
     print_sub("or_view: Position OR Velocity (\u96f6\u5206\u914d\uff0cnullable \u6307\u9488)");
     auto ov = mgr.view_or<Position, Velocity>();
+    print_kv("size()", ov.size());
+    print_kv("empty()", ov.empty());
+    bool oc = ov.contains(e1);
+    print_kv("contains(e1)", oc);
+    entity ofirst = ov.get_first_entity();
+    print_kv("get_first_entity() index", ofirst.parts_.index_);
     ov.for_each([](entity e, Position* p, Velocity* v) {
         std::cout << "    e" << e.parts_.index_ << ": ";
         if (p) std::cout << "P(" << p->x << ") ";
@@ -967,12 +1074,24 @@ static void demo_advanced_views()
     std::cout << "    size=" << fv.size() << " ";
     fv.for_each([](Position& p) { std::cout << "P(" << p.x << ") "; });
     std::cout << "\n";
+    print_kv("contains(e1)", fv.contains(e1));
+    entity fv_first = fv.get_first_entity();
+    print_kv("get_first_entity() index", fv_first.parts_.index_);
+    entity fv_nth = fv.get_entity_at_index(0);
+    print_kv("get_entity_at_index(0) index", fv_nth.parts_.index_);
+    Position* fcp = fv.get_component_at_index(0);
+    if (fcp) std::cout << "    get_component_at_index(0) = (" << fcp->x << "," << fcp->y << ")\n";
 
     print_sub("filter_and_view: Position.x > 1 AND Health");
     auto fav = mgr.view_filtered<Position>([](Position& p) { return p.x > 1; }).and_<Health>();
     fav.for_each([](entity e, Position& p, Health& h) {
         std::cout << "    e" << e.parts_.index_ << " P(" << p.x << ") Hp(" << h.hp << ")\n";
     });
+    print_kv("contains(e1)", fav.contains(e1));
+    entity fav_first = fav.get_first_entity();
+    print_kv("get_first_entity() index", fav_first.parts_.index_);
+    entity fav_nth = fav.get_entity_at_index(0);
+    std::cout << "    get_entity_at_index(0) index=" << fav_nth.parts_.index_ << "\n";
 
     print_sub("filter_or_view: Position.x > 1 OR Velocity");
     auto fov = mgr.view_filtered<Position>([](Position& p) { return p.x > 1; }).or_<Velocity>();
@@ -982,6 +1101,320 @@ static void demo_advanced_views()
         if (v) std::cout << "V(" << v->dx << ") ";
         std::cout << "\n";
     });
+    print_kv("contains(e1)", fov.contains(e1));
+    entity fov_first = fov.get_first_entity();
+    print_kv("get_first_entity() index", fov_first.parts_.index_);
+}
+
+// =============================================================================
+// 11b. 新视图：page / sorted_by_component / sorted_by_component_value / track_changes
+// =============================================================================
+static void demo_new_views()
+{
+    print_header(12, "新视图: page / sorted / grouped / track_changes");
+
+    ecs::manager mgr;
+    mgr.append_preallocated_entities(10);
+    auto e1 = mgr.create_entity();
+    auto e2 = mgr.create_entity();
+    auto e3 = mgr.create_entity();
+    auto e4 = mgr.create_entity();
+    auto e5 = mgr.create_entity();
+    mgr.add(e1, Position{10, 0});
+    mgr.add(e2, Position{30, 0});
+    mgr.add(e3, Position{20, 0});
+    mgr.add(e4, Position{50, 0});
+    mgr.add(e5, Position{40, 0});
+    mgr.add(e1, Velocity{1, 0});
+    mgr.add(e2, Velocity{3, 0});
+    mgr.add(e3, Velocity{2, 0});
+    mgr.add(e4, Velocity{5, 0});
+    mgr.add(e5, Velocity{4, 0});
+
+    print_sub("page(offset, limit) 分页视图");
+    {
+        auto mv = mgr.view<Position, Velocity>();
+        auto pv = mv.page(1, 3);
+        print_kv("page(1,3).size()", pv.size());
+        print_kv("page(1,3).empty()", pv.empty());
+        std::cout << "    for_each: ";
+        pv.for_each([](Position& p, Velocity& v) {
+            std::cout << "P(" << p.x << ")V(" << v.dx << ") ";
+        });
+        std::cout << "\n";
+    }
+
+    print_sub("sorted_by_component 排序视图（按 Position.x 升序）");
+    {
+        auto mv = mgr.view<Position, Velocity>();
+        auto sv = mv.sorted_by_component<Position>(
+            [](const Position& a, const Position& b) { return a.x < b.x; });
+        std::cout << "    for_each: ";
+        sv.for_each([](Position& p, Velocity&) {
+            std::cout << p.x << " ";
+        });
+        std::cout << "\n";
+    }
+
+    print_sub("sorted_by_component_value 分组视图（按 x/20 分组）");
+    {
+        auto sv = mgr.view<Position>();
+        auto gv = sv.sorted_by_component_value(
+            [](Position& p) -> int { return p.x / 20; });
+        print_kv("sorted_by_component_value.size()", gv.size());
+        print_kv("sorted_by_component_value.group_count()", gv.group_count());
+        std::cout << "    for_each_group: \n";
+        gv.for_each_group([](int key, size_t start, size_t end) {
+            std::cout << "      Group " << key << ": indices [" << start << ", " << end << "), count=" << (end - start) << "\n";
+        });
+    }
+
+    print_sub("track_changes 变更检测视图");
+    {
+        auto mv = mgr.view<Position, Velocity>();
+        auto cv = mv.track_changes();
+        size_t cnt1 = 0;
+        cv.for_each([&](Position&, Velocity&) { ++cnt1; });
+        print_kv("首次 for_each（全量返回）", cnt1);
+
+        size_t cnt2 = 0;
+        cv.for_each([&](Position&, Velocity&) { ++cnt2; });
+        print_kv("无变更再次 for_each（返回空）", cnt2);
+
+        mgr.add(e1, Position{999, 0}); // add 触发 pool version 变更
+        size_t cnt3 = 0;
+        cv.for_each([&](Position&, Velocity&) { ++cnt3; });
+        print_kv("修改组件后 for_each（全量返回）", cnt3);
+
+        cv.reset_tracking();
+        print_kv("reset_tracking() 完成", "成功");
+    }
+}
+
+// =============================================================================
+// 12b. Bevy 对标接口：filter_changed / filter_added / view_any_of / exactly_one / find_one / iter_over_entities
+// =============================================================================
+static void demo_bevy_views()
+{
+    print_header(13, "Bevy 对标接口: changed/added/any_of/exactly_one/find_one/iter_over_entities");
+
+    ecs::manager mgr;
+    mgr.append_preallocated_entities(20);
+    auto e1 = mgr.create_entity();
+    auto e2 = mgr.create_entity();
+    auto e3 = mgr.create_entity();
+    auto e4 = mgr.create_entity();
+    mgr.add(e1, Position{1, 0});
+    mgr.add(e2, Position{2, 0});
+    mgr.add(e3, Position{3, 0});
+    mgr.add(e1, Velocity{10, 0});
+    mgr.add(e2, Velocity{20, 0});
+    mgr.add(e3, Velocity{30, 0});
+    mgr.add(e4, Velocity{40, 0});
+    mgr.add(e1, Health{100, 100});
+    mgr.add(e2, Health{80, 100});
+
+    // ---- filter_changed (single_view) ----
+    print_sub("filter_changed (single_view): 逐实体变更检测");
+    {
+        auto fcv = mgr.view<Position>().filter_changed();
+        size_t cnt = 0;
+        fcv.for_each([&](Position&) { ++cnt; });
+        print_kv("首次查询（全量返回）", cnt);
+
+        cnt = 0;
+        fcv.for_each([&](Position&) { ++cnt; });
+        print_kv("无变更再次查询（返回空）", cnt);
+
+        mgr.add(e1, Position{10, 0});  // 修改 e1
+        fcv.for_each([&](Position&) { ++cnt; });
+        print_kv("修改1个实体后（仅返回变更）", cnt);
+
+        fcv.reset_tracking();
+        print_kv("reset_tracking() 重置基准", "完成");
+    }
+
+    // ---- filter_changed (multi_view) ----
+    print_sub("filter_changed (multi_view): 任一组件变更即触发");
+    {
+        auto mcv = mgr.view<Position, Velocity>().filter_changed<Position>();
+        size_t cnt = 0;
+        mcv.for_each([&](Position&, Velocity&) { ++cnt; });
+        print_kv("首次查询（全量返回）", cnt);
+
+        cnt = 0;
+        mcv.for_each([&](Position&, Velocity&) { ++cnt; });
+        print_kv("无变更再次查询（返回空）", cnt);
+
+        mgr.add(e2, Velocity{99, 0});  // 仅修改 Velocity
+        mcv.for_each([&](Position&, Velocity&) { ++cnt; });
+        print_kv("修改Velocity后（仅返回e2）", cnt);
+    }
+
+    // ---- filter_added (single_view) ----
+    print_sub("filter_added (single_view): 仅返回新添加的实体");
+    {
+        ecs::manager mgr2;
+        mgr2.append_preallocated_entities(10);
+        auto a1 = mgr2.create_entity();
+        auto a2 = mgr2.create_entity();
+        auto a3 = mgr2.create_entity();
+        auto fav = mgr2.view<Position>().filter_added();
+        mgr2.add(a1, Position{1, 0});
+        mgr2.add(a2, Position{2, 0});
+        size_t cnt = 0;
+        fav.for_each([&](Position&) { ++cnt; });
+        print_kv("首次添加全量返回", cnt);
+
+        cnt = 0;
+        fav.for_each([&](Position&) { ++cnt; });
+        print_kv("无新添加返回空", cnt);
+
+        mgr2.add(a1, Position{5, 0});  // 覆盖添加（不触发added）
+        fav.for_each([&](Position&) { ++cnt; });
+        print_kv("覆盖添加不触发added", cnt);
+
+        mgr2.add(a3, Position{3, 0});  // 新实体添加
+        fav.for_each([&](Position&) { ++cnt; });
+        print_kv("新实体添加触发added", cnt);
+    }
+
+    // ---- filter_added (multi_view) ----
+    print_sub("filter_added (multi_view): 仅返回双组件都新添加的实体");
+    {
+        ecs::manager mgr3;
+        mgr3.append_preallocated_entities(10);
+        auto b1 = mgr3.create_entity();
+        auto b2 = mgr3.create_entity();
+        auto mav = mgr3.view<Position, Velocity>().filter_added<Position>();
+        mgr3.add(b1, Position{1, 0});
+        mgr3.add(b1, Velocity{10, 0});
+        mgr3.add(b2, Position{2, 0});
+        size_t cnt = 0;
+        mav.for_each([&](Position&, Velocity&) { ++cnt; });
+        print_kv("b1有Pos+Vel触发，b2仅Pos不触发", cnt);
+    }
+
+    // ---- view_any_of (N元OR) ----
+    print_sub("view_any_of (N元OR): 任意组件匹配");
+    {
+        // 双组件 OR
+        auto av2 = mgr.view_any_of<Position, Velocity>();
+        size_t cnt2 = 0;
+        av2.for_each([&](Position* p, Velocity* v) {
+            ++cnt2;
+            (void)p; (void)v;
+        });
+        print_kv("view_any_of<Pos,Vel> 总数", cnt2);
+
+        // 三组件 OR
+        auto av3 = mgr.view_any_of<Position, Velocity, Health>();
+        size_t cnt3 = 0;
+        av3.for_each([&](Position* p, Velocity* v, Health* h) {
+            ++cnt3;
+            (void)p; (void)v; (void)h;
+        });
+        print_kv("view_any_of<Pos,Vel,Hp> 总数", cnt3);
+    }
+
+    // ---- exactly_one ----
+    print_sub("exactly_one: 恰好一个实体");
+    {
+        ecs::manager mgr4;
+        mgr4.append_preallocated_entities(10);
+        auto x1 = mgr4.create_entity();
+        mgr4.add(x1, Position{42, 0});
+        mgr4.add(x1, Velocity{100, 0});
+
+        auto& pos = mgr4.view<Position>().exactly_one();
+        print_kv("single exactly_one x", pos.x);
+
+        auto [p, v] = mgr4.view<Position, Velocity>().exactly_one();
+        print_kv("multi exactly_one [x, vx]", std::to_string(p.x) + ", " + std::to_string(v.dx));
+
+        // 三组件 exactly_one
+        mgr4.add(x1, Health{200, 200});
+        auto [p2, v2, h] = mgr4.view<Position, Velocity, Health>().exactly_one();
+        print_kv("three exactly_one hp", h.hp);
+    }
+
+    // ---- find_one ----
+    print_sub("find_one: 查询指定实体");
+    {
+        auto [p1, v1] = mgr.view<Position, Velocity>().find_one(e1);
+        print_kv("find_one(e1) 匹配", (p1 != nullptr && v1 != nullptr));
+        if (p1) print_kv("find_one(e1) Position.x", p1->x);
+
+        auto [p4, v4] = mgr.view<Position, Velocity>().find_one(e4);
+        print_kv("find_one(e4) 不匹配（无Position）", (p4 == nullptr && v4 == nullptr));
+    }
+
+    // ---- iter_over_entities ----
+    print_sub("iter_over_entities: 批量指定实体查询");
+    {
+        // 使用 std::array
+        std::array<entity, 3> targets = {e1, e2, e4};
+        auto ev = mgr.view<Position, Velocity>().iter_over_entities(targets);
+        size_t cnt = 0;
+        ev.for_each([&](Position& p, Velocity& v) {
+            ++cnt;
+            (void)p; (void)v;
+        });
+        print_kv("iter_over_entities [e1,e2,e4] 匹配数（e4无Pos跳过）", cnt);
+
+        // 使用 class_pool<entity>
+        class_pool<entity> ents;
+        ents.emplace_back(e1);
+        ents.emplace_back(e2);
+        ents.emplace_back(e3);
+        auto ev2 = mgr.view<Position, Velocity>().iter_over_entities(ents);
+        size_t cnt2 = 0;
+        ev2.for_each([&](Position&, Velocity&) { ++cnt2; });
+        print_kv("iter_over_entities(class_pool) 匹配数", cnt2);
+    }
+}
+
+// =============================================================================
+// 12. 排序工具：sort_entities_by_component / reorder_by_component
+// =============================================================================
+static void demo_sort()
+{
+    print_header(12, "\u89c6\u56fe\u6392\u5e8f\u5de5\u5177: sort/reorder");
+
+    ecs::manager mgr;
+    mgr.append_preallocated_entities(10);
+    entity e1 = mgr.create_entity();
+    entity e2 = mgr.create_entity();
+    entity e3 = mgr.create_entity();
+    mgr.add(e1, Position{30, 0});
+    mgr.add(e2, Position{10, 0});
+    mgr.add(e3, Position{20, 0});
+    mgr.add(e1, Velocity{3, 0});
+    mgr.add(e2, Velocity{1, 0});
+    mgr.add(e3, Velocity{2, 0});
+
+    print_sub("sort_entities_by_component<Position> (\u6309 x \u5347\u5e8f)");
+    mgr.sort_entities_by_component<Position>([](Position& a, Position& b) { return a.x < b.x; });
+    std::cout << "    \u6392\u5e8f\u540e: ";
+    mgr.view<Position>().for_each([](Position& p) { std::cout << p.x << " "; });
+    std::cout << "\n";
+
+    print_sub("reorder_by_component<Position, Velocity> (\u6309 v.dx \u964d\u5e8f)");
+    mgr.reorder_by_component<Position, Velocity>([](Velocity& a, Velocity& b) { return a.dx > b.dx; });
+    std::cout << "    \u6392\u5e8f\u540e: ";
+    mgr.view<Position>().for_each([](Position& p) { std::cout << p.x << " "; });
+    std::cout << "\n";
+
+    print_sub("sort_component_container<Position> (\u4ec5\u6392\u5e8f\u7ec4\u4ef6\u6c60\uff0c\u4e0d\u91cd\u6392 dense)");
+    mgr.sort_component_container<Position>([](Position& a, Position& b) { return a.x < b.x; });
+    std::cout << "    \u6392\u5e8f\u540e\u7ec4\u4ef6\u6c60: ";
+    auto* pool = mgr.get_component_vector<Position>();
+    if (pool)
+    {
+        for (size_t i = 0; i < pool->size(); ++i)
+            std::cout << (*pool)[i].x << " ";
+    }
+    std::cout << "\n";
 }
 
 // =============================================================================
@@ -1078,6 +1511,57 @@ static void demo_group()
             std::cout << "    [" << e.parts_.index_ << "] P(" << p.x << ") hp=" << h.hp << "\n";
         });
     }
+
+    print_sub("ReorderGroup: group<Position, Velocity>(reorder<Position>)");
+    {
+        auto rg = mgr.group<Position, Velocity>(ecs::reorder<Position>);
+        print_kv("group<Pos,Vel>(reorder<Pos>).size()", rg.size());
+        print_kv("group<Pos,Vel>(reorder<Pos>).empty()", rg.empty());
+
+        std::cout << "    for_each [comp]:      ";
+        rg.for_each([](Position& p, Velocity& v) {
+            std::cout << "P(" << p.x << "," << p.y << ")V(" << v.dx << "," << v.dy << ") ";
+        });
+        std::cout << "\n";
+
+        std::cout << "    for_each [ent+comp]:  ";
+        rg.for_each([](entity e, Position& p, Velocity& v) {
+            std::cout << "[" << e.parts_.index_ << "]P(" << p.x << ")V(" << v.dx << ") ";
+        });
+        std::cout << "\n";
+
+        print_kv("reorder_group.front()", rg.front().parts_.index_);
+        print_kv("reorder_group.back()", rg.back().parts_.index_);
+
+        auto* pos = rg.get<Position>(rg.front());
+        print_kv("reorder_group.get<Position>(front)", (pos ? std::to_string(pos->x) + "," + std::to_string(pos->y) : "null"));
+
+        rg.rebuild();
+        print_kv("reorder_group.rebuild() size", rg.size());
+    }
+
+    print_sub("ReorderGroup 共享状态: share_with()");
+    {
+        auto rg1 = mgr.group<Position, Velocity>(ecs::reorder<Position>);
+        auto rg2 = mgr.group<Position, Velocity>(ecs::reorder<Position>);
+        rg2.share_with(rg1);
+        print_kv("share_with() 后 rg2.size()", rg2.size());
+        print_kv("share_with() 后 rg2.empty()", rg2.empty());
+        std::cout << "    rg2.for_each: ";
+        rg2.for_each([](Position& p, Velocity& v) {
+            std::cout << "P(" << p.x << ")V(" << v.dx << ") ";
+        });
+        std::cout << "\n";
+    }
+
+    print_sub("ReorderGroup 三组件: group<Position, Velocity, Health>(reorder<Position>)");
+    {
+        auto rg = mgr.group<Position, Velocity, Health>(ecs::reorder<Position>);
+        print_kv("group<Pos,Vel,Health>(reorder<Pos>).size()", rg.size());
+        rg.for_each([](entity e, Position& p, Velocity&, Health& h) {
+            std::cout << "    [" << e.parts_.index_ << "] P(" << p.x << ") hp=" << h.hp << "\n";
+        });
+    }
 }
 
 // =============================================================================
@@ -1115,6 +1599,8 @@ static void demo_runtime_view()
         });
         print_kv("runtime_view.size()", rv.size());
         print_kv("runtime_view.empty()", rv.empty());
+        entity rv_first = rv.get_first_entity();
+        print_kv("get_first_entity() index", rv_first.parts_.index_);
 
         std::cout << "    for_each [entity]:    ";
         rv.for_each([&](entity e) {
@@ -1300,7 +1786,10 @@ int main()
     demo_single_class_set();    // 8. \u5355\u7ec4\u4ef6\u96c6\u5408
     demo_manager();             // 9. ECS\u7ba1\u7406\u5668
     demo_views();               // 10. View\u7cfb\u7edf
-    demo_advanced_views();      // 11. \u9ad8\u7ea7\u89c6\u56fe
+    demo_advanced_views();      // 11. 高级视图
+    demo_new_views();           // 12. 新视图（page/sorted/grouped/changed）
+    demo_bevy_views();          // 13. Bevy 对标接口
+    demo_sort();               // 13. 排序工具\u9ad8\u7ea7\u89c6\u56fe
     demo_group();               // 12. Group \u7cfb\u7edf
     demo_runtime_view();        // 13. runtime_view 运行时视图
     demo_lifecycle_signals();   // 14. 生命周期信号

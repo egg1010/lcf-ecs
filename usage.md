@@ -1,25 +1,119 @@
-# lcf-ecs 库完整接口文档
+# lcf-ecs 库接口文档
 
-# 包含component.hpp 即可使用
+包含 `component.hpp` 即可使用。
 
 ## 目录
 
-1. [entity — 实体](#1-entity--实体)
-2. [operating_message — 操作消息](#2-operating_message--操作消息)
-3. [class_pool\<T> — 核心容器](#3-class_poolt--核心容器)
-4. [void_any — 类型擦除存储](#4-void_any--类型擦除存储)
-5. [type_id — 类型ID](#5-type_id--类型id)
-6. [id_allocation\<T> — ID分配器](#6-id_allocationt--id分配器)
-7. [memory_pool — 内存池](#7-memory_pool--内存池)
-8. [single_class_set — 单组件集合](#8-single_class_set--单组件集合)
-9. [ecs::manager — ECS管理器](#9-ecsmanager--ecs管理器)
-10. [View系统](#10-view系统)
-11. [Group系统](#11-group系统)
-12. [runtime_view — 运行时视图](#12-runtime_view--运行时视图)
-13. [函数存储（回调作为组件）](#13-函数存储回调作为组件)
-14. [生命周期信号](#14-生命周期信号)
-15. [编译与运行](#15-编译与运行)
-16. [可选宏配置](#16-可选宏配置)
+- [lcf-ecs 库接口文档](#lcf-ecs-库接口文档)
+  - [目录](#目录)
+  - [1. entity — 实体](#1-entity--实体)
+    - [接口](#接口)
+    - [使用](#使用)
+    - [不要做什么](#不要做什么)
+  - [2. operating\_message — 操作消息](#2-operating_message--操作消息)
+    - [接口](#接口-1)
+    - [使用](#使用-1)
+    - [不要做什么](#不要做什么-1)
+  - [3. class\_pool\<T\> — 核心容器](#3-class_poolt--核心容器)
+    - [构造与赋值](#构造与赋值)
+    - [元素访问](#元素访问)
+    - [容量](#容量)
+    - [修改器](#修改器)
+    - [稀疏集/Bitmap](#稀疏集bitmap)
+    - [各操作对 contiguity 的影响](#各操作对-contiguity-的影响)
+    - [插入/删除](#插入删除)
+    - [迭代器](#迭代器)
+    - [自由函数](#自由函数)
+    - [使用](#使用-2)
+    - [应该用什么操作？](#应该用什么操作)
+    - [不要做什么](#不要做什么-2)
+  - [4. void\_any — 类型擦除存储](#4-void_any--类型擦除存储)
+    - [构造与赋值](#构造与赋值-1)
+    - [访问与操作](#访问与操作)
+    - [使用](#使用-3)
+    - [不要做什么](#不要做什么-3)
+  - [5. type\_id — 类型ID](#5-type_id--类型id)
+    - [接口](#接口-2)
+    - [使用](#使用-4)
+  - [6. id\_allocation\<T\> — ID分配器](#6-id_allocationt--id分配器)
+    - [接口](#接口-3)
+    - [使用](#使用-5)
+  - [7. memory\_pool — 内存池](#7-memory_pool--内存池)
+    - [memory\_block — 内存块](#memory_block--内存块)
+    - [memory\_pool — 内存池](#memory_pool--内存池)
+    - [使用](#使用-6)
+    - [不要做什么](#不要做什么-4)
+  - [8. single\_class\_set — 单组件集合](#8-single_class_set--单组件集合)
+    - [sparse 访问](#sparse-访问)
+    - [构造与赋值](#构造与赋值-2)
+    - [添加组件](#添加组件)
+    - [获取组件](#获取组件)
+    - [删除与清空](#删除与清空)
+    - [容量与查询](#容量与查询)
+    - [使用](#使用-7)
+    - [不要做什么](#不要做什么-5)
+  - [9. ecs::manager — ECS管理器](#9-ecsmanager--ecs管理器)
+    - [实体管理](#实体管理)
+    - [添加组件](#添加组件-1)
+    - [获取组件](#获取组件-1)
+    - [删除组件](#删除组件)
+    - [容器访问](#容器访问)
+    - [性能开关](#性能开关)
+    - [View系统](#view系统)
+    - [Group系统](#group系统)
+    - [runtime\_view](#runtime_view)
+    - [生命周期信号](#生命周期信号)
+    - [使用](#使用-8)
+    - [不要做什么](#不要做什么-6)
+  - [10. View系统](#10-view系统)
+    - [10.1 single\_view\<T\> — 单组件视图](#101-single_viewt--单组件视图)
+    - [10.2 multi\_view\<T1, T2, ...\> — 多组件视图](#102-multi_viewt1-t2---多组件视图)
+    - [10.3 single\_view\_without — 排除视图](#103-single_view_without--排除视图)
+    - [10.4 single\_view\_with — 获取视图](#104-single_view_with--获取视图)
+    - [10.5 or\_view\<A, B\> — OR视图（零分配）](#105-or_viewa-b--or视图零分配)
+    - [10.6 filter\_view\<T, Pred\> — 谓词过滤视图](#106-filter_viewt-pred--谓词过滤视图)
+    - [10.7 filter\_and\_view — 过滤+AND组合视图](#107-filter_and_view--过滤and组合视图)
+    - [10.8 filter\_or\_view — 过滤+OR组合视图](#108-filter_or_view--过滤or组合视图)
+    - [10.9 sort\_entities\_by\_component / reorder\_by\_component — 排序工具](#109-sort_entities_by_component--reorder_by_component--排序工具)
+    - [10.10 page — 分页视图](#1010-page--分页视图)
+    - [10.11 sorted\_by\_component — 排序视图](#1011-sorted_by_component--排序视图)
+    - [10.12 sorted\_by\_component\_value — 分组视图](#1012-sorted_by_component_value--分组视图)
+    - [10.13 track\_changes — 变更检测视图](#1013-track_changes--变更检测视图)
+    - [10.14 链式组合](#1014-链式组合)
+    - [10.15 filter\_changed — 逐实体变更检测](#1015-filter_changed--逐实体变更检测)
+    - [10.16 filter\_added — 逐实体添加检测](#1016-filter_added--逐实体添加检测)
+    - [10.17 view\_any\_of — N元OR视图](#1017-view_any_of--n元or视图)
+    - [10.18 exactly\_one — 精确获取单个实体](#1018-exactly_one--精确获取单个实体)
+    - [10.19 find\_one — 查询指定实体](#1019-find_one--查询指定实体)
+    - [10.20 iter\_over\_entities — 批量指定实体查询](#1020-iter_over_entities--批量指定实体查询)
+    - [View 不要做什么](#view-不要做什么)
+  - [11. Group系统](#11-group系统)
+    - [11.1 Non-OwningGroup (`group`)](#111-non-owninggroup-group)
+    - [11.2 OwningGroup (`group` + `owned`)](#112-owninggroup-group--owned)
+    - [11.3 ReorderGroup (`group` + `reorder`)](#113-reordergroup-group--reorder)
+    - [Group 不要做什么](#group-不要做什么)
+  - [12. runtime\_view — 运行时视图](#12-runtime_view--运行时视图)
+    - [12.1 实体掩码](#121-实体掩码)
+    - [12.2 运行时视图](#122-运行时视图)
+    - [12.3 排除视图](#123-排除视图)
+    - [12.4 接口](#124-接口)
+    - [不要做什么](#不要做什么-7)
+  - [13. 函数存储（回调作为组件）](#13-函数存储回调作为组件)
+    - [使用](#使用-9)
+    - [通过 View 批量调用](#通过-view-批量调用)
+  - [14. 生命周期信号](#14-生命周期信号)
+    - [14.1 实体级即时信号](#141-实体级即时信号)
+    - [14.2 组件级即时信号](#142-组件级即时信号)
+    - [14.3 实体级延迟信号](#143-实体级延迟信号)
+    - [14.4 组件级延迟信号](#144-组件级延迟信号)
+    - [14.5 即时信号 vs 延迟信号 选择指南](#145-即时信号-vs-延迟信号-选择指南)
+    - [不要做什么](#不要做什么-8)
+  - [15. 编译与运行](#15-编译与运行)
+    - [CMake](#cmake)
+    - [运行示例](#运行示例)
+    - [编译要求](#编译要求)
+  - [16. 可选宏配置](#16-可选宏配置)
+    - [配置示例](#配置示例)
 
 ---
 
@@ -41,7 +135,7 @@
 | `operator!=` | 判断两个实体是否不等 |
 | `std::hash<entity>` | 哈希特化，可用于 `std::unordered_map` |
 
-### 示例
+### 使用
 
 ```cpp
 entity e1;                    // 默认构造，无效实体
@@ -54,6 +148,14 @@ std::unordered_map<entity, int> map;
 map[e2] = 42;                 // 可用作哈希键
 ```
 
+### 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 手动构造 entity 的 index_ 和 version_ | 版本号不匹配会导致 ECS 管理器认为实体无效 | 始终通过 `manager::create_entity()` 创建实体 |
+| 复用已删除的 entity 句柄 | 版本号已递增，旧句柄失效 | 删除后丢弃句柄，重新创建 |
+| 将 entity 成员当作普通整数运算 | `index_` 和 `version_` 是内部实现细节 | 仅通过公开接口操作 entity |
+
 ---
 
 ## 2. operating_message — 操作消息
@@ -62,7 +164,6 @@ map[e2] = 42;                 // 可用作哈希键
 
 - **粘性 false 语义**：一旦失败就保持 false，只有 `reset()` 能恢复
 - **全局开关**：`ecs_debug_messages()` 运行时控制是否写入字符串
-- **零开销**：禁用时仅更新 `switch_`，无字符串操作
 
 ### 接口
 
@@ -88,7 +189,7 @@ map[e2] = 42;                 // 可用作哈希键
 | `operating_message(const operating_message&)` | 拷贝构造 |
 | `operator=(const operating_message&)` | 拷贝赋值 |
 
-### 示例
+### 使用
 
 ```cpp
 operating_message msg;
@@ -114,6 +215,14 @@ msg2.write_message(false, "Another error");
 msg += msg2;  // switch_ = msg.switch_ && msg2.switch_
 ```
 
+### 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 依赖 `write_message(true)` 恢复失败状态 | 粘性 false 语义，成功后不会恢复 | 调用 `reset()` 显式恢复 |
+| 在 Release 构建中依赖 `read_message()` | 全局开关关闭时字符串为空 | 使用 `operator bool()` 判断成败，而非消息内容 |
+| 忘记检查 `operator bool()` | 操作失败被静默忽略 | 每次关键操作后检查 `if (!msg) { ... }` |
+
 ---
 
 ## 3. class_pool\<T> — 核心容器
@@ -124,17 +233,10 @@ msg += msg2;  // switch_ = msg.switch_ && msg2.switch_
 
 | 模式 | 触发条件 | 迭代行为 |
 |------|---------|---------|
-| **dense（密集）** | `usage_` 范围内所有位均为 1（无空洞） | 零开销线性扫描 `[0, usage_)`，无 bitmap 跳转 |
+| **dense（密集）** | `usage_` 范围内所有位均为 1（无空洞） | 线性扫描 `[0, usage_)`，无 bitmap 跳转 |
 | **sparse（稀疏）** | `usage_` 范围内存在空洞（有未构造的槽位） | 自动跳过未构造槽位，仅遍历已构造元素 |
 
-**模式切换：** 自动判断，无需手动干预。每次修改操作后自动更新 `is_dense_` 缓存（O(usage_/64) bitmap 扫描，仅当模式可能变化时触发）。
-
-**性能特征：**
-
-- 对齐内存（`std::assume_aligned`）
-- `count()` 带缓存，避免重复 popcount
-- bitmap 操作使用 word 级批量移动
-- 禁止异常：分配失败时 `std::terminate()`
+**模式切换：** 自动判断，无需手动干预。
 
 ### 构造与赋值
 
@@ -159,7 +261,7 @@ msg += msg2;  // switch_ = msg.switch_ && msg2.switch_
 | `front()` | 首元素引用 |
 | `back()` | 尾元素引用 |
 | `get(size_t)` | 获取指定位置指针 |
-| `data()` | 原始数据指针（对齐） |
+| `data()` | 原始数据指针 |
 | `span()` | 返回 `std::span<T>` |
 | `span() const` | 返回 `std::span<const T>` |
 
@@ -172,7 +274,7 @@ msg += msg2;  // switch_ = msg.switch_ && msg2.switch_
 | `sparse_capacity()` | 稀疏集容量（同 capacity） |
 | `empty()` | 是否为空 |
 | `count()` | 已构造元素数（bitmap popcount，带缓存） |
-| `valid()` | 是否已分配（`data_ptr_` != null） |
+| `valid()` | 是否已分配 |
 | `size_bytes()` | 已使用字节数 |
 | `capacity_bytes()` | 总容量字节数 |
 
@@ -197,32 +299,30 @@ msg += msg2;  // switch_ = msg.switch_ && msg2.switch_
 | `resize(size_t)` | 扩容（不填充值） |
 | `resize(size_t, const T& value)` | 调整大小并填充值 |
 | `swap(other)` | 交换两个容器 |
+| `push_back_unchecked(const T&)` | 尾部追加（不设 bitmap 位，不更新 count 缓存，内部批量操作用） |
 
 ### 稀疏集/Bitmap
 
 | 接口 | 说明 |
 |------|------|
 | `is_constructed_at(index)` | 检查指定位置是否已构造 |
-| `is_dense()` | 前 `usage_` 位是否全部为 1（O(1) 缓存，每次修改操作自动更新） |
-| `recompute_is_dense()` | 强制重新扫描 bitmap 并更新 `is_dense_`（通常无需手动调用） |
+| `is_dense()` | 前 `usage_` 位是否全部为 1（O(1) 缓存） |
 | `invalidate_count_cache()` | 使 count 缓存失效 |
 
 ### 各操作对 contiguity 的影响
 
-| 操作 | 对 contiguity 的影响 | `is_dense_` 更新 |
-|------|---------------------|-----------------|
-| `emplace_back()` | 保持连续 | 无需更新 |
-| `emplace(pos)` / `insert(pos)` | 保持连续（元素右移） | 无需更新 |
-| `erase(pos)` / `erase(first,last)` | 保持连续（元素左移） | 无需更新 |
-| `pop_back()` | 保持连续 | 无需更新 |
-| `clear()` | 重置为连续 | 直接设为 `true` |
-| `sparse_erase_at(index)` | **产生空洞** → 变稀疏 | 直接设为 `false` |
-| `emplace_at(index)` | **可能填充空洞** → 可能变连续 | 自动调用 `recompute_is_dense()` |
-| `sparse_emplace_at(index)` | **可能填充空洞** → 可能变连续 | 自动调用 `recompute_is_dense()` |
-| `resize()` 缩小 | **可能消除空洞** → 可能变连续 | 自动调用 `recompute_is_dense()` |
-| `reduce_capacity()` 缩小 | **可能消除空洞** → 可能变连续 | 自动调用 `recompute_is_dense()` |
-
-> **关键规则：** 连续的操作保持连续，产生空洞的操作变稀疏，填满空洞的操作自动切回连续。无需手动管理 `is_dense_`。
+| 操作 | 对 contiguity 的影响 |
+|------|---------------------|
+| `emplace_back()` | 保持连续 |
+| `emplace(pos)` / `insert(pos)` | 保持连续（元素右移） |
+| `erase(pos)` / `erase(first,last)` | 保持连续（元素左移） |
+| `pop_back()` | 保持连续 |
+| `clear()` | 重置为连续 |
+| `sparse_erase_at(index)` | **产生空洞** → 变稀疏 |
+| `emplace_at(index)` | **可能填充空洞** → 可能变连续 |
+| `sparse_emplace_at(index)` | **可能填充空洞** → 可能变连续 |
+| `resize()` 缩小 | **可能消除空洞** → 可能变连续 |
+| `reduce_capacity()` 缩小 | **可能消除空洞** → 可能变连续 |
 
 ### 插入/删除
 
@@ -247,7 +347,7 @@ msg += msg2;  // switch_ = msg.switch_ && msg2.switch_
 |------|------|
 | `swap(class_pool&, class_pool&)` | 交换两个容器 |
 
-### 示例
+### 使用
 
 ```cpp
 class_pool<int> pool;
@@ -287,29 +387,27 @@ pool.is_dense();              // 检查是否连续
 
 | 场景 | 推荐操作 | 原因 |
 |------|---------|------|
-| 尾部追加元素 | `emplace_back()` | O(1)，保持连续，最快 |
+| 尾部追加元素 | `emplace_back()` | O(1)，保持连续 |
 | 任意位置插入/删除并保持连续 | `emplace(pos)` / `erase(pos)` | 移动后续元素，O(n)，保持连续 |
 | 稀疏数组（大索引跳跃） | `emplace_at()` / `sparse_erase_at()` | O(1)，不移动其他元素，但产生空洞 |
 | 批量填充已知索引 | `emplace_at()` | 填充空洞后自动切回连续 |
-| 删除整个容器 | `clear()` | 重置为连续，O(1) |
+| 删除整个容器 | `clear()` | 重置为连续 |
 
 ### 不要做什么
 
 | 错误做法 | 问题 | 正确做法 |
 |---------|------|---------|
 | `sparse_erase_at()` 后仍期望连续迭代 | 产生空洞，迭代变稀疏模式 | 用 `emplace_at()` 填充空洞，或用 `erase()` 替代 |
-| 频繁 `sparse_erase_at()` + `emplace_at()` 来回切换 | 每次切换触发 O(usage_/64) 扫描 | 批量操作，或统一使用 `erase()`/`emplace()` 保持连续 |
-| `emplace_at()` 在远超 `usage_` 的索引上构造 | 中间留大量未初始化槽位，`size()` 暴增（`usage_` = index+1） | 用 `resize()` 预填充，或改用 `sparse_emplace_at()` |
+| 频繁 `sparse_erase_at()` + `emplace_at()` 来回切换 | 每次切换触发模式扫描 | 批量操作，或统一使用 `erase()`/`emplace()` 保持连续 |
+| `emplace_at()` 在远超 `usage_` 的索引上构造 | 中间留大量未初始化槽位，`size()` 暴增 | 用 `resize()` 预填充，或改用 `sparse_emplace_at()` |
+| 在 sparse 模式下使用 `data()` + `span()` 做线性遍历 | 未初始化槽位包含垃圾数据 | 始终通过迭代器遍历，或先确认 `is_dense()` 为 true |
+| `emplace_at()` 期望覆盖已有值 | `emplace_at` 是 get-or-create，不覆盖 | 使用 `sparse_emplace_at()` 实现 insert-or-assign |
 
 ---
 
 ## 4. void_any — 类型擦除存储
 
-类似 `std::any`，使用 `type_id` 进行类型识别。核心特性：
-
-- **SSO 支持**：小对象内联存储（通过 `VOID_ANY_ENABLE_SSO` 启用）
-- **内存池可选**：通过 `VOID_ANY_ENABLE_MEMORY_POOL` 启用
-- **三级获取接口**：`get_ptr`（带类型检查）/ `fast_get_ptr`（无 type_id 检查）/ `get_ptr_unchecked`（无检查）
+使用 `type_id` 进行类型识别。支持 SSO 和内存池（通过宏配置）。
 
 ### 构造与赋值
 
@@ -332,13 +430,13 @@ pool.is_dense();              // 检查是否连续
 | `get_ptr<T>() const` | const 版本 |
 | `fast_get_ptr<T>()` | 快速获取（跳过 type_id 检查） |
 | `fast_get_ptr<T>() const` | const 版本 |
-| `get_ptr_unchecked<T>()` | 无检查获取（最快，不验证 has_value 和 type_id） |
+| `get_ptr_unchecked<T>()` | 无检查获取（不验证 has_value 和 type_id） |
 | `get_ptr_unchecked<T>() const` | const 版本 |
 | `get<T>()` | 获取值副本（空值或类型不匹配返回默认构造） |
 | `has_value()` | 是否有值 |
 | `reset()` | 清空（析构并置空） |
 
-### 示例
+### 使用
 
 ```cpp
 void_any a(42);
@@ -365,11 +463,20 @@ void_any b_move_assign;
 b_move_assign = std::move(b_move);  // 移动赋值
 ```
 
+### 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 使用 `get_ptr_unchecked` 前不检查 `has_value()` 和类型 | 返回悬垂指针，未定义行为 | 仅在确定类型和值存在时使用，否则用 `get_ptr<T>()` |
+| 依赖 `get<T>()` 返回默认值来判断类型 | 默认构造值可能与实际值相同 | 先用 `get_ptr<T>()` 检查指针是否为空 |
+| 移动后继续使用 | 移动后源对象为空 | 移动后仅可调用 `reset()` 或重新赋值 |
+| 在 `set()` 之前访问 | `has_value()` 为 false，get_ptr 返回 nullptr | 先 `set()` 或构造时传值 |
+
 ---
 
 ## 5. type_id — 类型ID
 
-为每种类型分配唯一整数 ID（编译时确定，线程安全）。内部使用 `id_allocation<int>` 管理。
+为每种类型分配唯一整数 ID（编译时确定，线程安全）。
 
 ### 接口
 
@@ -377,13 +484,12 @@ b_move_assign = std::move(b_move);  // 移动赋值
 |------|------|
 | `type_id::get_type_id<T>()` | 获取类型 T 的唯一 ID（静态函数） |
 
-### 示例
+### 使用
 
 ```cpp
 int id1 = type_id::get_type_id<int>();
 int id2 = type_id::get_type_id<double>();
-// 同类型 ID 相同
-assert(type_id::get_type_id<int>() == id1);
+assert(type_id::get_type_id<int>() == id1);  // 同类型 ID 相同
 ```
 
 ---
@@ -401,7 +507,7 @@ assert(type_id::get_type_id<int>() == id1);
 | `total_number_of_ids()` | 回收池大小 |
 | `maximum_id()` | 已分配的最大 ID |
 
-### 示例
+### 使用
 
 ```cpp
 id_allocation<uint32_t> alloc;
@@ -425,6 +531,8 @@ uint32_t id3 = alloc.get_id();  // 1（复用）
 | `memory_block(uint8_t* data, size_t size)` | 指定数据和大小构造 |
 | `memory_block(memory_block&&)` | 移动构造 |
 | `operator=(memory_block&&)` | 移动赋值 |
+| `data_` | 数据指针（`uint8_t*`） |
+| `size_` | 数据大小（`size_t`） |
 
 > 注：`memory_block` 禁止拷贝。
 
@@ -435,7 +543,7 @@ uint32_t id3 = alloc.get_id();  // 1（复用）
 | `memory_pool(size_t chunk_size = 4096)` | 构造，指定块大小 |
 | `memory_pool(memory_pool&&)` | 移动构造 |
 | `operator=(memory_pool&&)` | 移动赋值 |
-| `allocate(size_t size)` | 分配内存（O(1) TLSF 查找） |
+| `allocate(size_t size)` | 分配内存 |
 | `deallocate(void* ptr)` | 释放内存（自动合并相邻块） |
 | `construct<T>(Args...)` | 分配并构造对象 |
 | `destroy<T>(T* ptr)` | 析构并释放对象 |
@@ -443,13 +551,13 @@ uint32_t id3 = alloc.get_id();  // 1（复用）
 | `total_used()` | 已使用量 |
 | `chunk_size()` | 获取块大小 |
 | `empty()` | 是否空闲（`total_used_ == 0`） |
-| `increase_capacity(size_t size)` | 扩容（只扩容不缩容，确保总分配量至少为 size 字节） |
+| `increase_capacity(size_t size)` | 扩容（只扩容不缩容） |
 | `reduce_capacity(size_t target)` | 缩容（只缩容不扩容，释放空闲 chunk 直到总量 <= target） |
 | `reset()` | 释放所有内存块，回到初始状态 |
 
 > 注：`memory_pool` 禁止拷贝。
 
-### 示例
+### 使用
 
 ```cpp
 memory_pool pool;
@@ -464,18 +572,25 @@ pool.reduce_capacity(4096);          // 缩容，释放空闲 chunk 至总量 <=
 pool.reset();                        // 释放所有，回到初始状态
 ```
 
+### 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 用 `new`/`delete` 管理 `construct` 分配的对象 | 内存池有自己的分配器，`delete` 会崩溃 | 始终用 `destroy<T>()` 释放 |
+| `allocate` 后忘记 `deallocate` | 内存泄漏 | 每次 `allocate` 配对一个 `deallocate` |
+| 拷贝 `memory_pool` | 禁止拷贝，内部指针所有权混乱 | 使用移动语义或引用传递 |
+
 ---
 
 ## 8. single_class_set — 单组件集合
 
-管理单一类型组件的稀疏集存储。内部维护 sparse 数组（`sparse_entry`）、dense 数组和类型擦除的组件池。
+管理单一类型组件的稀疏集存储。内部维护 sparse_version_、sparse_dense_ 数组和类型擦除的组件池。
 
-### sparse_entry — 稀疏条目
+### sparse 访问
 
 | 接口 | 说明 |
 |------|------|
-| `sparse_entry()` | 默认构造，`dense_index_=0, version_=0` |
-| `is_valid()` | 是否有效（`version_ != 0`） |
+| `get_sparse_combined()` | 获取合并的稀疏数组（[31:0]=version, [63:32]=dense） |
 
 ### 构造与赋值
 
@@ -506,15 +621,22 @@ pool.reset();                        // 释放所有，回到初始状态
 | `get_ptr<T>(entity) const` | const 版本 |
 | `get_ptr_fast<T>(entity)` | 快速获取（跳过 type_id 检查） |
 | `get_ptr_fast<T>(entity) const` | const 版本 |
+| `get_ptr_raw<T>(entity)` | 零检查获取（调用者保证 entity 有效） |
+| `get_ptr_raw<T>(entity) const` | const 版本 |
 | `get_version(uint32_t entity_index)` | 获取实体版本号 |
 | `get_version_unchecked(uint32_t entity_index)` | 无检查获取版本号 |
+| `get_dense_at(uint32_t entity_index)` | 通过 entity index 获取 dense 索引 |
+| `prefetch_component(uint32_t entity_index)` | 预取 sparse 条目（按 entity index） |
+| `prefetch_ptr(entity)` | 预取 sparse 条目（按 entity） |
+| `prefetch_ptr_batch(const entity*, size_t)` | 批量预取 sparse 条目 |
+| `get_ptr_batch(const entity*, T**, size_t)` | 批量查询组件指针（管线化预取） |
 
 ### 删除与清空
 
 | 接口 | 说明 |
 |------|------|
 | `hard_remove(entity)` | 硬删除（交换删除，O(1)） |
-| `soft_remove(entity)` | 软删除（仅清除 sparse 条目，不移动组件。副作用：typed pool 和 dense 数组留下"空洞"，`size()` 仍包含已删除组件，遍历时通过版本号跳过。若需紧凑布局，使用 `hard_remove`） |
+| `soft_remove(entity)` | 软删除（仅清除 sparse 条目，不移动组件。副作用：组件池和 dense 数组留下"空洞"，`size()` 仍包含已删除组件，遍历时通过版本号跳过。若需紧凑布局，使用 `hard_remove`） |
 | `clear()` | 清空所有数据 |
 
 ### 容量与查询
@@ -532,7 +654,7 @@ pool.reset();                        // 释放所有，回到初始状态
 | `get_entity_indices() const` | const 版本 |
 | `get_pool_version()` | 获取组件池版本号（持久化视图自动同步用） |
 
-### 示例
+### 使用
 
 ```cpp
 single_class_set set;
@@ -550,11 +672,19 @@ class_pool<Position> comps = {Position{1,2}, Position{3,4}};
 set.add_batch(ents, comps);
 ```
 
+### 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| `soft_remove` 后依赖 `size()` 和连续遍历 | 留下空洞，`size()` 不减少，dense 数组不连续 | 若需紧凑布局，使用 `hard_remove` |
+| 在需要频繁增删时只用 `hard_remove` | 每次交换删除 O(1) 但破坏顺序 | 可接受顺序变化时用 `hard_remove`，需保持顺序时用 `soft_remove` 后定期重建 |
+| 拷贝 `single_class_set` | 禁止拷贝 | 使用移动语义 |
+
 ---
 
 ## 9. ecs::manager — ECS管理器
 
-ECS 核心管理类，管理实体和所有组件集合。内部组成：`entity_manager` 和 `class_pool<single_class_set>`。
+ECS 核心管理类，管理实体和所有组件集合。
 
 > 注：`manager` 可移动，禁止拷贝。
 
@@ -587,6 +717,9 @@ ECS 核心管理类，管理实体和所有组件集合。内部组成：`entity
 | `get_ptr<T>(entity) const` | const 版本 |
 | `get_ptr_fast<T>(entity)` | 快速获取（跳过 type_id 检查） |
 | `get_ptr_fast<T>(entity) const` | const 版本 |
+| `get_ptr_batch<T>(entities, results, count)` | 批量查询组件指针（管线化预取） |
+| `prefetch_ptr<T>(entity)` | 预取实体 sparse 条目 |
+| `prefetch_ptr_batch<T>(entities, count)` | 批量预取实体 sparse 条目 |
 
 ### 删除组件
 
@@ -608,6 +741,17 @@ ECS 核心管理类，管理实体和所有组件集合。内部组成：`entity
 | `get_component_vector<T>() const` | const 版本 |
 | `reserve_component_capacity<T>(capacity)` | 预留组件容量 |
 | `get_operating_message()` | 获取操作消息引用 |
+| `get_component_meta(int type_id)` | 获取组件元数据（含 bit 位等信息） |
+| `get_single_class_set_by_id(int type_id)` | 通过 type_id 获取组件集合（运行时视图用） |
+
+### 性能开关
+
+| 接口 | 说明 |
+|------|------|
+| `disable_comp_signals()` | 禁用组件信号推送（高频 add 场景优化） |
+| `enable_comp_signals()` | 启用组件信号推送 |
+| `disable_track_changes()` | 禁用版本追踪（高频 add 场景优化） |
+| `enable_track_changes()` | 启用版本追踪 |
 
 ### View系统
 
@@ -620,26 +764,35 @@ ECS 核心管理类，管理实体和所有组件集合。内部组成：`entity
 | `view<T>(with<Types...>)` | 获取视图 |
 | `view_or<A, B>()` | OR视图 |
 | `view_filtered<T>(Pred)` | 谓词过滤视图 |
+| `view<T>().page(offset, limit)` | 分页视图（链式） |
+| `view<T>().sorted_by_component<T>(cmp)` | 排序视图（链式） |
+| `view<T>().sorted_by_component_value(keyFn)` | 分组视图（链式） |
+| `view<T>().track_changes()` | 变更检测视图（链式） |
+| `view<T>().filter_changed()` | 逐实体变更检测（链式） |
+| `view<T>().filter_added()` | 逐实体添加检测（链式） |
+| `view_any_of<Types...>()` | N元OR视图（任意组件匹配） |
+| `view<T>().exactly_one()` | 精确获取单个实体组件 |
+| `view<First, Rest...>().exactly_one()` | 精确获取单个实体多组件 |
+| `view<First, Rest...>().find_one(entity)` | 查询指定实体多组件 |
+| `view<First, Rest...>().iter_over_entities(entities)` | 批量指定实体查询 |
 
 ### Group系统
 
 | 接口 | 说明 |
 |------|------|
-| `group<First, Rest...>()` | Non-OwningGroup（缓存匹配索引，零分支迭代） |
-| `group<First, Rest...>(owned<First>)` | OwningGroup（重排主集，纯线性扫描） |
+| `group<First, Rest...>()` | Non-OwningGroup（缓存匹配索引） |
+| `group<First, Rest...>(owned<First>)` | OwningGroup（重排主集，线性扫描） |
 
 ### runtime_view
 
 | 接口 | 说明 |
 |------|------|
-| `runtime_view_create({ids...})` | 运行时视图（位掩码匹配，零分支迭代） |
+| `runtime_view_create({ids...})` | 运行时视图（位掩码匹配） |
 | `runtime_view_create({ids}, {exclude_ids})` | 排除式运行时视图 |
 | `get_entity_mask(entity)` | 获取实体组件位掩码 |
 | `get_component_bit<T>()` | 获取类型的位掩码位 |
 
 ### 生命周期信号
-
-> 详见 [14. 生命周期信号](#14-生命周期信号)
 
 | 接口 | 说明 |
 |------|------|
@@ -652,7 +805,7 @@ ECS 核心管理类，管理实体和所有组件集合。内部组成：`entity
 | `flush_component_signals(handler)` | 批量处理组件延迟信号 |
 | `has_pending_component_signals()` | 是否有待处理组件信号 |
 
-### 综合示例
+### 使用
 
 ```cpp
 ecs::manager mgr;
@@ -672,6 +825,15 @@ mgr.addc(e1, Health{100, 100})
 // 获取组件
 Position* p = mgr.get_ptr<Position>(e1);
 
+// 批量查询组件（管线化预取，性能优于逐个 get_ptr）
+class_pool<Position*> results;
+results.resize(entities.size());
+mgr.get_ptr_batch<Position>(entities.data(), results.data(), entities.size());
+
+// 预取组件指针（搭配 get_ptr 管线化使用）
+mgr.prefetch_ptr<Position>(e1);
+mgr.prefetch_ptr_batch<Position>(entities.data(), entities.size());
+
 // 批量添加
 class_pool<entity> ents = {e1, e2};
 class_pool<Health> comps = {Health{100,100}, Health{80,100}};
@@ -689,11 +851,22 @@ mgr.soft_removec<Name>(e1)
 mgr.delete_entity(e2);
 ```
 
+### 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 拷贝 `manager` | 禁止拷贝，内部资源所有权混乱 | 使用移动语义或引用传递 |
+| 在遍历 View 的同时增删组件 | 迭代器失效或数据竞争 | 先收集变更，遍历结束后批量操作 |
+| 删除实体后继续使用其句柄 | 句柄版本号失效，`is_entity_valid` 返回 false | 删除后丢弃句柄，或重新创建 |
+| 忘记 `append_preallocated_entities` | 每个实体创建都可能触发扩容 | 启动时预估实体数量并预分配 |
+| 在 `soft_remove` 后假设 `size()` 减少 | 软删除不减少 `size()` | 使用 `hard_remove` 或通过 View 遍历 |
+| 使用 `get_ptr_fast` 跨越不同类型集合 | 跳过 type_id 检查，可能返回错误类型指针 | 同一类型集合内使用 `get_ptr_fast`，跨类型用 `get_ptr` |
+
 ---
 
 ## 10. View系统
 
-提供高效的组件遍历，类似 EnTT。自动选择最小集作为主集迭代，性能最优。
+提供高效的组件遍历，自动选择最小集作为主集迭代。
 
 ### 10.1 single_view\<T> — 单组件视图
 
@@ -705,6 +878,11 @@ mgr.delete_entity(e2);
 | `for_each(func)` | 遍历组件（自动检测 entity 参数：`func(T&)` 或 `func(entity, T&)`） |
 | `begin()` / `end()` | 实体迭代器 |
 | `component_begin()` / `component_end()` | 组件迭代器（`T*`） |
+| `get_component_for_entity(entity)` | 获取指定实体的组件引用（无则 nullptr） |
+| `get_first_entity()` | 返回第一个实体句柄 |
+| `get_last_entity()` | 返回最后一个实体句柄 |
+| `get_entity_at_index(index)` | 返回第 index 个实体句柄 |
+| `get_component_at_index(index)` | 返回第 index 个组件的指针 |
 
 ```cpp
 auto view = mgr.view<Position>();
@@ -729,7 +907,7 @@ mgr.view<Position>().for_each([](Position& p) { /* ... */ });
 
 ### 10.2 multi_view\<T1, T2, ...> — 多组件视图
 
-自动选择最小集作为主集迭代，性能最优。
+自动选择最小集作为主集迭代。
 
 | 接口 | 说明 |
 |------|------|
@@ -737,12 +915,26 @@ mgr.view<Position>().for_each([](Position& p) { /* ... */ });
 | `empty()` | 是否为空 |
 | `contains(entity)` | 是否同时拥有所有组件 |
 | `for_each(func)` | 遍历多组件（自动检测 entity 参数） |
+| `get_component_for_entity<T>(entity)` | 获取指定实体的指定类型组件（无则 nullptr） |
+| `get_first_entity()` | 返回第一个匹配所有组件的实体 |
+| `get_last_entity()` | 返回最后一个匹配所有组件的实体 |
+| `get_entity_at_index(index)` | 返回主集第 index 个实体句柄 |
+| `include_optional_component<U>()` | 链式追加可选组件，回调中为指针（无组件时为 nullptr） |
 
 ```cpp
 // 双组件
 auto v2 = mgr.view<Position, Velocity>();
 v2.for_each([](Position& p, Velocity& v) { /* ... */ });
 v2.for_each([](entity e, Position& p, Velocity& v) { /* ... */ });
+
+// 获取指定实体的组件
+Position* pp = v2.get_component_for_entity<Position>(some_entity);
+Velocity* vp = v2.get_component_for_entity<Velocity>(some_entity);
+
+// 获取首/尾实体
+entity first = v2.get_first_entity();
+entity last  = v2.get_last_entity();
+entity nth   = v2.get_entity_at_index(5);
 
 // 三组件
 auto v3 = mgr.view<Position, Velocity, Health>();
@@ -751,6 +943,15 @@ v3.for_each([](entity e, Position& p, Velocity& v, Health& h) { /* ... */ });
 // 四组件
 auto v4 = mgr.view<Position, Velocity, Health, Name>();
 v4.for_each([](entity e, Position&, Velocity&, Health&, Name& n) { /* ... */ });
+
+// 追加可选组件
+auto v_opt = mgr.view<Position, Velocity>()
+    .include_optional_component<Health>()
+    .include_optional_component<Name>();
+v_opt.for_each([](entity e, Position& p, Velocity& v, Health* h, Name* n) {
+    if (h) { /* 有 Health */ }
+    if (n) { /* 有 Name */ }
+});
 ```
 
 ### 10.3 single_view_without — 排除视图
@@ -761,6 +962,9 @@ v4.for_each([](entity e, Position&, Velocity&, Health&, Name& n) { /* ... */ });
 |------|------|
 | `size()` | 组件数量 |
 | `empty()` | 是否为空 |
+| `contains(entity)` | 检查实体是否有 T 且无 ExcludeTypes |
+| `get_component_for_entity(entity)` | 获取 T 的引用（无则 nullptr） |
+| `get_first_entity()` | 返回第一个匹配的实体 |
 | `for_each(func)` | 遍历组件（排除指定类型，自动检测 entity 参数） |
 
 ```cpp
@@ -768,6 +972,11 @@ v4.for_each([](entity e, Position&, Velocity&, Health&, Name& n) { /* ... */ });
 auto v = mgr.view<Position>(ecs::without<Health>);
 v.for_each([](Position& p) { /* 没有 Health 的实体 */ });
 v.for_each([](entity e, Position& p) { /* ... */ });
+
+// 检查实体是否匹配
+if (v.contains(some_entity)) { /* ... */ }
+Position* p = v.get_component_for_entity(some_entity);
+entity first = v.get_first_entity();
 
 // 排除多个类型
 auto v2 = mgr.view<Position>(ecs::without<Health, Name>);
@@ -781,6 +990,10 @@ auto v2 = mgr.view<Position>(ecs::without<Health, Name>);
 |------|------|
 | `size()` | 组件数量 |
 | `empty()` | 是否为空 |
+| `contains(entity)` | 检查实体是否有 T |
+| `get_component_for_entity(entity)` | 获取 T 的引用（无则 nullptr） |
+| `get_optional_component_for_entity<U>(entity)` | 获取可选组件 U 的指针 |
+| `get_first_entity()` | 返回第一个匹配的实体 |
 | `for_each(func)` | 遍历组件+可选指针（自动检测 entity 参数） |
 
 ```cpp
@@ -792,6 +1005,10 @@ v.for_each([](Position& p, Health* h) {
 });
 v.for_each([](entity e, Position& p, Health* h) { /* ... */ });
 
+// 获取指定实体的组件
+Position* p = v.get_component_for_entity(some_entity);
+Health*  h = v.get_optional_component_for_entity<Health>(some_entity);
+
 // 获取多个可选组件
 auto v2 = mgr.view<Position>(ecs::with<Health, Name>);
 v2.for_each([](Position& p, Health* h, Name* n) { /* ... */ });
@@ -799,20 +1016,26 @@ v2.for_each([](Position& p, Health* h, Name* n) { /* ... */ });
 
 ### 10.5 or_view\<A, B> — OR视图（零分配）
 
-遍历拥有 A **或** B 的实体，使用 nullable 指针区分。两阶段遍历，O(N_A + N_B)，零额外内存分配。
+遍历拥有 A **或** B 的实体，使用 nullable 指针区分。两阶段遍历，零额外内存分配。
 
 | 接口 | 说明 |
 |------|------|
+| `size()` | 近似大小（A.size + B.size，上界） |
+| `empty()` | 是否两个集都为空 |
+| `contains(entity)` | 是否有 A 或 B |
+| `get_first_entity()` | 返回第一个匹配实体 |
 | `for_each(func)` | 遍历 A OR B，回调为 `func(entity, A*, B*)` 或 `func(A*, B*)` |
 
 ```cpp
-// 通过 factory 方法创建
 auto ov = mgr.view_or<Position, Velocity>();
 ov.for_each([](entity e, Position* p, Velocity* v) {
     if (p && v) { /* 同时拥有 Position 和 Velocity */ }
     else if (p) { /* 仅拥有 Position */ }
     else if (v) { /* 仅拥有 Velocity */ }
 });
+
+if (ov.contains(some_entity)) { /* ... */ }
+entity first = ov.get_first_entity();
 ```
 
 ### 10.6 filter_view\<T, Pred> — 谓词过滤视图
@@ -823,6 +1046,11 @@ ov.for_each([](entity e, Position* p, Velocity* v) {
 |------|------|
 | `size()` | 过滤后组件数量 |
 | `empty()` | 是否为空 |
+| `contains(entity)` | 是否在过滤结果中（线性扫描） |
+| `get_component_for_entity(entity)` | 获取组件引用（无则 nullptr） |
+| `get_first_entity()` | 返回第一个过滤结果实体 |
+| `get_entity_at_index(index)` | 返回第 index 个过滤结果实体 |
+| `get_component_at_index(index)` | 返回第 index 个过滤结果组件指针 |
 | `rebuild()` | 重新执行过滤 |
 | `for_each(func)` | 遍历过滤后的组件，回调为 `func(entity, T&)` 或 `func(T&)` |
 | `and_<B>()` | 链式调用：在过滤结果上追加 AND 组件 B |
@@ -833,6 +1061,14 @@ ov.for_each([](entity e, Position* p, Velocity* v) {
 auto fv = mgr.view_filtered<Position>([](Position& p) { return p.x > 1; });
 fv.for_each([](Position& p) { /* 仅处理 x > 1 的实体 */ });
 
+// 索引访问
+if (!fv.empty()) {
+    entity first = fv.get_first_entity();
+    entity nth   = fv.get_entity_at_index(3);
+    Position* p  = fv.get_component_at_index(3);
+    if (fv.contains(some_entity)) { /* ... */ }
+}
+
 // 手动重新过滤（组件数据变化后）
 fv.rebuild();
 ```
@@ -841,6 +1077,18 @@ fv.rebuild();
 
 通过 `filter_view::and_<B>()` 链式创建。遍历满足谓词 **且** 同时拥有组件 B 的实体。
 
+| 接口 | 说明 |
+|------|------|
+| `size()` | 过滤后数量 |
+| `empty()` | 是否为空 |
+| `contains(entity)` | 是否在过滤结果中（线性扫描） |
+| `get_component_for_entity<T>(entity)` | 获取 T 引用（无则 nullptr） |
+| `get_optional_component_for_entity<B>(entity)` | 获取 B 指针 |
+| `get_first_entity()` | 返回第一个匹配实体 |
+| `get_entity_at_index(index)` | 返回第 index 个匹配实体 |
+| `rebuild()` | 重新执行过滤 |
+| `for_each(func)` | 遍历过滤+AND结果 |
+
 ```cpp
 // Position.x > 1 AND 同时拥有 Health
 auto fav = mgr.view_filtered<Position>([](Position& p) { return p.x > 1; })
@@ -848,11 +1096,24 @@ auto fav = mgr.view_filtered<Position>([](Position& p) { return p.x > 1; })
 fav.for_each([](entity e, Position& p, Health& h) {
     // 仅处理 x > 1 且拥有 Health 的实体
 });
+
+entity first = fav.get_first_entity();
+entity nth   = fav.get_entity_at_index(3);
+if (fav.contains(some_entity)) { /* ... */ }
 ```
 
 ### 10.8 filter_or_view — 过滤+OR组合视图
 
 通过 `filter_view::or_<B>()` 链式创建。遍历满足谓词 **或** 拥有组件 B 的实体，使用 nullable 指针区分。
+
+| 接口 | 说明 |
+|------|------|
+| `size()` | 过滤后数量 |
+| `empty()` | 是否为空 |
+| `contains(entity)` | 是否在过滤结果中 |
+| `get_first_entity()` | 返回第一个匹配实体 |
+| `rebuild()` | 重新执行过滤 |
+| `for_each(func)` | 遍历过滤+OR结果 |
 
 ```cpp
 // Position.x > 1 OR 拥有 Velocity
@@ -865,20 +1126,335 @@ fov.for_each([](entity e, Position* p, Velocity* v) {
 });
 ```
 
-### 10.9 性能对比
+### 10.9 sort_entities_by_component / reorder_by_component — 排序工具
 
-> 测试环境：AMD Ryzen 9700X / DDR5 6000MHz CL28
+manager 级别的排序工具，将 dense 数组按组件值重排，后续迭代即按排序顺序。
 
-| 场景 | 当前做法 | 升级后 | 分配 |
-|------|----------|--------|------|
-| A OR B (各 10K) | 两次 view + 手动去重 | 一次 `or_<B>` 遍历 | 0 |
-| 过滤 90% 实体 | 全量遍历 + lambda if | `filter` 预扫 + 只遍历 10% | 1 次 `class_pool` |
-| A AND B 且过滤 A | 全量遍历 + 双重 if | `filter<A>` + `and_<B>` | 1 次 `class_pool` |
+| 接口 | 说明 |
+|------|------|
+| `sort_entities_by_component<T>(cmp)` | 按组件 T 的值排序 dense 数组（同步更新 sparse 映射） |
+| `reorder_by_component<T, Other>(cmp)` | 按 Other 的值重排 T 的 dense 数组 |
+| `sort_component_container<T>(cmp)` | 仅排序组件池数据，不重排 dense 和 sparse（适用于临时排序场景） |
+
+```cpp
+// 按 Position.x 升序排序
+mgr.sort_entities_by_component<Position>([](Position& a, Position& b) {
+    return a.x < b.x;
+});
+
+// 按 Velocity.dx 降序重排 Position
+mgr.reorder_by_component<Position, Velocity>([](Velocity& a, Velocity& b) {
+    return a.dx > b.dx;
+});
+
+// 仅排序组件池（不更新 dense/sparse，实体顺序不变）
+mgr.sort_component_container<Position>([](Position& a, Position& b) {
+    return a.x < b.x;
+});
+```
+
+### 10.10 page — 分页视图
+
+通过 `page(offset, limit)` 链式调用，跳过前 `offset` 个结果并限制返回 `limit` 个。适用于 `single_view` 和 `multi_view`。
+
+| 接口 | 说明 |
+|------|------|
+| `size()` | 分页后数量（`min(limit, base_size - offset)`，offset 超界则为 0） |
+| `empty()` | 是否为空 |
+| `for_each(func)` | 分页遍历（跳过前 offset 个，最多处理 limit 个） |
+
+```cpp
+// 跳过前 1 个，最多处理 3 个
+auto paged = mgr.view<Position, Velocity>().page(1, 3);
+paged.for_each([](Position& p, Velocity& v) {
+    // 仅处理第 2~4 个匹配实体
+});
+```
+
+### 10.11 sorted_by_component — 排序视图
+
+通过 `sorted_by_component<T>(cmp)` 链式调用，按指定组件值临时排序查询结果。排序在首次 `for_each` 时执行（懒构建），通过版本号检测变更自动重建缓存。适用于 `single_view` 和 `multi_view`。
+
+| 接口 | 说明 |
+|------|------|
+| `size()` | 排序后数量 |
+| `empty()` | 是否为空 |
+| `for_each(func)` | 按排序顺序遍历（自动检测 entity 参数） |
+
+```cpp
+// 按 Position.x 升序排序
+auto sorted = mgr.view<Position, Velocity>()
+    .sorted_by_component<Position>([](Position& a, Position& b) {
+        return a.x < b.x;
+    });
+sorted.for_each([](Position& p, Velocity& v) {
+    // 按 p.x 升序遍历
+});
+```
+
+### 10.12 sorted_by_component_value — 分组视图
+
+通过 `sorted_by_component_value(keyFn)` 链式调用，按组件值分组，支持逐组遍历。适用于 `single_view` 和 `multi_view`。
+
+| 接口 | 说明 |
+|------|------|
+| `size()` | 分组后总数 |
+| `empty()` | 是否为空 |
+| `group_count()` | 分组数量 |
+| `for_each(func)` | 按分组顺序遍历所有元素 |
+| `for_each_group(func)` | 逐组遍历，回调为 `func(key, start_index, end_index)` |
+
+```cpp
+// 按 Position.x / 20 分组
+auto grouped = mgr.view<Position>()
+    .sorted_by_component_value([](Position& p) -> int {
+        return p.x / 20;
+    });
+
+// 逐组遍历
+grouped.for_each_group([](int key, size_t start, size_t end) {
+    std::cout << "Group " << key << ": " << (end - start) << " entities\n";
+});
+```
+
+### 10.13 track_changes — 变更检测视图
+
+通过 `track_changes()` 链式调用，仅返回自上次迭代以来组件发生变化的实体。基于组件池版本号实现，适用于 `single_view` 和 `multi_view`。
+
+| 接口 | 说明 |
+|------|------|
+| `size()` | 变更实体数量 |
+| `empty()` | 是否为空 |
+| `for_each(func)` | 遍历变更的实体（首次全量返回，后续仅返回变更实体） |
+| `reset_tracking()` | 重置跟踪基准（下次 for_each 重新全量返回） |
+
+```cpp
+auto changed = mgr.view<Position, Velocity>().track_changes();
+
+// 首次遍历：全量返回
+changed.for_each([](Position& p, Velocity& v) {
+    // 处理所有实体
+});
+
+// 修改组件 ...
+mgr.add(some_entity, Position{999, 0, 0}); // add 触发版本变更
+
+// 再次遍历：仅返回变更的实体
+changed.for_each([](Position& p, Velocity& v) {
+    // 仅处理变更的实体
+});
+
+// 重置跟踪
+changed.reset_tracking();
+```
+
+### 10.14 链式组合
+
+新视图均支持链式组合，可灵活组合使用：
+
+```cpp
+// 分页 + 排序
+mgr.view<Position, Velocity>()
+   .sorted_by_component<Position>([](Position& a, Position& b) { return a.x < b.x; })
+   .page(0, 10)
+   .for_each([](Position& p, Velocity& v) { /* 前10个排序结果 */ });
+
+// 分页 + 变更检测
+mgr.view<Position>()
+   .track_changes()
+   .page(0, 5)
+   .for_each([](Position& p) { /* 最多5个变更实体 */ });
+```
+
+### 10.15 filter_changed — 逐实体变更检测
+
+通过 `filter_changed()` 链式调用，仅返回自上次迭代以来组件值发生变化的实体。基于逐实体版本号追踪，可精确到单个实体。
+
+> **注意：** 仅 `add()` 操作（包括覆盖添加）会触发变更版本号递增。通过 `get_ptr()` 直接修改组件内存不会触发变更检测。
+
+| 接口 | 说明 |
+|------|------|
+| `size()` | 变更实体数量 |
+| `empty()` | 是否为空 |
+| `for_each(func)` | 遍历变更实体（首次全量返回，后续仅返回变更实体） |
+| `reset_tracking()` | 重置快照基准（下次 for_each 重新全量返回） |
+
+```cpp
+// 单组件变更检测
+auto cv = mgr.view<Position>().filter_changed();
+cv.for_each([](Position& p) {
+    // 首次：全量返回所有 Position 实体
+    // 后续：仅返回 Position 被修改过的实体
+});
+
+// 多组件变更检测（跟踪指定组件，需指定模板参数）
+auto mcv = mgr.view<Position, Velocity>().filter_changed<Position>();
+mcv.for_each([](Position& p, Velocity& v) {
+    // 跟踪 Position 的变更，同时返回 Velocity
+});
+
+// 重置跟踪基准
+cv.reset_tracking();  // 下次 for_each 重新全量返回
+```
+
+### 10.16 filter_added — 逐实体添加检测
+
+通过 `filter_added()` 链式调用，仅返回视图创建后**新添加**的组件。基于全局添加计数器实现。
+
+| 接口 | 说明 |
+|------|------|
+| `size()` | 新增实体数量 |
+| `empty()` | 是否为空 |
+| `for_each(func)` | 遍历新增实体（首次全量返回，后续仅返回新添加的实体） |
+
+```cpp
+// 单组件添加检测
+auto av = mgr.view<Position>().filter_added();
+// 先创建视图，再添加组件
+mgr.add(e1, Position{1, 0});
+mgr.add(e2, Position{2, 0});
+av.for_each([](Position& p) {
+    // 首次：返回所有已添加的实体
+});
+av.for_each([](Position& p) {
+    // 再次：无新添加，返回空
+});
+
+// 多组件添加检测（需指定跟踪的组件类型）
+auto mav = mgr.view<Position, Velocity>().filter_added<Position>();
+mav.for_each([](Position& p, Velocity& v) {
+    // 仅返回 Position 新添加的实体（同时需有 Velocity）
+});
+```
+
+> **与 `filter_changed` 的区别：** `filter_changed` 追踪"修改"（覆盖添加也会触发），`filter_added` 仅追踪"首次添加"（覆盖添加不触发）。
+
+### 10.17 view_any_of — N元OR视图
+
+通过 `view_any_of<Types...>()` 创建，遍历拥有**任意一个**指定组件的实体。使用 bitset 去重，确保每个实体仅出现一次。
+
+| 接口 | 说明 |
+|------|------|
+| `size()` | 近似大小（各集合大小之和，上界） |
+| `empty()` | 是否所有集合都为空 |
+| `for_each(func)` | 遍历任意匹配的实体，回调为 `func(Types*...)` 或 `func(entity, Types*...)` |
+
+```cpp
+// 双组件 OR：Position OR Velocity
+auto av2 = mgr.view_any_of<Position, Velocity>();
+av2.for_each([](Position* p, Velocity* v) {
+    if (p && v) { /* 同时拥有 */ }
+    else if (p) { /* 仅有 Position */ }
+    else if (v) { /* 仅有 Velocity */ }
+});
+
+// 三组件 OR：Position OR Velocity OR Health
+auto av3 = mgr.view_any_of<Position, Velocity, Health>();
+av3.for_each([](entity e, Position* p, Velocity* v, Health* h) {
+    // 指针非空即拥有该组件
+});
+
+// 四组件 OR
+auto av4 = mgr.view_any_of<Position, Velocity, Health, Name>();
+av4.for_each([](Position* p, Velocity* v, Health* h, Name* n) {
+    // 至少拥有一个组件
+});
+```
+
+> **与 `or_view` 的区别：** `or_view` 仅支持 2 组件，`view_any_of` 支持任意数量组件。
+
+### 10.18 exactly_one — 精确获取单个实体
+
+通过 `exactly_one()` 获取恰好一个实体的组件引用。若实体数量不为 1，行为未定义。
+
+**返回值：**
+- `single_view<T>::exactly_one()` → `T&`
+- `multi_view<T1, T2, ...>::exactly_one()` → `std::tuple<T1&, T2&, ...>`
+
+```cpp
+// 恰好一个实体有 Position
+auto& pos = mgr.view<Position>().exactly_one();
+pos.x = 100;
+
+// 恰好一个实体同时有 Position 和 Velocity
+auto [p, v] = mgr.view<Position, Velocity>().exactly_one();
+p.x += v.dx;
+p.y += v.dy;
+
+// 三组件
+auto [p2, v2, h] = mgr.view<Position, Velocity, Health>().exactly_one();
+h.hp -= 10;
+```
+
+> **注意：** 视图内实体数量不为 1 时行为未定义，调用者需自行保证。适用于单例实体、玩家实体等场景。
+
+### 10.19 find_one — 查询指定实体
+
+通过 `find_one(entity)` 查询指定实体是否拥有视图要求的全部组件。若拥有则返回组件指针元组，否则返回空指针。
+
+**返回值：** `std::tuple<First*, Rest*...>`，所有组件都存在时所有指针非空，否则所有指针为空。
+
+```cpp
+// 查询 e1 是否有 Position + Velocity
+auto [p, v] = mgr.view<Position, Velocity>().find_one(e1);
+if (p && v) {
+    // e1 拥有 Position 和 Velocity
+    p->x += v->dx;
+}
+
+// 查询不存在的实体
+auto [p2, v2] = mgr.view<Position, Velocity>().find_one(invalid_entity);
+// p2 == nullptr, v2 == nullptr
+
+// 三组件查询
+auto [p3, v3, h] = mgr.view<Position, Velocity, Health>().find_one(e1);
+if (p3 && v3 && h) {
+    // e1 拥有全部三个组件
+}
+```
+
+### 10.20 iter_over_entities — 批量指定实体查询
+
+通过 `iter_over_entities(entities)` 在指定实体列表上迭代，仅处理同时拥有视图所有组件的实体。
+
+**参数：** `entities` 支持 `std::array<entity, N>`、`std::span<entity>`、`class_pool<entity>` 等可迭代容器。
+
+```cpp
+// 在指定实体列表中迭代
+std::array<entity, 3> targets = {e1, e2, e3};
+auto ev = mgr.view<Position, Velocity>().iter_over_entities(targets);
+ev.for_each([](Position& p, Velocity& v) {
+    // 仅处理 e1, e2, e3 中同时拥有 Position 和 Velocity 的实体
+    p.x += v.dx;
+});
+
+// 使用 class_pool<entity>
+class_pool<entity> entity_list;
+entity_list.emplace_back(e1);
+entity_list.emplace_back(e2);
+auto ev2 = mgr.view<Position, Health>().iter_over_entities(entity_list);
+ev2.for_each([](Position& p, Health& h) {
+    // 仅处理列表中有 Position 和 Health 的实体
+});
+```
+
+> **注意：** 实体列表中不满足组件条件的实体会被静默跳过，不会报错。
+
+### View 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 在 `for_each` 回调中增删组件 | 迭代器失效，可能导致崩溃或漏处理 | 先收集变更实体列表，遍历结束后批量操作 |
+| `filter_view` 过滤条件变化后忘记 `rebuild()` | 过滤结果过期，仍返回旧数据 | 组件数据变化后调用 `rebuild()` |
+| `exactly_one()` 在实体数不为 1 时使用 | 行为未定义 | 先检查 `size() == 1`，或使用 `find_one()` |
+| 依赖 `filter_changed` 检测 `get_ptr()` 修改 | 直接修改内存不触发变更检测 | 通过 `add()` 覆盖触发变更，或使用 `track_changes` |
+| 在多组件 View 中混用 `get_ptr_fast` 和 `get_ptr` | 性能不一致且类型安全边界模糊 | 同一 View 中统一使用一种获取方式 |
 
 ---
+
 ## 11. Group系统
 
-Group 在构造时预先计算匹配实体集，迭代时零分支、零版本检查。
+Group 在构造时预先计算匹配实体集，迭代时零分支。
 
 ### 11.1 Non-OwningGroup (`group`)
 
@@ -896,8 +1472,6 @@ Group 在构造时预先计算匹配实体集，迭代时零分支、零版本�
 | `front()` | 首个匹配实体 |
 | `back()` | 末尾匹配实体 |
 | `rebuild()` | 重建缓存（组件增删后调用） |
-
-**示例：**
 
 ```cpp
 // 双组件 Group
@@ -926,19 +1500,14 @@ g3.for_each([](entity e, Position& p, Velocity& v, Health& h) {
 
 ### 11.2 OwningGroup (`group` + `owned`)
 
-通过 `mgr.group<First, Rest...>(ecs::owned<First>)` 创建，重排主集 `First` 的 dense 数组，使匹配实体在数组前部连续排列。迭代时纯线性扫描 `[0, owned_size_)`。
+通过 `mgr.group<First, Rest...>(ecs::owned<First>)` 创建，重排主集 `First` 的 dense 数组，使匹配实体在数组前部连续排列。
 
 **注意：** `owned` 标签标记的组件类型会被重排，组件数据顺序会改变。如果其他代码依赖该组件的 dense 顺序，需谨慎使用。
-
-**接口：** 与 Non-OwningGroup 相同。
-
-**示例：**
 
 ```cpp
 // OwningGroup: Position 被重排
 auto og = mgr.group<Position, Velocity>(ecs::owned<Position>);
 og.for_each([](Position& p, Velocity& v) {
-    // 纯线性扫描，性能最高
     p.x += v.vx;
 });
 
@@ -954,17 +1523,45 @@ og3.for_each([](entity e, Position& p, Velocity& v, Health& h) {
 });
 ```
 
-### 11.3 性能对比
+### 11.3 ReorderGroup (`group` + `reorder`)
 
-> 测试环境：AMD Ryzen 9700X / DDR5 6000MHz CL28
+通过 `mgr.group<First, Rest...>(ecs::reorder<First>)` 创建，与 OwningGroup 同样重排主集，但语义更轻——仅表达"允许重排以换取性能"，不暗示生命周期所有权。
 
-| 场景 | `multi_view` | `group` (Non-Owning) | `group` + `owned` (Owning) |
-|------|-------------|---------------------|---------------------------|
-| 每次迭代 | 检查所有组件是否存在 | 零检查（预缓存） | 零检查（连续排列） |
-| 分支预测 | 依赖数据分布 | 无分支 | 无分支 |
-| 内存访问 | sparse → dense 间接 | 缓存索引直接访问 | 纯线性扫描 |
-| 额外内存 | 0 | `class_pool<size_t>` (N × 8 bytes) | 0 |
-| 数据重排 | 无 | 无 | 有（主集 dense 重排） |
+```cpp
+// ReorderGroup: Position 被重排
+auto rg = mgr.group<Position, Velocity>(ecs::reorder<Position>);
+rg.for_each([](Position& p, Velocity& v) {
+    p.x += v.vx;
+});
+
+// 带 entity 参数
+rg.for_each([](entity e, Position& p, Velocity& v) {
+    std::cout << "Entity " << e.parts_.index_ << ": pos=(" << p.x << "," << p.y << ")\n";
+});
+
+// 三组件 ReorderGroup
+auto rg3 = mgr.group<Position, Velocity, Health>(ecs::reorder<Position>);
+rg3.for_each([](entity e, Position& p, Velocity& v, Health& h) {
+    // 同时拥有三个组件的实体
+});
+```
+
+**多 Group 共享重排：** 多个相同组件类型的 ReorderGroup 可通过 `share_with()` 共享重排状态，避免重复重排。
+
+```cpp
+auto rg1 = mgr.group<Position, Velocity>(ecs::reorder<Position>);
+auto rg2 = mgr.group<Position, Velocity>(ecs::reorder<Position>);
+rg2.share_with(rg1);  // rg2 共享 rg1 的重排状态
+// 两者 size() 和迭代结果一致，共享同一份缓存
+```
+
+### Group 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 组件增删后忘记 `rebuild()` | Group 缓存过期，可能漏掉新实体或包含已删除实体 | 每次批量增删后调用 `rebuild()` |
+| 在 OwningGroup / ReorderGroup 中依赖 dense 顺序 | `owned` / `reorder` 会重排主集 dense 数组 | 若需保持顺序，使用 Non-OwningGroup |
+| 对频繁增删的组件使用 Group | 每次增删都需 `rebuild()`，开销大 | 稳定组件用 Group，频繁变化组件用 View |
 
 ---
 
@@ -1030,20 +1627,18 @@ rv.for_each([](entity e) {
 | `empty()` | 是否为空 |
 | `contains(entity)` | 检查实体是否匹配查询 |
 | `get_ptr<T>(entity)` | 获取实体的组件指针 |
+| `get_first_entity()` | 返回第一个匹配实体 |
 | `rebuild()` | 重新选择最小集合（组件数量变化后调用） |
 | `get_entity_mask(entity)` | 获取实体组件位掩码 |
 | `get_component_bit<T>()` | 获取组件类型的位掩码位 |
 
-### 12.5 性能对比
+### 不要做什么
 
-> 测试环境：AMD Ryzen 9700X / DDR5 6000MHz CL28
-
-| 视图 | 50万实体迭代 | 匹配方式 |
-|------|------------|---------|
-| `multi_view<Pos+Vel>` (编译期) | 0.58ms | 多次 get_ptr_fast |
-| `group<Pos,Vel>(owned)` (Owning) | 1.33ms | 连续内存扫描 |
-| **`runtime_view<Pos+Vel>` (运行时)** | **2.14ms** | **单条 AND 指令** |
-| `group<Pos,Vel>` (Non-Owning) | 4.18ms | 缓存索引遍历 |
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| `size()` 依赖精确值 | 返回的是主集大小上限，非精确匹配数 | 使用 `for_each` 遍历或 `contains()` 检查 |
+| 忘记自增 `entity_bit_` 计数器 | 位掩码位耗尽（uint64_t 最多 64 种组件类型） | 控制组件类型数量在 64 以内 |
+| 组件数量变化后忘记 `rebuild()` | 主集选择可能不是最优 | 增删组件类型后调用 `rebuild()` |
 
 ---
 
@@ -1051,7 +1646,7 @@ rv.for_each([](entity e) {
 
 将函数/回调封装为组件，通过 `ecs::manager` 的标准组件接口存储与调用。
 
-### 用法
+### 使用
 
 定义一个包含 `std::function` 的组件结构体，然后像普通组件一样使用。
 
@@ -1102,7 +1697,7 @@ mgr.view<CallbackComponent>().for_each([](entity e, CallbackComponent& c) {
 
 ### 14.1 实体级即时信号
 
-实体创建/销毁时立即触发回调。通过 `void* user_data` 传递上下文，兼容 C 风格函数指针和无捕获 lambda。
+实体创建/销毁时立即触发回调。通过 `void* user_data` 传递上下文。
 
 **接口：**
 
@@ -1110,8 +1705,6 @@ mgr.view<CallbackComponent>().for_each([](entity e, CallbackComponent& c) {
 |------|------|
 | `set_on_entity_created(fn, user_data)` | 绑定实体创建回调：`void fn(entity, void* user_data)` |
 | `set_on_entity_destroyed(fn, user_data)` | 绑定实体销毁回调：`void fn(entity, void* user_data)` |
-
-**示例：**
 
 ```cpp
 ecs::manager mgr;
@@ -1135,7 +1728,7 @@ entity e2 = mgr.create_entity();  // created == 2
 mgr.delete_entity(e1);           // destroyed == 1
 ```
 
-> **注意：** 回调必须是 `void (*)(entity, void*) noexcept` 签名。使用 `+` 将无捕获 lambda 转为函数指针。需要上下文时通过 `user_data` 传递。
+> **注意：** 回调必须是 `void (*)(entity, void*) noexcept` 签名。使用 `+` 将无捕获 lambda 转为函数指针。
 
 ### 14.2 组件级即时信号
 
@@ -1148,8 +1741,6 @@ mgr.delete_entity(e1);           // destroyed == 1
 | `set_on_add<T>(fn, user_data)` | 绑定组件 T 添加回调：`void fn(entity, void* component, void* user_data)` |
 | `set_on_remove<T>(fn, user_data)` | 绑定组件 T 移除回调：`void fn(entity, void* component, void* user_data)` |
 
-**示例：**
-
 ```cpp
 ecs::manager mgr;
 mgr.append_preallocated_entities(100);
@@ -1158,7 +1749,6 @@ int add_count = 0, remove_count = 0;
 
 auto on_add = [](entity e, void* comp, void* data) noexcept {
     (*static_cast<int*>(data)) += 1;
-    // comp 指向组件数据，可在回调中修改
     auto* pos = static_cast<Position*>(comp);
     pos->x = 100;  // 直接修改组件
 };
@@ -1192,8 +1782,6 @@ mgr.hard_remove<Position>(e);      // remove_count == 1
 - `type=0`：实体创建
 - `type=1`：实体销毁
 
-**示例：**
-
 ```cpp
 ecs::manager mgr;
 mgr.append_preallocated_entities(100);
@@ -1213,11 +1801,10 @@ mgr.flush_entity_signals([&](uint32_t type, uint32_t entity_idx) {
 });
 
 // created == 2, destroyed == 1
-// 缓冲区已清空
 assert(!mgr.has_pending_entity_signals());
 ```
 
-> **缓冲区容量：** 256 条。缓冲区满时丢弃新事件（生产环境可改为先 flush 再插入）。
+> **缓冲区容量：** 256 条。缓冲区满时丢弃新事件。
 
 ### 14.4 组件级延迟信号
 
@@ -1233,8 +1820,6 @@ assert(!mgr.has_pending_entity_signals());
 **信号类型：**
 - `type=0`：组件添加
 - `type=1`：组件移除
-
-**示例：**
 
 ```cpp
 ecs::manager mgr;
@@ -1270,14 +1855,14 @@ assert(!mgr.has_pending_component_signals());
 | 文件持久化 | 延迟信号 | 批量写入，减少 I/O |
 | 第三方集成 | 延迟信号 | 解耦 ECS 内部状态与外部系统 |
 
-### 14.6 性能特征
+### 不要做什么
 
-| 操作 | 开销 |
-|------|------|
-| 即时信号（无订阅者） | 零开销（`if (fn) [[unlikely]]` 分支预测跳转） |
-| 即时信号（有订阅者） | 1 次函数指针调用 + `void*` 解引用 |
-| 延迟信号推送 | 2 次 `uint32_t` 写入 + 1 次取模运算 |
-| 延迟信号 flush | 遍历环形缓冲区，每个事件 1 次回调 |
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 在即时信号回调中增删实体/组件 | 可能导致重入和迭代器失效 | 使用延迟信号，在 flush 时处理 |
+| 依赖延迟信号缓冲区不丢事件 | 缓冲区满时丢弃新事件 | 定期 flush，或降低事件产生频率 |
+| 忘记 `flush` 延迟信号 | 事件堆积在缓冲区中未处理 | 每帧开头或结尾调用 `flush_*_signals` |
+| 使用有捕获的 lambda 作为即时信号回调 | 无法转换为函数指针 | 使用无捕获 lambda + `user_data` 传上下文 |
 
 ---
 
@@ -1295,7 +1880,7 @@ cmake --build . --config Release
 
 ```bash
 ./build/usagec.exe    # 完整接口示例
-./build/test.exe      # 测试与性能基准
+./build/test.exe      # 测试
 ```
 
 ### 编译要求
@@ -1314,6 +1899,8 @@ cmake --build . --config Release
 | `VOID_ANY_ENABLE_SSO` | 启用 void_any 小对象优化（SSO），小对象内联存储 |
 | `VOID_ANY_ENABLE_MEMORY_POOL` | 启用 void_any 内存池，使用 `memory_pool` 替代 `::operator new` |
 | `VOID_ANY_SSO_BUFFER_SIZE` | SSO 缓冲区大小（默认 32 字节），仅在启用 SSO 时有效 |
+| `VOID_ANY_MEMORY_POOL_NOT_ENABLED` | 禁用内存池（与 `VOID_ANY_ENABLE_MEMORY_POOL` 互斥） |
+| `VOID_ANY_SSO_NOT_ENABLED` | 禁用 SSO（与 `VOID_ANY_ENABLE_SSO` 互斥） |
 
 ### 配置示例
 

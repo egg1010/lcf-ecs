@@ -24,7 +24,7 @@ private:
         uint32_t type;        // 0=entity_created, 1=entity_destroyed
         uint32_t entity_idx;
     };
-    static constexpr size_t signal_buffer_size = 256;
+    static constexpr size_t signal_buffer_size = 1024;
     signal_event signal_buffer_[signal_buffer_size]{};
     uint32_t signal_write_{0};
     uint32_t signal_read_{0};

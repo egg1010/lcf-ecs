@@ -13,8 +13,8 @@ add_executable(usagec usagec.cpp)
 # 百万级性能测试可执行文件
 add_executable(test test.cpp)
 
-target_compile_options(usagec PRIVATE)
-target_compile_options(test PRIVATE)
+target_compile_options(usagec PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
+target_compile_options(test PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
 
 
 

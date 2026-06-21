@@ -61,6 +61,8 @@ public:
 
     [[nodiscard]] bool contains(entity e) noexcept;
 
+    [[nodiscard]] entity get_first_entity() noexcept;
+
     template <typename T>
     [[nodiscard]] T* get_ptr(entity e) noexcept;
 
