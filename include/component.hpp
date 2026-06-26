@@ -416,15 +416,17 @@ public:
     template <typename T>
     [[nodiscard]] T* get_ptr(entity entitys) noexcept
     {
+        if (!entitys.is_valid()) [[unlikely]] return nullptr;
         single_class_set* set = get_single_class_set<T>();
-        return set ? set->get_ptr<T>(entitys) : nullptr;
+        return set ? set->get_ptr_fast<T>(entitys) : nullptr;
     }
 
     template <typename T>
     [[nodiscard]] const T* get_ptr(entity entitys) const noexcept
     {
+        if (!entitys.is_valid()) [[unlikely]] return nullptr;
         const single_class_set* set = get_single_class_set<T>();
-        return set ? set->get_ptr<T>(entitys) : nullptr;
+        return set ? set->get_ptr_fast<T>(entitys) : nullptr;
     }
 
     template <typename T>
@@ -453,6 +455,13 @@ public:
     {
         const single_class_set* set = get_single_class_set<T>();
         if (set) set->prefetch_ptr_batch(entities, count);
+    }
+
+    template <typename T>
+    void prefetch_ptr_data(entity entitys) const noexcept
+    {
+        const single_class_set* set = get_single_class_set<T>();
+        if (set) set->prefetch_ptr_data<T>(entitys);
     }
 
     template <typename T>

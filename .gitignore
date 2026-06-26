@@ -5,6 +5,7 @@ times.hpp
 build/
 build_clang/
 build_msvc/
+build_avx2/
 
 .vscode
 

@@ -58,7 +58,7 @@
     - [获取组件](#获取组件-1)
     - [删除组件](#删除组件)
     - [容器访问](#容器访问)
-    - [性能开关](#性能开关)
+    - [信号与追踪开关](#信号与追踪开关)
     - [View系统](#view系统)
     - [Group系统](#group系统)
     - [runtime\_view](#runtime_view)
@@ -233,8 +233,8 @@ msg += msg2;  // switch_ = msg.switch_ && msg2.switch_
 
 | 模式 | 触发条件 | 迭代行为 |
 |------|---------|---------|
-| **dense（密集）** | `usage_` 范围内所有位均为 1（无空洞） | 线性扫描 `[0, usage_)`，无 bitmap 跳转 |
-| **sparse（稀疏）** | `usage_` 范围内存在空洞（有未构造的槽位） | 自动跳过未构造槽位，仅遍历已构造元素 |
+| **dense（密集）** | `index_` 范围内所有位均为 1（无空洞） | 线性扫描 `[0, index_)`，无 bitmap 跳转 |
+| **sparse（稀疏）** | `index_` 范围内存在空洞（有未构造的槽位） | 自动跳过未构造槽位，仅遍历已构造元素 |
 
 **模式切换：** 自动判断，无需手动干预。
 
@@ -305,7 +305,7 @@ msg += msg2;  // switch_ = msg.switch_ && msg2.switch_
 | 接口 | 说明 |
 |------|------|
 | `is_constructed_at(index)` | 检查指定位置是否已构造 |
-| `is_dense()` | 前 `usage_` 位是否全部为 1（O(1) 缓存） |
+| `is_dense()` | 前 `index_` 位是否全部为 1 |
 | `invalidate_count_cache()` | 使 count 缓存失效 |
 
 ### 各操作对 contiguity 的影响
@@ -398,7 +398,7 @@ pool.is_dense();              // 检查是否连续
 |---------|------|---------|
 | `sparse_erase_at()` 后仍期望连续迭代 | 产生空洞，迭代变稀疏模式 | 用 `emplace_at()` 填充空洞，或用 `erase()` 替代 |
 | 频繁 `sparse_erase_at()` + `emplace_at()` 来回切换 | 每次切换触发模式扫描 | 批量操作，或统一使用 `erase()`/`emplace()` 保持连续 |
-| `emplace_at()` 在远超 `usage_` 的索引上构造 | 中间留大量未初始化槽位，`size()` 暴增 | 用 `resize()` 预填充，或改用 `sparse_emplace_at()` |
+| `emplace_at()` 在远超 `index_` 的索引上构造 | 中间留大量未初始化槽位，`size()` 暴增 | 用 `resize()` 预填充，或改用 `sparse_emplace_at()` |
 | 在 sparse 模式下使用 `data()` + `span()` 做线性遍历 | 未初始化槽位包含垃圾数据 | 始终通过迭代器遍历，或先确认 `is_dense()` 为 true |
 | `emplace_at()` 期望覆盖已有值 | `emplace_at` 是 get-or-create，不覆盖 | 使用 `sparse_emplace_at()` 实现 insert-or-assign |
 
@@ -628,6 +628,7 @@ pool.reset();                        // 释放所有，回到初始状态
 | `prefetch_component(uint32_t entity_index)` | 预取 sparse 条目（按 entity index） |
 | `prefetch_ptr(entity)` | 预取 sparse 条目（按 entity） |
 | `prefetch_ptr_batch(const entity*, size_t)` | 批量预取 sparse 条目 |
+| `prefetch_ptr_data<T>(entity)` | 预取组件数据（按 entity，需先加载 sparse 条目） |
 | `get_ptr_batch(const entity*, T**, size_t)` | 批量查询组件指针（管线化预取） |
 
 ### 删除与清空
@@ -719,6 +720,7 @@ ECS 核心管理类，管理实体和所有组件集合。
 | `get_ptr_batch<T>(entities, results, count)` | 批量查询组件指针（管线化预取） |
 | `prefetch_ptr<T>(entity)` | 预取实体 sparse 条目 |
 | `prefetch_ptr_batch<T>(entities, count)` | 批量预取实体 sparse 条目 |
+| `prefetch_ptr_data<T>(entity)` | 预取组件数据（需先加载 sparse 条目获取 dense 索引） |
 
 ### 删除组件
 
@@ -743,7 +745,7 @@ ECS 核心管理类，管理实体和所有组件集合。
 | `get_component_meta(int type_id)` | 获取组件元数据（含 bit 位等信息） |
 | `get_single_class_set_by_id(int type_id)` | 通过 type_id 获取组件集合（运行时视图用） |
 
-### 性能开关
+### 信号与追踪开关
 
 | 接口 | 说明 |
 |------|------|
@@ -832,6 +834,10 @@ mgr.get_ptr_batch<Position>(entities.data(), results.data(), entities.size());
 // 预取组件指针
 mgr.prefetch_ptr<Position>(e1);
 mgr.prefetch_ptr_batch<Position>(entities.data(), entities.size());
+
+// 双级预取：先预取 sparse 条目，再预取组件数据
+mgr.prefetch_ptr<Position>(e1);
+mgr.prefetch_ptr_data<Position>(e1);
 
 // 批量添加
 class_pool<entity> ents = {e1, e2};

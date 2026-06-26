@@ -403,31 +403,6 @@ static void demo_class_pool()
     std::cout << "    \u79fb\u52a8\u8d4b\u503c: ";
     for (auto v : pool16) std::cout << v << " ";
     std::cout << "\n";
-
-    print_sub("性能特性: count() dense 短路 / pop_back() dense 快路径 / 稀疏迭代器字级跳跃");
-    {
-        // Dense count() 短路: O(1) 而非 O(usage_/64)
-        class_pool<int> p1 = {1, 2, 3, 4, 5};
-        print_kv("dense count() == size()", p1.count() == p1.size() && p1.is_dense());
-
-        // Dense pop_back() 快路径: 跳过 bitmap_test
-        p1.pop_back();
-        print_kv("dense pop_back 后 count()", p1.count());
-
-        // 稀疏迭代器字级跳跃: 按 64-bit 字跳跃而非逐位
-        class_pool<int> p2;
-        p2.resize(1000, 0);  // 密集填充 1000 个元素
-        p2.sparse_erase_at(500);  // 制造空洞
-        p2.sparse_erase_at(600);
-        size_t sparse_cnt = 0;
-        for (auto it = p2.begin(); it != p2.end(); ++it) { ++sparse_cnt; }
-        print_kv("稀疏迭代 998 元素 (countr_zero 跳跃)", sparse_cnt == 998);
-
-        // 空洞填充后自动切回 dense
-        p2.emplace_at(500, 42);
-        p2.emplace_at(600, 42);
-        print_kv("空洞填充后 is_dense()", p2.is_dense());
-    }
 }
 
 // =============================================================================
@@ -787,6 +762,11 @@ static void demo_manager()
     mgr.prefetch_ptr<Position>(e1);
     auto* p2 = mgr.get_ptr<Position>(e1);
     print_kv("prefetch_ptr<Position>(e1) + get_ptr", (p2 ? std::to_string(p2->x) + "," + std::to_string(p2->y) : "null"));
+
+    mgr.prefetch_ptr<Position>(e1);
+    mgr.prefetch_ptr_data<Position>(e1);
+    auto* p3 = mgr.get_ptr<Position>(e1);
+    print_kv("prefetch_ptr + prefetch_ptr_data + get_ptr", (p3 ? std::to_string(p3->x) + "," + std::to_string(p3->y) : "null"));
 
     print_sub("add_batch \u4e09\u79cd\u91cd\u8f7d");
     class_pool<entity> batch_ents = {mgr.create_entity(), mgr.create_entity()};

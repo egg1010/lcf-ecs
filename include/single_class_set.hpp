@@ -437,36 +437,48 @@ public:
     [[nodiscard]] T* get_ptr(entity e) noexcept
     {
         if (!e.is_valid() || type_id_ != type_id::get_type_id<T>() ||
-            e.parts_.index_ >= sparse_combined_.size() || sparse_version_at(e.parts_.index_) != e.parts_.version_) [[unlikely]]
+            e.parts_.index_ >= sparse_combined_.size()) [[unlikely]]
         {
             return nullptr;
         }
-        return &(*get_typed_pool<T>())[sparse_dense_at(e.parts_.index_)];
+        const uint64_t combined = sparse_combined_[e.parts_.index_];
+        if (static_cast<uint32_t>(combined) != e.parts_.version_) [[unlikely]]
+            return nullptr;
+        return &(*get_typed_pool<T>())[static_cast<uint32_t>(combined >> 32)];
     }
 
     template <typename T>
     [[nodiscard]] const T* get_ptr(entity e) const noexcept
     {
         if (!e.is_valid() || type_id_ != type_id::get_type_id<T>() ||
-            e.parts_.index_ >= sparse_combined_.size() || sparse_version_at(e.parts_.index_) != e.parts_.version_) [[unlikely]]
+            e.parts_.index_ >= sparse_combined_.size()) [[unlikely]]
             return nullptr;
-        return &(*get_typed_pool<T>())[sparse_dense_at(e.parts_.index_)];
+        const uint64_t combined = sparse_combined_[e.parts_.index_];
+        if (static_cast<uint32_t>(combined) != e.parts_.version_) [[unlikely]]
+            return nullptr;
+        return &(*get_typed_pool<T>())[static_cast<uint32_t>(combined >> 32)];
     }
 
     template <typename T>
     [[nodiscard]] T* get_ptr_fast(entity e) noexcept
     {
-        if (e.parts_.index_ >= sparse_combined_.size() || sparse_version_at(e.parts_.index_) != e.parts_.version_) [[unlikely]]
+        if (e.parts_.index_ >= sparse_combined_.size()) [[unlikely]]
             return nullptr;
-        return &(*get_typed_pool<T>())[sparse_dense_at(e.parts_.index_)];
+        const uint64_t combined = sparse_combined_[e.parts_.index_];
+        if (static_cast<uint32_t>(combined) != e.parts_.version_) [[unlikely]]
+            return nullptr;
+        return &(*get_typed_pool<T>())[static_cast<uint32_t>(combined >> 32)];
     }
 
     template <typename T>
     [[nodiscard]] const T* get_ptr_fast(entity e) const noexcept
     {
-        if (e.parts_.index_ >= sparse_combined_.size() || sparse_version_at(e.parts_.index_) != e.parts_.version_) [[unlikely]]
+        if (e.parts_.index_ >= sparse_combined_.size()) [[unlikely]]
             return nullptr;
-        return &(*get_typed_pool<T>())[sparse_dense_at(e.parts_.index_)];
+        const uint64_t combined = sparse_combined_[e.parts_.index_];
+        if (static_cast<uint32_t>(combined) != e.parts_.version_) [[unlikely]]
+            return nullptr;
+        return &(*get_typed_pool<T>())[static_cast<uint32_t>(combined >> 32)];
     }
 
     template <typename T>
@@ -495,6 +507,17 @@ public:
     {
         for (size_t i = 0; i < count; ++i)
             PREFETCH_R(&sparse_combined_[entities[i].parts_.index_]);
+    }
+
+    template <typename T>
+    void prefetch_ptr_data(entity e) const noexcept
+    {
+        if (e.parts_.index_ < sparse_combined_.size()) [[likely]]
+        {
+            const uint64_t combined = sparse_combined_[e.parts_.index_];
+            const uint32_t dense = static_cast<uint32_t>(combined >> 32);
+            PREFETCH_R(&(*get_typed_pool<T>())[dense]);
+        }
     }
 
     template <typename T>

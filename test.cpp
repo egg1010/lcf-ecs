@@ -2636,20 +2636,103 @@ int main()
 
         {
             std::uniform_int_distribution<size_t> idx_dist(0, entity_count - 1);
+            const size_t query_count = 100000;
 
-            timer.reset();
-            for (size_t i = 0; i < 100000; ++i) {
-                auto* p = ecss.get_ptr<Position>(entities[idx_dist(gen)]);
+            class_pool<entity> query_ents;
+            query_ents.resize(query_count);
+            for (size_t i = 0; i < query_count; ++i)
+                query_ents[i] = entities[idx_dist(gen)];
+
+            for (size_t i = 0; i < query_count; ++i)
+            {
+                auto* p = ecss.get_ptr<Position>(query_ents[i]);
                 volatile bool b = (p != nullptr); (void)b;
             }
-            print_perf("get_ptr 随机查询", 100000, timer.elapsed_ms());
 
             timer.reset();
-            for (size_t i = 0; i < 100000; ++i) {
-                auto* p = ecss.get_ptr_fast<Position>(entities[idx_dist(gen)]);
+            for (size_t i = 0; i < query_count; ++i)
+            {
+                auto* p = ecss.get_ptr<Position>(query_ents[i]);
                 volatile bool b = (p != nullptr); (void)b;
             }
-            print_perf("get_ptr_fast 快速查询", 100000, timer.elapsed_ms());
+            print_perf("get_ptr 随机查询", query_count, timer.elapsed_ms());
+
+            timer.reset();
+            for (size_t i = 0; i < query_count; ++i)
+            {
+                auto* p = ecss.get_ptr_fast<Position>(query_ents[i]);
+                volatile bool b = (p != nullptr); (void)b;
+            }
+            print_perf("get_ptr_fast 快速查询", query_count, timer.elapsed_ms());
+
+            class_pool<entity> rand_ents;
+            rand_ents.resize(query_count);
+            for (size_t i = 0; i < query_count; ++i)
+                rand_ents[i] = entities[idx_dist(gen)];
+
+            const auto* pos_set = ecss.get_single_class_set<Position>();
+            constexpr size_t sparse_dist = 16;
+            constexpr size_t data_dist = 4;
+
+            for (size_t i = 0; i < sparse_dist; ++i)
+                pos_set->prefetch_ptr(rand_ents[i]);
+            for (size_t i = 0; i < data_dist; ++i)
+                pos_set->prefetch_ptr_data<Position>(rand_ents[i]);
+
+            timer.reset();
+            size_t pf_hit = 0;
+            for (size_t i = 0; i < query_count; ++i)
+            {
+                if (i + sparse_dist < query_count)
+                    pos_set->prefetch_ptr(rand_ents[i + sparse_dist]);
+                if (i + data_dist < query_count)
+                    pos_set->prefetch_ptr_data<Position>(rand_ents[i + data_dist]);
+                auto* p = pos_set->get_ptr<Position>(rand_ents[i]);
+                if (p) { ++pf_hit; volatile float d = p->x; (void)d; }
+            }
+            print_perf("get_ptr 随机查询 (双级预取)", pf_hit, timer.elapsed_ms());
+
+            class_pool<entity> cache_ents;
+            cache_ents.resize(query_count);
+            for (size_t i = 0; i < query_count; ++i)
+                cache_ents[i] = entities[idx_dist(gen)];
+
+            class_pool<uint64_t> cache_evict;
+            constexpr size_t evict_bytes = 64 * 1024 * 1024;
+            cache_evict.resize(evict_bytes / sizeof(uint64_t));
+            volatile uint64_t evict_sink = 0;
+
+            for (size_t rep = 0; rep < 2; ++rep)
+            {
+                for (size_t i = 0; i < cache_evict.size(); ++i)
+                    evict_sink = cache_evict[i];
+            }
+
+            timer.reset();
+            size_t cold_hit = 0;
+            for (size_t i = 0; i < query_count; ++i)
+            {
+                auto* p = pos_set->get_ptr<Position>(cache_ents[i]);
+                if (p) { ++cold_hit; volatile float d = p->x; (void)d; }
+            }
+            double cold_ms = timer.elapsed_ms();
+
+            timer.reset();
+            size_t warm_hit = 0;
+            for (size_t i = 0; i < query_count; ++i)
+            {
+                auto* p = pos_set->get_ptr<Position>(cache_ents[i]);
+                if (p) { ++warm_hit; volatile float d = p->x; (void)d; }
+            }
+            double warm_ms = timer.elapsed_ms();
+
+            print_perf("缓存命中率 冷查询", query_count, cold_ms);
+            print_perf("缓存命中率 暖查询", query_count, warm_ms);
+            double efficiency = cold_ms > 0.01 ? (1.0 - warm_ms / cold_ms) * 100.0 : 0.0;
+            std::ostringstream oss;
+            oss << std::fixed << std::setprecision(1) << efficiency << "%";
+            print_item("缓存有效率", oss.str());
+            (void)evict_sink;
         }
 
         // ---- 14.11 实体/组件操作 ----
