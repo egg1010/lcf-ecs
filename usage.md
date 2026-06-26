@@ -227,7 +227,7 @@ msg += msg2;  // switch_ = msg.switch_ && msg2.switch_
 
 ## 3. class_pool\<T> — 核心容器
 
-基于 bitmap 稀疏集的高性能容器，替代 `std::vector`。
+基于 bitmap 稀疏集的容器，替代 `std::vector`。
 
 **两种模式：**
 
@@ -299,7 +299,6 @@ msg += msg2;  // switch_ = msg.switch_ && msg2.switch_
 | `resize(size_t)` | 扩容（不填充值） |
 | `resize(size_t, const T& value)` | 调整大小并填充值 |
 | `swap(other)` | 交换两个容器 |
-| `push_back_unchecked(const T&)` | 尾部追加（不设 bitmap 位，不更新 count 缓存，内部批量操作用） |
 
 ### 稀疏集/Bitmap
 
@@ -748,9 +747,9 @@ ECS 核心管理类，管理实体和所有组件集合。
 
 | 接口 | 说明 |
 |------|------|
-| `disable_comp_signals()` | 禁用组件信号推送（高频 add 场景优化） |
+| `disable_comp_signals()` | 禁用组件信号推送 |
 | `enable_comp_signals()` | 启用组件信号推送 |
-| `disable_track_changes()` | 禁用版本追踪（高频 add 场景优化） |
+| `disable_track_changes()` | 禁用版本追踪 |
 | `enable_track_changes()` | 启用版本追踪 |
 
 ### View系统
@@ -825,12 +824,12 @@ mgr.addc(e1, Health{100, 100})
 // 获取组件
 Position* p = mgr.get_ptr<Position>(e1);
 
-// 批量查询组件（管线化预取，性能优于逐个 get_ptr）
+// 批量查询组件
 class_pool<Position*> results;
 results.resize(entities.size());
 mgr.get_ptr_batch<Position>(entities.data(), results.data(), entities.size());
 
-// 预取组件指针（搭配 get_ptr 管线化使用）
+// 预取组件指针
 mgr.prefetch_ptr<Position>(e1);
 mgr.prefetch_ptr_batch<Position>(entities.data(), entities.size());
 
@@ -1134,7 +1133,7 @@ manager 级别的排序工具，将 dense 数组按组件值重排，后续迭�
 |------|------|
 | `sort_entities_by_component<T>(cmp)` | 按组件 T 的值排序 dense 数组（同步更新 sparse 映射） |
 | `reorder_by_component<T, Other>(cmp)` | 按 Other 的值重排 T 的 dense 数组 |
-| `sort_component_container<T>(cmp)` | 仅排序组件池数据，不重排 dense 和 sparse（适用于临时排序场景） |
+| `sort_component_container<T>(cmp)` | 按组件 T 的值排序并同步更新 dense/sparse 映射 |
 
 ```cpp
 // 按 Position.x 升序排序
@@ -1147,7 +1146,7 @@ mgr.reorder_by_component<Position, Velocity>([](Velocity& a, Velocity& b) {
     return a.dx > b.dx;
 });
 
-// 仅排序组件池（不更新 dense/sparse，实体顺序不变）
+// 排序组件池（同步更新 dense/sparse，保持 entity-component 映射一致）
 mgr.sort_component_container<Position>([](Position& a, Position& b) {
     return a.x < b.x;
 });
@@ -1173,11 +1172,11 @@ paged.for_each([](Position& p, Velocity& v) {
 
 ### 10.11 sorted_by_component — 排序视图
 
-通过 `sorted_by_component<T>(cmp)` 链式调用，按指定组件值临时排序查询结果。排序在首次 `for_each` 时执行（懒构建），通过版本号检测变更自动重建缓存。适用于 `single_view` 和 `multi_view`。
+通过 `sorted_by_component<T>(cmp)` 链式调用，按指定组件值临时排序查询结果。通过版本号检测变更自动重建缓存。适用于 `single_view` 和 `multi_view`。
 
 | 接口 | 说明 |
 |------|------|
-| `size()` | 排序后数量 |
+| `size()` | 排序后数量（仅含拥有全部组件的有效实体） |
 | `empty()` | 是否为空 |
 | `for_each(func)` | 按排序顺序遍历（自动检测 entity 参数） |
 
@@ -1448,7 +1447,7 @@ ev2.for_each([](Position& p, Health& h) {
 | `filter_view` 过滤条件变化后忘记 `rebuild()` | 过滤结果过期，仍返回旧数据 | 组件数据变化后调用 `rebuild()` |
 | `exactly_one()` 在实体数不为 1 时使用 | 行为未定义 | 先检查 `size() == 1`，或使用 `find_one()` |
 | 依赖 `filter_changed` 检测 `get_ptr()` 修改 | 直接修改内存不触发变更检测 | 通过 `add()` 覆盖触发变更，或使用 `track_changes` |
-| 在多组件 View 中混用 `get_ptr_fast` 和 `get_ptr` | 性能不一致且类型安全边界模糊 | 同一 View 中统一使用一种获取方式 |
+| 在多组件 View 中混用 `get_ptr_fast` 和 `get_ptr` | 类型安全边界模糊 | 同一 View 中统一使用一种获取方式 |
 
 ---
 
@@ -1525,7 +1524,7 @@ og3.for_each([](entity e, Position& p, Velocity& v, Health& h) {
 
 ### 11.3 ReorderGroup (`group` + `reorder`)
 
-通过 `mgr.group<First, Rest...>(ecs::reorder<First>)` 创建，与 OwningGroup 同样重排主集，但语义更轻——仅表达"允许重排以换取性能"，不暗示生命周期所有权。
+通过 `mgr.group<First, Rest...>(ecs::reorder<First>)` 创建，与 OwningGroup 同样重排主集，但语义更轻——仅表达"允许重排"，不暗示生命周期所有权。
 
 ```cpp
 // ReorderGroup: Position 被重排
@@ -1896,7 +1895,7 @@ cmake --build . --config Release
 
 | 宏 | 说明 |
 |------|------|
-| `VOID_ANY_ENABLE_SSO` | 启用 void_any 小对象优化（SSO），小对象内联存储 |
+| `VOID_ANY_ENABLE_SSO` | 启用 void_any 小对象存储（SSO），小对象内联存储 |
 | `VOID_ANY_ENABLE_MEMORY_POOL` | 启用 void_any 内存池，使用 `memory_pool` 替代 `::operator new` |
 | `VOID_ANY_SSO_BUFFER_SIZE` | SSO 缓冲区大小（默认 32 字节），仅在启用 SSO 时有效 |
 | `VOID_ANY_MEMORY_POOL_NOT_ENABLED` | 禁用内存池（与 `VOID_ANY_ENABLE_MEMORY_POOL` 互斥） |
@@ -1910,7 +1909,7 @@ cmake --build . --config Release
 // 启用内存池
 #define VOID_ANY_ENABLE_MEMORY_POOL
 
-// 启用小对象优化
+// 启用小对象存储
 #define VOID_ANY_ENABLE_SSO
 
 // SSO 缓冲区大小

@@ -1405,9 +1405,9 @@ static void demo_sort()
     mgr.view<Position>().for_each([](Position& p) { std::cout << p.x << " "; });
     std::cout << "\n";
 
-    print_sub("sort_component_container<Position> (\u4ec5\u6392\u5e8f\u7ec4\u4ef6\u6c60\uff0c\u4e0d\u91cd\u6392 dense)");
+    print_sub("sort_component_container<Position> (排序组件池并同步 dense/sparse 映射)");
     mgr.sort_component_container<Position>([](Position& a, Position& b) { return a.x < b.x; });
-    std::cout << "    \u6392\u5e8f\u540e\u7ec4\u4ef6\u6c60: ";
+    std::cout << "    排序后组件池: ";
     auto* pool = mgr.get_component_vector<Position>();
     if (pool)
     {

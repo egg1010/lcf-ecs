@@ -1,6 +1,7 @@
 #include "include/component.hpp"
 #include "include/void_any.hpp"
 #include "include/memory_pool.hpp"
+#include "include/class_pool.hpp"
 #include <iostream>
 #include <chrono>
 #include <random>
@@ -1198,6 +1199,96 @@ int main()
             size_t cnt4 = 0;
             cv.for_each([&](Position&, Velocity&) { ++cnt4; });
             print_item("track_changes reset后全量", cnt4 == 5);
+        }
+
+        // sort_entities_by_component 正确性
+        {
+            ecs::manager smgr;
+            smgr.append_preallocated_entities(10);
+            auto a = smgr.create_entity();
+            auto b = smgr.create_entity();
+            auto c = smgr.create_entity();
+            smgr.add(a, Position{30, 0, 0});
+            smgr.add(b, Position{10, 0, 0});
+            smgr.add(c, Position{20, 0, 0});
+            smgr.add(a, Velocity{3, 0, 0});
+            smgr.add(b, Velocity{1, 0, 0});
+            smgr.add(c, Velocity{2, 0, 0});
+
+            smgr.sort_entities_by_component<Position>(
+                [](Position& x, Position& y) { return x.x < y.x; });
+
+            class_pool<float> xs;
+            smgr.view<Position>().for_each([&](Position& p) { xs.emplace_back(p.x); });
+            bool sorted_ok = xs.size() == 3 && xs[0] == 10 && xs[1] == 20 && xs[2] == 30;
+            print_item("sort_entities_by_component 排序正确", sorted_ok);
+
+            Velocity* va = smgr.get_ptr<Velocity>(a);
+            Velocity* vb = smgr.get_ptr<Velocity>(b);
+            Velocity* vc = smgr.get_ptr<Velocity>(c);
+            print_item("sort_entities_by_component 映射保持(a)",
+                va != nullptr && va->vx == 3);
+            print_item("sort_entities_by_component 映射保持(b)",
+                vb != nullptr && vb->vx == 1);
+            print_item("sort_entities_by_component 映射保持(c)",
+                vc != nullptr && vc->vx == 2);
+        }
+
+        // sort_component_container 正确性 + 映射同步
+        {
+            ecs::manager cmgr;
+            cmgr.append_preallocated_entities(10);
+            auto a = cmgr.create_entity();
+            auto b = cmgr.create_entity();
+            auto c = cmgr.create_entity();
+            cmgr.add(a, Position{30, 0, 0});
+            cmgr.add(b, Position{10, 0, 0});
+            cmgr.add(c, Position{20, 0, 0});
+
+            cmgr.sort_component_container<Position>(
+                [](Position& x, Position& y) { return x.x < y.x; });
+
+            Position* pa = cmgr.get_ptr<Position>(a);
+            Position* pb = cmgr.get_ptr<Position>(b);
+            Position* pc = cmgr.get_ptr<Position>(c);
+            bool mapping_ok = pa && pb && pc
+                && pa->x == 30 && pb->x == 10 && pc->x == 20;
+            print_item("sort_component_container 映射同步", mapping_ok);
+
+            class_pool<float> xs;
+            cmgr.view<Position>().for_each([&](Position& p) { xs.emplace_back(p.x); });
+            bool sorted_ok = xs.size() == 3 && xs[0] == 10 && xs[1] == 20 && xs[2] == 30;
+            print_item("sort_component_container 排序正确", sorted_ok);
+        }
+
+        // reorder_by_component 正确性
+        {
+            ecs::manager rmgr;
+            rmgr.append_preallocated_entities(10);
+            auto a = rmgr.create_entity();
+            auto b = rmgr.create_entity();
+            auto c = rmgr.create_entity();
+            rmgr.add(a, Position{10, 0, 0});
+            rmgr.add(b, Position{20, 0, 0});
+            rmgr.add(c, Position{30, 0, 0});
+            rmgr.add(a, Velocity{1, 0, 0});
+            rmgr.add(b, Velocity{2, 0, 0});
+            rmgr.add(c, Velocity{3, 0, 0});
+
+            rmgr.reorder_by_component<Position, Velocity>(
+                [](Velocity& x, Velocity& y) { return x.vx > y.vx; });
+
+            class_pool<float> xs;
+            rmgr.view<Position>().for_each([&](Position& p) { xs.emplace_back(p.x); });
+            bool reordered = xs.size() == 3 && xs[0] == 30 && xs[1] == 20 && xs[2] == 10;
+            print_item("reorder_by_component 重排正确", reordered);
+
+            Position* pa = rmgr.get_ptr<Position>(a);
+            Position* pb = rmgr.get_ptr<Position>(b);
+            Position* pc = rmgr.get_ptr<Position>(c);
+            bool mapping_ok = pa && pb && pc
+                && pa->x == 10 && pb->x == 20 && pc->x == 30;
+            print_item("reorder_by_component 映射保持", mapping_ok);
         }
     }
 
@@ -2600,7 +2691,837 @@ int main()
             print_perf("实体删除 delete_entity", op_count / 2, timer.elapsed_ms());
         }
 
-        // ---- 14.12 汇总 ----
+        // ---- 14.12 class_pool 性能 ----
+        print_perf_sub("14.12 class_pool 容器接口");
+        {
+            const size_t cp_count = 500000;
+
+            // emplace_back
+            timer.reset();
+            class_pool<int> cp_em;
+            cp_em.increase_capacity(cp_count);
+            for (size_t i = 0; i < cp_count; ++i)
+                cp_em.emplace_back(static_cast<int>(i));
+            print_perf("class_pool emplace_back", cp_count, timer.elapsed_ms());
+
+            // push_back_unchecked
+            timer.reset();
+            class_pool<int> cp_pb;
+            cp_pb.increase_capacity(cp_count);
+            for (size_t i = 0; i < cp_count; ++i)
+                cp_pb.push_back_unchecked(static_cast<int>(i));
+            print_perf("class_pool push_back_unchecked", cp_count, timer.elapsed_ms());
+
+            // 范围构造（批量构造，公开接口）
+            {
+                class_pool<int> src(cp_count, 42);
+                timer.reset();
+                class_pool<int> cp_ab(src.begin(), src.end());
+                print_perf("class_pool 范围构造(批量)", cp_count, timer.elapsed_ms());
+            }
+
+            // resize
+            timer.reset();
+            class_pool<int> cp_rz;
+            cp_rz.resize(cp_count);
+            print_perf("class_pool resize(cap)", cp_count, timer.elapsed_ms());
+
+            // resize with value
+            timer.reset();
+            class_pool<int> cp_rzv;
+            cp_rzv.resize(cp_count, 77);
+            print_perf("class_pool resize(cap,val)", cp_count, timer.elapsed_ms());
+
+            // increase_capacity(cap, value)
+            timer.reset();
+            class_pool<int> cp_ic;
+            cp_ic.emplace_back(1);
+            cp_ic.increase_capacity(cp_count, 99);
+            print_perf("class_pool increase_capacity(cap,val)", cp_count, timer.elapsed_ms());
+
+            // emplace_at (sparse)
+            timer.reset();
+            class_pool<int> cp_ea;
+            cp_ea.increase_capacity(cp_count);
+            for (size_t i = 0; i < cp_count; ++i)
+                cp_ea.emplace_at(i, static_cast<int>(i));
+            print_perf("class_pool emplace_at", cp_count, timer.elapsed_ms());
+
+            // sparse_emplace_at
+            timer.reset();
+            class_pool<int> cp_sea;
+            cp_sea.increase_capacity(cp_count);
+            for (size_t i = 0; i < cp_count; ++i)
+                cp_sea.sparse_emplace_at(i, static_cast<int>(i));
+            print_perf("class_pool sparse_emplace_at", cp_count, timer.elapsed_ms());
+
+            // sparse_erase_at
+            timer.reset();
+            for (size_t i = 0; i < cp_count; i += 2)
+                cp_sea.sparse_erase_at(i);
+            print_perf("class_pool sparse_erase_at (隔位)", cp_count / 2, timer.elapsed_ms());
+
+            // erase
+            timer.reset();
+            class_pool<int> cp_er = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+            for (int iter = 0; iter < 100000; ++iter) {
+                class_pool<int> tmp = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+                tmp.erase(std::next(tmp.begin(), 5));
+            }
+            print_perf("class_pool erase", 100000, timer.elapsed_ms());
+
+            // emplace (insert)
+            timer.reset();
+            for (int iter = 0; iter < 100000; ++iter) {
+                class_pool<int> tmp = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+                tmp.emplace(std::next(tmp.begin(), 5), 99);
+            }
+            print_perf("class_pool emplace(insert)", 100000, timer.elapsed_ms());
+
+            // pop_back
+            timer.reset();
+            class_pool<int> cp_pop;
+            cp_pop.increase_capacity(cp_count);
+            for (size_t i = 0; i < cp_count; ++i) cp_pop.emplace_back(static_cast<int>(i));
+            for (size_t i = 0; i < cp_count; ++i) cp_pop.pop_back();
+            print_perf("class_pool pop_back", cp_count, timer.elapsed_ms());
+
+            // swap
+            timer.reset();
+            class_pool<int> cp_s1 = {1, 2, 3}, cp_s2 = {4, 5, 6, 7, 8};
+            for (int iter = 0; iter < 1000000; ++iter) {
+                cp_s1.swap(cp_s2);
+            }
+            print_perf("class_pool swap", 1000000, timer.elapsed_ms());
+
+            // shrink_to_fit
+            timer.reset();
+            class_pool<int> cp_sf;
+            cp_sf.increase_capacity(cp_count);
+            for (size_t i = 0; i < cp_count / 2; ++i) cp_sf.emplace_back(static_cast<int>(i));
+            cp_sf.shrink_to_fit();
+            print_perf("class_pool shrink_to_fit", cp_count / 2, timer.elapsed_ms());
+
+            // reduce_capacity
+            timer.reset();
+            class_pool<int> cp_rc;
+            cp_rc.increase_capacity(cp_count);
+            for (size_t i = 0; i < cp_count; ++i) cp_rc.emplace_back(static_cast<int>(i));
+            cp_rc.reduce_capacity(cp_count / 2);
+            print_perf("class_pool reduce_capacity", cp_count, timer.elapsed_ms());
+
+            // reduce_capacity(dst)
+            timer.reset();
+            class_pool<int> cp_src2;
+            cp_src2.increase_capacity(cp_count);
+            for (size_t i = 0; i < cp_count; ++i) cp_src2.emplace_back(static_cast<int>(i));
+            class_pool<int> cp_dst2;
+            cp_src2.reduce_capacity(cp_count / 2, cp_dst2);
+            print_perf("class_pool reduce_capacity(dst)", cp_count / 2, timer.elapsed_ms());
+
+            // clear
+            timer.reset();
+            class_pool<int> cp_cl;
+            cp_cl.increase_capacity(cp_count);
+            for (size_t i = 0; i < cp_count; ++i) cp_cl.emplace_back(static_cast<int>(i));
+            cp_cl.clear();
+            print_perf("class_pool clear", cp_count, timer.elapsed_ms());
+
+            // 遍历
+            timer.reset();
+            class_pool<int> cp_tr;
+            cp_tr.increase_capacity(cp_count);
+            for (size_t i = 0; i < cp_count; ++i) cp_tr.emplace_back(static_cast<int>(i));
+            volatile long long sum = 0;
+            for (auto it = cp_tr.begin(); it != cp_tr.end(); ++it) sum += *it;
+            print_perf("class_pool 遍历 begin/end", cp_count, timer.elapsed_ms());
+
+            // count (sparse)
+            timer.reset();
+            class_pool<int> cp_cnt;
+            cp_cnt.increase_capacity(cp_count);
+            for (size_t i = 0; i < cp_count; ++i) cp_cnt.emplace_back(static_cast<int>(i));
+            for (size_t i = 0; i < cp_count; i += 2) cp_cnt.sparse_erase_at(i);
+            size_t cnt_cp = cp_cnt.count();
+            print_perf("class_pool count (sparse)", cnt_cp, timer.elapsed_ms());
+
+            // is_constructed_at
+            timer.reset();
+            volatile bool bv = false;
+            for (size_t i = 0; i < cp_count; ++i) bv = cp_tr.is_constructed_at(i);
+            print_perf("class_pool is_constructed_at", cp_count, timer.elapsed_ms());
+        }
+
+        // ---- 14.13 void_any 性能 ----
+        print_perf_sub("14.13 void_any 类型擦除容器");
+        {
+            const size_t va_count = 1000000;
+
+            // 构造
+            timer.reset();
+            class_pool<void_any> va_pool;
+            va_pool.increase_capacity(va_count);
+            for (size_t i = 0; i < va_count; ++i)
+                va_pool.emplace_back(static_cast<int>(i));
+            print_perf("void_any 构造(T&&)", va_count, timer.elapsed_ms());
+
+            // set
+            timer.reset();
+            for (size_t i = 0; i < va_count; ++i)
+                va_pool[i].set(static_cast<double>(i));
+            print_perf("void_any set()", va_count, timer.elapsed_ms());
+
+            // has_value
+            timer.reset();
+            size_t hv = 0;
+            for (size_t i = 0; i < va_count; ++i)
+                if (va_pool[i].has_value()) ++hv;
+            volatile size_t hv_sink = hv;
+            (void)hv_sink;
+            print_perf("void_any has_value()", va_count, timer.elapsed_ms());
+
+            // type_id
+            timer.reset();
+            volatile int tid = 0;
+            for (size_t i = 0; i < va_count; ++i)
+                tid = va_pool[i].type_id();
+            print_perf("void_any type_id()", va_count, timer.elapsed_ms());
+
+            // get_ptr
+            timer.reset();
+            volatile double* dp = nullptr;
+            for (size_t i = 0; i < va_count; ++i)
+                dp = va_pool[i].get_ptr<double>();
+            print_perf("void_any get_ptr<T>()", va_count, timer.elapsed_ms());
+
+            // fast_get_ptr
+            timer.reset();
+            for (size_t i = 0; i < va_count; ++i)
+                dp = va_pool[i].fast_get_ptr<double>();
+            print_perf("void_any fast_get_ptr<T>()", va_count, timer.elapsed_ms());
+
+            // get_ptr_unchecked
+            timer.reset();
+            for (size_t i = 0; i < va_count; ++i)
+                dp = va_pool[i].get_ptr_unchecked<double>();
+            print_perf("void_any get_ptr_unchecked<T>()", va_count, timer.elapsed_ms());
+
+            // get
+            timer.reset();
+            for (size_t i = 0; i < va_count; ++i) {
+                double v = va_pool[i].get<double>();
+                (void)v;
+            }
+            print_perf("void_any get<T>()", va_count, timer.elapsed_ms());
+
+            // reset
+            timer.reset();
+            for (size_t i = 0; i < va_count; ++i)
+                va_pool[i].reset();
+            print_perf("void_any reset()", va_count, timer.elapsed_ms());
+
+            // 拷贝构造
+            timer.reset();
+            void_any va_src(42);
+            for (size_t i = 0; i < va_count; ++i) {
+                void_any va_copy_obj(va_src);
+            }
+            print_perf("void_any 拷贝构造", va_count, timer.elapsed_ms());
+
+            // 移动构造
+            timer.reset();
+            for (size_t i = 0; i < va_count; ++i) {
+                void_any va_tmp(42);
+                void_any va_move(std::move(va_tmp));
+            }
+            print_perf("void_any 移动构造", va_count, timer.elapsed_ms());
+        }
+
+        // ---- 14.14 memory_pool 性能 ----
+        print_perf_sub("14.14 memory_pool 内存池");
+        {
+            const size_t mp_count = 1000000;
+
+            // allocate/deallocate
+            timer.reset();
+            memory_pool mp(1024 * 1024);
+            class_pool<void*> ptrs;
+            ptrs.increase_capacity(mp_count);
+            for (size_t i = 0; i < mp_count; ++i)
+                ptrs.emplace_back(mp.allocate(64));
+            print_perf("memory_pool allocate(64)", mp_count, timer.elapsed_ms());
+
+            timer.reset();
+            for (size_t i = 0; i < mp_count; ++i)
+                mp.deallocate(ptrs[i]);
+            print_perf("memory_pool deallocate", mp_count, timer.elapsed_ms());
+
+            // construct/destroy
+            timer.reset();
+            class_pool<int*> iptrs;
+            iptrs.increase_capacity(mp_count);
+            for (size_t i = 0; i < mp_count; ++i)
+                iptrs.emplace_back(mp.construct<int>(static_cast<int>(i)));
+            print_perf("memory_pool construct<int>", mp_count, timer.elapsed_ms());
+
+            timer.reset();
+            for (size_t i = 0; i < mp_count; ++i)
+                mp.destroy(iptrs[i]);
+            print_perf("memory_pool destroy<int>", mp_count, timer.elapsed_ms());
+
+            // increase_capacity
+            timer.reset();
+            memory_pool mp2(4096);
+            mp2.increase_capacity(8 * 1024 * 1024);
+            print_perf("memory_pool increase_capacity", 1, timer.elapsed_ms());
+
+            // reduce_capacity
+            timer.reset();
+            mp2.reduce_capacity(0);
+            print_perf("memory_pool reduce_capacity", 1, timer.elapsed_ms());
+
+            // reset
+            timer.reset();
+            memory_pool mp3(4096);
+            for (size_t i = 0; i < 10000; ++i) { void* p = mp3.allocate(64); (void)p; }
+            mp3.reset();
+            print_perf("memory_pool reset", 10000, timer.elapsed_ms());
+
+            // total_allocated / total_used / empty / chunk_size
+            timer.reset();
+            volatile size_t ta = 0, tu = 0;
+            volatile bool em = false;
+            volatile size_t cs = 0;
+            for (int i = 0; i < 1000000; ++i) {
+                ta = mp3.total_allocated();
+                tu = mp3.total_used();
+                em = mp3.empty();
+                cs = mp3.chunk_size();
+            }
+            print_perf("memory_pool 状态查询", 1000000, timer.elapsed_ms());
+        }
+
+        // ---- 14.15 operating_message 性能 ----
+        print_perf_sub("14.15 operating_message 操作消息");
+        {
+            const size_t om_count = 1000000;
+
+            // write_message
+            timer.reset();
+            operating_message om1;
+            for (size_t i = 0; i < om_count; ++i) {
+                om1.reset();
+                om1.write_message(true, "msg", i);
+            }
+            print_perf("operating_message write_message", om_count, timer.elapsed_ms());
+
+            // write_message_fmt
+            timer.reset();
+            operating_message om2;
+            for (size_t i = 0; i < om_count; ++i) {
+                om2.reset();
+                om2.write_message_fmt(true, "fmt: {} + {}", i, i + 1);
+            }
+            print_perf("operating_message write_message_fmt", om_count, timer.elapsed_ms());
+
+            // operator+=(string_view)
+            timer.reset();
+            for (size_t i = 0; i < om_count; ++i) {
+                operating_message om3;
+                om3 += "hello";
+                om3 += " world";
+            }
+            print_perf("operating_message operator+=(str)", om_count * 2, timer.elapsed_ms());
+
+            // operator+=(operating_message)
+            timer.reset();
+            for (size_t i = 0; i < om_count; ++i) {
+                operating_message om4, om5;
+                om5.write_message(true, "src");
+                om4 += std::move(om5);
+            }
+            print_perf("operating_message operator+=(om&&)", om_count, timer.elapsed_ms());
+
+            // reset / clear_message / set_switch_bool / get_switch_bool
+            timer.reset();
+            operating_message om6;
+            for (size_t i = 0; i < om_count; ++i) {
+                om6.reset();
+                om6.set_switch_bool(false);
+                volatile bool b = om6.get_switch_bool();
+                om6.clear_message();
+                (void)b;
+            }
+            print_perf("operating_message reset/clear/switch", om_count, timer.elapsed_ms());
+
+            // read_message / operator bool
+            timer.reset();
+            om6.reset();
+            om6.write_message(true, "test");
+            for (size_t i = 0; i < om_count; ++i) {
+                volatile bool b = (bool)om6;
+                auto sv = om6.read_message();
+                (void)sv; (void)b;
+            }
+            print_perf("operating_message read/bool", om_count, timer.elapsed_ms());
+        }
+
+        // ---- 14.16 id_allocation 性能 ----
+        print_perf_sub("14.16 id_allocation ID分配器");
+        {
+            const size_t id_count = 1000000;
+
+            // get_id
+            timer.reset();
+            id_allocation<int> ida;
+            volatile int id_sink = 0;
+            for (size_t i = 0; i < id_count; ++i)
+                id_sink = ida.get_id();
+            (void)id_sink;
+            print_perf("id_allocation get_id", id_count, timer.elapsed_ms());
+
+            // free_id
+            timer.reset();
+            class_pool<int> ids;
+            ids.increase_capacity(id_count);
+            for (size_t i = 0; i < id_count; ++i) ids.emplace_back(ida.get_id());
+            for (size_t i = 0; i < id_count; ++i) ida.free_id(ids[i]);
+            print_perf("id_allocation free_id", id_count, timer.elapsed_ms());
+
+            // 回收再分配
+            timer.reset();
+            volatile int id_sink2 = 0;
+            for (size_t i = 0; i < id_count; ++i)
+                id_sink2 = ida.get_id();
+            (void)id_sink2;
+            print_perf("id_allocation 回收再分配", id_count, timer.elapsed_ms());
+
+            // total_number_of_ids / maximum_id
+            timer.reset();
+            volatile size_t tn = 0, mx = 0;
+            for (int i = 0; i < 1000000; ++i) {
+                tn = ida.total_number_of_ids();
+                mx = ida.maximum_id();
+            }
+            print_perf("id_allocation total/maximum", 1000000, timer.elapsed_ms());
+        }
+
+        // ---- 14.17 信号系统性能 ----
+        print_perf_sub("14.17 生命周期信号系统");
+        {
+            const size_t sig_count = 500000;
+
+            // 即时信号：实体创建/销毁
+            {
+                ecs::manager mgr;
+                mgr.append_preallocated_entities(sig_count * 2);
+                size_t created = 0, destroyed = 0;
+                mgr.set_on_entity_created([](entity, void* d) noexcept { (*static_cast<size_t*>(d))++; }, &created);
+                mgr.set_on_entity_destroyed([](entity, void* d) noexcept { (*static_cast<size_t*>(d))++; }, &destroyed);
+
+                timer.reset();
+                class_pool<entity> ents;
+                ents.increase_capacity(sig_count);
+                for (size_t i = 0; i < sig_count; ++i)
+                    ents.emplace_back(mgr.create_entity());
+                print_perf("即时信号 entity_created", sig_count, timer.elapsed_ms());
+
+                timer.reset();
+                for (size_t i = 0; i < sig_count; ++i)
+                    mgr.delete_entity(ents[i]);
+                print_perf("即时信号 entity_destroyed", sig_count, timer.elapsed_ms());
+            }
+
+            // 即时信号：组件 add/remove
+            {
+                ecs::manager mgr;
+                mgr.append_preallocated_entities(sig_count);
+                size_t added = 0, removed = 0;
+                mgr.set_on_add<Position>([](entity, void*, void* d) noexcept { (*static_cast<size_t*>(d))++; }, &added);
+                mgr.set_on_remove<Position>([](entity, void*, void* d) noexcept { (*static_cast<size_t*>(d))++; }, &removed);
+
+                class_pool<entity> ents;
+                ents.increase_capacity(sig_count);
+                for (size_t i = 0; i < sig_count; ++i) ents.emplace_back(mgr.create_entity());
+
+                timer.reset();
+                for (size_t i = 0; i < sig_count; ++i)
+                    mgr.add(ents[i], Position{1.0f, 0, 0});
+                print_perf("即时信号 on_add<Position>", sig_count, timer.elapsed_ms());
+
+                timer.reset();
+                for (size_t i = 0; i < sig_count; ++i)
+                    mgr.hard_remove<Position>(ents[i]);
+                print_perf("即时信号 on_remove<Position>", sig_count, timer.elapsed_ms());
+            }
+
+            // 延迟信号：flush_entity_signals
+            {
+                ecs::manager mgr;
+                mgr.disable_comp_signals();
+                mgr.append_preallocated_entities(sig_count);
+                class_pool<entity> ents;
+                ents.increase_capacity(sig_count);
+                for (size_t i = 0; i < sig_count; ++i) ents.emplace_back(mgr.create_entity());
+                for (size_t i = 0; i < sig_count / 2; ++i) mgr.delete_entity(ents[i]);
+
+                timer.reset();
+                size_t created = 0, destroyed = 0;
+                mgr.flush_entity_signals([&](uint32_t type, uint32_t) noexcept {
+                    if (type == 0) created++;
+                    else destroyed++;
+                });
+                print_perf("flush_entity_signals", sig_count, timer.elapsed_ms());
+            }
+
+            // 延迟信号：flush_component_signals
+            {
+                ecs::manager mgr;
+                mgr.disable_track_changes();
+                mgr.append_preallocated_entities(sig_count);
+                class_pool<entity> ents;
+                ents.increase_capacity(sig_count);
+                for (size_t i = 0; i < sig_count; ++i) ents.emplace_back(mgr.create_entity());
+                for (size_t i = 0; i < sig_count; ++i) mgr.add(ents[i], Position{1.0f, 0, 0});
+                for (size_t i = 0; i < sig_count / 2; ++i) mgr.hard_remove<Position>(ents[i]);
+
+                timer.reset();
+                size_t added = 0, removed = 0;
+                mgr.flush_component_signals([&](uint32_t type, uint32_t, uint32_t) noexcept {
+                    if (type == 0) added++;
+                    else removed++;
+                });
+                print_perf("flush_component_signals", sig_count + sig_count / 2, timer.elapsed_ms());
+            }
+
+            // has_pending_signals 查询
+            timer.reset();
+            ecs::manager mgr_chk;
+            volatile bool hp = false;
+            for (int i = 0; i < 1000000; ++i) {
+                hp = mgr_chk.has_pending_entity_signals();
+                hp = mgr_chk.has_pending_component_signals();
+            }
+            print_perf("has_pending_signals 查询", 1000000 * 2, timer.elapsed_ms());
+
+            // enable/disable 信号开关
+            timer.reset();
+            for (int i = 0; i < 1000000; ++i) {
+                mgr_chk.disable_comp_signals();
+                mgr_chk.enable_comp_signals();
+                mgr_chk.disable_track_changes();
+                mgr_chk.enable_track_changes();
+            }
+            print_perf("enable/disable 信号开关", 1000000 * 4, timer.elapsed_ms());
+        }
+
+        // ---- 14.18 排序/重排接口性能 ----
+        print_perf_sub("14.18 排序 / 重排接口");
+        {
+            constexpr size_t sort_n = 100000;
+            ecs::manager sort_mgr;
+            sort_mgr.append_preallocated_entities(sort_n);
+            class_pool<entity> sort_ents;
+            sort_ents.increase_capacity(sort_n);
+            for (size_t i = 0; i < sort_n; ++i) {
+                sort_ents.emplace_back(sort_mgr.create_entity());
+                sort_mgr.add(sort_ents[i], Position{static_cast<float>(rand() % 10000), 0, 0});
+                sort_mgr.add(sort_ents[i], Velocity{static_cast<float>(rand() % 1000), 0, 0});
+            }
+
+            // sort_entities_by_component
+            timer.reset();
+            sort_mgr.sort_entities_by_component<Position>(
+                [](const Position& a, const Position& b) { return a.x < b.x; });
+            print_perf("sort_entities_by_component", sort_n, timer.elapsed_ms());
+
+            // reorder_by_component
+            timer.reset();
+            sort_mgr.reorder_by_component<Position, Velocity>(
+                [](const Velocity& a, const Velocity& b) { return a.vx < b.vx; });
+            print_perf("reorder_by_component", sort_n, timer.elapsed_ms());
+
+            // sort_component_container
+            timer.reset();
+            sort_mgr.sort_component_container<Position>(
+                [](const Position& a, const Position& b) { return a.x < b.x; });
+            print_perf("sort_component_container", sort_n, timer.elapsed_ms());
+
+            // single_view sorted_by_component
+            timer.reset();
+            {
+                auto sv = sort_mgr.view<Position>();
+                auto ssv = sv.sorted_by_component(
+                    [](const Position& a, const Position& b) { return a.x < b.x; });
+                size_t cnt = 0;
+                ssv.for_each([&](Position&) { cnt++; });
+                print_perf("single_view sorted_by_component", cnt, timer.elapsed_ms());
+            }
+
+            // multi_view sorted_by_component
+            timer.reset();
+            {
+                auto mv = sort_mgr.view<Position, Velocity>();
+                auto msv = mv.sorted_by_component<Position>(
+                    [](const Position& a, const Position& b) { return a.x < b.x; });
+                size_t cnt = 0;
+                msv.for_each([&](Position&, Velocity&) { cnt++; });
+                print_perf("multi_view sorted_by_component", cnt, timer.elapsed_ms());
+            }
+
+            // sorted_by_component_value 分组
+            timer.reset();
+            {
+                auto sv = sort_mgr.view<Position>();
+                auto gv = sv.sorted_by_component_value(
+                    [](Position& p) -> int { return static_cast<int>(p.x) / 1000; });
+                size_t groups = 0;
+                gv.for_each_group([&](int, size_t, size_t) { groups++; });
+                print_perf("sorted_by_component_value 分组", groups, timer.elapsed_ms());
+            }
+        }
+
+        // ---- 14.19 其他管理器接口性能 ----
+        print_perf_sub("14.19 其他管理器接口");
+        {
+            const size_t misc_count = 500000;
+
+            // is_entity_valid
+            timer.reset();
+            ecs::manager mgr_m;
+            mgr_m.append_preallocated_entities(misc_count);
+            class_pool<entity> ents_m;
+            ents_m.increase_capacity(misc_count);
+            for (size_t i = 0; i < misc_count; ++i) ents_m.emplace_back(mgr_m.create_entity());
+            volatile bool ev = false;
+            for (size_t i = 0; i < misc_count; ++i) ev = mgr_m.is_entity_valid(ents_m[i]);
+            print_perf("is_entity_valid", misc_count, timer.elapsed_ms());
+
+            // get_entity_mask
+            timer.reset();
+            volatile uint64_t em = 0;
+            for (size_t i = 0; i < misc_count; ++i) em = mgr_m.get_entity_mask(ents_m[i]);
+            print_perf("get_entity_mask", misc_count, timer.elapsed_ms());
+
+            // get_component_bit
+            timer.reset();
+            volatile uint64_t cb = 0;
+            for (int i = 0; i < 1000000; ++i) cb = mgr_m.get_component_bit<Position>();
+            print_perf("get_component_bit", 1000000, timer.elapsed_ms());
+
+            // get_component_meta
+            timer.reset();
+            volatile const ecs::component_meta* cm = nullptr;
+            int pid = type_id::get_type_id<Position>();
+            for (int i = 0; i < 1000000; ++i) cm = mgr_m.get_component_meta(pid);
+            print_perf("get_component_meta", 1000000, timer.elapsed_ms());
+
+            // get_single_class_set
+            timer.reset();
+            volatile single_class_set* scs = nullptr;
+            for (int i = 0; i < 1000000; ++i) scs = mgr_m.get_single_class_set<Position>();
+            print_perf("get_single_class_set", 1000000, timer.elapsed_ms());
+
+            // get_single_class_set_by_id
+            timer.reset();
+            for (int i = 0; i < 1000000; ++i) scs = mgr_m.get_single_class_set_by_id(pid);
+            print_perf("get_single_class_set_by_id", 1000000, timer.elapsed_ms());
+
+            // get_component_vector
+            timer.reset();
+            volatile class_pool<Position>* cv = nullptr;
+            for (int i = 0; i < 1000000; ++i) cv = mgr_m.get_component_vector<Position>();
+            print_perf("get_component_vector", 1000000, timer.elapsed_ms());
+
+            // get_entity_manager
+            timer.reset();
+            for (int i = 0; i < 1000000; ++i) {
+                auto& emr = mgr_m.get_entity_manager();
+                (void)emr;
+            }
+            print_perf("get_entity_manager", 1000000, timer.elapsed_ms());
+
+            // get_operating_message
+            timer.reset();
+            for (int i = 0; i < 1000000; ++i) {
+                auto& omr = mgr_m.get_operating_message();
+                (void)omr;
+            }
+            print_perf("get_operating_message", 1000000, timer.elapsed_ms());
+
+            // reserve_component_capacity
+            timer.reset();
+            mgr_m.reserve_component_capacity<Health>(misc_count);
+            print_perf("reserve_component_capacity", 1, timer.elapsed_ms());
+
+            // delete_type_container
+            for (size_t i = 0; i < misc_count; ++i) mgr_m.add(ents_m[i], Health{100, 100});
+            timer.reset();
+            mgr_m.delete_type_container<Health>();
+            print_perf("delete_type_container", misc_count, timer.elapsed_ms());
+
+            // hard_removec / soft_removec (链式)
+            {
+                ecs::manager mgr_ch;
+                mgr_ch.append_preallocated_entities(misc_count);
+                class_pool<entity> ents_ch;
+                ents_ch.increase_capacity(misc_count);
+                for (size_t i = 0; i < misc_count; ++i) {
+                    ents_ch.emplace_back(mgr_ch.create_entity());
+                    mgr_ch.add(ents_ch[i], Position{1.0f, 0, 0});
+                }
+                timer.reset();
+                for (size_t i = 0; i < misc_count; ++i)
+                    mgr_ch.hard_removec<Position>(ents_ch[i]);
+                print_perf("hard_removec (链式)", misc_count, timer.elapsed_ms());
+
+                for (size_t i = 0; i < misc_count; ++i) mgr_ch.add(ents_ch[i], Velocity{1.0f, 0, 0});
+                timer.reset();
+                for (size_t i = 0; i < misc_count; ++i)
+                    mgr_ch.soft_removec<Velocity>(ents_ch[i]);
+                print_perf("soft_removec (链式)", misc_count, timer.elapsed_ms());
+            }
+
+            // addc (链式)
+            ecs::manager mgr_ac;
+            mgr_ac.append_preallocated_entities(misc_count);
+            class_pool<entity> ents_ac;
+            ents_ac.increase_capacity(misc_count);
+            for (size_t i = 0; i < misc_count; ++i) ents_ac.emplace_back(mgr_ac.create_entity());
+            timer.reset();
+            for (size_t i = 0; i < misc_count; ++i)
+                mgr_ac.addc(ents_ac[i], Position{1.0f, 0, 0});
+            print_perf("addc (链式)", misc_count, timer.elapsed_ms());
+
+            // add(T, e) 反向参数
+            ecs::manager mgr_rev;
+            mgr_rev.append_preallocated_entities(misc_count);
+            class_pool<entity> ents_rev;
+            ents_rev.increase_capacity(misc_count);
+            for (size_t i = 0; i < misc_count; ++i) ents_rev.emplace_back(mgr_rev.create_entity());
+            timer.reset();
+            for (size_t i = 0; i < misc_count; ++i)
+                mgr_rev.add(Velocity{1.0f, 0, 0}, ents_rev[i]);
+            print_perf("add(T, e) 反向参数", misc_count, timer.elapsed_ms());
+
+            // prefetch_ptr_batch
+            timer.reset();
+            mgr_m.add(ents_m[0], Position{1, 0, 0});
+            for (int iter = 0; iter < 100; ++iter)
+                mgr_m.prefetch_ptr_batch<Position>(ents_m.data(), 64);
+            print_perf("prefetch_ptr_batch", 100 * 64, timer.elapsed_ms());
+
+            // single_class_set 直接接口
+            {
+                single_class_set scs_d;
+                scs_d.increase_capacity(misc_count);
+                class_pool<entity> ents_d;
+                ents_d.increase_capacity(misc_count);
+                for (size_t i = 0; i < misc_count; ++i) ents_d.emplace_back(entity(static_cast<uint32_t>(i), 1));
+
+                timer.reset();
+                for (size_t i = 0; i < misc_count; ++i)
+                    scs_d.add(ents_d[i], Position{1.0f, 0, 0});
+                print_perf("single_class_set add", misc_count, timer.elapsed_ms());
+
+                timer.reset();
+                for (size_t i = 0; i < misc_count; ++i) {
+                    auto* p = scs_d.get_ptr<Position>(ents_d[i]);
+                    volatile float fx = p ? p->x : 0;
+                    (void)fx;
+                }
+                print_perf("single_class_set get_ptr", misc_count, timer.elapsed_ms());
+
+                timer.reset();
+                for (size_t i = 0; i < misc_count; ++i) {
+                    auto* p = scs_d.get_ptr_fast<Position>(ents_d[i]);
+                    volatile float fx = p ? p->x : 0;
+                    (void)fx;
+                }
+                print_perf("single_class_set get_ptr_fast", misc_count, timer.elapsed_ms());
+
+                timer.reset();
+                for (size_t i = 0; i < misc_count; ++i)
+                    scs_d.hard_remove(ents_d[i]);
+                print_perf("single_class_set hard_remove", misc_count, timer.elapsed_ms());
+
+                // add_batch
+                for (size_t i = 0; i < misc_count; ++i) scs_d.add(ents_d[i], Position{1.0f, 0, 0});
+                timer.reset();
+                scs_d.clear();
+                print_perf("single_class_set clear", misc_count, timer.elapsed_ms());
+
+                // size / empty / get_type_id / get_operating_message
+                timer.reset();
+                volatile size_t sz = 0;
+                volatile bool ey = false;
+                volatile int ti = 0;
+                for (int i = 0; i < 1000000; ++i) {
+                    sz = scs_d.size();
+                    ey = scs_d.empty();
+                    ti = scs_d.get_type_id();
+                }
+                print_perf("single_class_set 状态查询", 1000000 * 3, timer.elapsed_ms());
+            }
+        }
+
+        // ---- 14.20 entity / type_id 性能 ----
+        print_perf_sub("14.20 entity / type_id 基础类型");
+        {
+            const size_t base_count = 1000000;
+
+            // entity 构造
+            timer.reset();
+            entity e_test;
+            volatile uint32_t e_idx = 0, e_ver = 0;
+            for (size_t i = 0; i < base_count; ++i) {
+                e_test = entity(static_cast<uint32_t>(i), static_cast<uint32_t>(i));
+                e_idx = e_test.parts_.index_;
+                e_ver = e_test.parts_.version_;
+            }
+            print_perf("entity 构造", base_count, timer.elapsed_ms());
+
+            // entity is_valid / operator== / operator!=
+            timer.reset();
+            entity e1(1, 1), e2(1, 1), e3(2, 1);
+            volatile bool b1 = false, b2 = false, b3 = false;
+            for (size_t i = 0; i < base_count; ++i) {
+                b1 = e1.is_valid();
+                b2 = (e1 == e2);
+                b3 = (e1 != e3);
+            }
+            print_perf("entity is_valid/==/!=", base_count * 3, timer.elapsed_ms());
+
+            // std::hash<entity>
+            timer.reset();
+            std::hash<entity> eh;
+            volatile size_t hv = 0;
+            for (size_t i = 0; i < base_count; ++i)
+                hv = eh(entity(static_cast<uint32_t>(i), 1));
+            print_perf("std::hash<entity>", base_count, timer.elapsed_ms());
+
+            // type_id::get_type_id
+            timer.reset();
+            volatile int tid = 0;
+            for (int i = 0; i < base_count; ++i)
+                tid = type_id::get_type_id<Position>();
+            print_perf("type_id::get_type_id", base_count, timer.elapsed_ms());
+
+            // entity_manager 掩码操作
+            timer.reset();
+            ecs::manager mgr_em;
+            mgr_em.append_preallocated_entities(base_count);
+            class_pool<entity> ents_em;
+            ents_em.increase_capacity(base_count);
+            for (size_t i = 0; i < base_count; ++i) ents_em.emplace_back(mgr_em.create_entity());
+            mgr_em.add(ents_em[0], Position{1, 0, 0});
+            volatile uint64_t mask = 0;
+            for (size_t i = 0; i < base_count; ++i)
+                mask = mgr_em.get_entity_mask(ents_em[i]);
+            print_perf("entity_manager get_mask", base_count, timer.elapsed_ms());
+        }
+
+        // ---- 14.21 汇总 ----
         std::cout << "\n  ┌─ 匹配数汇总\n";
         std::cout << "  │ 双组件 Pos+Vel:          " << cnt_2a << "\n";
         std::cout << "  │ 双组件 Pos+Hp:           " << cnt_2b << "\n";

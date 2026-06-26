@@ -821,6 +821,23 @@ public:
 		++usage_;
 	}
 
+	template <typename... Args>
+	inline void emplace_back_unchecked(Args&&... args) noexcept {
+		if (usage_ >= maximum_quantity_) [[unlikely]] {
+			grow_data_and_bitmap(calculate_new_capacity(maximum_quantity_));
+		}
+		new (&data_ptr_[usage_]) T(std::forward<Args>(args)...);
+		++usage_;
+	}
+
+	template <typename... Args>
+	inline void emplace_back_dense_unchecked(Args&&... args) noexcept {
+		invalidate_count_cache();
+		new (&data_ptr_[usage_]) T(std::forward<Args>(args)...);
+		sparse_bits_[usage_ / BITS_PER_WORD] |= (1ull << (usage_ % BITS_PER_WORD));
+		++usage_;
+	}
+
 	inline void clear() noexcept {
 		destroy_all();
 		invalidate_count_cache();
@@ -1473,6 +1490,13 @@ public:
 		if (extended) [[unlikely]] {
 			usage_ = index + 1;
 			hole_count_ += (index - old_usage);
+			if (index > old_usage) {
+				is_dense_ = false;
+			}
+		}
+
+		if (is_dense_ && !extended) [[likely]] {
+			return data_ptr_[index];
 		}
 
 		if (bitmap_test(sparse_bits_, index)) [[likely]] {
@@ -1503,6 +1527,18 @@ public:
 		if (extended) {
 			usage_ = index + 1;
 			hole_count_ += (index - old_usage);
+			if (index > old_usage) {
+				is_dense_ = false;
+			}
+		}
+
+		if (is_dense_ && !extended) [[likely]] {
+			if constexpr (!std::is_trivially_destructible_v<T>) {
+				data_ptr_[index].~T();
+			}
+			new (&data_ptr_[index]) T(std::forward<Args>(args)...);
+			bitmap_set(sparse_bits_, index);
+			return data_ptr_[index];
 		}
 
 		if (bitmap_test(sparse_bits_, index)) {
@@ -1660,6 +1696,22 @@ private:
 		hole_count_ = 0;
 	}
 
+	template <typename F>
+	void append_generated(size_t count, F&& generator) noexcept {
+		if (count == 0) { return; }
+		if (usage_ + count > maximum_quantity_) [[unlikely]] {
+			increase_capacity(usage_ + count);
+		}
+		for (size_t i = 0; i < count; ++i) {
+			new (&data_ptr_[usage_ + i]) T(generator());
+		}
+		size_t end = usage_ + count;
+		bulk_set_bits(usage_, end);
+		usage_ = end;
+		is_dense_ = true;
+		hole_count_ = 0;
+	}
+
 	template <typename EntityLike>
 	void append_indices_from(const EntityLike* entities, size_t count) noexcept {
 		if (count == 0) { return; }
@@ -1676,6 +1728,7 @@ private:
 		hole_count_ = 0;
 	}
 
+public:
 	void fill_bulk(const T& value, size_t start, size_t count) noexcept {
 		if (count == 0) { return; }
 		size_t end = start + count;
@@ -1707,6 +1760,20 @@ private:
 		hole_count_ = 0;
 	}
 
+	void prepare_dense(size_t new_size) noexcept {
+		invalidate_count_cache();
+		if (new_size > maximum_quantity_) [[unlikely]] {
+			grow_data_and_bitmap(calculate_growth_for_reserve(new_size));
+		}
+		if (new_size > usage_) {
+			bulk_set_bits(usage_, new_size);
+			usage_ = new_size;
+		}
+		is_dense_ = true;
+		hole_count_ = 0;
+	}
+
+private:
 	void update_dense_status() noexcept {
 		if (is_dense_) { return; }
 		if (hole_count_ == static_cast<size_t>(-1)) {

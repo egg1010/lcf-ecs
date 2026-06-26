@@ -36,9 +36,13 @@ private:
     } ops_{};
 
     uint64_t version_{0};
-    class_pool<uint64_t> entity_change_version_;
+    struct change_tracking_entry
+    {
+        uint64_t change_version;
+        uint64_t added_version;
+    };
+    class_pool<change_tracking_entry> entity_change_tracking_;
     uint64_t global_change_counter_{0};
-    class_pool<uint64_t> entity_added_version_;
     uint64_t global_added_counter_{0};
     bool track_changes_enabled_{true};
 
@@ -59,6 +63,9 @@ private:
         if (pending_increase_capacity_ > 0)
         {
             pool->increase_capacity(pending_increase_capacity_);
+            sparse_combined_.increase_capacity(pending_increase_capacity_);
+            dense_.increase_capacity(pending_increase_capacity_);
+            entity_change_tracking_.increase_capacity(pending_increase_capacity_);
             pending_increase_capacity_ = 0;
         }
         typed_pool_ = pool;
@@ -217,8 +224,9 @@ private:
                 pool->append_bulk_move(temp_components.data(), count);
             }
 
-            entity_change_version_.append_incrementing(count, global_change_counter_);
-            entity_added_version_.append_incrementing(count, global_added_counter_);
+            entity_change_tracking_.append_generated(count, [this]() noexcept {
+                return change_tracking_entry{++global_change_counter_, ++global_added_counter_};
+            });
         }
         else
         {
@@ -269,8 +277,9 @@ private:
                     sparse_set(static_cast<uint32_t>(idx), entities[i].parts_.version_, static_cast<uint32_t>(dense_old + j));
                 }
 
-                entity_change_version_.append_incrementing(new_count, global_change_counter_);
-                entity_added_version_.append_incrementing(new_count, global_added_counter_);
+                entity_change_tracking_.append_generated(new_count, [this]() noexcept {
+                    return change_tracking_entry{++global_change_counter_, ++global_added_counter_};
+                });
             }
 
             for (size_t j = 0; j < exist_count; ++j)
@@ -280,7 +289,7 @@ private:
                 uint32_t dense_idx = sparse_dense_at(e.parts_.index_);
                 (*pool)[dense_idx].~DT();
                 new (&(*pool)[dense_idx]) DT(get_component(i));
-                entity_change_version_.sparse_emplace_at(dense_idx, ++global_change_counter_);
+                entity_change_tracking_.sparse_emplace_at(dense_idx, change_tracking_entry{++global_change_counter_, entity_change_tracking_[dense_idx].added_version});
             }
         }
 
@@ -293,8 +302,7 @@ public:
     {
         sparse_combined_.clear();
         dense_.clear();
-        entity_change_version_.clear();
-        entity_added_version_.clear();
+        entity_change_tracking_.clear();
         if (typed_pool_ && ops_.clear_pool) ops_.clear_pool(typed_pool_);
     }
 
@@ -313,8 +321,8 @@ public:
     }
 
     template <typename T>
-    operating_message add(entity e, T&& object) noexcept
-    {   
+    operating_message& add(entity e, T&& object) noexcept
+    {
         using DT = std::decay_t<T>;
         const int tid = type_id::get_type_id<DT>();
         if (type_id_ == -1) [[unlikely]]
@@ -333,21 +341,21 @@ public:
             message.write_message(false, "single_class_set::add(): ID is invalid, index=", std::to_string(e.parts_.index_));
             return message;
         }
-        
+
         auto* pool = get_typed_pool<DT>();
         size_t old_size = sparse_combined_.size();
 
         if (e.parts_.index_ == old_size) [[likely]]
         {
-            uint64_t combined = (static_cast<uint64_t>(dense_.size()) << 32) | e.parts_.version_;
-            sparse_combined_.emplace_at(e.parts_.index_, combined);
-            dense_.emplace_back(e.parts_.index_);
-            pool->emplace_back(std::forward<T>(object));
-            uint32_t dense_idx = static_cast<uint32_t>(dense_.size() - 1);
+            uint32_t dense_idx = static_cast<uint32_t>(dense_.size());
+            uint64_t combined = (static_cast<uint64_t>(dense_idx) << 32) | e.parts_.version_;
+            sparse_combined_.emplace_back_unchecked(combined);
+            dense_.emplace_back_unchecked(e.parts_.index_);
+            pool->emplace_back_unchecked(std::forward<T>(object));
             ++version_;
-            if (track_changes_enabled_) [[unlikely]] {
-                entity_change_version_.sparse_emplace_at(dense_idx, ++global_change_counter_);
-                entity_added_version_.sparse_emplace_at(dense_idx, ++global_added_counter_);
+            if (track_changes_enabled_) [[likely]] {
+                entity_change_tracking_.emplace_back_unchecked(
+                    change_tracking_entry{++global_change_counter_, ++global_added_counter_});
             }
             if (on_add_) [[unlikely]] on_add_(e, &(*pool)[dense_idx], on_add_data_);
             return message;
@@ -379,9 +387,11 @@ public:
         }
         ++version_;
         if (track_changes_enabled_) [[unlikely]] {
-            entity_change_version_.sparse_emplace_at(dense_idx, ++global_change_counter_);
-            if (is_new_add)
-                entity_added_version_.sparse_emplace_at(dense_idx, ++global_added_counter_);
+            uint64_t preserved_added = (dense_idx < entity_change_tracking_.size())
+                ? entity_change_tracking_[dense_idx].added_version : 0;
+            uint64_t new_added = is_new_add ? ++global_added_counter_ : preserved_added;
+            entity_change_tracking_.sparse_emplace_at(dense_idx,
+                change_tracking_entry{++global_change_counter_, new_added});
         }
         if (on_add_) [[unlikely]] on_add_(e, &(*pool)[dense_idx], on_add_data_);
         return message;       
@@ -559,14 +569,14 @@ public:
 
     [[nodiscard]] uint64_t get_entity_change_version(size_t dense_index) const noexcept
     {
-        if (dense_index >= entity_change_version_.size()) [[unlikely]] return 0;
-        return entity_change_version_[dense_index];
+        if (dense_index >= entity_change_tracking_.size()) [[unlikely]] return 0;
+        return entity_change_tracking_[dense_index].change_version;
     }
 
     [[nodiscard]] uint64_t get_entity_added_version(size_t dense_index) const noexcept
     {
-        if (dense_index >= entity_added_version_.size()) [[unlikely]] return 0;
-        return entity_added_version_[dense_index];
+        if (dense_index >= entity_change_tracking_.size()) [[unlikely]] return 0;
+        return entity_change_tracking_[dense_index].added_version;
     }
 
     [[nodiscard]] uint64_t get_global_added_counter() const noexcept
@@ -600,15 +610,13 @@ public:
         }
         dense_.pop_back();
 
-        if (index < entity_change_version_.size() && entity_change_version_.size() > 0)
+        if (index < entity_change_tracking_.size() && entity_change_tracking_.size() > 0)
         {
-            if (index < entity_change_version_.size() - 1)
+            if (index < entity_change_tracking_.size() - 1)
             {
-                entity_change_version_[index] = entity_change_version_.back();
-                entity_added_version_[index] = entity_added_version_.back();
+                entity_change_tracking_[index] = entity_change_tracking_.back();
             }
-            entity_change_version_.pop_back();
-            entity_added_version_.pop_back();
+            entity_change_tracking_.pop_back();
         }
 
         if (typed_pool_ && ops_.swap_pop) ops_.swap_pop(typed_pool_, index);
@@ -660,9 +668,8 @@ public:
     , component_size_(other.component_size_)
     , ops_(other.ops_)
     , version_(other.version_)
-    , entity_change_version_(std::move(other.entity_change_version_))
+    , entity_change_tracking_(std::move(other.entity_change_tracking_))
     , global_change_counter_(other.global_change_counter_)
-    , entity_added_version_(std::move(other.entity_added_version_))
     , global_added_counter_(other.global_added_counter_)
     , track_changes_enabled_(other.track_changes_enabled_)
     , on_add_(other.on_add_)
@@ -699,9 +706,8 @@ public:
             message = std::move(other.message);
             type_id_ = other.type_id_;
             version_ = other.version_;
-            entity_change_version_ = std::move(other.entity_change_version_);
+            entity_change_tracking_ = std::move(other.entity_change_tracking_);
             global_change_counter_ = other.global_change_counter_;
-            entity_added_version_ = std::move(other.entity_added_version_);
             global_added_counter_ = other.global_added_counter_;
             track_changes_enabled_ = other.track_changes_enabled_;
             on_add_ = other.on_add_;
@@ -747,8 +753,7 @@ public:
     {
         sparse_combined_.increase_capacity(capacity);
         dense_.increase_capacity(capacity);
-        entity_change_version_.increase_capacity(capacity);
-        entity_added_version_.increase_capacity(capacity);
+        entity_change_tracking_.increase_capacity(capacity);
         if (typed_pool_ && ops_.increase_capacity_pool)
         {
             ops_.increase_capacity_pool(typed_pool_, capacity);
@@ -787,19 +792,55 @@ public:
         dense_[j] = tmp;
         sparse_set(dense_[i], sparse_version_at(dense_[i]), static_cast<uint32_t>(i));
         sparse_set(dense_[j], sparse_version_at(dense_[j]), static_cast<uint32_t>(j));
-        if (i < entity_change_version_.size() && j < entity_change_version_.size())
+        if (i < entity_change_tracking_.size() && j < entity_change_tracking_.size())
         {
-            uint64_t tmp_ver = entity_change_version_[i];
-            entity_change_version_[i] = entity_change_version_[j];
-            entity_change_version_[j] = tmp_ver;
-            uint64_t tmp_added = entity_added_version_[i];
-            entity_added_version_[i] = entity_added_version_[j];
-            entity_added_version_[j] = tmp_added;
+            change_tracking_entry tmp = entity_change_tracking_[i];
+            entity_change_tracking_[i] = entity_change_tracking_[j];
+            entity_change_tracking_[j] = tmp;
         }
         if (typed_pool_ && ops_.swap_pool) [[likely]]
         {
             ops_.swap_pool(typed_pool_, i, j);
         }
+    }
+
+    template <typename T>
+    void reorder_dense_by_indices(const class_pool<size_t>& sorted_indices) noexcept
+    {
+        const size_t n = dense_.size();
+        if (n <= 1 || sorted_indices.size() < n) [[unlikely]] return;
+
+        class_pool<uint32_t> new_dense;
+        new_dense.increase_capacity(n);
+        for (size_t i = 0; i < n; ++i)
+            new_dense.emplace_back(dense_[sorted_indices[i]]);
+
+        class_pool<T>* typed_pool = get_typed_pool_ptr<T>();
+        if (typed_pool)
+        {
+            class_pool<T> new_pool;
+            new_pool.increase_capacity(n);
+            for (size_t i = 0; i < n; ++i)
+                new_pool.emplace_back(std::move((*typed_pool)[sorted_indices[i]]));
+            *typed_pool = std::move(new_pool);
+        }
+
+        class_pool<change_tracking_entry> new_tracking;
+        if (entity_change_tracking_.size() >= n)
+        {
+            new_tracking.increase_capacity(n);
+            for (size_t i = 0; i < n; ++i)
+            {
+                new_tracking.emplace_back(entity_change_tracking_[sorted_indices[i]]);
+            }
+            entity_change_tracking_ = std::move(new_tracking);
+        }
+
+        for (size_t i = 0; i < n; ++i)
+            sparse_set(new_dense[i], sparse_version_at(new_dense[i]), static_cast<uint32_t>(i));
+
+        dense_ = std::move(new_dense);
+        ++version_;
     }
 
     ~single_class_set() noexcept

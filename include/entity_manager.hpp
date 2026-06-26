@@ -31,7 +31,7 @@ private:
 
     void push_signal(uint32_t type, uint32_t entity_idx) noexcept
     {
-        uint32_t next = (signal_write_ + 1) % signal_buffer_size;
+        uint32_t next = (signal_write_ + 1) & (signal_buffer_size - 1);
         if (next == signal_read_) [[unlikely]]
         {
             return;
@@ -73,11 +73,22 @@ public:
         size_t initial_size = preallocated_entities_.size();
         preallocated_entities_.increase_capacity(initial_size + count);
 
+        size_t max_idx = count + 1;
+        if (max_idx > version_v_.size())
+        {
+            version_v_.increase_capacity(max_idx);
+            version_v_.resize(max_idx, 1);
+        }
+        if (max_idx > entity_masks_.size())
+        {
+            entity_masks_.increase_capacity(max_idx);
+            entity_masks_.resize(max_idx, 0);
+        }
+
         for (size_t i = 0; i < count; ++i)
         {
             uint32_t idx = id_manager_.get_id();
-            ensure_version_capacity(idx);
-            preallocated_entities_.emplace_back(entity(idx, version_v_[idx]));
+            preallocated_entities_.emplace_back_unchecked(entity(idx, version_v_[idx]));
         }
     }
 
@@ -101,10 +112,19 @@ public:
 
     void set_mask_bit(uint32_t entity_index, uint64_t bit) noexcept
     {
-        if (entity_index >= entity_masks_.size()) [[unlikely]]
+        if (entity_index < entity_masks_.size()) [[likely]]
+        {
+            entity_masks_[entity_index] |= bit;
+        }
+        else [[unlikely]]
         {
             entity_masks_.resize(entity_index + 1, 0);
+            entity_masks_[entity_index] |= bit;
         }
+    }
+
+    void set_mask_bit_no_bounds_check(uint32_t entity_index, uint64_t bit) noexcept
+    {
         entity_masks_[entity_index] |= bit;
     }
 
