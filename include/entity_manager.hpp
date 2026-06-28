@@ -1,7 +1,8 @@
 #pragma once
 
 #include "entity.hpp"
-#include "id_.hpp"
+#include "part/id_.hpp"
+#include "part/class_pool.hpp"
 
 class entity_manager
 {
@@ -25,20 +26,59 @@ private:
         uint32_t entity_idx;
     };
     static constexpr size_t signal_buffer_size = 1024;
+    static_assert((signal_buffer_size & (signal_buffer_size - 1)) == 0,
+                  "signal_buffer_size must be power of 2");
     signal_event signal_buffer_[signal_buffer_size]{};
     uint32_t signal_write_{0};
     uint32_t signal_read_{0};
+    class_pool<signal_event> signal_overflow_chain_;
+    size_t signal_overflow_read_{0};
+    uint64_t signal_overflow_count_{0};
+    bool entity_signal_enabled_{true};
+    bool entity_signal_flushing_{false};
+    uint32_t entity_reentrancy_depth_{0};
 
     void push_signal(uint32_t type, uint32_t entity_idx) noexcept
     {
+        if (!entity_signal_enabled_) [[unlikely]] return;
         uint32_t next = (signal_write_ + 1) & (signal_buffer_size - 1);
         if (next == signal_read_) [[unlikely]]
         {
+            ++signal_overflow_count_;
+            signal_overflow_chain_.emplace_back(signal_event{type, entity_idx});
             return;
         }
-        signal_buffer_[signal_write_].type = type;
-        signal_buffer_[signal_write_].entity_idx = entity_idx;
+        signal_buffer_[signal_write_] = {type, entity_idx};
         signal_write_ = next;
+    }
+
+    // 即时回调与延迟队列互斥:注册了即时回调且非重入时同步调用,否则入队
+    void notify_created(entity e) noexcept
+    {
+        if (entity_reentrancy_depth_ == 0 && on_entity_created_) [[unlikely]]
+        {
+            ++entity_reentrancy_depth_;
+            on_entity_created_(e, on_entity_created_data_);
+            --entity_reentrancy_depth_;
+        }
+        else
+        {
+            push_signal(0, e.parts_.index_);
+        }
+    }
+
+    void notify_destroyed(entity e) noexcept
+    {
+        if (entity_reentrancy_depth_ == 0 && on_entity_destroyed_) [[unlikely]]
+        {
+            ++entity_reentrancy_depth_;
+            on_entity_destroyed_(e, on_entity_destroyed_data_);
+            --entity_reentrancy_depth_;
+        }
+        else
+        {
+            push_signal(1, e.parts_.index_);
+        }
     }
 
     void ensure_version_capacity(uint32_t idx) noexcept
@@ -96,12 +136,11 @@ public:
     {
         return entitys.parts_.index_ < version_v_.size() && entitys.parts_.version_ == version_v_[entitys.parts_.index_];
     }
-    
+
     void destroy_entity(entity &entitys) noexcept
     {
         if(!is_version_valid(entitys)) [[unlikely]] return;
-        if (on_entity_destroyed_) [[unlikely]] on_entity_destroyed_(entitys, on_entity_destroyed_data_);
-        push_signal(1, entitys.parts_.index_);
+        notify_destroyed(entitys);
         id_manager_.free_id(entitys.parts_.index_);
         version_v_[entitys.parts_.index_]++;
         if (entitys.parts_.index_ < entity_masks_.size())
@@ -147,24 +186,53 @@ public:
         entity e = current_preallocated_index_ < preallocated_entities_.size()
             ? preallocated_entities_[current_preallocated_index_++]
             : allocate_entity();
-        if (on_entity_created_) [[unlikely]] on_entity_created_(e, on_entity_created_data_);
-        push_signal(0, e.parts_.index_);
+        notify_created(e);
         return e;
     }
 
     template <typename Func>
     void flush_signals(Func&& handler) noexcept
     {
-        while (signal_read_ != signal_write_)
+        // 防 flush 递归重入
+        if (entity_signal_flushing_) [[unlikely]] return;
+        entity_signal_flushing_ = true;
+        // 循环上限防止 handler 内追加导致无限循环
+        uint64_t budget = signal_buffer_size * 4 + signal_overflow_chain_.size();
+        while (budget > 0 && signal_read_ != signal_write_)
         {
             auto& ev = signal_buffer_[signal_read_];
             handler(ev.type, ev.entity_idx);
-            signal_read_ = (signal_read_ + 1) % signal_buffer_size;
+            signal_read_ = (signal_read_ + 1) & (signal_buffer_size - 1);
+            --budget;
         }
+        while (budget > 0 && signal_overflow_read_ < signal_overflow_chain_.size())
+        {
+            auto& ev = signal_overflow_chain_[signal_overflow_read_];
+            handler(ev.type, ev.entity_idx);
+            ++signal_overflow_read_;
+            --budget;
+        }
+        if (signal_overflow_read_ == signal_overflow_chain_.size() && signal_overflow_chain_.size() > 0)
+        {
+            signal_overflow_chain_.clear();
+            signal_overflow_read_ = 0;
+        }
+        entity_signal_flushing_ = false;
     }
 
     [[nodiscard]] bool has_pending_signals() const noexcept
     {
-        return signal_read_ != signal_write_;
+        return signal_read_ != signal_write_ || signal_overflow_read_ < signal_overflow_chain_.size();
+    }
+
+    void enable_entity_signals() noexcept { entity_signal_enabled_ = true; }
+    void disable_entity_signals() noexcept { entity_signal_enabled_ = false; }
+
+    [[nodiscard]] uint64_t signal_overflow_count() const noexcept { return signal_overflow_count_; }
+    void reset_signal_overflow_count() noexcept { signal_overflow_count_ = 0; }
+
+    void reserve_signal_capacity(size_t n) noexcept
+    {
+        signal_overflow_chain_.increase_capacity(n);
     }
 };

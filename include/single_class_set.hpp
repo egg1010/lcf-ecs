@@ -4,10 +4,10 @@
 #include <cassert>
 #include <cstdint>
 #include <cstring>
-#include "operating_message.hpp"
+#include "part/operating_message.hpp"
 #include "entity.hpp"
-#include "class_pool.hpp"
-#include "type_id.hpp"
+#include "part/class_pool.hpp"
+#include "part/type_id.hpp"
 
 namespace ecs
 {
@@ -50,6 +50,8 @@ private:
     void* on_add_data_{nullptr};
     void (*on_remove_)(entity, void* component, void* user_data) noexcept = nullptr;
     void* on_remove_data_{nullptr};
+    void (*on_modify_)(entity, void* component, void* user_data) noexcept = nullptr;
+    void* on_modify_data_{nullptr};
 
     friend class ecs::manager;
 
@@ -204,7 +206,7 @@ private:
             {
                 for (size_t i = 0; i < count; ++i)
                 {
-                    PREFETCH_R(&entities[i + 16]);
+                    if (i + 16 < count) [[likely]] PREFETCH_R(&entities[i + 16]);
                     uint32_t idx = entities[i].parts_.index_;
                     sparse_set(idx, entities[i].parts_.version_, static_cast<uint32_t>(dense_start + i));
                 }
@@ -216,7 +218,7 @@ private:
                 temp_components.increase_capacity(count);
                 for (size_t i = 0; i < count; ++i)
                 {
-                    PREFETCH_R(&entities[i + 16]);
+                    if (i + 16 < count) [[likely]] PREFETCH_R(&entities[i + 16]);
                     uint32_t idx = entities[i].parts_.index_;
                     sparse_set(idx, entities[i].parts_.version_, static_cast<uint32_t>(dense_start + i));
                     temp_components.push_back_unchecked(get_component(i));
@@ -374,8 +376,18 @@ public:
 
         if (ver == e.parts_.version_) [[likely]]
         {
+            void* old_ptr = &(*pool)[dense_idx];
+            if (on_modify_) [[unlikely]]
+            {
+                on_modify_(e, old_ptr, on_modify_data_);
+            }
+            else
+            {
+                if (on_remove_) [[unlikely]] on_remove_(e, old_ptr, on_remove_data_);
+            }
             (*pool)[dense_idx].~DT();
             new (&(*pool)[dense_idx]) DT(std::forward<T>(object));
+            if (!on_modify_ && on_add_) [[unlikely]] on_add_(e, &(*pool)[dense_idx], on_add_data_);
         }
         else
         {
@@ -384,6 +396,7 @@ public:
             ver = e.parts_.version_;
             combined = (static_cast<uint64_t>(dense_idx) << 32) | ver;
             pool->emplace_back(std::forward<T>(object));
+            if (on_add_) [[unlikely]] on_add_(e, &(*pool)[dense_idx], on_add_data_);
         }
         ++version_;
         if (track_changes_enabled_) [[unlikely]] {
@@ -393,7 +406,6 @@ public:
             entity_change_tracking_.sparse_emplace_at(dense_idx,
                 change_tracking_entry{++global_change_counter_, new_added});
         }
-        if (on_add_) [[unlikely]] on_add_(e, &(*pool)[dense_idx], on_add_data_);
         return message;       
     }
     
@@ -662,6 +674,13 @@ public:
         return message;
     }
 
+    [[nodiscard]] bool contains_entity(entity e) const noexcept
+    {
+        if (!e.is_valid() || e.parts_.index_ >= sparse_combined_.size()) [[unlikely]] return false;
+        uint64_t combined = sparse_combined_[e.parts_.index_];
+        return static_cast<uint32_t>(combined) == e.parts_.version_;
+    }
+
     [[nodiscard]] int& get_type_id() noexcept
     {
         return type_id_;
@@ -699,6 +718,8 @@ public:
     , on_add_data_(other.on_add_data_)
     , on_remove_(other.on_remove_)
     , on_remove_data_(other.on_remove_data_)
+    , on_modify_(other.on_modify_)
+    , on_modify_data_(other.on_modify_data_)
     {
         other.typed_pool_ = nullptr;
         other.ops_ = {};
@@ -712,6 +733,8 @@ public:
         other.on_add_data_ = nullptr;
         other.on_remove_ = nullptr;
         other.on_remove_data_ = nullptr;
+        other.on_modify_ = nullptr;
+        other.on_modify_data_ = nullptr;
     }
 
     single_class_set& operator=(single_class_set&& other) noexcept
@@ -737,6 +760,8 @@ public:
             on_add_data_ = other.on_add_data_;
             on_remove_ = other.on_remove_;
             on_remove_data_ = other.on_remove_data_;
+            on_modify_ = other.on_modify_;
+            on_modify_data_ = other.on_modify_data_;
 
             other.typed_pool_ = nullptr;
             other.ops_ = {};
@@ -750,6 +775,8 @@ public:
             other.on_add_data_ = nullptr;
             other.on_remove_ = nullptr;
             other.on_remove_data_ = nullptr;
+            other.on_modify_ = nullptr;
+            other.on_modify_data_ = nullptr;
         }
         return *this;
     }
@@ -800,6 +827,20 @@ public:
     [[nodiscard]] const class_pool<uint64_t>& get_sparse_combined() const noexcept
     {
         return sparse_combined_;
+    }
+
+    // sparse 交集判断:实体 idx 是否在此集合中且版本匹配(>64 类型走 sparse 慢路径用)
+    [[nodiscard]] static bool sparse_contains_version(const single_class_set* set,
+                                                     uint32_t idx,
+                                                     uint32_t version) noexcept
+    {
+        if (!set) return false;
+        const auto& sparse = set->get_sparse_combined();
+        if (idx >= sparse.size()) return false;
+        uint64_t entry = sparse[idx];
+        uint32_t dense = static_cast<uint32_t>(entry >> 32);
+        uint32_t ver = static_cast<uint32_t>(entry);
+        return dense != 0xFFFFFFFFu && ver == version;
     }
 
     [[nodiscard]] uint32_t get_dense_at(uint32_t entity_index) const noexcept

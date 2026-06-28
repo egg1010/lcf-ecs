@@ -27,6 +27,7 @@
     - [使用](#使用-2)
     - [应该用什么操作？](#应该用什么操作)
     - [不要做什么](#不要做什么-2)
+    - [fill\_the\_hole — 填洞或追加](#fill_the_hole--填洞或追加)
   - [4. void\_any — 类型擦除存储](#4-void_any--类型擦除存储)
     - [构造与赋值](#构造与赋值-1)
     - [访问与操作](#访问与操作)
@@ -43,6 +44,9 @@
     - [memory\_pool — 内存池](#memory_pool--内存池)
     - [使用](#使用-6)
     - [不要做什么](#不要做什么-4)
+    - [arena\_allocator — 线性 bump 分配器](#arena_allocator--线性-bump-分配器)
+    - [slab\_allocator — 固定块对象池](#slab_allocator--固定块对象池)
+    - [layered\_allocator — 分层分配器](#layered_allocator--分层分配器)
   - [8. single\_class\_set — 单组件集合](#8-single_class_set--单组件集合)
     - [sparse 访问](#sparse-访问)
     - [构造与赋值](#构造与赋值-2)
@@ -59,6 +63,7 @@
     - [删除组件](#删除组件)
     - [容器访问](#容器访问)
     - [信号与追踪开关](#信号与追踪开关)
+    - [信号溢出与容量](#信号溢出与容量)
     - [View系统](#view系统)
     - [Group系统](#group系统)
     - [runtime\_view](#runtime_view)
@@ -97,6 +102,16 @@
     - [12.2 运行时视图](#122-运行时视图)
     - [12.3 排除视图](#123-排除视图)
     - [12.4 接口](#124-接口)
+    - [12.5 组件类型无上限](#125-组件类型无上限)
+    - [12.6 for\_each\_typed — 组件引用回传](#126-for_each_typed--组件引用回传)
+    - [12.7 for\_each\_parallel — 并行迭代](#127-for_each_parallel--并行迭代)
+    - [12.8 for\_each\_paged — 分页遍历](#128-for_each_paged--分页遍历)
+    - [12.9 变更检测](#129-变更检测)
+    - [12.10 sort\_by\_component — 按组件排序](#1210-sort_by_component--按组件排序)
+    - [12.11 count — 精确命中数](#1211-count--精确命中数)
+    - [12.12 iterator — 迭代器](#1212-iterator--迭代器)
+    - [12.13 runtime\_term — OR / OPTIONAL / NOT 查询](#1213-runtime_term--or--optional--not-查询)
+    - [12.14 access\_mode — 读写标注](#1214-access_mode--读写标注)
     - [不要做什么](#不要做什么-7)
   - [13. 函数存储（回调作为组件）](#13-函数存储回调作为组件)
     - [使用](#使用-9)
@@ -104,9 +119,13 @@
   - [14. 生命周期信号](#14-生命周期信号)
     - [14.1 实体级即时信号](#141-实体级即时信号)
     - [14.2 组件级即时信号](#142-组件级即时信号)
-    - [14.3 实体级延迟信号](#143-实体级延迟信号)
-    - [14.4 组件级延迟信号](#144-组件级延迟信号)
-    - [14.5 即时信号 vs 延迟信号 选择指南](#145-即时信号-vs-延迟信号-选择指南)
+    - [14.3 覆盖写与 on\_modify](#143-覆盖写与-on_modify)
+    - [14.4 实体级延迟信号](#144-实体级延迟信号)
+    - [14.5 组件级延迟信号](#145-组件级延迟信号)
+    - [14.6 即时/延迟互斥机制](#146-即时延迟互斥机制)
+    - [14.7 信号开关与溢出](#147-信号开关与溢出)
+    - [14.8 delete\_entity 的组件清理](#148-delete_entity-的组件清理)
+    - [14.9 即时信号 vs 延迟信号 选择指南](#149-即时信号-vs-延迟信号-选择指南)
     - [不要做什么](#不要做什么-8)
   - [15. 编译与运行](#15-编译与运行)
     - [CMake](#cmake)
@@ -114,6 +133,9 @@
     - [编译要求](#编译要求)
   - [16. 可选宏配置](#16-可选宏配置)
     - [配置示例](#配置示例)
+  - [17. command\_buffer — 延迟结构变更](#17-command_buffer--延迟结构变更)
+    - [使用](#使用-10)
+    - [不要做什么](#不要做什么-9)
 
 ---
 
@@ -402,11 +424,87 @@ pool.is_dense();              // 检查是否连续
 | 在 sparse 模式下使用 `data()` + `span()` 做线性遍历 | 未初始化槽位包含垃圾数据 | 始终通过迭代器遍历，或先确认 `is_dense()` 为 true |
 | `emplace_at()` 期望覆盖已有值 | `emplace_at` 是 get-or-create，不覆盖 | 使用 `sparse_emplace_at()` 实现 insert-or-assign |
 
+### fill_the_hole — 填洞或追加
+
+`class_pool<T>` 的填洞接口，复用内部 `hole_count_` 与 `sparse_bits_`，零额外内存。`fill_the_hole` 优先填第一个空洞（最低索引的 bitmap=0 位），无洞则 `emplace_back` 末尾追加。
+
+#### 机制
+
+| 操作 | 行为 |
+|------|------|
+| `fill_the_hole(args...)` | `hole_count_==0` → `emplace_back`；有洞 → `find_first_hole_` 扫描 bitmap 找首个 0 位 → `emplace_at` 填洞（自动 `--hole_count_`） |
+| `sparse_erase_at(idx)` | 产生空洞，`++hole_count_`（已删除位置不重复计数，`bitmap_test` 检查） |
+
+- fast path（`hole_count_==0`）：一次比较短路 + `emplace_back`，与直接 `emplace_back` 几乎无差异
+- slow path（有洞）：bitmap 字扫描 + `std::countr_one` 单指令定位首个 0 位，平均 first word 命中，接近 O(1)
+- 不新增成员变量，不影响其他接口性能
+- 填洞顺序：**最低索引优先**（非 LIFO），找 `[0, index_)` 范围内第一个 bitmap=0 位
+
+#### 接口
+
+| 接口 | 说明 |
+|------|------|
+| `fill_the_hole(args...)` | 填第一个空洞或末尾追加，返回 `T&` |
+
+填洞依赖现有接口：`sparse_erase_at` 产生空洞、`emplace_at` 填洞、`emplace_back` 追加。
+
+#### 使用
+
+```cpp
+class_pool<int> pool;
+pool.fill_the_hole(10);   // index 0
+pool.fill_the_hole(20);   // index 1
+pool.fill_the_hole(30);   // index 2
+
+pool.sparse_erase_at(1);  // 产生空洞
+pool.fill_the_hole(99);   // 填到 index 1 (最低空洞)
+
+// 多空洞: 填最低索引
+pool.sparse_erase_at(0);
+pool.sparse_erase_at(2);
+pool.fill_the_hole(7);    // 填到 index 0 (最低)
+pool.fill_the_hole(8);    // 填到 index 2
+
+// 迭代跳过空洞
+pool.sparse_erase_at(1);
+for (int& v : pool) { /* 跳过 index 1 */ }
+```
+
+#### 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 期望 `fill_the_hole` 填最近删除的空洞 | 最低索引优先，非 LIFO | 如需 LIFO 顺序，自行维护栈 |
+| 混用 compacting `erase(iterator)` | 索引前移导致空洞位置变化 | 填洞场景用 `sparse_erase_at` |
+| `sparse_erase_at` 后期望 `is_dense()` 为 true | 产生空洞变稀疏 | `fill_the_hole` 填满后自动恢复 |
+| 对已删除位置重复 `sparse_erase_at` | `bitmap_test` 检查，不重复计数 | 删除前可 `is_constructed_at` 检查 |
+
 ---
 
 ## 4. void_any — 类型擦除存储
 
 使用 `type_id` 进行类型识别。支持 SSO 和内存池（通过宏配置）。
+
+### 内存布局
+
+`sizeof(void_any) == 64`（恰好 1 个 cache line），由两部分组成：
+
+| 字段 | 偏移 | 大小 | 说明 |
+|------|------|------|------|
+| `storage_` | 0 | 56 | SSO 缓冲区（内联存储小对象）或 `void*` 指针（heap） |
+| `vtable_sso_type_` | 56 | 8 | 位编码字段：`[63:48]`=type_id(16位)，`[47:1]`=vtable指针，`[0]`=SSO标志 |
+
+位编码利用 x86-64 用户空间指针高 16 位为 0 的特性，将 `type_id` 编码进 `vtable_sso_type_` 高位，使 `type_id()` 和 `get_ptr<T>()` 无需解引用 vtable 即可完成类型检查。
+
+### vtable 与函数指针跳过
+
+每个类型对应一个静态 `vtable`，含 `type_id`、`element_size`、`destroy`、`copy_to`、`move_to`、`clone` 函数指针。对 `std::is_trivially_copyable_v<T>` 为真的类型：
+
+- `copy_to` / `move_to` / `destroy`（SSO 路径）设为 `nullptr`
+- 拷贝/移动时直接 `memcpy`（编译器自动向量化为 AVX2）
+- 析构时跳过函数调用
+
+非平凡可拷贝类型仍走函数指针路径，保证语义正确（如深拷贝、自定义析构）。
 
 ### 构造与赋值
 
@@ -522,6 +620,18 @@ uint32_t id3 = alloc.get_id();  // 1（复用）
 
 基于 TLSF（Two-Level Segregated Fit）算法的分桶式内存池，减少频繁 malloc/free 开销。
 
+### 内存布局
+
+每个块由 16 字节 `block_header` + 用户数据区组成：
+
+| 字段 | 偏移 | 大小 | 说明 |
+|------|------|------|------|
+| `block_header.size_` | 0 | 8 | 块大小（低 1 位为 in_use 标志） |
+| `block_header.prev_physical_` | 8 | 8 | 物理前驱块指针（用于合并） |
+| 用户数据区 | 16 | size | `allocate` 返回的指针 |
+
+空闲块的数据区前 16 字节复用为链表节点（`free_node`：`next_`/`prev_`），不额外占空间。`allocate(16)` 实际占用 32 字节（header 16 + 数据 16），小对象利用率高。
+
 ### memory_block — 内存块
 
 | 接口 | 说明 |
@@ -535,6 +645,17 @@ uint32_t id3 = alloc.get_id();  // 1（复用）
 
 > 注：`memory_block` 禁止拷贝。
 
+### pool_stats — 统计信息
+
+| 字段 | 说明 |
+|------|------|
+| `total_allocated` | 已分配 chunk 总量 |
+| `total_used` | 用户使用量（含 header） |
+| `total_free` | 空闲量（含 header） |
+| `free_block_count` | 空闲块数量 |
+| `max_contiguous_free` | 最大连续空闲块大小 |
+| `fragmentation` | 碎片率 [0,1]，`1 - max_contiguous_free / total_free` |
+
 ### memory_pool — 内存池
 
 | 接口 | 说明 |
@@ -542,7 +663,7 @@ uint32_t id3 = alloc.get_id();  // 1（复用）
 | `memory_pool(size_t chunk_size = 4096)` | 构造，指定块大小 |
 | `memory_pool(memory_pool&&)` | 移动构造 |
 | `operator=(memory_pool&&)` | 移动赋值 |
-| `allocate(size_t size)` | 分配内存 |
+| `allocate(size_t size)` | 分配内存，返回 16 字节对齐指针 |
 | `deallocate(void* ptr)` | 释放内存（自动合并相邻块） |
 | `construct<T>(Args...)` | 分配并构造对象 |
 | `destroy<T>(T* ptr)` | 析构并释放对象 |
@@ -550,6 +671,9 @@ uint32_t id3 = alloc.get_id();  // 1（复用）
 | `total_used()` | 已使用量 |
 | `chunk_size()` | 获取块大小 |
 | `empty()` | 是否空闲（`total_used_ == 0`） |
+| `owns(const void* ptr)` | 判断指针是否属于本池 |
+| `stats()` | 返回 `pool_stats` 统计信息 |
+| `iterate_free(Fn&& fn)` | 遍历空闲块，回调签名 `void(void* data_ptr, size_t block_size)` |
 | `increase_capacity(size_t size)` | 扩容（只扩容不缩容） |
 | `reduce_capacity(size_t target)` | 缩容（只缩容不扩容，释放空闲 chunk 直到总量 <= target） |
 | `reset()` | 释放所有内存块，回到初始状态 |
@@ -569,6 +693,24 @@ pool.destroy(s);
 pool.increase_capacity(1024 * 1024);  // 扩容至 1MB
 pool.reduce_capacity(4096);          // 缩容，释放空闲 chunk 至总量 <= 4096
 pool.reset();                        // 释放所有，回到初始状态
+
+// owns: 判断指针归属
+void* q = pool.allocate(32);
+bool in_pool = pool.owns(q);         // true
+int stack_var = 0;
+bool in_stack = pool.owns(&stack_var); // false
+
+// stats: 统计信息
+pool_stats s = pool.stats();
+// s.total_allocated, s.total_used, s.total_free
+// s.free_block_count, s.max_contiguous_free, s.fragmentation
+
+// iterate_free: 遍历空闲块
+size_t free_count = 0;
+pool.iterate_free([&](void* data_ptr, size_t block_size) {
+    ++free_count;
+    // data_ptr: 空闲块数据区指针, block_size: 空闲块大小
+});
 ```
 
 ### 不要做什么
@@ -578,6 +720,187 @@ pool.reset();                        // 释放所有，回到初始状态
 | 用 `new`/`delete` 管理 `construct` 分配的对象 | 内存池有自己的分配器，`delete` 会崩溃 | 始终用 `destroy<T>()` 释放 |
 | `allocate` 后忘记 `deallocate` | 内存泄漏 | 每次 `allocate` 配对一个 `deallocate` |
 | 拷贝 `memory_pool` | 禁止拷贝，内部指针所有权混乱 | 使用移动语义或引用传递 |
+| 在 `iterate_free` 回调中修改池状态 | 遍历中增删块会破坏链表 | 仅在回调中读取信息，不调用 `allocate`/`deallocate` |
+| 依赖 `owns()` 区分池内不同块 | `owns` 仅判断指针是否属于本池，不区分具体块 | 用 `stats()`/`iterate_free()` 获取块信息 |
+
+### arena_allocator — 线性 bump 分配器
+
+线性 bump 分配器，无 header，无单个 deallocate，仅 `reset()` 整体回收。两种模式：自有内存（析构释放）/ 借用外部 buffer（零所有权）。适合 command_buffer 等批量分配、整体回收场景。
+
+#### 内存布局
+
+`base_` 64 字节对齐（cache line），`allocate(n, align)` 支持 `align <= 64`（覆盖 AVX2 32 / AVX512 64）。无 per-block header，零开销。bump 分配用位运算对齐 offset，无分支。
+
+#### 接口
+
+| 接口 | 说明 |
+|------|------|
+| `arena_allocator()` | 默认构造，空 |
+| `arena_allocator(size_t capacity)` | 自有模式：分配 capacity 字节，析构释放 |
+| `arena_allocator(void* buffer, size_t size)` | 借用模式：使用外部 buffer，不分配不释放 |
+| `arena_allocator(arena_allocator&&)` | 移动构造（原对象置空防 double free） |
+| `operator=(arena_allocator&&)` | 移动赋值 |
+| `allocate(size_t n, size_t align = 16)` | bump 分配，位运算对齐，溢出返回 nullptr |
+| `reset()` | 整体回收，offset 归零（不调用析构） |
+| `used()` | 已用字节数 |
+| `capacity()` | 总容量 |
+| `remaining()` | 剩余字节数 |
+| `empty()` | 是否已 reset（offset == 0） |
+| `owns(const void* p)` | 判断指针是否属于本 arena |
+
+> 注：禁止拷贝；无单个 deallocate，必须 `reset()` 整体回收。
+
+#### 使用
+
+```cpp
+// 自有模式
+arena_allocator ar(4096);
+void* p = ar.allocate(128);
+void* q = ar.allocate(64, 32);  // 32 字节对齐
+ar.reset();  // 整体回收，p/q 失效
+
+// 借用模式（零所有权，不分配不释放）
+uint8_t buf[1024];
+arena_allocator ar2(buf, sizeof(buf));
+void* r = ar2.allocate(32);
+
+// owns: 判断指针归属
+bool in_arena = ar.owns(p);   // true（reset 前）
+int stack_var = 0;
+bool in_stack = ar.owns(&stack_var);  // false
+
+// 移动语义
+arena_allocator ar3(2048);
+arena_allocator ar4(std::move(ar3));  // ar3 置空
+```
+
+#### 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 对单个指针调用 `deallocate` | arena 无此接口 | 仅用 `reset()` 整体回收 |
+| `reset()` 后继续使用已分配指针 | 内存被整体回收，指针悬空 | `reset()` 后重新分配 |
+| 借用模式析构后期望释放 buffer | 借用模式零所有权，不释放 | 由 buffer 所有者管理生命周期 |
+| 期望 `allocate(n, 128)` 对齐 | base_ 仅 64 字节对齐 | 对齐上限 64，超过不保证 |
+
+### slab_allocator — 固定块对象池
+
+固定块大小对象池，侵入式 free list（块首 8 字节存 next 指针），零 header，O(1) push/pop。chunk 用 `operator new` 独立分配，不依赖 memory_pool。适合 void_any 小对象（≤128B）高频分配/释放。
+
+#### 内存布局
+
+每个 chunk 切分为固定大小块，空闲块首 8 字节复用为 free list next 指针。`allocate()` 返回的块无 header，零开销。`block_size` 构造时向上对齐到 `alignment`。
+
+#### 接口
+
+| 接口 | 说明 |
+|------|------|
+| `slab_allocator(size_t block_size, size_t alignment = 16, size_t blocks_per_chunk = 256)` | 构造，block_size 向上对齐 |
+| `slab_allocator(slab_allocator&&)` | 移动构造 |
+| `operator=(slab_allocator&&)` | 移动赋值 |
+| `allocate()` | O(1) pop，无空闲块则 grow 新 chunk |
+| `deallocate(void* p)` | O(1) push，归还块到 free list |
+| `owns(const void* p)` | 遍历 chunk 链表判断归属 |
+| `block_size()` | 实际块大小（对齐后） |
+| `total_blocks()` | 总块数 |
+| `free_blocks()` | 空闲块数 |
+| `empty()` | 是否全部空闲（free == total） |
+
+> 注：禁止拷贝；块大小固定，不支持变长分配。
+
+#### 使用
+
+```cpp
+slab_allocator sl(64);  // 64 字节块
+void* p = sl.allocate();
+void* q = sl.allocate();
+sl.deallocate(p);  // O(1) 归还
+sl.deallocate(q);
+
+// 释放后重用（同指针，LIFO）
+void* r = sl.allocate();
+assert(r == q);  // q 最后释放，最先重用
+
+// 批量分配自动 grow
+slab_allocator sl2(32, 16, 64);  // 32B 块, 64 块/chunk
+void* batch[100];
+for (int i = 0; i < 100; ++i) batch[i] = sl2.allocate();
+for (int i = 0; i < 100; ++i) sl2.deallocate(batch[i]);
+
+// owns
+bool in_slab = sl.owns(p);
+```
+
+#### 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| `deallocate` 非 slab 分配的指针 | 写入非法内存，破坏 free list | 仅释放 `allocate()` 返回的指针 |
+| 同一指针 `deallocate` 两次 | double free，破坏 free list | 释放后置空，避免重复释放 |
+| 期望块大小可变 | slab 固定块大小 | 变长用 `layered_allocator` 或 `memory_pool` |
+
+### layered_allocator — 分层分配器
+
+组合 slab + TLSF，按大小路由：小对象（≤128B）走 slab（0 header, O(1)），大对象走 memory_pool（TLSF）。void_any 默认通过 `VOID_ANY_USE_LAYERED_ALLOCATOR` 启用此分配器。
+
+#### 路由表
+
+| 分配大小 | 路径 | size class |
+|---------|------|-----------|
+| 1-16 | slab[0] | 16B |
+| 17-32 | slab[1] | 32B |
+| 33-48 | slab[2] | 48B |
+| 49-64 | slab[3] | 64B |
+| 65-80 | slab[4] | 80B |
+| 81-96 | slab[5] | 96B |
+| 97-112 | slab[6] | 112B |
+| 113-128 | slab[7] | 128B |
+| >128 | memory_pool (TLSF) | 变长 |
+
+`deallocate` 遍历 8 个 slab 的 `owns()` 判断归属，未命中走 `memory_pool.deallocate`。
+
+#### 接口
+
+| 接口 | 说明 |
+|------|------|
+| `layered_allocator()` | 默认构造，初始化 8 个 slab + memory_pool |
+| `layered_allocator(layered_allocator&&)` | 移动构造 |
+| `operator=(layered_allocator&&)` | 移动赋值 |
+| `allocate(size_t n)` | 按大小路由：≤128 走 slab，>128 走 TLSF |
+| `deallocate(void* p)` | 遍历 `owns()` 判断归属后释放 |
+| `construct<T>(Args...)` | 分配并构造对象 |
+| `destroy<T>(T* ptr)` | 析构并释放对象 |
+| `owns(const void* p)` | 判断指针是否属于本分配器 |
+| `slab_max()` | slab 路径上限（128） |
+| `big_pool()` | 访问内部 memory_pool（大对象路径） |
+
+> 注：禁止拷贝；void_any 通过 `VOID_ANY_USE_LAYERED_ALLOCATOR` 宏启用。
+
+#### 使用
+
+```cpp
+layered_allocator la;
+void* small = la.allocate(64);   // 走 slab[3]
+void* big = la.allocate(256);    // 走 memory_pool
+la.deallocate(small);            // 遍历 owns → slab[3]
+la.deallocate(big);              // 遍历 owns → memory_pool
+
+// construct/destroy
+struct Foo { int a; double b; Foo(int x, double y) : a(x), b(y) {} };
+Foo* foo = la.construct<Foo>(42, 3.14);
+la.destroy(foo);
+
+// owns
+bool in_la = la.owns(small);
+```
+
+#### 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| `deallocate` 非 layered 分配的指针 | 遍历 owns 未命中后错误走 memory_pool | 仅释放 `allocate()` 返回的指针 |
+| 同一指针 `deallocate` 两次 | double free | 释放后置空 |
+| 期望 slab 路径支持 >128B | slab 最大 128B | >128B 自动走 memory_pool |
 
 ---
 
@@ -749,10 +1072,23 @@ ECS 核心管理类，管理实体和所有组件集合。
 
 | 接口 | 说明 |
 |------|------|
-| `disable_comp_signals()` | 禁用组件信号推送 |
-| `enable_comp_signals()` | 启用组件信号推送 |
+| `disable_comp_signals()` | 禁用组件延迟信号入队 |
+| `enable_comp_signals()` | 启用组件延迟信号入队 |
+| `disable_entity_signals()` | 禁用实体延迟信号入队 |
+| `enable_entity_signals()` | 启用实体延迟信号入队 |
 | `disable_track_changes()` | 禁用版本追踪 |
 | `enable_track_changes()` | 启用版本追踪 |
+
+### 信号溢出与容量
+
+| 接口 | 说明 |
+|------|------|
+| `comp_signal_overflow_count()` | 组件信号溢出到 chain 的累计次数 |
+| `entity_signal_overflow_count()` | 实体信号溢出到 chain 的累计次数 |
+| `reset_comp_signal_overflow_count()` | 清零组件溢出计数 |
+| `reset_entity_signal_overflow_count()` | 清零实体溢出计数 |
+| `reserve_comp_signal_capacity(n)` | 预分配组件溢出 chain 容量 |
+| `reserve_entity_signal_capacity(n)` | 预分配实体溢出 chain 容量 |
 
 ### View系统
 
@@ -801,6 +1137,7 @@ ECS 核心管理类，管理实体和所有组件集合。
 | `set_on_entity_destroyed(fn, data)` | 绑定实体销毁即时回调 |
 | `set_on_add<T>(fn, data)` | 绑定组件 T 添加即时回调 |
 | `set_on_remove<T>(fn, data)` | 绑定组件 T 移除即时回调 |
+| `set_on_modify<T>(fn, data)` | 绑定组件 T 覆盖写即时回调 |
 | `flush_entity_signals(handler)` | 批量处理实体延迟信号 |
 | `has_pending_entity_signals()` | 是否有待处理实体信号 |
 | `flush_component_signals(handler)` | 批量处理组件延迟信号 |
@@ -1139,7 +1476,9 @@ manager 级别的排序工具，将 dense 数组按组件值重排，后续迭�
 |------|------|
 | `sort_entities_by_component<T>(cmp)` | 按组件 T 的值排序 dense 数组（同步更新 sparse 映射） |
 | `reorder_by_component<T, Other>(cmp)` | 按 Other 的值重排 T 的 dense 数组 |
-| `sort_component_container<T>(cmp)` | 按组件 T 的值排序并同步更新 dense/sparse 映射 |
+| `sort_component_container<T>(cmp)` | 按组件 T 的值排序并同步更新 dense/sparse 映射（等价于 `sort_entities_by_component`） |
+
+**reorder_by_component 语义**：遍历 T 池的所有实体，按 Other 的值排序。若某实体没有 Other 组件，使用默认构造的 `Other{}` 参与比较。
 
 ```cpp
 // 按 Position.x 升序排序
@@ -1157,6 +1496,13 @@ mgr.sort_component_container<Position>([](Position& a, Position& b) {
     return a.x < b.x;
 });
 ```
+
+**不要做什么**
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| `reorder_by_component` 期望实体没有 Other 时被排除 | 没有 Other 的实体会用 `Other{}` 参与排序，不会被排除 | 若需排除，先过滤实体再排序 |
+| 排序后仍用旧 index 访问组件 | dense 数组已重排，旧 index 失效 | 排序后通过 `get_ptr<T>(entity)` 重新获取 |
 
 ### 10.10 page — 分页视图
 
@@ -1572,11 +1918,11 @@ rg2.share_with(rg1);  // rg2 共享 rg1 的重排状态
 
 ## 12. runtime_view — 运行时视图
 
-在运行时动态指定组件类型组合进行查询。通过实体组件位掩码（`uint64_t`）实现匹配。
+在运行时动态指定组件类型组合进行查询。组件类型数量无上限，前 64 种组件类型自动维护实体位掩码，超过 64 种的组件类型同样参与所有视图/分组查询。
 
 ### 12.1 实体掩码
 
-每个实体在添加/删除组件时自动维护组件位掩码：
+每个实体在添加/删除组件时自动维护组件位掩码（仅覆盖 type_id ≤ 64 的组件类型）：
 
 ```cpp
 ecs::manager mgr;
@@ -1627,23 +1973,235 @@ rv.for_each([](entity e) {
 |------|------|
 | `runtime_view_create({ids...})` | 创建运行时视图，传入必须拥有的组件 type_id 列表 |
 | `runtime_view_create({ids}, {exclude_ids})` | 创建排除式运行时视图 |
-| `for_each(func)` | 遍历所有匹配实体，回调接收 `entity` |
+| `runtime_view_create_from_terms(terms)` | 通过 `runtime_term` 创建视图，支持 OR / OPTIONAL / NOT |
+| `for_each(func)` | 遍历所有匹配实体，回调接收 `entity` 或无参 |
+| `for_each_typed<Ts...>(func)` | 遍历并回传组件引用，回调接收 `entity, Ts&...` 或 `Ts&...` |
+| `for_each_parallel(worker_id, worker_count, func)` | 分片并行遍历，外部线程池驱动 |
+| `for_each_paged(offset, limit, func)` | 分页遍历 |
+| `for_each_changed(func)` | 遍历自上次调用后发生变更的实体 |
 | `size()` | 返回主集大小（上限，非精确匹配数） |
+| `count()` | 精确命中数（遍历计算） |
 | `empty()` | 是否为空 |
 | `contains(entity)` | 检查实体是否匹配查询 |
 | `get_ptr<T>(entity)` | 获取实体的组件指针 |
 | `get_first_entity()` | 返回第一个匹配实体 |
+| `sort_by_component<T>(cmp)` | 按组件值排序，结果存于 `get_sorted_entities()` |
+| `changed()` | 检测组件池版本是否变化 |
+| `reset_change_tracking()` | 重置变更检测基线 |
+| `begin()` / `end()` | 迭代器，支持 range-for |
 | `rebuild()` | 重新选择最小集合（组件数量变化后调用） |
 | `get_entity_mask(entity)` | 获取实体组件位掩码 |
 | `get_component_bit<T>()` | 获取组件类型的位掩码位 |
+
+### 12.5 组件类型无上限
+
+组件类型数量不受 64 限制。type_id ≤ 64 的组件参与实体位掩码；type_id > 64 的组件 `get_component_bit<T>()` 返回 0，但仍可正常添加、查询，并参与所有视图/分组（`view` / `group` / `owning_group` / `reorder_group` / `runtime_view` / `view(without)`）的匹配。无需任何特殊处理。
+
+```cpp
+ecs::manager mgr;
+
+// 假设已注册超过 64 种组件类型，CompA 的 type_id = 64，CompB 的 type_id = 65
+mgr.add(e1, CompA{});
+mgr.add(e2, CompB{});
+mgr.add(e3, CompA{});
+mgr.add(e3, CompB{});
+
+// CompB 超过 64，get_component_bit 返回 0，但查询照常工作
+auto rv = mgr.runtime_view_create({
+    type_id::get_type_id<CompA>(),
+    type_id::get_type_id<CompB>()
+});
+rv.for_each([](entity e) { /* 命中 e3 */ });
+
+// group / view(without) 同样支持超过 64 的组件类型
+auto g = mgr.group<CompA, CompB>();
+mgr.view<CompA>(ecs::without<CompB>).for_each([](CompA&) {});
+```
+
+### 12.6 for_each_typed — 组件引用回传
+
+`for_each` 只回调 `entity`，需手动调用 `get_ptr` 获取组件。`for_each_typed<Ts...>` 直接回传组件引用，`Ts` 顺序对应 `runtime_view_create` 传入的 type_id 顺序。
+
+```cpp
+auto rv = mgr.runtime_view_create({
+    type_id::get_type_id<Position>(),
+    type_id::get_type_id<Velocity>()
+});
+
+// 回调接收 entity + 组件引用
+rv.for_each_typed<Position, Velocity>([](entity e, Position& p, Velocity& v) {
+    p.x += v.dx;
+});
+
+// 也可不接收 entity
+rv.for_each_typed<Position>([](Position& p) {
+    p.x += 1;
+});
+```
+
+机制：内部遍历命中实体后，通过 sparse 数组按 version 校验获取组件指针，全部存在才回调。`Ts` 必须是 `runtime_view_create` 中 required_ids 的子集。
+
+### 12.7 for_each_parallel — 并行迭代
+
+按 primary dense 数组分片，由外部线程池驱动。每个 worker 处理 `[worker_id * per_worker, (worker_id+1) * per_worker)` 区间。
+
+```cpp
+auto rv = mgr.runtime_view_create({type_id::get_type_id<Position>()});
+
+// 2 个 worker
+rv.for_each_parallel(0, 2, [](entity e, size_t worker_id) {
+    // worker 0 处理前半
+});
+rv.for_each_parallel(1, 2, [](entity e) {
+    // worker 1 处理后半
+});
+```
+
+机制：分片基于 primary_set 的 dense 索引，非实体索引。纯 OR 查询无 primary_set，不支持并行分片。
+
+### 12.8 for_each_paged — 分页遍历
+
+```cpp
+auto rv = mgr.runtime_view_create({type_id::get_type_id<Position>()});
+
+// 每页 100 个，处理第 2 页
+rv.for_each_paged(100, 100, [](entity e) {
+    // 处理实体
+});
+```
+
+机制：`offset` 和 `limit` 基于 primary dense 索引。offset 超出范围时回调不触发。
+
+### 12.9 变更检测
+
+通过组件池版本号检测变更。首次调用 `reset_change_tracking` 记录基线，`changed` 比较当前版本与基线。
+
+```cpp
+auto rv = mgr.runtime_view_create({type_id::get_type_id<Position>()});
+
+rv.reset_change_tracking();      // 记录基线
+// ... 修改组件 ...
+if (rv.changed()) {              // 版本变化则 true
+    rv.for_each_changed([](entity e) {
+        // 遍历所有匹配实体（非增量，全量遍历）
+    });
+    // for_each_changed 内部调用 reset_change_tracking
+}
+```
+
+机制：`changed` 比较所有 required 集合的 `pool_version`。`for_each_changed` 在 `changed` 为 true 时全量遍历并重置基线。检测的是"有无变更"而非"哪些实体变更"。
+
+### 12.10 sort_by_component — 按组件排序
+
+```cpp
+auto rv = mgr.runtime_view_create({type_id::get_type_id<Position>()});
+
+rv.sort_by_component<Position>([](const Position& a, const Position& b) {
+    return a.x < b.x;  // 升序
+});
+
+// 排序结果缓存在视图中
+for (const auto& e : rv.get_sorted_entities()) {
+    auto* p = mgr.get_ptr<Position>(e);
+    // 按 x 升序处理
+}
+```
+
+机制：收集所有命中实体的组件副本，用 `std::sort` 排序，结果存入 `sorted_entities_`。排序后实体顺序与 primary dense 顺序无关。`rebuild` 或组件变更后需重新排序。
+
+### 12.11 count — 精确命中数
+
+```cpp
+auto rv = mgr.runtime_view_create({
+    type_id::get_type_id<Position>(),
+    type_id::get_type_id<Velocity>()
+});
+
+size_t n = rv.count();  // 精确匹配数，遍历计算
+```
+
+机制：`size()` 返回 primary_set 大小（上限），`count()` 遍历所有命中实体计数。`count` 是 O(n) 操作。
+
+### 12.12 iterator — 迭代器
+
+```cpp
+auto rv = mgr.runtime_view_create({type_id::get_type_id<Position>()});
+
+// range-for
+for (auto it = rv.begin(); it != rv.end(); ++it) {
+    entity e = *it;
+    auto* p = mgr.get_ptr<Position>(e);
+}
+
+// 等价于
+for (entity e : rv) {
+    // 处理 e
+}
+```
+
+机制：迭代器基于 primary dense 索引，`advance_to_valid` 跳过不匹配的实体。`end()` 的 index 为 primary_set 大小。
+
+### 12.13 runtime_term — OR / OPTIONAL / NOT 查询
+
+通过 `runtime_term` 构造查询条件，支持 OR（并集）、NOT（排除）、OPTIONAL（可选）操作。
+
+```cpp
+class_pool<ecs::runtime_term> terms;
+// AND: op=0
+terms.emplace_back(ecs::runtime_term{type_id::get_type_id<Position>(), 0, ecs::access_mode::read_write});
+// OR: op=1
+terms.emplace_back(ecs::runtime_term{type_id::get_type_id<Velocity>(), 1, ecs::access_mode::read_only});
+// NOT: op=2
+terms.emplace_back(ecs::runtime_term{type_id::get_type_id<Health>(), 2, ecs::access_mode::read_only});
+// OPTIONAL: op=3
+terms.emplace_back(ecs::runtime_term{type_id::get_type_id<Name>(), 3, ecs::access_mode::read_only});
+
+auto rv = mgr.runtime_view_create_from_terms(std::move(terms));
+rv.for_each([](entity e) {
+    // 命中：有 Position OR Velocity，且无 Health
+});
+```
+
+| op 值 | 语义 | 说明 |
+|-------|------|------|
+| 0 | AND | 必须拥有 |
+| 1 | OR | 至少命中一个 OR term |
+| 2 | NOT | 必须不拥有 |
+| 3 | OPTIONAL | 可选，不影响命中 |
+
+机制：纯 OR 查询（无 AND term）时遍历所有 OR 集合并集去重。有 AND term 时以最小 AND 集合为 primary_set 遍历，对每个实体检查 OR / NOT 条件。OR 查询会关闭 mask 快路径，走 sparse 交集。
+
+### 12.14 access_mode — 读写标注
+
+`runtime_term.access` 标注组件访问模式，用于意图声明。
+
+```cpp
+class_pool<ecs::runtime_term> terms;
+terms.emplace_back(ecs::runtime_term{
+    type_id::get_type_id<Position>(), 0, ecs::access_mode::read_only});
+terms.emplace_back(ecs::runtime_term{
+    type_id::get_type_id<Velocity>(), 0, ecs::access_mode::read_write});
+
+auto rv = mgr.runtime_view_create_from_terms(std::move(terms));
+```
+
+| 值 | 语义 |
+|----|------|
+| `access_mode::read_only` | 只读访问 |
+| `access_mode::read_write` | 读写访问 |
+
+机制：当前版本 `access_mode` 仅作为意图标注，不影响查询行为。可用于后续并行调度时的依赖分析。
 
 ### 不要做什么
 
 | 错误做法 | 问题 | 正确做法 |
 |---------|------|---------|
-| `size()` 依赖精确值 | 返回的是主集大小上限，非精确匹配数 | 使用 `for_each` 遍历或 `contains()` 检查 |
-| 忘记自增 `entity_bit_` 计数器 | 位掩码位耗尽（uint64_t 最多 64 种组件类型） | 控制组件类型数量在 64 以内 |
+| `size()` 依赖精确值 | 返回的是主集大小上限，非精确匹配数 | 使用 `count()` 获取精确值或 `for_each` 遍历 |
+| 用 `get_component_bit<T>() != 0` 判断组件是否存在 | type_id > 64 的组件 bit 恒为 0 | 用 `get_ptr<T>(e) != nullptr` 或视图查询判断 |
 | 组件数量变化后忘记 `rebuild()` | 主集选择可能不是最优 | 增删组件类型后调用 `rebuild()` |
+| `for_each_changed` 依赖增量语义 | 全量遍历匹配实体，非仅变更实体 | 变更检测仅判断"有无变更" |
+| 纯 OR 查询使用 `for_each_parallel` | 纯 OR 无 primary_set，不支持分片 | 纯 OR 查询使用 `for_each` 或 `count` |
+| `sort_by_component` 后不重新排序就修改组件 | 排序缓存与实际数据不一致 | 组件变更后重新调用 `sort_by_component` |
 
 ---
 
@@ -1698,7 +2256,9 @@ mgr.view<CallbackComponent>().for_each([](entity e, CallbackComponent& c) {
 
 ## 14. 生命周期信号
 
-两层架构：**即时信号**（函数指针回调） + **延迟信号**（环形缓冲区，批量处理）。
+两层架构：**即时信号**（函数指针回调） + **延迟信号**（环形缓冲区 + 溢出 chain，批量处理）。
+
+**核心机制：即时/延迟互斥。** 注册了即时回调的事件同步触发且不入延迟队列；未注册才入队，由 `flush_*_signals` 处理。同一事件不会两路重复通知。
 
 ### 14.1 实体级即时信号
 
@@ -1766,13 +2326,39 @@ mgr.set_on_remove<Position>(+on_remove, &remove_count);
 
 entity e = mgr.create_entity();
 mgr.add(e, Position{1, 2});        // add_count == 1, Position.x 被改为 100
-mgr.add(e, Position{3, 4});        // add_count == 2（覆盖也会触发）
-mgr.hard_remove<Position>(e);      // remove_count == 1
+mgr.add(e, Position{3, 4});        // 覆盖写:未注册 on_modify 时回退为 on_remove(旧)+on_add(新)
+mgr.hard_remove<Position>(e);      // remove_count == 2(覆盖 1 + hard_remove 1)
 ```
 
-> **注意：** 组件指针在回调期间有效，可用于读取或修改组件数据。`soft_remove` 和 `hard_remove` 均会触发 `on_remove`。
+> **注意：** 组件指针在回调期间有效，可用于读取或修改组件数据。`hard_remove` 触发 `on_remove`；`soft_remove` 仅逻辑隐藏组件（未析构），**不触发** `on_remove` 也不入延迟队列。
 
-### 14.3 实体级延迟信号
+### 14.3 覆盖写与 on_modify
+
+对同一实体的同一组件再次 `add` 称为覆盖写。覆盖写语义由 `on_modify` 是否注册决定：
+
+- **注册了 `on_modify<T>`**：覆盖写只触发 `on_modify`，不触发 `on_remove`/`on_add`。
+- **未注册 `on_modify<T>`**：覆盖写回退为 `on_remove`(旧组件) + `on_add`(新组件)。
+
+| 接口 | 说明 |
+|------|------|
+| `set_on_modify<T>(fn, user_data)` | 绑定组件 T 覆盖写回调：`void fn(entity, void* component, void* user_data)` |
+
+```cpp
+ecs::manager mgr;
+mgr.append_preallocated_entities(10);
+int add_cnt = 0, remove_cnt = 0, modify_cnt = 0;
+mgr.set_on_add<Position>(+[](entity, void*, void* d) noexcept { (*static_cast<int*>(d))++; }, &add_cnt);
+mgr.set_on_remove<Position>(+[](entity, void*, void* d) noexcept { (*static_cast<int*>(d))++; }, &remove_cnt);
+mgr.set_on_modify<Position>(+[](entity, void*, void* d) noexcept { (*static_cast<int*>(d))++; }, &modify_cnt);
+
+entity e = mgr.create_entity();
+mgr.add(e, Position{1, 0});   // add_cnt == 1
+mgr.add(e, Position{2, 0});   // modify_cnt == 1, add_cnt/remove_cnt 不变
+```
+
+> **不应：** 靠 `on_add` 区分新增与覆盖。注册 `on_modify` 后覆盖路径不再走 `on_add`。
+
+### 14.4 实体级延迟信号
 
 实体创建/销毁事件被推入环形缓冲区，调用 `flush_entity_signals` 时批量处理。适合批量同步、避免重入的场景。
 
@@ -1809,9 +2395,9 @@ mgr.flush_entity_signals([&](uint32_t type, uint32_t entity_idx) {
 assert(!mgr.has_pending_entity_signals());
 ```
 
-> **缓冲区容量：** 256 条。缓冲区满时丢弃新事件。
+> **缓冲区容量：** 1024 条（2 的幂）。缓冲区满时事件落入 `overflow_chain`，`overflow_count` 累计，`flush` 一并消费，不静默丢弃。
 
-### 14.4 组件级延迟信号
+### 14.5 组件级延迟信号
 
 组件添加/移除事件被推入环形缓冲区，调用 `flush_component_signals` 时批量处理。
 
@@ -1849,7 +2435,93 @@ mgr.flush_component_signals([&](uint32_t type, uint32_t entity_idx, uint32_t com
 assert(!mgr.has_pending_component_signals());
 ```
 
-### 14.5 即时信号 vs 延迟信号 选择指南
+### 14.6 即时/延迟互斥机制
+
+即时回调与延迟队列对同一事件**互斥**，避免重复通知：
+
+- `set_on_add<T>` 注册后：`add` 同步触发 `on_add`，**不**入组件延迟队列。
+- `set_on_remove<T>` 注册后：`hard_remove` 同步触发 `on_remove`，**不**入组件延迟队列。
+- `set_on_entity_created` 注册后：`create_entity` 同步触发，**不**入实体延迟队列。
+- `set_on_entity_destroyed` 注册后：`delete_entity` 同步触发，**不**入实体延迟队列。
+
+```cpp
+ecs::manager mgr;
+mgr.append_preallocated_entities(10);
+int add_cb = 0;
+mgr.set_on_add<Position>(+[](entity, void*, void* d) noexcept { (*static_cast<int*>(d))++; }, &add_cb);
+
+entity e = mgr.create_entity();
+mgr.add(e, Position{1, 0});   // add_cb == 1,不入队
+
+int add_sig = 0;
+mgr.flush_component_signals([&](uint32_t type, uint32_t, uint32_t) noexcept {
+    if (type == 0) ++add_sig;
+});
+// add_sig == 0(已注册即时回调,不重复入队)
+```
+
+> **不应：** 同一事件既订阅即时回调又期望 `flush` 收到。互斥设计下二者只走一路。
+
+### 14.7 信号开关与溢出
+
+**信号开关**控制延迟队列是否入队（不影响即时回调）：
+
+| 接口 | 说明 |
+|------|------|
+| `disable_comp_signals()` / `enable_comp_signals()` | 关/开组件延迟信号入队 |
+| `disable_entity_signals()` / `enable_entity_signals()` | 关/开实体延迟信号入队 |
+
+**溢出处理：** 环形缓冲区满时事件落入 `overflow_chain`，`flush_*_signals` 先消费缓冲区再消费 chain。`overflow_count` 累计溢出次数（不随 flush 清零），需手动 `reset_*_overflow_count`。
+
+| 接口 | 说明 |
+|------|------|
+| `comp_signal_overflow_count()` / `entity_signal_overflow_count()` | 查询累计溢出次数 |
+| `reset_comp_signal_overflow_count()` / `reset_entity_signal_overflow_count()` | 清零溢出计数 |
+| `reserve_comp_signal_capacity(n)` / `reserve_entity_signal_capacity(n)` | 预分配 overflow chain 容量 |
+
+```cpp
+ecs::manager mgr;
+mgr.disable_entity_signals();
+auto e1 = mgr.create_entity();   // 不入队
+mgr.enable_entity_signals();
+auto e2 = mgr.create_entity();   // 入队
+// has_pending_entity_signals() == true
+
+mgr.reserve_comp_signal_capacity(2048);  // 预分配溢出容量
+```
+
+> **不应：** 长期忽略 `overflow_count`。其值 >0 表示曾发生溢出，应确认 `flush` 已消费完 chain（`has_pending_*_signals()` 为 false）。
+
+### 14.8 delete_entity 的组件清理
+
+`delete_entity` 会先遍历该实体身上所有组件触发清理，再销毁实体：
+
+- 已注册 `on_remove<T>` 的组件：同步触发 `on_remove`。
+- 未注册 `on_remove<T>` 的组件：remove 信号入组件延迟队列。
+
+```cpp
+ecs::manager mgr;
+mgr.append_preallocated_entities(10);
+int pos_removed = 0;
+mgr.set_on_remove<Position>(+[](entity, void*, void* d) noexcept { (*static_cast<int*>(d))++; }, &pos_removed);
+
+entity e = mgr.create_entity();
+mgr.add(e, Position{1, 0});
+mgr.add(e, Velocity{2, 0});   // Velocity 未注册 on_remove
+mgr.delete_entity(e);         // pos_removed == 1;Velocity remove 信号入队
+
+int removed_sig = 0;
+mgr.flush_component_signals([&](uint32_t type, uint32_t, uint32_t) noexcept {
+    if (type == 1) ++removed_sig;
+});
+// removed_sig == 1(Velocity)
+```
+
+> **不应：** 在 `on_remove` 回调内访问已销毁实体。回调在实体销毁前触发，实体此时仍有效；回调返回后实体才被销毁。
+>
+> **flush 顺序建议：** 先 `flush_component_signals` 再 `flush_entity_signals`。组件 remove 信号在实体销毁前入队，先消费组件信号可避免实体 id 被复用导致的归属错乱。
+
+### 14.9 即时信号 vs 延迟信号 选择指南
 
 | 场景 | 推荐方案 | 原因 |
 |------|----------|------|
@@ -1864,10 +2536,14 @@ assert(!mgr.has_pending_component_signals());
 
 | 错误做法 | 问题 | 正确做法 |
 |---------|------|---------|
-| 在即时信号回调中增删实体/组件 | 可能导致重入和迭代器失效 | 使用延迟信号，在 flush 时处理 |
-| 依赖延迟信号缓冲区不丢事件 | 缓冲区满时丢弃新事件 | 定期 flush，或降低事件产生频率 |
-| 忘记 `flush` 延迟信号 | 事件堆积在缓冲区中未处理 | 每帧开头或结尾调用 `flush_*_signals` |
+| 在即时信号回调中增删实体/组件 | 可能导致重入 | 使用延迟信号，在 flush 时处理；flush 内部有重入保护与 budget 上限 |
+| 依赖延迟信号缓冲区不丢事件 | 缓冲区满时落入 overflow_chain | 定期 flush；批量场景用 `reserve_*_signal_capacity` 预分配 |
+| 忘记 `flush` 延迟信号 | 事件堆积在缓冲区与 chain 中未处理 | 每帧开头或结尾调用 `flush_*_signals` |
 | 使用有捕获的 lambda 作为即时信号回调 | 无法转换为函数指针 | 使用无捕获 lambda + `user_data` 传上下文 |
+| 期望 `soft_remove` 触发 `on_remove` | `soft_remove` 仅逻辑隐藏，不析构不触发 | 需要回调改用 `hard_remove` |
+| 同一事件既注册即时回调又等 flush | 互斥设计下不会重复通知，flush 收不到该事件 | 二选一：要即时就注册回调，要批量就不注册 |
+| 在 `on_remove` 回调内访问已销毁实体 | 实体在回调返回后才销毁，回调内访问的是销毁前状态 | 回调内可安全读取组件，但不要依赖实体后续有效性 |
+| 回调 `user_data` 指向局部变量后让变量超出作用域 | 回调持有悬垂指针，后续触发写入野内存，污染相邻栈变量 | 块结束前 `set_on_*(nullptr, nullptr)` 解绑，或让 `user_data` 指向生命周期足够长的对象 |
 
 ---
 
@@ -1903,7 +2579,9 @@ cmake --build . --config Release
 |------|------|
 | `VOID_ANY_ENABLE_SSO` | 启用 void_any 小对象存储（SSO），小对象内联存储 |
 | `VOID_ANY_ENABLE_MEMORY_POOL` | 启用 void_any 内存池，使用 `memory_pool` 替代 `::operator new` |
-| `VOID_ANY_SSO_BUFFER_SIZE` | SSO 缓冲区大小（默认 32 字节），仅在启用 SSO 时有效 |
+| `VOID_ANY_USE_LAYERED_ALLOCATOR` | 启用分层分配器：小对象（≤128B）走 slab，大对象走 TLSF（优先级高于 `VOID_ANY_ENABLE_MEMORY_POOL`） |
+| `VOID_ANY_SSO_BUFFER_SIZE` | SSO 缓冲区大小（默认 56 字节，与 `vtable_sso_type_` 共 64 字节 = 1 cache line） |
+| `VOID_ANY_SSO_ALIGNMENT` | SSO 对齐（默认 8 字节；设为 32 会破坏 `sizeof==64` 不变量） |
 | `VOID_ANY_MEMORY_POOL_NOT_ENABLED` | 禁用内存池（与 `VOID_ANY_ENABLE_MEMORY_POOL` 互斥） |
 | `VOID_ANY_SSO_NOT_ENABLED` | 禁用 SSO（与 `VOID_ANY_ENABLE_SSO` 互斥） |
 
@@ -1915,9 +2593,77 @@ cmake --build . --config Release
 // 启用内存池
 #define VOID_ANY_ENABLE_MEMORY_POOL
 
+// 启用分层分配器（小对象走 slab, 大对象走 TLSF, 优先级高于 memory_pool）
+#define VOID_ANY_USE_LAYERED_ALLOCATOR
+
 // 启用小对象存储
 #define VOID_ANY_ENABLE_SSO
 
-// SSO 缓冲区大小
-#define VOID_ANY_SSO_BUFFER_SIZE 64
+// SSO 缓冲区大小: 56 + 8(vtable_sso_type_) = 64 (1 cache line)
+#define VOID_ANY_SSO_BUFFER_SIZE 56
+
+// SSO 对齐: 8 确保 sizeof(void_any)==64
+#define VOID_ANY_SSO_ALIGNMENT 8
 ```
+
+---
+
+## 17. command_buffer — 延迟结构变更
+
+将组件添加、移除、实体销毁等结构变更操作暂存，在 `flush` 时一次性应用到 manager。适用于帧末批量提交、主循环延迟执行等场景。
+
+### 使用
+
+```cpp
+ecs::manager mgr;
+auto a = mgr.create_entity();
+auto b = mgr.create_entity();
+auto c = mgr.create_entity();
+mgr.add(a, Position{1, 0, 0});
+
+// 创建 command_buffer
+auto cb = mgr.create_command_buffer();
+
+// 录制命令(不立即执行)
+cb.add_component<Position>(b, Position{2, 0, 0});
+cb.add_component<Velocity>(a, Velocity{10, 0, 0});
+cb.remove_component<Position>(a);
+cb.destroy_entity(c);
+
+// flush 前状态不变
+// mgr.get_ptr<Position>(b) == nullptr
+// mgr.get_ptr<Position>(a) != nullptr
+
+// 一次性应用
+cb.flush();
+
+// flush 后
+// mgr.get_ptr<Position>(b) != nullptr, x == 2.0f
+// mgr.get_ptr<Velocity>(a) != nullptr
+// mgr.get_ptr<Position>(a) == nullptr
+// !mgr.is_entity_valid(c)
+```
+
+**接口：**
+
+| 接口 | 说明 |
+|------|------|
+| `create_command_buffer()` | manager 工厂方法，返回绑定到该 manager 的 command_buffer |
+| `add_component<T>(entity, T&&)` | 录制添加组件命令 |
+| `remove_component<T>(entity)` | 录制移除组件命令（soft_remove 语义） |
+| `destroy_entity(entity)` | 录制销毁实体命令 |
+| `flush()` | 按录入顺序应用所有命令，应用后清空缓冲区 |
+| `clear()` | 清空所有未应用命令 |
+| `size()` | 未应用命令数 |
+| `empty()` | 是否为空 |
+
+机制：每条命令存储 `entity` 副本 + `void_any` 载荷 + 类型擦除的 apply 函数指针。`flush` 按顺序调用各 apply 函数，内部调用 manager 的 `add` / `soft_remove` / `delete_entity`。
+
+### 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| `flush` 后用 `entity.is_valid()` 判断实体是否被销毁 | `destroy_entity` 按值传入，修改的是副本 | 用 `mgr.is_entity_valid(entity)` 检查 |
+| `flush` 后继续使用已销毁实体的句柄 | version 已过期，操作无效 | `flush` 后重新获取有效实体 |
+| 跨 manager 使用 command_buffer | apply 函数绑定到创建时的 manager | 每个 manager 独立创建 command_buffer |
+| 在 `flush` 过程中向同一 command_buffer 录入新命令 | `flush` 结束时清空缓冲区，新命令丢失 | `flush` 完成后再录入新命令 |

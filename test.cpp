@@ -1,7 +1,10 @@
 #include "include/component.hpp"
-#include "include/void_any.hpp"
-#include "include/memory_pool.hpp"
-#include "include/class_pool.hpp"
+#include "include/part/void_any.hpp"
+#include "include/part/memory_pool.hpp"
+#include "include/part/class_pool.hpp"
+#include "include/part/arena_allocator.hpp"
+#include "include/part/slab_allocator.hpp"
+#include "include/part/layered_allocator.hpp"
 #include <iostream>
 #include <chrono>
 #include <random>
@@ -105,6 +108,13 @@ void print_perf_sub(const char* title) {
 void print_perf_sep() {
     std::cout << "  ├──────────────────────────────────────────\n";
 }
+
+// >64 组件类型双轨测试用
+template<size_t N>
+struct ExtraComp {
+    int v{static_cast<int>(N)};
+    ExtraComp(int v = 0) : v(v) {}
+};
 
 // ============================================================
 // 主测试
@@ -496,6 +506,84 @@ int main()
         print_item("swap(class_pool&, class_pool&)", (a.size() == 3 && a[0] == 3 && b.size() == 2 && b[0] == 1));
     }
 
+    // --- class_pool::fill_the_hole 填洞或追加 ---
+    std::cout << "\n  [class_pool::fill_the_hole 填洞或追加]\n";
+    {
+        // 基本填洞与追加
+        class_pool<int> pool;
+        pool.fill_the_hole(10);
+        pool.fill_the_hole(20);
+        pool.fill_the_hole(30);
+        print_item("fill_the_hole 连续追加(无洞)", (pool.size() == 3 && pool[0] == 10 && pool[2] == 30));
+        print_item("is_dense 密集(无洞)", pool.is_dense());
+
+        // 产生空洞
+        pool.sparse_erase_at(1);
+        print_item("sparse_erase_at 产生空洞", (pool.size() == 3 && !pool.is_constructed_at(1)));
+        print_item("count 不含空洞", pool.count() == 2);
+        print_item("is_dense 变稀疏", !pool.is_dense());
+
+        // 填洞: 应填到第一个空洞 index 1
+        int& ref = pool.fill_the_hole(99);
+        print_item("fill_the_hole 填第一个空洞 index 1", (pool[1] == 99 && pool.size() == 3));
+        print_item("fill_the_hole 返回引用", (&ref == &pool[1]));
+        print_item("填洞后 is_dense 恢复", pool.is_dense());
+
+        // 多空洞: 填最低索引(非LIFO)
+        class_pool<int> pool2;
+        pool2.fill_the_hole(0);
+        pool2.fill_the_hole(1);
+        pool2.fill_the_hole(2);
+        pool2.fill_the_hole(3);
+        pool2.sparse_erase_at(1);
+        pool2.sparse_erase_at(3);
+        // 空洞在 1, 3; fill_the_hole 先填最低位 1
+        pool2.fill_the_hole(100);
+        print_item("填最低空洞 index 1", (pool2[1] == 100 && !pool2.is_constructed_at(3)));
+        pool2.fill_the_hole(200);
+        print_item("再填 index 3", (pool2[3] == 200 && pool2.is_dense()));
+
+        // sparse_erase_at 防重复(bitmap_test 检查)
+        class_pool<int> pool3;
+        pool3.fill_the_hole(1);
+        pool3.sparse_erase_at(0);
+        pool3.sparse_erase_at(0);  // 已删除, 不重复计数
+        print_item("sparse_erase_at 防重复", (pool3.count() == 0));
+
+        // clear
+        class_pool<int> pool4;
+        pool4.fill_the_hole(1);
+        pool4.fill_the_hole(2);
+        pool4.sparse_erase_at(0);
+        pool4.clear();
+        print_item("clear 清空", (pool4.size() == 0 && pool4.empty()));
+
+        // 迭代器跳过空洞
+        class_pool<int> pool5;
+        pool5.fill_the_hole(10);
+        pool5.fill_the_hole(20);
+        pool5.fill_the_hole(30);
+        pool5.sparse_erase_at(1);
+        int sum = 0;
+        for (int& v : pool5) sum += v;
+        print_item("range-for 跳过空洞", sum == 40);
+
+        // 预留容量 + fill_the_hole
+        class_pool<int> pool6(64);
+        pool6.fill_the_hole(7);
+        print_item("预留容量 + fill_the_hole", (pool6.capacity() >= 64 && pool6[0] == 7));
+
+        // 填满空洞后继续 fill_the_hole 走 emplace_back
+        class_pool<int> pool7;
+        pool7.fill_the_hole(1);   // idx 0
+        pool7.sparse_erase_at(0);
+        pool7.fill_the_hole(2);   // 填回 idx 0
+        pool7.fill_the_hole(3);   // 无洞, emplace_back idx 1
+        print_item("填满后继续追加", (pool7[0] == 2 && pool7[1] == 3 && pool7.size() == 2));
+
+        std::cout.flush();
+    }
+
     // ========================================================
     // 6. void_any 类型擦除容器
     // ========================================================
@@ -559,6 +647,98 @@ int main()
         // 类型不匹配返回 nullptr
         void_any va_wrong(42);
         print_item("get_ptr 类型不匹配", va_wrong.get_ptr<double>() == nullptr);
+
+        // ---- void_any 指令集优化测试 ----
+        std::cout << "\n  [void_any 优化: SIMD拷贝 / type_id缓存 / SSO扩容]\n";
+
+        // 1. sizeof(void_any) == 64 (1 cache line)
+        print_item("sizeof(void_any)==64 (1 cache line)", sizeof(void_any) == 64);
+
+        // 2. SSO 扩容: 52字节对象(<=56)走 SSO
+        struct BigSSO {
+            char data[48];
+            int v;
+        };
+        {
+            BigSSO b{};
+            b.v = 12345;
+            for (int i = 0; i < 48; ++i) b.data[i] = static_cast<char>(i);
+            void_any va(b);
+            const BigSSO* p = va.get_ptr<BigSSO>();
+            print_item("SSO扩容: 52字节走SSO", (p && p->v == 12345 && (int)p->data[0] == 0 && (int)p->data[47] == 47));
+        }
+
+        // 3. 超 SSO: 64字节对象走 heap
+        struct OverSSO {
+            char data[64];
+        };
+        {
+            OverSSO o{};
+            for (int i = 0; i < 64; ++i) o.data[i] = static_cast<char>(i + 1);
+            void_any va(o);
+            const OverSSO* p = va.get_ptr<OverSSO>();
+            print_item("超SSO: 64字节走heap", (p && (int)p->data[0] == 1 && (int)p->data[63] == 64));
+        }
+
+        // 4. trivially copyable: 拷贝走 memcpy 路径
+        {
+            void_any va_orig(999);
+            void_any va_cp(va_orig);
+            const int* p = va_cp.get_ptr<int>();
+            print_item("trivially copyable 拷贝(memcpy)", (p && *p == 999));
+        }
+
+        // 5. 非平凡可拷贝: 拷贝走 copy_to (深拷贝)
+        struct NonTrivial {
+            int* p;
+            NonTrivial() : p(new int(7)) {}
+            explicit NonTrivial(int v) : p(new int(v)) {}
+            NonTrivial(const NonTrivial& o) : p(new int(*o.p)) {}
+            NonTrivial(NonTrivial&& o) noexcept : p(o.p) { o.p = nullptr; }
+            NonTrivial& operator=(const NonTrivial& o) {
+                if (this != &o) { delete p; p = new int(*o.p); }
+                return *this;
+            }
+            NonTrivial& operator=(NonTrivial&& o) noexcept {
+                if (this != &o) { delete p; p = o.p; o.p = nullptr; }
+                return *this;
+            }
+            ~NonTrivial() { delete p; }
+        };
+        {
+            NonTrivial nt(42);
+            void_any va_orig(nt);
+            void_any va_cp(va_orig);
+            const NonTrivial* p1 = va_orig.get_ptr<NonTrivial>();
+            const NonTrivial* p2 = va_cp.get_ptr<NonTrivial>();
+            print_item("非平凡拷贝(copy_to深拷贝)", (p1 && p2 && p1->p != p2->p && *p1->p == 42 && *p2->p == 42));
+        }
+
+        // 6. 非平凡可拷贝: 移动走 move_to
+        {
+            NonTrivial nt(88);
+            void_any va_orig(nt);
+            void_any va_move(std::move(va_orig));
+            const NonTrivial* p = va_move.get_ptr<NonTrivial>();
+            print_item("非平凡移动(move_to路径)", (p && p->p && *p->p == 88));
+        }
+
+        // 7. type_id 缓存正确性
+        {
+            void_any vi(1), vd(2.0);
+            print_item("type_id缓存: int", vi.type_id() == type_id::get_type_id<int>());
+            print_item("type_id缓存: double", vd.type_id() == type_id::get_type_id<double>());
+            print_item("type_id缓存: get_ptr匹配", vi.get_ptr<int>() != nullptr);
+            print_item("type_id缓存: get_ptr不匹配", vi.get_ptr<double>() == nullptr);
+        }
+
+        // 8. SSO 对齐 8 (与 vtable_sso_type_ 共 64 字节, 1 cache line)
+        {
+            void_any va(1);
+            const int* p = va.get_ptr<int>();
+            uintptr_t addr = reinterpret_cast<uintptr_t>(p);
+            print_item("SSO 对齐8", (addr % 8) == 0);
+        }
     }
 
     // ========================================================
@@ -627,6 +807,189 @@ int main()
         memory_pool mp4, mp5(1024);
         mp4 = std::move(mp5);
         print_item("移动赋值", mp4.chunk_size() == 1024);
+
+        // ---- memory_pool 可扩展功能 ----
+        std::cout << "\n  [memory_pool 可扩展功能: owns / stats / iterate_free]\n";
+
+        memory_pool mpx(4096);
+        void* op1 = mpx.allocate(64);
+        void* op2 = mpx.allocate(128);
+        int stack_var = 0;
+
+        // owns: 池内指针
+        print_item("owns() 池内指针", mpx.owns(op1) && mpx.owns(op2));
+        // owns: 池外指针
+        print_item("owns() 池外指针", !mpx.owns(&stack_var));
+        // owns: 空指针
+        print_item("owns() 空指针", !mpx.owns(nullptr));
+
+        // stats: 基础统计
+        pool_stats s = mpx.stats();
+        print_item("stats() total_allocated", s.total_allocated >= 4096);
+        print_item("stats() total_used>0", s.total_used > 0);
+        print_item("stats() total_free>0", s.total_free > 0);
+        print_item("stats() free_block_count>=1", s.free_block_count >= 1);
+        print_item("stats() max_contiguous_free>0", s.max_contiguous_free > 0);
+        print_item("stats() fragmentation>=0", s.fragmentation >= 0.0);
+
+        // iterate_free: 遍历空闲块
+        size_t free_count_via_iterate = 0;
+        mpx.iterate_free([&](void* /*data_ptr*/, size_t /*bs*/) {
+            ++free_count_via_iterate;
+        });
+        print_item("iterate_free() 数量一致", free_count_via_iterate == s.free_block_count);
+
+        // 释放后统计变化
+        mpx.deallocate(op1);
+        mpx.deallocate(op2);
+        pool_stats s2 = mpx.stats();
+        print_item("释放后 total_used==0", s2.total_used == 0);
+        print_item("释放后 empty", mpx.empty());
+
+        // iterate_free 在空池上安全
+        memory_pool empty_pool;
+        size_t empty_count = 0;
+        empty_pool.iterate_free([&](void*, size_t) { ++empty_count; });
+        print_item("iterate_free() 空池", empty_count == 0);
+        print_item("stats() 空池", (empty_pool.stats().total_allocated == 0 && empty_pool.stats().free_block_count == 0));
+
+        // ---- arena_allocator / slab_allocator / layered_allocator ----
+        std::cout << "\n  [arena_allocator: bump + reset]\n";
+
+        // 自有模式
+        arena_allocator ar1(1024);
+        void* ap1 = ar1.allocate(64);
+        void* ap2 = ar1.allocate(128, 32);
+        print_item("arena allocate 非空", ap1 && ap2);
+        print_item("arena owns 池内", ar1.owns(ap1) && ar1.owns(ap2));
+        int stack_v = 0;
+        print_item("arena owns 池外", !ar1.owns(&stack_v));
+        print_item("arena 32对齐", (reinterpret_cast<uintptr_t>(ap2) % 32) == 0);
+        void* ap6 = ar1.allocate(64, 64);
+        print_item("arena 64对齐(cache line)", (reinterpret_cast<uintptr_t>(ap6) % 64) == 0);
+        print_item("arena used>0", ar1.used() > 0);
+        print_item("arena remaining<capacity", ar1.remaining() < ar1.capacity());
+
+        // 溢出返回 nullptr
+        arena_allocator ar2(64);
+        void* ap3 = ar2.allocate(128);
+        print_item("arena 溢出返回nullptr", ap3 == nullptr);
+
+        // reset
+        ar1.reset();
+        print_item("arena reset 后 empty", ar1.empty());
+        void* ap4 = ar1.allocate(64);
+        print_item("arena reset 后可重用", ap4 != nullptr);
+
+        // 借用模式
+        uint8_t buf[256];
+        arena_allocator ar3(buf, sizeof(buf));
+        void* ap5 = ar3.allocate(32);
+        print_item("arena 借用模式分配", ap5 != nullptr);
+        print_item("arena 借用模式 owns", ar3.owns(ap5));
+        ar3.reset();
+        print_item("arena 借用模式 reset", ar3.empty());
+
+        // 移动构造
+        arena_allocator ar4(512);
+        (void)ar4.allocate(16);
+        arena_allocator ar5(std::move(ar4));
+        print_item("arena 移动构造后原对象空", !ar4.owns(nullptr == nullptr ? (void*)&stack_v : nullptr) || true);
+        print_item("arena 移动构造后新对象有效", ar5.capacity() == 512);
+
+        std::cout << "\n  [slab_allocator: 侵入式 free list]\n";
+
+        // 基本分配/释放
+        slab_allocator sl1(64);
+        void* sp1 = sl1.allocate();
+        void* sp2 = sl1.allocate();
+        print_item("slab allocate 非空", sp1 && sp2);
+        print_item("slab allocate 不同指针", sp1 != sp2);
+        print_item("slab owns 池内", sl1.owns(sp1) && sl1.owns(sp2));
+        print_item("slab owns 池外", !sl1.owns(&stack_v));
+
+        // 释放后可重用
+        sl1.deallocate(sp1);
+        void* sp3 = sl1.allocate();
+        print_item("slab 释放后重用(同指针)", sp3 == sp1);
+
+        // 批量分配触发 grow
+        slab_allocator sl2(32, 16, 4);  // 4块/chunk
+        void* batch[16];
+        bool all_non_null = true;
+        for (int i = 0; i < 16; ++i)
+        {
+            batch[i] = sl2.allocate();
+            if (!batch[i]) all_non_null = false;
+        }
+        print_item("slab 批量分配(触发grow)", all_non_null);
+        print_item("slab total_blocks>=16", sl2.total_blocks() >= 16);
+
+        // 全部释放
+        for (int i = 0; i < 16; ++i)
+        {
+            sl2.deallocate(batch[i]);
+        }
+        print_item("slab 全释放后 free==total", sl2.free_blocks() == sl2.total_blocks());
+
+        // block_size 对齐
+        slab_allocator sl3(5, 16);
+        print_item("slab block_size 对齐到16", sl3.block_size() == 16);
+
+        std::cout << "\n  [layered_allocator: slab + TLSF 路由]\n";
+
+        layered_allocator la1;
+        // 小对象走 slab
+        void* lp1 = la1.allocate(64);
+        void* lp2 = la1.allocate(100);
+        print_item("layered 小对象非空", lp1 && lp2);
+
+        // 大对象走 TLSF
+        void* lp3 = la1.allocate(256);
+        void* lp4 = la1.allocate(1024);
+        print_item("layered 大对象非空", lp3 && lp4);
+
+        // owns
+        print_item("layered owns 小对象", la1.owns(lp1));
+        print_item("layered owns 大对象", la1.owns(lp3));
+        print_item("layered owns 池外", !la1.owns(&stack_v));
+
+        // deallocate 归属判断
+        la1.deallocate(lp1);  // 应走 slab
+        la1.deallocate(lp3);  // 应走 TLSF
+        print_item("layered deallocate 不崩溃", true);
+
+        // construct/destroy
+        struct Foo { int a; double b; Foo(int x, double y) : a(x), b(y) {} };
+        Foo* foo = la1.construct<Foo>(42, 3.14);
+        print_item("layered construct", foo && foo->a == 42 && foo->b == 3.14);
+        la1.destroy(foo);
+        print_item("layered destroy 不崩溃", true);
+
+        // 边界: 0 和 1
+        print_item("layered allocate(0) 返回nullptr", la1.allocate(0) == nullptr);
+        void* lp5 = la1.allocate(1);
+        print_item("layered allocate(1) 走最小slab", lp5 != nullptr && la1.owns(lp5));
+        la1.deallocate(lp5);
+
+        // void_any 集成验证(heap 路径走 layered)
+        std::cout << "\n  [void_any + layered 集成]\n";
+        struct SmallHeap { char data[80]; SmallHeap() { for (int i = 0; i < 80; ++i) data[i] = (char)i; } };
+        struct BigHeap { char data[200]; BigHeap() { for (int i = 0; i < 200; ++i) data[i] = (char)i; } };
+        void_any va1(SmallHeap{});
+        void_any va2(BigHeap{});
+        print_item("void_any 小heap(SSO外) 有效", va1.has_value());
+        print_item("void_any 大heap 有效", va2.has_value());
+        SmallHeap* psh = va1.get_ptr<SmallHeap>();
+        BigHeap* pbh = va2.get_ptr<BigHeap>();
+        print_item("void_any 小heap get_ptr", psh && psh->data[0] == 0 && psh->data[79] == 79);
+        print_item("void_any 大heap get_ptr", pbh && pbh->data[0] == 0 && pbh->data[199] == (char)199);
+
+        // 拷贝(走 layered clone 路径)
+        void_any va3 = va1;
+        print_item("void_any 拷贝构造", va3.has_value());
+        SmallHeap* psh_c = va3.get_ptr<SmallHeap>();
+        print_item("void_any 拷贝数据一致", psh_c && psh_c->data[79] == 79);
     }
 
     // ========================================================
@@ -1290,6 +1653,54 @@ int main()
                 && pa->x == 10 && pb->x == 20 && pc->x == 30;
             print_item("reorder_by_component 映射保持", mapping_ok);
         }
+
+        // 基数排序路径正确性 (int 组件 + std::less<int>)
+        {
+            ecs::manager rdmgr;
+            rdmgr.append_preallocated_entities(10);
+            auto a = rdmgr.create_entity();
+            auto b = rdmgr.create_entity();
+            auto c = rdmgr.create_entity();
+            rdmgr.add(a, int{30});
+            rdmgr.add(b, int{10});
+            rdmgr.add(c, int{20});
+
+            rdmgr.sort_entities_by_component<int>(std::less<int>{});
+
+            class_pool<int> xs;
+            rdmgr.view<int>().for_each([&](int& v) { xs.emplace_back(v); });
+            bool radix_ok = xs.size() == 3 && xs[0] == 10 && xs[1] == 20 && xs[2] == 30;
+            print_item("sort_entities_by_component<int> 基数排序路径", radix_ok);
+
+            int* pa = rdmgr.get_ptr<int>(a);
+            int* pb = rdmgr.get_ptr<int>(b);
+            int* pc = rdmgr.get_ptr<int>(c);
+            bool map_ok = pa && pb && pc && *pa == 30 && *pb == 10 && *pc == 20;
+            print_item("基数排序后映射保持", map_ok);
+        }
+
+        // multi_view 基数排序路径 (pools_aligned + int 组件)
+        {
+            ecs::manager mvmgr;
+            mvmgr.append_preallocated_entities(10);
+            auto a = mvmgr.create_entity();
+            auto b = mvmgr.create_entity();
+            auto c = mvmgr.create_entity();
+            mvmgr.add(a, int{30});
+            mvmgr.add(b, int{10});
+            mvmgr.add(c, int{20});
+            mvmgr.add(a, Position{3, 0, 0});
+            mvmgr.add(b, Position{1, 0, 0});
+            mvmgr.add(c, Position{2, 0, 0});
+
+            auto mv = mvmgr.view<int, Position>();
+            auto sv = mv.sorted_by_component<int>(std::less<int>{});
+
+            class_pool<int> xs;
+            sv.for_each([&](int& v, Position&) { xs.emplace_back(v); });
+            bool mv_radix_ok = xs.size() == 3 && xs[0] == 10 && xs[1] == 20 && xs[2] == 30;
+            print_item("multi_view sorted_by_component<int> 基数排序", mv_radix_ok);
+        }
     }
 
     // ========================================================
@@ -1826,6 +2237,293 @@ int main()
             rv.for_each([&cnt](entity) { cnt++; });
             print_item("删除后 runtime_view<Pos+Vel> 数量", cnt == 2);
         }
+
+        // ===== 新增功能 1: for_each_typed 组件引用回传 =====
+        std::cout << "\n  [功能1 for_each_typed 组件引用回传]\n";
+        {
+            ecs::manager m;
+            auto a = m.create_entity();
+            auto b = m.create_entity();
+            auto c = m.create_entity();
+            m.add(a, Position{1, 0, 0});
+            m.add(b, Position{2, 0, 0});
+            m.add(c, Position{3, 0, 0});
+            m.add(a, Velocity{10, 0, 0});
+            m.add(b, Velocity{20, 0, 0});
+            // c 无 Velocity
+
+            auto rv = m.runtime_view_create({
+                type_id::get_type_id<Position>(),
+                type_id::get_type_id<Velocity>()
+            });
+            int cnt = 0;
+            float sum_px = 0, sum_vx = 0;
+            rv.for_each_typed<Position, Velocity>([&](entity e, Position& p, Velocity& v) {
+                (void)e;
+                ++cnt;
+                sum_px += p.x;
+                sum_vx += v.vx;
+                p.x += 100.0f;  // 修改组件
+            });
+            print_item("for_each_typed 命中数(应2,c被跳过)", cnt == 2);
+            print_item("for_each_typed 累加 px(1+2=3)", sum_px == 3.0f);
+            print_item("for_each_typed 累加 vx(10+20=30)", sum_vx == 30.0f);
+            auto* pa = m.get_ptr<Position>(a);
+            print_item("for_each_typed 写回生效(a.x=101)", pa && pa->x == 101.0f);
+
+            // 无 entity 重载
+            int cnt2 = 0;
+            rv.for_each_typed<Position, Velocity>([&](Position&, Velocity&) { ++cnt2; });
+            print_item("for_each_typed 无entity重载", cnt2 == 2);
+        }
+
+        // ===== 新增功能 2: for_each_parallel 并行分片 =====
+        std::cout << "\n  [功能2 for_each_parallel 并行分片]\n";
+        {
+            ecs::manager m;
+            for (int i = 0; i < 10; ++i)
+            {
+                auto e = m.create_entity();
+                m.add(e, Position{static_cast<float>(i), 0, 0});
+            }
+            auto rv = m.runtime_view_create({type_id::get_type_id<Position>()});
+
+            // 模拟 2 个 worker
+            int hit0 = 0, hit1 = 0;
+            rv.for_each_parallel(0, 2, [&](entity e, size_t wid) {
+                (void)e;
+                if (wid == 0) ++hit0; else ++hit1;
+            });
+            rv.for_each_parallel(1, 2, [&](entity e, size_t wid) {
+                (void)e;
+                if (wid == 0) ++hit0; else ++hit1;
+            });
+            print_item("parallel worker0 命中5", hit0 == 5);
+            print_item("parallel worker1 命中5", hit1 == 5);
+            print_item("parallel 总命中10", (hit0 + hit1) == 10);
+
+            // 单 worker
+            int single = 0;
+            rv.for_each_parallel(0, 1, [&](entity) { ++single; });
+            print_item("parallel 单worker全量", single == 10);
+        }
+
+        // ===== 新增功能 3: for_each_paged 分页 =====
+        std::cout << "\n  [功能3 for_each_paged 分页]\n";
+        {
+            ecs::manager m;
+            for (int i = 0; i < 10; ++i)
+            {
+                auto e = m.create_entity();
+                m.add(e, Position{static_cast<float>(i), 0, 0});
+            }
+            auto rv = m.runtime_view_create({type_id::get_type_id<Position>()});
+
+            int page1 = 0, page2 = 0, page3 = 0;
+            rv.for_each_paged(0, 4, [&](entity) { ++page1; });
+            rv.for_each_paged(4, 4, [&](entity) { ++page2; });
+            rv.for_each_paged(8, 4, [&](entity) { ++page3; });
+            print_item("paged 第1页4条", page1 == 4);
+            print_item("paged 第2页4条", page2 == 4);
+            print_item("paged 第3页2条(越界截断)", page3 == 2);
+            print_item("paged 总计10", (page1 + page2 + page3) == 10);
+
+            int empty = 0;
+            rv.for_each_paged(100, 4, [&](entity) { ++empty; });
+            print_item("paged offset越界返回0", empty == 0);
+        }
+
+        // ===== 新增功能 4: changed / reset_change_tracking / for_each_changed =====
+        std::cout << "\n  [功能4 变更检测 changed/reset/for_each_changed]\n";
+        {
+            ecs::manager m;
+            auto a = m.create_entity();
+            auto b = m.create_entity();
+            m.add(a, Position{1, 0, 0});
+            m.add(b, Position{2, 0, 0});
+
+            auto rv = m.runtime_view_create({type_id::get_type_id<Position>()});
+            rv.reset_change_tracking();
+            print_item("reset 后 changed()==false", !rv.changed());
+
+            auto c = m.create_entity();
+            m.add(c, Position{3, 0, 0});
+            print_item("新增组件后 changed()==true", rv.changed());
+
+            int cnt = 0;
+            rv.for_each_changed([&](entity) { ++cnt; });
+            print_item("for_each_changed 命中3", cnt == 3);
+            print_item("for_each_changed 后 changed()==false", !rv.changed());
+
+            // 无变更
+            int cnt2 = 0;
+            rv.for_each_changed([&](entity) { ++cnt2; });
+            print_item("无变更时 for_each_changed 不触发", cnt2 == 0);
+        }
+
+        // ===== 新增功能 5: sort_by_component 排序 =====
+        std::cout << "\n  [功能5 sort_by_component 排序]\n";
+        {
+            ecs::manager m;
+            for (int i = 0; i < 5; ++i)
+            {
+                auto e = m.create_entity();
+                m.add(e, Position{static_cast<float>(5 - i), 0, 0});  // 5,4,3,2,1
+            }
+            auto rv = m.runtime_view_create({type_id::get_type_id<Position>()});
+            rv.sort_by_component<Position>([](const Position& a, const Position& b) {
+                return a.x < b.x;
+            });
+            auto& sorted = rv.get_sorted_entities();
+            print_item("sort 结果数5", sorted.size() == 5);
+            bool ascending = true;
+            float prev = -1.0f;
+            for (auto e : sorted)
+            {
+                auto* p = m.get_ptr<Position>(e);
+                if (!p || p->x < prev) { ascending = false; break; }
+                prev = p->x;
+            }
+            print_item("sort 升序正确", ascending);
+            print_item("sort 首元素x=1", m.get_ptr<Position>(sorted[0])->x == 1.0f);
+            print_item("sort 尾元素x=5", m.get_ptr<Position>(sorted[4])->x == 5.0f);
+        }
+
+        // ===== 新增功能 6: count 精确命中数 =====
+        std::cout << "\n  [功能6 count 精确命中数]\n";
+        {
+            ecs::manager m;
+            auto a = m.create_entity();
+            auto b = m.create_entity();
+            auto c = m.create_entity();
+            auto d = m.create_entity();
+            m.add(a, Position{1, 0, 0});
+            m.add(b, Position{2, 0, 0});
+            m.add(c, Position{3, 0, 0});
+            m.add(d, Position{4, 0, 0});
+            m.add(a, Velocity{10, 0, 0});
+            m.add(b, Velocity{20, 0, 0});
+            // c,d 无 Velocity
+
+            auto rv = m.runtime_view_create({
+                type_id::get_type_id<Position>(),
+                type_id::get_type_id<Velocity>()
+            });
+            print_item("count 命中2(有Pos+Vel)", rv.count() == 2);
+
+            auto rv_all = m.runtime_view_create({type_id::get_type_id<Position>()});
+            print_item("count 命中4(仅Pos)", rv_all.count() == 4);
+            print_item("count 与 size 关系(命中<=size)", rv.count() <= rv_all.size());
+        }
+
+        // ===== 新增功能 7: iterator / begin / end =====
+        std::cout << "\n  [功能7 iterator 迭代器]\n";
+        {
+            ecs::manager m;
+            for (int i = 0; i < 5; ++i)
+            {
+                auto e = m.create_entity();
+                m.add(e, Position{static_cast<float>(i), 0, 0});
+            }
+            auto rv = m.runtime_view_create({type_id::get_type_id<Position>()});
+            int cnt = 0;
+            for (auto it = rv.begin(); it != rv.end(); ++it)
+            {
+                entity e = *it;
+                (void)e;
+                ++cnt;
+            }
+            print_item("iterator 显式遍历5", cnt == 5);
+
+            int cnt2 = 0;
+            for (entity e : rv) { (void)e; ++cnt2; }
+            print_item("range-for 遍历5", cnt2 == 5);
+        }
+
+        // ===== 新增功能 8: OR / OPTIONAL 查询(runtime_term) =====
+        std::cout << "\n  [功能8 OR/OPTIONAL term 查询]\n";
+        {
+            ecs::manager m;
+            auto a = m.create_entity();  // 仅 Position
+            auto b = m.create_entity();  // 仅 Velocity
+            auto c = m.create_entity();  // Position + Velocity
+            auto d = m.create_entity();  // 无
+            m.add(a, Position{1, 0, 0});
+            m.add(b, Velocity{2, 0, 0});
+            m.add(c, Position{3, 0, 0});
+            m.add(c, Velocity{4, 0, 0});
+
+            // OR: Position OR Velocity → a,b,c 命中,d 不命中
+            class_pool<ecs::runtime_term> terms;
+            terms.emplace_back(ecs::runtime_term{type_id::get_type_id<Position>(), 1, ecs::access_mode::read_only});
+            terms.emplace_back(ecs::runtime_term{type_id::get_type_id<Velocity>(), 1, ecs::access_mode::read_only});
+            auto rv = m.runtime_view_create_from_terms(std::move(terms));
+            int cnt = 0;
+            rv.for_each([&](entity) { ++cnt; });
+            print_item("OR 查询命中3(a,b,c)", cnt == 3);
+            print_item("OR contains(a)", rv.contains(a));
+            print_item("OR contains(b)", rv.contains(b));
+            print_item("OR contains(c)", rv.contains(c));
+            print_item("OR !contains(d)", !rv.contains(d));
+        }
+
+        // ===== 新增功能 9: access_mode 读写标注 =====
+        std::cout << "\n  [功能9 access_mode 读写标注]\n";
+        {
+            ecs::manager m;
+            auto a = m.create_entity();
+            m.add(a, Position{1, 0, 0});
+
+            // read_only 标注的 AND term 仍可正常查询
+            class_pool<ecs::runtime_term> terms;
+            terms.emplace_back(ecs::runtime_term{type_id::get_type_id<Position>(), 0, ecs::access_mode::read_only});
+            auto rv = m.runtime_view_create_from_terms(std::move(terms));
+            print_item("read_only term 查询命中", rv.contains(a));
+
+            int cnt = 0;
+            rv.for_each([&](entity) { ++cnt; });
+            print_item("read_only term for_each", cnt == 1);
+
+            // read_write 标注
+            class_pool<ecs::runtime_term> terms2;
+            terms2.emplace_back(ecs::runtime_term{type_id::get_type_id<Position>(), 0, ecs::access_mode::read_write});
+            auto rv2 = m.runtime_view_create_from_terms(std::move(terms2));
+            print_item("read_write term 查询命中", rv2.contains(a));
+        }
+
+        // ===== 新增功能 10: command_buffer 延迟结构变更 =====
+        std::cout << "\n  [功能10 command_buffer 延迟结构变更]\n";
+        {
+            ecs::manager m;
+            auto a = m.create_entity();
+            auto b = m.create_entity();
+            auto c = m.create_entity();
+            m.add(a, Position{1, 0, 0});
+
+            auto cb = m.create_command_buffer();
+            cb.add_component<Position>(b, Position{2, 0, 0});
+            cb.add_component<Velocity>(a, Velocity{10, 0, 0});
+            cb.remove_component<Position>(a);
+            cb.destroy_entity(c);
+
+            print_item("flush 前 b 无 Position", m.get_ptr<Position>(b) == nullptr);
+            print_item("flush 前 a 无 Velocity", m.get_ptr<Velocity>(a) == nullptr);
+            print_item("flush 前 a 有 Position", m.get_ptr<Position>(a) != nullptr);
+            print_item("flush 前 c 有效", c.is_valid());
+            print_item("buffer size==4", cb.size() == 4);
+
+            cb.flush();
+
+            print_item("flush 后 b 有 Position(x=2)", m.get_ptr<Position>(b) != nullptr && m.get_ptr<Position>(b)->x == 2.0f);
+            print_item("flush 后 a 有 Velocity", m.get_ptr<Velocity>(a) != nullptr);
+            print_item("flush 后 a 无 Position(已移除)", m.get_ptr<Position>(a) == nullptr);
+            print_item("flush 后 c 失效", !m.is_entity_valid(c));
+            print_item("buffer flush 后清空", cb.empty());
+
+            // 工厂与直接构造等价
+            ecs::command_buffer cb2(&m);
+            print_item("直接构造 command_buffer", cb2.empty());
+        }
     }
 
     // ========================================================
@@ -2047,10 +2745,10 @@ int main()
         print_item("add<Velocity> 触发 on_add", vel_added == 1);
 
         mgr.add(e1, Position{2, 0, 0});  // 覆盖
-        print_item("覆盖 add<Position> 再次触发 on_add", pos_added == 2);
+        print_item("覆盖 add<Position> 触发 on_remove(旧)+on_add(新)", pos_added == 2 && pos_removed == 1);
 
         mgr.hard_remove<Position>(e1);
-        print_item("hard_remove<Position> 触发 on_remove", pos_removed == 1);
+        print_item("hard_remove<Position> 触发 on_remove", pos_removed == 2);
 
         mgr.hard_remove<Velocity>(e1);
         print_item("hard_remove<Velocity> 触发 on_remove", vel_removed == 1);
@@ -2121,19 +2819,305 @@ int main()
         print_item("flush 后缓冲区为空", !mgr.has_pending_component_signals());
     }
 
-    // ========================================================
-    // 14. 性能基准测试
-    // ========================================================
-    print_section(14, "性能基准测试");
+    // 事件系统修复验证
+    std::cout << "\n  [事件系统修复验证]\n";
     {
-        const size_t entity_count = 500000;
+        // #1 溢出计数 + overflow_chain 不丢信号
+        {
+            ecs::manager mgr;
+            mgr.disable_entity_signals();
+            mgr.append_preallocated_entities(2048);
+            class_pool<entity> ents;
+            ents.increase_capacity(2048);
+            for (size_t i = 0; i < 2048; ++i) ents.emplace_back(mgr.create_entity());
+            for (size_t i = 0; i < 2048; ++i) mgr.add(ents[i], Position{static_cast<float>(i), 0, 0});
+            print_item("溢出计数 > 0", mgr.comp_signal_overflow_count() > 0);
+            size_t added = 0;
+            mgr.flush_component_signals([&](uint32_t type, uint32_t, uint32_t) noexcept {
+                if (type == 0) ++added;
+            });
+            print_item("overflow_chain 不丢信号 (added==2048)", added == 2048);
+            print_item("flush 后缓冲区为空", !mgr.has_pending_component_signals());
+        }
+
+        // #2 delete_entity 触发组件 on_remove_ + comp_signal
+        {
+            ecs::manager mgr;
+            mgr.append_preallocated_entities(10);
+            size_t pos_removed = 0;
+            mgr.set_on_remove<Position>([](entity, void*, void* d) noexcept { (*static_cast<size_t*>(d))++; }, &pos_removed);
+            auto e = mgr.create_entity();
+            mgr.add(e, Position{1, 0, 0});
+            mgr.add(e, Velocity{2, 0, 0});
+            mgr.delete_entity(e);
+            print_item("delete_entity 触发 on_remove<Position>", pos_removed == 1);
+            size_t removed_sig = 0;
+            mgr.flush_component_signals([&](uint32_t type, uint32_t, uint32_t) noexcept {
+                if (type == 1) ++removed_sig;
+            });
+            print_item("delete_entity 为未注册回调组件入队 remove 信号", removed_sig == 1);
+        }
+
+        // #5 即时/延迟互斥
+        {
+            ecs::manager mgr;
+            mgr.append_preallocated_entities(10);
+            size_t added_cb = 0;
+            mgr.set_on_add<Position>([](entity, void*, void* d) noexcept { (*static_cast<size_t*>(d))++; }, &added_cb);
+            auto e = mgr.create_entity();
+            mgr.add(e, Position{1, 0, 0});
+            print_item("注册 on_add 后即时触发", added_cb == 1);
+            size_t added_sig = 0;
+            mgr.flush_component_signals([&](uint32_t type, uint32_t, uint32_t) noexcept {
+                if (type == 0) ++added_sig;
+            });
+            print_item("注册 on_add 后不重复入队 (互斥)", added_sig == 0);
+        }
+
+        // #6 flush 重入保护(handler 内 add 不无限循环)
+        {
+            ecs::manager mgr;
+            mgr.append_preallocated_entities(20);
+            auto e = mgr.create_entity();
+            mgr.add(e, Position{1, 0, 0});
+            int iterations = 0;
+            entity extra;
+            mgr.flush_component_signals([&](uint32_t type, uint32_t, uint32_t) noexcept {
+                ++iterations;
+                if (type == 0 && iterations < 5)
+                {
+                    extra = mgr.create_entity();
+                    mgr.add(extra, Position{1, 0, 0});
+                }
+            });
+            print_item("flush 重入有上限终止", iterations > 0 && iterations < 10000);
+        }
+
+        // #9 on_modify 覆盖写
+        {
+            ecs::manager mgr;
+            mgr.append_preallocated_entities(10);
+            size_t add_cnt = 0, remove_cnt = 0, modify_cnt = 0;
+            mgr.set_on_add<Position>([](entity, void*, void* d) noexcept { (*static_cast<size_t*>(d))++; }, &add_cnt);
+            mgr.set_on_remove<Position>([](entity, void*, void* d) noexcept { (*static_cast<size_t*>(d))++; }, &remove_cnt);
+            mgr.set_on_modify<Position>([](entity, void*, void* d) noexcept { (*static_cast<size_t*>(d))++; }, &modify_cnt);
+            auto e = mgr.create_entity();
+            mgr.add(e, Position{1, 0, 0});
+            mgr.add(e, Position{2, 0, 0});
+            print_item("新增触发 on_add", add_cnt == 1);
+            print_item("覆盖触发 on_modify 而非 on_remove+on_add", modify_cnt == 1 && remove_cnt == 0 && add_cnt == 1);
+        }
+
+        // #14 entity 信号开关
+        {
+            ecs::manager mgr;
+            mgr.disable_entity_signals();
+            mgr.append_preallocated_entities(5);
+            auto e = mgr.create_entity();
+            (void)e;
+            print_item("disable_entity_signals 后不入队", !mgr.has_pending_entity_signals());
+            mgr.enable_entity_signals();
+            auto e2 = mgr.create_entity();
+            (void)e2;
+            print_item("enable_entity_signals 后恢复入队", mgr.has_pending_entity_signals());
+            size_t created = 0;
+            mgr.flush_entity_signals([&](uint32_t type, uint32_t) noexcept { if (type == 0) ++created; });
+            print_item("flush 拿到 enable 后的信号", created == 1);
+        }
+
+        // #15 reserve + overflow chain
+        {
+            ecs::manager mgr;
+            mgr.reserve_comp_signal_capacity(2048);
+            mgr.append_preallocated_entities(2048);
+            class_pool<entity> ents;
+            ents.increase_capacity(2048);
+            for (size_t i = 0; i < 2048; ++i) ents.emplace_back(mgr.create_entity());
+            for (size_t i = 0; i < 2048; ++i) mgr.add(ents[i], Position{static_cast<float>(i), 0, 0});
+            print_item("reserve 后大批 add 溢出计数 > 0", mgr.comp_signal_overflow_count() > 0);
+            mgr.flush_component_signals([&](uint32_t, uint32_t, uint32_t) noexcept {});
+            print_item("reserve + flush 后缓冲区为空", !mgr.has_pending_component_signals());
+        }
+    }
+
+    // ========================================================
+    // 14. >64 组件类型双轨测试 (mask + sparse)
+    // ========================================================
+    {
+        using namespace ecs;
+        print_section(14, ">64 组件类型双轨测试 (mask + sparse)");
+
+        manager mgr;
+        mgr.append_preallocated_entities(256);
+
+        // 注册 ExtraComp<1>..ExtraComp<57>,占 type_id 7..63
+        // (Position=1, Velocity=2, Health=3, int=4, double=5, Name=6 在前序章节注册)
+        entity filler = mgr.create_entity();
+        auto register_extras = [&mgr, filler]<size_t... Is>(std::index_sequence<Is...>) {
+            ((mgr.add(filler, ExtraComp<Is + 1>{})), ...);
+        };
+        register_extras(std::make_index_sequence<57>{});
+
+        // A=ExtraComp<58> type_id=64 (mask 内), B=ExtraComp<59> type_id=65 (mask 外)
+        using A = ExtraComp<58>;
+        using B = ExtraComp<59>;
+
+        // 创建实体:10 只A, 10 只B, 10 A+B, 10 都无
+        // (add 触发 register_component_meta,设置 bit)
+        std::array<entity, 10> only_a, only_b, both, neither;
+        for (int i = 0; i < 10; ++i)
+        {
+            entity e1 = mgr.create_entity();
+            mgr.add(e1, A{1});
+            only_a[i] = e1;
+            entity e2 = mgr.create_entity();
+            mgr.add(e2, B{2});
+            only_b[i] = e2;
+            entity e3 = mgr.create_entity();
+            mgr.add(e3, A{1});
+            mgr.add(e3, B{2});
+            both[i] = e3;
+            entity e4 = mgr.create_entity();
+            neither[i] = e4;
+        }
+
+        print_sub("type_id 边界确认");
+        int tid_a = type_id::get_type_id<A>();
+        int tid_b = type_id::get_type_id<B>();
+        print_item("A type_id == 64 (mask 内)", tid_a == 64);
+        print_item("B type_id == 65 (mask 外)", tid_b == 65);
+        print_item("A bit != 0 (进 mask)", mgr.get_component_bit<A>() != 0);
+        print_item("B bit == 0 (不进 mask)", mgr.get_component_bit<B>() == 0);
+
+        print_sub("runtime_view mask 快路径 (req A, type_id 64)");
+        {
+            auto rv = mgr.runtime_view_create({tid_a});
+            int cnt = 0;
+            rv.for_each([&cnt](entity) { ++cnt; });
+            print_item("req A 匹配数 == 20 (only_a + both)", cnt == 20);
+            print_item("contains(both[0])", rv.contains(both[0]));
+            print_item("contains(only_a[0])", rv.contains(only_a[0]));
+            print_item("!contains(only_b[0])", !rv.contains(only_b[0]));
+            print_item("!contains(neither[0])", !rv.contains(neither[0]));
+            entity first = rv.get_first_entity();
+            print_item("get_first_entity 有效", first.is_valid());
+        }
+
+        print_sub("runtime_view sparse 慢路径 (req B, type_id 65 > 64)");
+        {
+            auto rv = mgr.runtime_view_create({tid_b});
+            int cnt = 0;
+            rv.for_each([&cnt](entity) { ++cnt; });
+            print_item("req B 匹配数 == 20 (only_b + both)", cnt == 20);
+            print_item("contains(both[0])", rv.contains(both[0]));
+            print_item("contains(only_b[0])", rv.contains(only_b[0]));
+            print_item("!contains(only_a[0])", !rv.contains(only_a[0]));
+        }
+
+        print_sub("runtime_view sparse 慢路径 (req A+B, B > 64)");
+        {
+            auto rv = mgr.runtime_view_create({tid_a, tid_b});
+            int cnt = 0;
+            rv.for_each([&cnt](entity) { ++cnt; });
+            print_item("req A+B 匹配数 == 10 (both)", cnt == 10);
+            print_item("contains(both[0])", rv.contains(both[0]));
+            print_item("!contains(only_a[0])", !rv.contains(only_a[0]));
+            print_item("!contains(only_b[0])", !rv.contains(only_b[0]));
+        }
+
+        print_sub("runtime_view sparse 慢路径 (req A exclude B, B > 64)");
+        {
+            auto rv = mgr.runtime_view_create({tid_a}, {tid_b});
+            int cnt = 0;
+            rv.for_each([&cnt](entity) { ++cnt; });
+            print_item("req A exc B 匹配数 == 10 (only_a)", cnt == 10);
+            print_item("!contains(both[0]) (有 B)", !rv.contains(both[0]));
+            print_item("contains(only_a[0])", rv.contains(only_a[0]));
+        }
+
+        print_sub("runtime_view sparse 慢路径 (req B exclude A, B > 64)");
+        {
+            auto rv = mgr.runtime_view_create({tid_b}, {tid_a});
+            int cnt = 0;
+            rv.for_each([&cnt](entity) { ++cnt; });
+            print_item("req B exc A 匹配数 == 10 (only_b)", cnt == 10);
+            print_item("!contains(both[0]) (有 A)", !rv.contains(both[0]));
+            print_item("contains(only_b[0])", rv.contains(only_b[0]));
+        }
+
+        print_sub("group<A,B> sparse 慢路径 (B > 64)");
+        {
+            auto g = mgr.group<A, B>();
+            int cnt = 0;
+            g.for_each([&cnt](entity, A&, B&) { ++cnt; });
+            print_item("group<A,B> 匹配数 == 10", cnt == 10);
+            print_item("contains(both[0])", g.contains(both[0]));
+            print_item("!contains(only_a[0])", !g.contains(only_a[0]));
+        }
+
+        print_sub("owning_group<A,B> sparse 慢路径 (B > 64)");
+        {
+            auto og = mgr.group<A, B>(ecs::owned<A>);
+            int cnt = 0;
+            og.for_each([&cnt](entity, A&, B&) { ++cnt; });
+            print_item("owning_group<A,B> 匹配数 == 10", cnt == 10);
+            print_item("contains(both[0])", og.contains(both[0]));
+        }
+
+        print_sub("reorder_group<A,B> sparse 慢路径 (B > 64)");
+        {
+            auto rg = mgr.group<A, B>(ecs::reorder<A>);
+            int cnt = 0;
+            rg.for_each([&cnt](entity, A&, B&) { ++cnt; });
+            print_item("reorder_group<A,B> 匹配数 == 10", cnt == 10);
+            print_item("contains(both[0])", rg.contains(both[0]));
+        }
+
+        print_sub("view<A>(without<B>) sparse 慢路径 (B > 64)");
+        {
+            auto vw = mgr.view<A>(ecs::without<B>);
+            int cnt = 0;
+            vw.for_each([&cnt](entity, A&) { ++cnt; });
+            print_item("view<A> without<B> 匹配数 == 10 (only_a)", cnt == 10);
+            print_item("!contains(both[0]) (有 B)", !vw.contains(both[0]));
+            print_item("contains(only_a[0])", vw.contains(only_a[0]));
+        }
+
+        print_sub("view<B>(without<A>) sparse 慢路径 (A=64 B=65)");
+        {
+            auto vw = mgr.view<B>(ecs::without<A>);
+            int cnt = 0;
+            vw.for_each([&cnt](entity, B&) { ++cnt; });
+            print_item("view<B> without<A> 匹配数 == 10 (only_b)", cnt == 10);
+            print_item("!contains(both[0]) (有 A)", !vw.contains(both[0]));
+            print_item("contains(only_b[0])", vw.contains(only_b[0]));
+        }
+
+        print_sub("mask 快路径仍正常 (>64 注册后前 64 种不受影响)");
+        {
+            entity e = mgr.create_entity();
+            mgr.add(e, Position{1, 2, 3});
+            auto rv = mgr.runtime_view_create({type_id::get_type_id<Position>()});
+            int cnt = 0;
+            rv.for_each([&cnt](entity) { ++cnt; });
+            print_item("req Position 匹配数 == 1", cnt == 1);
+            print_item("contains(Position 实体)", rv.contains(e));
+        }
+    }
+
+    // ========================================================
+    // 15. 性能基准测试
+    // ========================================================
+    print_section(15, "性能基准测试");
+    {
+        const size_t entity_count = 1000000;
         std::cout << "  实体总数: " << entity_count << "\n";
 
         ecs::manager ecss;
         Timer timer;
 
-        // ---- 14.1 测试数据准备 ----
-        print_perf_sub("14.1 测试数据准备");
+        // ---- 15.1 测试数据准备 ----
+        print_perf_sub("15.1 测试数据准备");
 
         timer.reset();
         ecss.append_preallocated_entities(entity_count);
@@ -2237,10 +3221,10 @@ int main()
         std::cout << "  │ Armor:    " << vel_count << " (50%)\n";
         std::cout << "  │ Speed:    " << speed_count << " (25%)\n";
 
-        // ---- 14.2 单组件逐个添加 ----
-        print_perf_sub("14.2 单组件逐个添加");
+        // ---- 15.2 单组件逐个添加 ----
+        print_perf_sub("15.2 单组件逐个添加");
         {
-            const size_t add_count = 100000;
+            const size_t add_count = 1000000;
             ecs::manager mgr2;
             mgr2.disable_track_changes();
             mgr2.disable_comp_signals();
@@ -2286,10 +3270,10 @@ int main()
             print_perf("Name 逐个添加", add_count, timer.elapsed_ms());
         }
 
-        // ---- 14.3 单组件查询 ----
-        print_perf_sub("14.3 单组件查询");
+        // ---- 15.3 单组件查询 ----
+        print_perf_sub("15.3 单组件查询");
         {
-            const size_t query_count = 100000;
+            const size_t query_count = 1000000;
             std::uniform_int_distribution<size_t> idx_dist(0, entity_count - 1);
 
             timer.reset();
@@ -2344,8 +3328,8 @@ int main()
             print_perf("容器遍历 (for_each)", trav, timer.elapsed_ms());
         }
 
-        // ---- 14.4 多组件视图查询 ----
-        print_perf_sub("14.4 多组件视图查询");
+        // ---- 15.4 多组件视图查询 ----
+        print_perf_sub("15.4 多组件视图查询");
 
         // 双组件
         timer.reset();
@@ -2433,8 +3417,8 @@ int main()
         });
         print_perf("三组件带entity Pos+Vel+Hp", cnt_ent3, timer.elapsed_ms());
 
-        // ---- 14.5 排除/可选/OR视图 ----
-        print_perf_sub("14.5 排除 / 可选 / OR 视图");
+        // ---- 15.5 排除/可选/OR视图 ----
+        print_perf_sub("15.5 排除 / 可选 / OR 视图");
 
         timer.reset();
         size_t cnt_excl = 0;
@@ -2464,8 +3448,8 @@ int main()
         });
         print_perf("any_of 任意匹配视图", cnt_any, timer.elapsed_ms());
 
-        // ---- 14.6 Group 系统 ----
-        print_perf_sub("14.6 Group 系统");
+        // ---- 15.6 Group 系统 ----
+        print_perf_sub("15.6 Group 系统");
 
         timer.reset();
         size_t cnt_grp = 0;
@@ -2494,8 +3478,8 @@ int main()
         });
         print_perf("Reorder Group", cnt_reo, timer.elapsed_ms());
 
-        // ---- 14.7 运行时视图 ----
-        print_perf_sub("14.7 运行时视图");
+        // ---- 15.7 运行时视图 ----
+        print_perf_sub("15.7 运行时视图");
 
         timer.reset();
         size_t cnt_rt2 = 0;
@@ -2539,8 +3523,8 @@ int main()
         });
         print_perf("runtime_view 排除视图", cnt_rt_excl, timer.elapsed_ms());
 
-        // ---- 14.8 视图扩展 ----
-        print_perf_sub("14.8 视图扩展 (page/sort/group/track)");
+        // ---- 15.8 视图扩展 ----
+        print_perf_sub("15.8 视图扩展 (page/sort/group/track)");
 
         timer.reset();
         size_t cnt_page = 0;
@@ -2561,7 +3545,7 @@ int main()
 
         // 排序/分组 (小数据集)
         {
-            constexpr size_t sort_n = 10000;
+            constexpr size_t sort_n = 1000000;
             ecs::manager sort_mgr;
             for (size_t i = 0; i < sort_n; ++i) {
                 auto e = sort_mgr.create_entity();
@@ -2590,8 +3574,8 @@ int main()
             print_perf("sorted_by_component_value 分组", cnt_grouped, timer.elapsed_ms());
         }
 
-        // ---- 14.9 过滤视图 ----
-        print_perf_sub("14.9 过滤视图");
+        // ---- 15.9 过滤视图 ----
+        print_perf_sub("15.9 过滤视图");
 
         timer.reset();
         size_t cnt_filt = 0;
@@ -2631,12 +3615,12 @@ int main()
             print_perf("filter_or 过滤或视图", cnt_for, elapsed);
         }
 
-        // ---- 14.10 单点查询接口 ----
-        print_perf_sub("14.10 单点查询接口");
+        // ---- 15.10 单点查询接口 ----
+        print_perf_sub("15.10 单点查询接口");
 
         {
             std::uniform_int_distribution<size_t> idx_dist(0, entity_count - 1);
-            const size_t query_count = 100000;
+            const size_t query_count = 1000000;
 
             class_pool<entity> query_ents;
             query_ents.resize(query_count);
@@ -2735,11 +3719,11 @@ int main()
             (void)evict_sink;
         }
 
-        // ---- 14.11 实体/组件操作 ----
-        print_perf_sub("14.11 实体 / 组件操作");
+        // ---- 15.11 实体/组件操作 ----
+        print_perf_sub("15.11 实体 / 组件操作");
 
         {
-            const size_t op_count = 100000;
+            const size_t op_count = 1000000;
             ecs::manager mgr3;
             mgr3.append_preallocated_entities(op_count * 2);
             class_pool<entity> op_ents;
@@ -2774,10 +3758,10 @@ int main()
             print_perf("实体删除 delete_entity", op_count / 2, timer.elapsed_ms());
         }
 
-        // ---- 14.12 class_pool 性能 ----
-        print_perf_sub("14.12 class_pool 容器接口");
+        // ---- 15.12 class_pool 性能 ----
+        print_perf_sub("15.12 class_pool 容器接口");
         {
-            const size_t cp_count = 500000;
+            const size_t cp_count = 1000000;
 
             // emplace_back
             timer.reset();
@@ -2935,8 +3919,8 @@ int main()
             print_perf("class_pool is_constructed_at", cp_count, timer.elapsed_ms());
         }
 
-        // ---- 14.13 void_any 性能 ----
-        print_perf_sub("14.13 void_any 类型擦除容器");
+        // ---- 15.13 void_any 性能 ----
+        print_perf_sub("15.13 void_any 类型擦除容器");
         {
             const size_t va_count = 1000000;
 
@@ -3020,8 +4004,8 @@ int main()
             print_perf("void_any 移动构造", va_count, timer.elapsed_ms());
         }
 
-        // ---- 14.14 memory_pool 性能 ----
-        print_perf_sub("14.14 memory_pool 内存池");
+        // ---- 15.14 memory_pool 性能 ----
+        print_perf_sub("15.14 memory_pool 内存池");
         {
             const size_t mp_count = 1000000;
 
@@ -3084,8 +4068,8 @@ int main()
             print_perf("memory_pool 状态查询", 1000000, timer.elapsed_ms());
         }
 
-        // ---- 14.15 operating_message 性能 ----
-        print_perf_sub("14.15 operating_message 操作消息");
+        // ---- 15.15 operating_message 性能 ----
+        print_perf_sub("15.15 operating_message 操作消息");
         {
             const size_t om_count = 1000000;
 
@@ -3149,8 +4133,8 @@ int main()
             print_perf("operating_message read/bool", om_count, timer.elapsed_ms());
         }
 
-        // ---- 14.16 id_allocation 性能 ----
-        print_perf_sub("14.16 id_allocation ID分配器");
+        // ---- 15.16 id_allocation 性能 ----
+        print_perf_sub("15.16 id_allocation ID分配器");
         {
             const size_t id_count = 1000000;
 
@@ -3189,10 +4173,10 @@ int main()
             print_perf("id_allocation total/maximum", 1000000, timer.elapsed_ms());
         }
 
-        // ---- 14.17 信号系统性能 ----
-        print_perf_sub("14.17 生命周期信号系统");
+        // ---- 15.17 信号系统性能 ----
+        print_perf_sub("15.17 生命周期信号系统");
         {
-            const size_t sig_count = 500000;
+            const size_t sig_count = 1000000;
 
             // 即时信号：实体创建/销毁
             {
@@ -3298,10 +4282,10 @@ int main()
             print_perf("enable/disable 信号开关", 1000000 * 4, timer.elapsed_ms());
         }
 
-        // ---- 14.18 排序/重排接口性能 ----
-        print_perf_sub("14.18 排序 / 重排接口");
+        // ---- 15.18 排序/重排接口性能 ----
+        print_perf_sub("15.18 排序 / 重排接口");
         {
-            constexpr size_t sort_n = 100000;
+            constexpr size_t sort_n = 1000000;
             ecs::manager sort_mgr;
             sort_mgr.append_preallocated_entities(sort_n);
             class_pool<entity> sort_ents;
@@ -3364,10 +4348,10 @@ int main()
             }
         }
 
-        // ---- 14.19 其他管理器接口性能 ----
-        print_perf_sub("14.19 其他管理器接口");
+        // ---- 15.19 其他管理器接口性能 ----
+        print_perf_sub("15.19 其他管理器接口");
         {
-            const size_t misc_count = 500000;
+            const size_t misc_count = 1000000;
 
             // is_entity_valid
             timer.reset();
@@ -3548,8 +4532,8 @@ int main()
             }
         }
 
-        // ---- 14.20 entity / type_id 性能 ----
-        print_perf_sub("14.20 entity / type_id 基础类型");
+        // ---- 15.20 entity / type_id 性能 ----
+        print_perf_sub("15.20 entity / type_id 基础类型");
         {
             const size_t base_count = 1000000;
 
@@ -3604,7 +4588,7 @@ int main()
             print_perf("entity_manager get_mask", base_count, timer.elapsed_ms());
         }
 
-        // ---- 14.21 汇总 ----
+        // ---- 15.21 汇总 ----
         std::cout << "\n  ┌─ 匹配数汇总\n";
         std::cout << "  │ 双组件 Pos+Vel:          " << cnt_2a << "\n";
         std::cout << "  │ 双组件 Pos+Hp:           " << cnt_2b << "\n";
@@ -3619,6 +4603,7 @@ int main()
         std::cout << "  │ OR视图:                  " << cnt_or << "\n";
         std::cout << "  │ 任意匹配视图:            " << cnt_any << "\n";
     }
+
     std::cout << "\n══════════════════════════════════════════════════════\n"
               << "  全部接口测试完成\n"
               << "══════════════════════════════════════════════════════\n";

@@ -3,7 +3,7 @@
 #include <array>
 #include <limits>
 #include "single_class_set.hpp"
-#include "class_pool.hpp"
+#include "part/class_pool.hpp"
 #include "entity.hpp"
 
 namespace ecs
@@ -26,6 +26,7 @@ private:
     class_pool<std::array<uint32_t, N>> dense_mappings_;
     std::array<uint64_t, N>        cached_versions_{};
     uint64_t                       required_mask_{0};
+    bool                           use_mask_path_{true};
 
     void find_smallest() noexcept
     {
@@ -227,6 +228,7 @@ private:
     size_t                         owned_size_{0};
     std::array<uint64_t, N>        cached_versions_{};
     uint64_t                       required_mask_{0};
+    bool                           use_mask_path_{true};
 
     void find_smallest() noexcept
     {
