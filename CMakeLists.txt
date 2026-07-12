@@ -23,8 +23,8 @@ add_executable(test test.cpp)
 # AVX2 增加寄存器溢出栈开销, 提升栈大小防止溢出
 if(WIN32)
     if(MSVC)
-        target_link_options(test PRIVATE -Wl,/STACK:33554432)
-        target_link_options(usagec PRIVATE -Wl,/STACK:33554432)
+        target_link_options(test PRIVATE /STACK:33554432)
+        target_link_options(usagec PRIVATE /STACK:33554432)
     else()
         target_link_options(test PRIVATE -Wl,--stack,33554432)
         target_link_options(usagec PRIVATE -Wl,--stack,33554432)
@@ -40,15 +40,15 @@ if(WIN32)
     add_custom_command(
         TARGET usagec
         PRE_BUILD
-        COMMAND taskkill /F /IM usagec.exe /T 2>nul || echo Process not running
+        COMMAND cmd /c "taskkill /F /IM usagec.exe /T >nul 2>&1 & exit /b 0"
         COMMENT "Terminating usagec.exe if it is running..."
     )
-    
+
     add_custom_command(
         TARGET test
         PRE_BUILD
-        COMMAND taskkill /F /IM test.exe /T 2>nul || echo Process not running
+        COMMAND cmd /c "taskkill /F /IM test.exe /T >nul 2>&1 & exit /b 0"
         COMMENT "Terminating test.exe if it is running..."
     )
-    
+
 endif()
