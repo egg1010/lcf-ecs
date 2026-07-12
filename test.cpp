@@ -397,8 +397,8 @@ int main()
         print_item("shrink_to_fit()", cp2.capacity() == cp2.size());
 
         class_pool<int> cp3;
-        cp3.resize(100);
-        print_item("resize(size_t) 仅扩容", cp3.capacity() >= 100);
+        cp3.reserve_exact(100);
+        print_item("reserve_exact(size_t) 仅扩容", cp3.capacity() >= 100);
 
         class_pool<int> cp4;
         cp4.resize(static_cast<size_t>(5), 77);
@@ -1001,7 +1001,7 @@ int main()
     std::cout << "\n  [sparse SOA]\n";
     {
         single_class_set scs;
-        print_item("sparse_combined_ empty", scs.get_sparse_combined().empty());
+        print_item("sparse empty", scs.get_sparse_size() == 0);
     }
 
     // --- 构造函数 ---
@@ -2950,17 +2950,16 @@ int main()
         manager mgr;
         mgr.append_preallocated_entities(256);
 
-        // 注册 ExtraComp<1>..ExtraComp<57>,占 type_id 7..63
-        // (Position=1, Velocity=2, Health=3, int=4, double=5, Name=6 在前序章节注册)
+        // 注册 ExtraComp<1>..ExtraComp<200>, 确保覆盖 mask 边界
         entity filler = mgr.create_entity();
         auto register_extras = [&mgr, filler]<size_t... Is>(std::index_sequence<Is...>) {
             ((mgr.add(filler, ExtraComp<Is + 1>{})), ...);
         };
-        register_extras(std::make_index_sequence<57>{});
+        register_extras(std::make_index_sequence<200>{});
 
-        // A=ExtraComp<58> type_id=64 (mask 内), B=ExtraComp<59> type_id=65 (mask 外)
-        using A = ExtraComp<58>;
-        using B = ExtraComp<59>;
+        // A=ExtraComp<201> B=ExtraComp<202>
+        using A = ExtraComp<201>;
+        using B = ExtraComp<202>;
 
         // 创建实体:10 只A, 10 只B, 10 A+B, 10 都无
         // (add 触发 register_component_meta,设置 bit)
@@ -2984,10 +2983,10 @@ int main()
         print_sub("type_id 边界确认");
         int tid_a = type_id::get_type_id<A>();
         int tid_b = type_id::get_type_id<B>();
-        print_item("A type_id == 64 (mask 内)", tid_a == 64);
-        print_item("B type_id == 65 (mask 外)", tid_b == 65);
-        print_item("A bit != 0 (进 mask)", mgr.get_component_bit<A>() != 0);
-        print_item("B bit == 0 (不进 mask)", mgr.get_component_bit<B>() == 0);
+        constexpr int mask_boundary = sizeof(uint64_t) * 8;
+        print_item("B type_id == A type_id + 1", tid_b == tid_a + 1);
+        print_item("A mask 一致性 (tid>64 == bit==0)", (tid_a > mask_boundary) == (mgr.get_component_bit<A>() == 0));
+        print_item("B mask 一致性 (tid>64 == bit==0)", (tid_b > mask_boundary) == (mgr.get_component_bit<B>() == 0));
 
         print_sub("runtime_view mask 快路径 (req A, type_id 64)");
         {
@@ -3288,11 +3287,11 @@ int main()
             size_t batch_hit = 0;
             {
                 class_pool<entity> batch_ents;
-                batch_ents.resize(query_count);
+                batch_ents.reserve_exact(query_count);
                 for (size_t i = 0; i < query_count; ++i)
                     batch_ents[i] = entities[idx_dist(gen)];
                 class_pool<Position*> results;
-                results.resize(query_count);
+                results.reserve_exact(query_count);
                 ecss.get_ptr_batch<Position>(batch_ents.data(), results.data(), query_count);
                 for (size_t i = 0; i < query_count; ++i)
                     if (results[i]) { batch_hit++; volatile float d = results[i]->x; (void)d; }
@@ -3303,7 +3302,7 @@ int main()
             size_t pf_hit = 0;
             {
                 class_pool<entity> pf_ents;
-                pf_ents.resize(query_count);
+                pf_ents.reserve_exact(query_count);
                 for (size_t i = 0; i < query_count; ++i)
                     pf_ents[i] = entities[idx_dist(gen)];
                 constexpr size_t chunk = 16;
@@ -3318,6 +3317,50 @@ int main()
                 }
             }
             print_perf("prefetch+get 预取查询", pf_hit, timer.elapsed_ms());
+
+            timer.reset();
+            size_t cached_hit = 0;
+            {
+                class_pool<entity> cached_ents;
+                cached_ents.reserve_exact(query_count);
+                for (size_t i = 0; i < query_count; ++i)
+                    cached_ents[i] = entities[idx_dist(gen)];
+                auto* set = ecss.get_single_class_set<Position>();
+                constexpr size_t pf_sparse = 16;
+                constexpr size_t pf_data = 8;
+                for (size_t i = 0; i < query_count; ++i)
+                {
+                    if (i + pf_sparse < query_count)
+                        ecss.prefetch_ptr_cached<Position>(set, cached_ents[i + pf_sparse]);
+                    if (i + pf_data < query_count)
+                        ecss.prefetch_ptr_data_cached<Position>(set, cached_ents[i + pf_data]);
+                    auto* p = ecss.get_ptr_fast_cached<Position>(set, cached_ents[i]);
+                    if (p) { cached_hit++; volatile float d = p->x; (void)d; }
+                }
+            }
+            print_perf("cached+双级预取 查询", cached_hit, timer.elapsed_ms());
+
+            timer.reset();
+            size_t ctx_hit = 0;
+            {
+                class_pool<entity> ctx_ents;
+                ctx_ents.reserve_exact(query_count);
+                for (size_t i = 0; i < query_count; ++i)
+                    ctx_ents[i] = entities[idx_dist(gen)];
+                ecs::query_context<Position> ctx(ecss);
+                constexpr size_t pf_sparse = 16;
+                constexpr size_t pf_data = 8;
+                for (size_t i = 0; i < query_count; ++i)
+                {
+                    if (i + pf_sparse < query_count)
+                        ctx.prefetch_sparse(ctx_ents[i + pf_sparse]);
+                    if (i + pf_data < query_count)
+                        ctx.prefetch_data(ctx_ents[i + pf_data]);
+                    auto* p = ctx.get_ptr(ctx_ents[i]);
+                    if (p) { ctx_hit++; volatile float d = p->x; (void)d; }
+                }
+            }
+            print_perf("query_context 双级预取", ctx_hit, timer.elapsed_ms());
 
             timer.reset();
             size_t trav = 0;
@@ -3623,7 +3666,7 @@ int main()
             const size_t query_count = 1000000;
 
             class_pool<entity> query_ents;
-            query_ents.resize(query_count);
+            query_ents.reserve_exact(query_count);
             for (size_t i = 0; i < query_count; ++i)
                 query_ents[i] = entities[idx_dist(gen)];
 
@@ -3650,7 +3693,7 @@ int main()
             print_perf("get_ptr_fast 快速查询", query_count, timer.elapsed_ms());
 
             class_pool<entity> rand_ents;
-            rand_ents.resize(query_count);
+            rand_ents.reserve_exact(query_count);
             for (size_t i = 0; i < query_count; ++i)
                 rand_ents[i] = entities[idx_dist(gen)];
 
@@ -3677,13 +3720,13 @@ int main()
             print_perf("get_ptr 随机查询 (双级预取)", pf_hit, timer.elapsed_ms());
 
             class_pool<entity> cache_ents;
-            cache_ents.resize(query_count);
+            cache_ents.reserve_exact(query_count);
             for (size_t i = 0; i < query_count; ++i)
                 cache_ents[i] = entities[idx_dist(gen)];
 
             class_pool<uint64_t> cache_evict;
             constexpr size_t evict_bytes = 64 * 1024 * 1024;
-            cache_evict.resize(evict_bytes / sizeof(uint64_t));
+            cache_evict.reserve_exact(evict_bytes / sizeof(uint64_t));
             volatile uint64_t evict_sink = 0;
 
             for (size_t rep = 0; rep < 2; ++rep)
@@ -3717,6 +3760,167 @@ int main()
             oss << std::fixed << std::setprecision(1) << efficiency << "%";
             print_item("缓存有效率", oss.str());
             (void)evict_sink;
+        }
+
+        // ---- 15.10b 分页稀疏 + 热集缓存 ----
+        print_perf_sub("15.10b 分页稀疏 + 热集缓存");
+
+        {
+            const size_t query_count = 1000000;
+            std::uniform_int_distribution<size_t> idx_dist(0, entity_count - 1);
+
+            auto* pos_set = ecss.get_single_class_set<Position>();
+
+            // 分页稀疏信息
+            print_item("sparse_size", std::to_string(pos_set->get_sparse_size()));
+            print_item("page_directory_capacity", std::to_string(pos_set->get_page_directory_capacity()));
+
+            // 热集命中率测试：顺序扫描（热集命中）
+            class_pool<entity> seq_ents;
+            seq_ents.reserve_exact(query_count);
+            for (size_t i = 0; i < query_count; ++i)
+                seq_ents[i] = entities[i % entity_count];
+
+            // 第一遍预热热集
+            for (size_t i = 0; i < query_count; ++i)
+            {
+                auto* p = pos_set->get_ptr<Position>(seq_ents[i]);
+                (void)p;
+            }
+
+            // 第二遍测热集命中
+            timer.reset();
+            size_t hot_hit = 0;
+            for (size_t i = 0; i < query_count; ++i)
+            {
+                auto* p = pos_set->get_ptr<Position>(seq_ents[i]);
+                if (p) { ++hot_hit; volatile float d = p->x; (void)d; }
+            }
+            print_perf("热集命中 (顺序)", hot_hit, timer.elapsed_ms());
+
+            // 热集未命中测试：随机查询
+            class_pool<entity> rand_ents2;
+            rand_ents2.reserve_exact(query_count);
+            for (size_t i = 0; i < query_count; ++i)
+                rand_ents2[i] = entities[idx_dist(gen)];
+
+            // 清空热集
+            pos_set->clear_hot_set();
+
+            timer.reset();
+            size_t miss_hit = 0;
+            for (size_t i = 0; i < query_count; ++i)
+            {
+                auto* p = pos_set->get_ptr<Position>(rand_ents2[i]);
+                if (p) { ++miss_hit; volatile float d = p->x; (void)d; }
+            }
+            print_perf("热集未命中 (随机)", miss_hit, timer.elapsed_ms());
+
+            // query_context + 热集
+            class_pool<entity> ctx_ents2;
+            ctx_ents2.reserve_exact(query_count);
+            for (size_t i = 0; i < query_count; ++i)
+                ctx_ents2[i] = entities[idx_dist(gen)];
+
+            pos_set->clear_hot_set();
+
+            timer.reset();
+            size_t ctx_hit2 = 0;
+            {
+                ecs::query_context<Position> ctx(ecss);
+                for (size_t i = 0; i < query_count; ++i)
+                {
+                    auto* p = ctx.get_ptr(ctx_ents2[i]);
+                    if (p) { ++ctx_hit2; volatile float d = p->x; (void)d; }
+                }
+            }
+            print_perf("query_context+热集 (随机)", ctx_hit2, timer.elapsed_ms());
+
+            // query_context + 热集 + 双级预取
+            class_pool<entity> pf_ents2;
+            pf_ents2.reserve_exact(query_count);
+            for (size_t i = 0; i < query_count; ++i)
+                pf_ents2[i] = entities[idx_dist(gen)];
+
+            pos_set->clear_hot_set();
+
+            timer.reset();
+            size_t pf_ctx_hit = 0;
+            {
+                ecs::query_context<Position> ctx(ecss);
+                constexpr size_t pf_sparse = 16;
+                constexpr size_t pf_data = 8;
+                for (size_t i = 0; i < query_count; ++i)
+                {
+                    if (i + pf_sparse < query_count)
+                        ctx.prefetch_sparse(pf_ents2[i + pf_sparse]);
+                    if (i + pf_data < query_count)
+                        ctx.prefetch_data(pf_ents2[i + pf_data]);
+                    auto* p = ctx.get_ptr(pf_ents2[i]);
+                    if (p) { ++pf_ctx_hit; volatile float d = p->x; (void)d; }
+                }
+            }
+            print_perf("query_context+热集+预取 (随机)", pf_ctx_hit, timer.elapsed_ms());
+
+            // 分页稀疏 vs flat 对比：直接 sparse_version_at_public
+            class_pool<entity> sparse_ents;
+            sparse_ents.reserve_exact(query_count);
+            for (size_t i = 0; i < query_count; ++i)
+                sparse_ents[i] = entities[idx_dist(gen)];
+
+            timer.reset();
+            size_t sparse_hit = 0;
+            for (size_t i = 0; i < query_count; ++i)
+            {
+                uint32_t ver = pos_set->sparse_version_at_public(sparse_ents[i].parts_.index_);
+                if (ver == sparse_ents[i].parts_.version_) ++sparse_hit;
+            }
+            print_perf("sparse_version_at_public (随机)", sparse_hit, timer.elapsed_ms());
+        }
+
+        // ---- 15.10c 分页大小运行时可配置 + flat/paged 模式 ----
+        print_perf_sub("15.10c 分页大小运行时可配置 + flat/paged 模式");
+        {
+            auto* pos_set = ecss.get_single_class_set<Position>();
+            print_item("is_flat_mode (1M实体)", pos_set->is_flat_mode() ? "true" : "false");
+            size_t orig_shift = pos_set->get_page_size_shift();
+            print_item("默认 shift", std::to_string(orig_shift));
+
+            // 修改分页大小
+            pos_set->set_page_size_shift(12);
+            print_item("set shift=12 后", std::to_string(pos_set->get_page_size_shift()));
+
+            bool all_valid = true;
+            for (size_t i = 0; i < entity_count; ++i)
+            {
+                auto* p = pos_set->get_ptr<Position>(entities[i]);
+                if (!p) { all_valid = false; break; }
+            }
+            print_item("shift=12 查询正确", all_valid ? "true" : "false");
+
+            ecss.set_component_page_size_shift<Position>(8);
+            print_item("manager shift=8", std::to_string(ecss.get_component_page_size_shift<Position>()));
+            all_valid = true;
+            for (size_t i = 0; i < entity_count; ++i)
+            {
+                auto* p = pos_set->get_ptr<Position>(entities[i]);
+                if (!p) { all_valid = false; break; }
+            }
+            print_item("shift=8 查询正确", all_valid ? "true" : "false");
+
+            pos_set->set_page_size_shift(orig_shift);
+
+            // flat 模式测试 (小规模)
+            ecs::manager fmgr;
+            auto e0 = fmgr.create_entity();
+            auto e1 = fmgr.create_entity();
+            fmgr.add(e0, Position{1, 0, 0});
+            fmgr.add(e1, Position{2, 0, 0});
+            auto* fset = fmgr.get_single_class_set<Position>();
+            print_item("小规模 is_flat_mode", fset->is_flat_mode() ? "true" : "false");
+            auto* p0 = fmgr.get_ptr<Position>(e0);
+            auto* p1 = fmgr.get_ptr<Position>(e1);
+            print_item("flat 模式查询正确", p0 && p1 && p0->x == 1 && p1->x == 2);
         }
 
         // ---- 15.11 实体/组件操作 ----
@@ -3790,8 +3994,8 @@ int main()
             // resize
             timer.reset();
             class_pool<int> cp_rz;
-            cp_rz.resize(cp_count);
-            print_perf("class_pool resize(cap)", cp_count, timer.elapsed_ms());
+            cp_rz.reserve_exact(cp_count);
+            print_perf("class_pool reserve_exact(cap)", cp_count, timer.elapsed_ms());
 
             // resize with value
             timer.reset();

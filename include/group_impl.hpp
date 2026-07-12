@@ -67,19 +67,29 @@ inline void group<First, Rest...>::rebuild() noexcept
 
     dense_mappings_.clear();
     dense_mappings_.resize(cached_.size(), std::array<uint32_t, N>{});
-    std::array<const uint64_t*, N> sparse_arrays{};
-    for (size_t k = 0; k < N; ++k)
-        sparse_arrays[k] = sets_[k]->get_sparse_combined().data();
+    const sparse_entry* grp_set_dense_pages[N] = {};
+    size_t grp_set_page_idxs[N];
+    for (size_t k = 0; k < N; ++k) grp_set_page_idxs[k] = SIZE_MAX;
     for (size_t i = 0; i < cached_.size(); ++i)
     {
         auto& entry = dense_mappings_[i];
         uint32_t eid = indices[cached_[i]];
+        size_t pid = eid >> primary->page_shift;
         for (size_t k = 0; k < N; ++k)
         {
             if (k == primary_idx_)
                 entry[k] = cached_[i];
             else
-                entry[k] = static_cast<uint32_t>(sparse_arrays[k][eid] >> 32);
+            {
+                if (pid != grp_set_page_idxs[k]) [[unlikely]]
+                {
+                    grp_set_dense_pages[k] = sets_[k]->get_dense_page(eid);
+                    grp_set_page_idxs[k] = pid;
+                }
+                entry[k] = 0xFFFFFFFFu;
+                if (grp_set_dense_pages[k]) [[likely]]
+                    entry[k] = single_class_set::read_dense_from_page(grp_set_dense_pages[k], eid, sets_[k]->page_mask);
+            }
         }
     }
 }
@@ -150,6 +160,7 @@ inline void owning_group<First, Rest...>::rebuild() noexcept
         }
     }
     owned_size_ = write;
+    primary->clear_hot_set();
 
     for (size_t i = 0; i < N; ++i)
     {
@@ -224,6 +235,7 @@ inline void reorder_group<First, Rest...>::rebuild() noexcept
         }
     }
     s->owned_size = write;
+    primary->clear_hot_set();
 
     for (size_t i = 0; i < N; ++i)
     {

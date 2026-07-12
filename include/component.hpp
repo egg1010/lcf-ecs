@@ -11,6 +11,7 @@
 #include "reorder.hpp"
 #include "runtime_view.hpp"
 #include "part/radix_sort_helper.hpp"
+#include "part/tiered_sort.hpp"
 #include "view_tags.hpp"
 
 template <typename T>
@@ -262,7 +263,7 @@ public:
     {
         if (!entitys.is_valid()) [[unlikely]] return nullptr;
         single_class_set* set = get_single_class_set<T>();
-        return set ? set->get_ptr_fast<T>(entitys) : nullptr;
+        return set ? set->get_ptr_fast_inline<T>(entitys) : nullptr;
     }
 
     template <typename T>
@@ -270,21 +271,21 @@ public:
     {
         if (!entitys.is_valid()) [[unlikely]] return nullptr;
         const single_class_set* set = get_single_class_set<T>();
-        return set ? set->get_ptr_fast<T>(entitys) : nullptr;
+        return set ? set->get_ptr_fast_inline<T>(entitys) : nullptr;
     }
 
     template <typename T>
     [[nodiscard]] T* get_ptr_fast(entity entitys) noexcept
     {
         single_class_set* set = get_single_class_set<T>();
-        return set ? set->get_ptr_fast<T>(entitys) : nullptr;
+        return set ? set->get_ptr_fast_inline<T>(entitys) : nullptr;
     }
 
     template <typename T>
     [[nodiscard]] const T* get_ptr_fast(entity entitys) const noexcept
     {
         const single_class_set* set = get_single_class_set<T>();
-        return set ? set->get_ptr_fast<T>(entitys) : nullptr;
+        return set ? set->get_ptr_fast_inline<T>(entitys) : nullptr;
     }
 
     template <typename T>
@@ -317,6 +318,42 @@ public:
         {
             for (size_t i = 0; i < count; ++i) results[i] = nullptr;
         }
+    }
+
+    template <typename T>
+    [[nodiscard]] T* get_ptr_fast_cached(single_class_set* set, entity e) noexcept
+    {
+        return set ? set->get_ptr_fast<T>(e) : nullptr;
+    }
+
+    template <typename T>
+    [[nodiscard]] const T* get_ptr_fast_cached(const single_class_set* set, entity e) const noexcept
+    {
+        return set ? set->get_ptr_fast<T>(e) : nullptr;
+    }
+
+    template <typename T>
+    void prefetch_ptr_cached(single_class_set* set, entity e) const noexcept
+    {
+        if (set) set->prefetch_ptr(e);
+    }
+
+    template <typename T>
+    void prefetch_ptr_cached(const single_class_set* set, entity e) const noexcept
+    {
+        if (set) set->prefetch_ptr(e);
+    }
+
+    template <typename T>
+    void prefetch_ptr_data_cached(single_class_set* set, entity e) const noexcept
+    {
+        if (set) set->prefetch_ptr_data<T>(e);
+    }
+
+    template <typename T>
+    void prefetch_ptr_data_cached(const single_class_set* set, entity e) const noexcept
+    {
+        if (set) set->prefetch_ptr_data<T>(e);
     }
 
     template <typename T>
@@ -400,6 +437,23 @@ public:
     }
 
     template <typename T>
+    void set_component_page_size_shift(size_t shift) noexcept
+    {
+        single_class_set* set = get_single_class_set<T>();
+        if (set) [[likely]]
+        {
+            set->set_page_size_shift(shift);
+        }
+    }
+
+    template <typename T>
+    [[nodiscard]] size_t get_component_page_size_shift() const noexcept
+    {
+        const single_class_set* set = get_single_class_set<T>();
+        return set ? set->get_page_size_shift() : 10;
+    }
+
+    template <typename T>
     [[nodiscard]] class_pool<T>* get_component_vector() noexcept
     {
         single_class_set* set = get_single_class_set<T>();
@@ -476,17 +530,14 @@ public:
         T* pool_data = pool->data();
         size_t* idx_data = indices.data();
 
-        if constexpr (is_radix_sortable_v<T> &&
-                       std::is_same_v<std::decay_t<Compare>, std::less<T>>)
+        if constexpr (std::is_same_v<std::decay_t<Compare>, std::less<T>>)
         {
-            class_pool<size_t> temp_buf;
-            temp_buf.increase_capacity(n);
-            temp_buf.resize(n, size_t{0});
-            radix_sort_indices<T>(idx_data, pool_data, n, temp_buf.data());
+            ecs::tiered_sort_indices<T>(idx_data, pool_data, n);
         }
         else
         {
-            std::sort(idx_data, idx_data + n, [pool_data, &cmp](size_t a, size_t b) {
+            // MinGW+AVX2 下 std::sort+lambda 会崩溃, 使用 ecs::pdqsort 替代
+            ecs::pdqsort<size_t>(idx_data, n, [pool_data, &cmp](size_t a, size_t b) {
                 return cmp(pool_data[a], pool_data[b]);
             });
         }
@@ -511,19 +562,18 @@ public:
             indices.emplace_back(i);
 
         auto& t_indices = set_t->get_entity_indices();
-        auto& other_sparse_pool = set_other->get_sparse_combined();
-        const size_t other_sparse_size = other_sparse_pool.size();
-        auto* other_sparse = other_sparse_pool.data();
+        const size_t other_sparse_size = set_other->get_sparse_size();
         auto* other_pool_data = pool_other->data();
         size_t* idx_data = indices.data();
         Other default_other{};
 
-        std::sort(idx_data, idx_data + n,
-            [t_indices_ptr = t_indices.data(), other_sparse, other_sparse_size, other_pool_data, &default_other, &cmp](size_t a, size_t b) {
+        // MinGW+AVX2 下 std::sort+lambda 会崩溃, 使用 ecs::pdqsort 替代
+        ecs::pdqsort<size_t>(idx_data, n,
+            [t_indices_ptr = t_indices.data(), set_other, other_sparse_size, other_pool_data, &default_other, &cmp](size_t a, size_t b) {
                 uint32_t eid_a = t_indices_ptr[a];
                 uint32_t eid_b = t_indices_ptr[b];
-                uint32_t od_a = (eid_a < other_sparse_size) ? static_cast<uint32_t>(other_sparse[eid_a] >> 32) : UINT32_MAX;
-                uint32_t od_b = (eid_b < other_sparse_size) ? static_cast<uint32_t>(other_sparse[eid_b] >> 32) : UINT32_MAX;
+                uint32_t od_a = (eid_a < other_sparse_size) ? set_other->sparse_dense_at_public(eid_a) : UINT32_MAX;
+                uint32_t od_b = (eid_b < other_sparse_size) ? set_other->sparse_dense_at_public(eid_b) : UINT32_MAX;
                 Other& ra = (od_a != UINT32_MAX) ? other_pool_data[od_a] : default_other;
                 Other& rb = (od_b != UINT32_MAX) ? other_pool_data[od_b] : default_other;
                 return cmp(ra, rb);
@@ -753,6 +803,85 @@ public:
     }
 
     ~manager() = default;
+};
+
+template <typename T>
+class query_context
+{
+    single_class_set* set_;
+    size_t sparse_size_;
+    T* pool_data_;
+
+public:
+    query_context(manager& mgr) noexcept
+        : set_(mgr.get_single_class_set<T>())
+        , sparse_size_(set_ ? set_->sparse_size_ : 0)
+        , pool_data_(set_ ? set_->get_typed_pool<T>()->data() : nullptr)
+    {}
+
+    [[nodiscard]] T* get_ptr(entity e) noexcept
+    {
+        if (!set_ || e.parts_.index_ >= sparse_size_) [[unlikely]]
+            return nullptr;
+        const size_t slot = e.parts_.index_ & (single_class_set::hot_set_capacity_ - 1);
+        const auto& entry = set_->hot_set_[slot];
+        if (entry.entity_index == e.parts_.index_ && entry.version == e.parts_.version_) [[likely]]
+        {
+            return &pool_data_[entry.dense_index];
+        }
+        const uint32_t dense = set_->sparse_dense_at(e.parts_.index_);
+        if (dense == single_class_set::dense_invalid) [[unlikely]]
+            return nullptr;
+        const uint32_t ver = set_->sparse_version_at(e.parts_.index_);
+        if (ver != e.parts_.version_) [[unlikely]]
+            return nullptr;
+        set_->hot_set_[slot] = {e.parts_.index_, dense, ver, 0};
+        return &pool_data_[dense];
+    }
+
+    [[nodiscard]] const T* get_ptr(entity e) const noexcept
+    {
+        if (!set_ || e.parts_.index_ >= sparse_size_) [[unlikely]]
+            return nullptr;
+        const size_t slot = e.parts_.index_ & (single_class_set::hot_set_capacity_ - 1);
+        const auto& entry = set_->hot_set_[slot];
+        if (entry.entity_index == e.parts_.index_ && entry.version == e.parts_.version_) [[likely]]
+        {
+            return &pool_data_[entry.dense_index];
+        }
+        const uint32_t dense = set_->sparse_dense_at(e.parts_.index_);
+        if (dense == single_class_set::dense_invalid) [[unlikely]]
+            return nullptr;
+        const uint32_t ver = set_->sparse_version_at(e.parts_.index_);
+        if (ver != e.parts_.version_) [[unlikely]]
+            return nullptr;
+        return &pool_data_[dense];
+    }
+
+    void prefetch_sparse(entity e) const noexcept
+    {
+        if (!set_ || e.parts_.index_ >= sparse_size_) [[unlikely]]
+            return;
+        const size_t page_idx = e.parts_.index_ >> set_->page_shift;
+        if (page_idx < set_->get_page_directory_capacity() && set_->get_entry_pages()[page_idx])
+        {
+            PREFETCH_R(&set_->get_entry_pages()[page_idx][e.parts_.index_ & set_->page_mask]);
+        }
+    }
+
+    void prefetch_data(entity e) const noexcept
+    {
+        if (!set_ || e.parts_.index_ >= sparse_size_) [[unlikely]]
+            return;
+        const uint32_t ver = set_->sparse_version_at(e.parts_.index_);
+        if (ver == e.parts_.version_)
+        {
+            const uint32_t dense = set_->sparse_dense_at(e.parts_.index_);
+            PREFETCH_R(&pool_data_[dense]);
+        }
+    }
+
+    [[nodiscard]] bool valid() const noexcept { return set_ != nullptr; }
 };
 
 } // namespace ecs

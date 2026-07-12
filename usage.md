@@ -28,25 +28,45 @@
     - [应该用什么操作？](#应该用什么操作)
     - [不要做什么](#不要做什么-2)
     - [fill\_the\_hole — 填洞或追加](#fill_the_hole--填洞或追加)
+      - [机制](#机制)
+      - [接口](#接口-2)
+      - [使用](#使用-3)
+      - [不要做什么](#不要做什么-3)
   - [4. void\_any — 类型擦除存储](#4-void_any--类型擦除存储)
+    - [内存布局](#内存布局)
+    - [vtable 与函数指针跳过](#vtable-与函数指针跳过)
     - [构造与赋值](#构造与赋值-1)
     - [访问与操作](#访问与操作)
-    - [使用](#使用-3)
-    - [不要做什么](#不要做什么-3)
-  - [5. type\_id — 类型ID](#5-type_id--类型id)
-    - [接口](#接口-2)
     - [使用](#使用-4)
-  - [6. id\_allocation\<T\> — ID分配器](#6-id_allocationt--id分配器)
+    - [不要做什么](#不要做什么-4)
+  - [5. type\_id — 类型ID](#5-type_id--类型id)
     - [接口](#接口-3)
     - [使用](#使用-5)
-  - [7. memory\_pool — 内存池](#7-memory_pool--内存池)
-    - [memory\_block — 内存块](#memory_block--内存块)
-    - [memory\_pool — 内存池](#memory_pool--内存池)
+  - [6. id\_allocation\<T\> — ID分配器](#6-id_allocationt--id分配器)
+    - [接口](#接口-4)
     - [使用](#使用-6)
-    - [不要做什么](#不要做什么-4)
+  - [7. memory\_pool — 内存池](#7-memory_pool--内存池)
+    - [内存布局](#内存布局-1)
+    - [memory\_block — 内存块](#memory_block--内存块)
+    - [pool\_stats — 统计信息](#pool_stats--统计信息)
+    - [memory\_pool — 内存池](#memory_pool--内存池)
+    - [使用](#使用-7)
+    - [不要做什么](#不要做什么-5)
     - [arena\_allocator — 线性 bump 分配器](#arena_allocator--线性-bump-分配器)
+      - [内存布局](#内存布局-2)
+      - [接口](#接口-5)
+      - [使用](#使用-8)
+      - [不要做什么](#不要做什么-6)
     - [slab\_allocator — 固定块对象池](#slab_allocator--固定块对象池)
+      - [内存布局](#内存布局-3)
+      - [接口](#接口-6)
+      - [使用](#使用-9)
+      - [不要做什么](#不要做什么-7)
     - [layered\_allocator — 分层分配器](#layered_allocator--分层分配器)
+      - [路由表](#路由表)
+      - [接口](#接口-7)
+      - [使用](#使用-10)
+      - [不要做什么](#不要做什么-8)
   - [8. single\_class\_set — 单组件集合](#8-single_class_set--单组件集合)
     - [sparse 访问](#sparse-访问)
     - [构造与赋值](#构造与赋值-2)
@@ -54,22 +74,25 @@
     - [获取组件](#获取组件)
     - [删除与清空](#删除与清空)
     - [容量与查询](#容量与查询)
-    - [使用](#使用-7)
-    - [不要做什么](#不要做什么-5)
+    - [使用](#使用-11)
+    - [不要做什么](#不要做什么-9)
   - [9. ecs::manager — ECS管理器](#9-ecsmanager--ecs管理器)
     - [实体管理](#实体管理)
     - [添加组件](#添加组件-1)
     - [获取组件](#获取组件-1)
+    - [query\_context 查询上下文](#query_context-查询上下文)
     - [删除组件](#删除组件)
     - [容器访问](#容器访问)
+    - [single\_class\_set 分页稀疏+热集接口](#single_class_set-分页稀疏热集接口)
     - [信号与追踪开关](#信号与追踪开关)
     - [信号溢出与容量](#信号溢出与容量)
     - [View系统](#view系统)
+    - [分级排序](#分级排序)
     - [Group系统](#group系统)
     - [runtime\_view](#runtime_view)
     - [生命周期信号](#生命周期信号)
-    - [使用](#使用-8)
-    - [不要做什么](#不要做什么-6)
+    - [使用](#使用-12)
+    - [不要做什么](#不要做什么-10)
   - [10. View系统](#10-view系统)
     - [10.1 single\_view\<T\> — 单组件视图](#101-single_viewt--单组件视图)
     - [10.2 multi\_view\<T1, T2, ...\> — 多组件视图](#102-multi_viewt1-t2---多组件视图)
@@ -112,9 +135,9 @@
     - [12.12 iterator — 迭代器](#1212-iterator--迭代器)
     - [12.13 runtime\_term — OR / OPTIONAL / NOT 查询](#1213-runtime_term--or--optional--not-查询)
     - [12.14 access\_mode — 读写标注](#1214-access_mode--读写标注)
-    - [不要做什么](#不要做什么-7)
+    - [不要做什么](#不要做什么-11)
   - [13. 函数存储（回调作为组件）](#13-函数存储回调作为组件)
-    - [使用](#使用-9)
+    - [使用](#使用-13)
     - [通过 View 批量调用](#通过-view-批量调用)
   - [14. 生命周期信号](#14-生命周期信号)
     - [14.1 实体级即时信号](#141-实体级即时信号)
@@ -126,7 +149,7 @@
     - [14.7 信号开关与溢出](#147-信号开关与溢出)
     - [14.8 delete\_entity 的组件清理](#148-delete_entity-的组件清理)
     - [14.9 即时信号 vs 延迟信号 选择指南](#149-即时信号-vs-延迟信号-选择指南)
-    - [不要做什么](#不要做什么-8)
+    - [不要做什么](#不要做什么-12)
   - [15. 编译与运行](#15-编译与运行)
     - [CMake](#cmake)
     - [运行示例](#运行示例)
@@ -134,8 +157,8 @@
   - [16. 可选宏配置](#16-可选宏配置)
     - [配置示例](#配置示例)
   - [17. command\_buffer — 延迟结构变更](#17-command_buffer--延迟结构变更)
-    - [使用](#使用-10)
-    - [不要做什么](#不要做什么-9)
+    - [使用](#使用-14)
+    - [不要做什么](#不要做什么-13)
 
 ---
 
@@ -305,6 +328,9 @@ msg += msg2;  // switch_ = msg.switch_ && msg2.switch_
 | 接口 | 说明 |
 |------|------|
 | `emplace_back(Args...)` | 尾部构造元素 |
+| `push_back_unchecked(const T&)` | 尾部拷贝追加（跳过 bitmap 设置，仅 dense 连续模式可用） |
+| `emplace_back_unchecked(Args...)` | 尾部原地构造（跳过 bitmap 设置，仅 dense 连续模式可用） |
+| `emplace_back_dense_unchecked(Args...)` | 尾部原地构造（仅设置当前位 bitmap，dense 模式快速路径） |
 | `emplace(pos, Args...)` | 在指定位置插入（移动后续元素） |
 | `emplace_at(index, Args...)` | 任意位置构造（get-or-create：已存在则返回现有值，不覆盖） |
 | `sparse_emplace_at(index, Args...)` | 任意位置构造（insert-or-assign：已存在则覆盖） |
@@ -318,8 +344,8 @@ msg += msg2;  // switch_ = msg.switch_ && msg2.switch_
 | `reduce_capacity(capacity)` | 缩容（截断超出元素） |
 | `reduce_capacity(capacity, dst)` | 缩容，超出元素移至 dst |
 | `shrink_to_fit()` | 缩容至 `size()` |
-| `resize(size_t)` | 扩容（不填充值） |
-| `resize(size_t, const T& value)` | 调整大小并填充值 |
+| `reserve_exact(capacity)` | 精确扩容（不填充值，不增加元素，分配到精确大小） |
+| `resize(size_t, const T& value)` | 调整大小并填充值（支持缩小） |
 | `swap(other)` | 交换两个容器 |
 
 ### 稀疏集/Bitmap
@@ -390,6 +416,19 @@ pool.is_dense();                   // false（索引 100 处产生空洞）
 pool.emplace_at(100, 123);         // 填充空洞
 pool.is_dense();                   // true（空洞消失，自动切回）
 
+// unchecked 快速追加（仅 dense 连续模式，跳过 bitmap 设置）
+class_pool<int> dense_pool;
+dense_pool.emplace_back(1);
+dense_pool.emplace_back(2);
+dense_pool.push_back_unchecked(3);              // 跳过 bitmap，更快
+dense_pool.emplace_back_unchecked(4);           // 跳过 bitmap，更快
+dense_pool.emplace_back_dense_unchecked(5);     // 仅设置当前位 bitmap
+
+// 精确扩容（不增加元素，分配到精确大小）
+class_pool<int> reserved;
+reserved.reserve_exact(1000);        // capacity >= 1000，size 不变
+reserved.resize(10, 0);             // 调整 size 到 10 并填充 0
+
 // 位置插入
 pool.emplace(std::next(pool.begin(), 1), 42);  // 在位置 1 插入
 
@@ -420,9 +459,10 @@ pool.is_dense();              // 检查是否连续
 |---------|------|---------|
 | `sparse_erase_at()` 后仍期望连续迭代 | 产生空洞，迭代变稀疏模式 | 用 `emplace_at()` 填充空洞，或用 `erase()` 替代 |
 | 频繁 `sparse_erase_at()` + `emplace_at()` 来回切换 | 每次切换触发模式扫描 | 批量操作，或统一使用 `erase()`/`emplace()` 保持连续 |
-| `emplace_at()` 在远超 `index_` 的索引上构造 | 中间留大量未初始化槽位，`size()` 暴增 | 用 `resize()` 预填充，或改用 `sparse_emplace_at()` |
+| `emplace_at()` 在远超 `index_` 的索引上构造 | 中间留大量未初始化槽位，`size()` 暴增 | 用 `resize(n, value)` 预填充，或改用 `sparse_emplace_at()` |
 | 在 sparse 模式下使用 `data()` + `span()` 做线性遍历 | 未初始化槽位包含垃圾数据 | 始终通过迭代器遍历，或先确认 `is_dense()` 为 true |
 | `emplace_at()` 期望覆盖已有值 | `emplace_at` 是 get-or-create，不覆盖 | 使用 `sparse_emplace_at()` 实现 insert-or-assign |
+| 在 sparse 模式下使用 `push_back_unchecked` / `emplace_back_unchecked` | 不设置 bitmap 位，迭代器无法看到新元素 | 仅在已知 dense 连续模式下使用，或用 `emplace_back()` 替代 |
 
 ### fill_the_hole — 填洞或追加
 
@@ -906,13 +946,28 @@ bool in_la = la.owns(small);
 
 ## 8. single_class_set — 单组件集合
 
-管理单一类型组件的稀疏集存储。内部维护 sparse_version_、sparse_dense_ 数组和类型擦除的组件池。
+管理单一类型组件的分页稀疏集存储。内部使用分页稀疏表（paged sparse table）+ 热集缓存（hot set cache），替代传统的连续稀疏数组。
 
 ### sparse 访问
 
 | 接口 | 说明 |
 |------|------|
-| `get_sparse_combined()` | 获取合并的稀疏数组（[31:0]=version, [63:32]=dense） |
+| `sparse_dense_at_public(uint32_t idx)` | 获取稀疏条目的 dense 索引，不存在返回 `dense_invalid` (0xFFFFFFFF) |
+| `sparse_version_at_public(uint32_t idx)` | 获取稀疏条目的 version，不存在返回 0 |
+| `dense_invalid` | 无效 dense 索引常量（0xFFFFFFFF） |
+| `get_sparse_size()` | 稀疏表已使用的最大索引+1 |
+| `get_page_directory_capacity()` | 页目录容量 |
+| `get_page_directory()` | 获取页目录指针 |
+| `clear_hot_set()` | 清空热集缓存 |
+
+机制：
+
+- `sparse_dense_at_public` / `sparse_version_at_public`：合并存储（sparse_entry {dense, version}），二级页目录查找 `entry_pages_[idx>>shift][idx&mask]`
+- flat 模式：连续 `flat_entries_[]` 数组（sparse_entry 合并存储），实体数 ≤ 65536 时启用
+- paged 模式：按需分页，实体数 > 65536 时自动切换
+- 未映射条目：dense 返回 `dense_invalid`，version 返回 0
+- hot_set 是 256 项直接映射缓存（alignas(32)），查询未命中时自动填充
+- `clear_hot_set` 应在批量修改后调用，避免缓存过期
 
 ### 构造与赋值
 
@@ -952,7 +1007,7 @@ bool in_la = la.owns(small);
 | `prefetch_ptr(entity)` | 预取 sparse 条目（按 entity） |
 | `prefetch_ptr_batch(const entity*, size_t)` | 批量预取 sparse 条目 |
 | `prefetch_ptr_data<T>(entity)` | 预取组件数据（按 entity，需先加载 sparse 条目） |
-| `get_ptr_batch(const entity*, T**, size_t)` | 批量查询组件指针（管线化预取） |
+| `get_ptr_batch(const entity*, T**, size_t)` | 批量查询组件指针（管线化预取，大规模 sparse 表自动走排序预取路径） |
 
 ### 删除与清空
 
@@ -1002,6 +1057,8 @@ set.add_batch(ents, comps);
 | `soft_remove` 后依赖 `size()` 和连续遍历 | 留下空洞，`size()` 不减少，dense 数组不连续 | 若需紧凑布局，使用 `hard_remove` |
 | 在需要频繁增删时只用 `hard_remove` | 每次交换删除 O(1) 但破坏顺序 | 可接受顺序变化时用 `hard_remove`，需保持顺序时用 `soft_remove` 后定期重建 |
 | 拷贝 `single_class_set` | 禁止拷贝 | 使用移动语义 |
+| 批量增删后不调用 `clear_hot_set` | hot_set 缓存可能指向已变更的条目 | 批量修改后调用 `clear_hot_set()` |
+| 依赖 `sparse_dense_at_public` 返回值判断条目是否存在 | 需检查返回值是否等于 `dense_invalid` | 检查 `sparse_dense_at_public(idx) != dense_invalid`，或使用 `get_ptr` 系列接口 |
 
 ---
 
@@ -1044,6 +1101,27 @@ ECS 核心管理类，管理实体和所有组件集合。
 | `prefetch_ptr<T>(entity)` | 预取实体 sparse 条目 |
 | `prefetch_ptr_batch<T>(entities, count)` | 批量预取实体 sparse 条目 |
 | `prefetch_ptr_data<T>(entity)` | 预取组件数据（需先加载 sparse 条目获取 dense 索引） |
+| `get_ptr_fast_cached<T>(set, entity)` | 用缓存的 set 指针快速查询（避免重复 get_single_class_set） |
+| `prefetch_ptr_cached<T>(set, entity)` | 用缓存的 set 指针预取 sparse 条目 |
+| `prefetch_ptr_data_cached<T>(set, entity)` | 用缓存的 set 指针预取组件数据 |
+
+> `get_ptr` 和 `get_ptr_fast` 内部已自动使用 `get_ptr_fast_inline`，通过缓存的 `typed_pool_data_` 指针直接访问组件数据，无需 `get_typed_pool` 间接寻址。无需手动调用。
+
+### query_context 查询上下文
+
+| 接口 | 说明 |
+|------|------|
+| `query_context<T>(manager&)` | 构造查询上下文，缓存 set/sparse/pool 指针 |
+| `get_ptr(entity)` | 内联快速查询组件指针，返回 `T*` |
+| `get_ptr(entity) const` | const 版本，返回 `const T*` |
+| `prefetch_sparse(entity) const` | 预取 sparse 条目到 L1 |
+| `prefetch_data(entity) const` | 预取组件数据到 L1 |
+| `valid() const` | 上下文是否有效（组件类型是否已注册） |
+
+机制：
+
+- `query_context` 内部持有 `typed_pool_data_` 指针，直接访问组件数据，无需经过 `get_typed_pool` 间接寻址
+- 构造时一次性缓存所有指针（set / sparse / pool），后续查询为内联路径
 
 ### 删除组件
 
@@ -1054,6 +1132,8 @@ ECS 核心管理类，管理实体和所有组件集合。
 | `soft_removec<T>(entity)` | 链式软删除（返回 `manager&`） |
 | `hard_removec<T>(entity)` | 链式硬删除（返回 `manager&`） |
 | `delete_type_container<T>()` | 删除整个类型容器 |
+
+> `hard_remove` 和 `swap_dense_and_pool` 对 `std::is_trivially_copyable` 类型使用 `typed_pool_data_` + `memcpy` 直接操作，跳过函数指针间接调用。非 trivial 类型回退到 `ops_.swap_pop` / `ops_.swap_pool` 函数指针路径。
 
 ### 容器访问
 
@@ -1067,6 +1147,83 @@ ECS 核心管理类，管理实体和所有组件集合。
 | `get_operating_message()` | 获取操作消息引用 |
 | `get_component_meta(int type_id)` | 获取组件元数据（含 bit 位等信息） |
 | `get_single_class_set_by_id(int type_id)` | 通过 type_id 获取组件集合（运行时视图用） |
+
+### single_class_set 合并稀疏表+热集接口
+
+稀疏表使用 flat + paged 混合存储：实体数 ≤ 65536 时用 flat 连续数组（1次加载），超过时自动切换为 paged 分页模式。dense 和 version 合并存储为 `sparse_entry {uint32_t dense; uint32_t version}`（8 字节），同一 cache line 减少 get_ptr 慢路径 cache miss。
+
+| 接口 | 说明 |
+|------|------|
+| `sparse_dense_at_public(uint32_t idx) const` | 读取稀疏条目的 dense 索引，不存在返回 `dense_invalid` |
+| `sparse_version_at_public(uint32_t idx) const` | 读取稀疏条目的 version，不存在返回 0 |
+| `dense_invalid` | 无效 dense 索引常量（0xFFFFFFFF），public 静态成员 |
+| `get_sparse_size() const` | 稀疏表已覆盖的最大索引+1 |
+| `get_page_directory_capacity() const` | 页目录容量（paged 模式） |
+| `get_entry_pages() const` | 获取 sparse_entry 页目录指针（paged 模式） |
+| `is_flat_mode() const` | 当前是否为 flat 模式 |
+| `get_flat_entries() const` | 获取 flat sparse_entry 数组指针（flat 模式） |
+| `get_flat_capacity() const` | flat 数组容量 |
+| `get_dense_page(uint32_t entity_index) const` | 获取 sparse_entry 页指针（合并存储，flat 模式返回 flat_entries_） |
+| `get_version_page(uint32_t entity_index) const` | 获取 sparse_entry 页指针（与 get_dense_page 返回同一指针） |
+| `read_dense_from_page(page, entity_index, mask)` | 从 sparse_entry 页指针读取 dense index（static） |
+| `read_version_from_page(page, entity_index, mask)` | 从 sparse_entry 页指针读取 version（static） |
+| `clear_hot_set()` | 清空热集缓存 |
+| `page_shift` / `page_size` / `page_mask` | 实例级分页参数（flat 模式下 page_shift=32, page_mask=SIZE_MAX） |
+| `get_page_size_shift() const` | 获取当前分页 shift 值 |
+| `set_page_size_shift(size_t shift)` | 设置分页 shift 值（6~20），已有数据时自动重建 |
+| `dense_invalid` | 无效 dense 索引哨兵值（`0xFFFFFFFFu`），public 静态成员 |
+
+```cpp
+auto* set = mgr.get_single_class_set<Position>();
+
+// 查询模式
+if (set->is_flat_mode())
+{
+    // flat 模式: 直接数组访问 (sparse_entry 合并存储)
+    const sparse_entry* entries = set->get_flat_entries();
+    // entries[entity_index].dense 即为 dense index
+    // entries[entity_index].version 即为 version
+}
+else
+{
+    // paged 模式: 页指针缓存遍历
+    const sparse_entry* cur_page = nullptr;
+    size_t cur_page_idx = SIZE_MAX;
+    for (size_t i = 0; i < set->get_sparse_size(); ++i)
+    {
+        size_t pid = i >> set->page_shift;
+        if (pid != cur_page_idx)
+        {
+            cur_page = set->get_dense_page(static_cast<uint32_t>(i));
+            cur_page_idx = pid;
+        }
+        if (cur_page)
+        {
+            uint32_t dense = single_class_set::read_dense_from_page(
+                cur_page, static_cast<uint32_t>(i), set->page_mask);
+        }
+    }
+}
+
+// 清空热集缓存
+set->clear_hot_set();
+
+// 运行时修改分页大小
+set->set_page_size_shift(12);
+```
+
+### manager 分页大小配置
+
+| 接口 | 说明 |
+|------|------|
+| `set_component_page_size_shift<T>(size_t shift)` | 按类型设置分页 shift 值（6~20），已有数据时自动重建 |
+| `get_component_page_size_shift<T>() const` | 查询类型的当前分页 shift 值 |
+
+```cpp
+mgr.set_component_page_size_shift<Position>(12);
+mgr.set_component_page_size_shift<Velocity>(8);
+size_t shift = mgr.get_component_page_size_shift<Position>();
+```
 
 ### 信号与追踪开关
 
@@ -1112,6 +1269,45 @@ ECS 核心管理类，管理实体和所有组件集合。
 | `view<First, Rest...>().exactly_one()` | 精确获取单个实体多组件 |
 | `view<First, Rest...>().find_one(entity)` | 查询指定实体多组件 |
 | `view<First, Rest...>().iter_over_entities(entities)` | 批量指定实体查询 |
+
+### 分级排序
+
+`#include "part/tiered_sort.hpp"`，位于 `ecs` 命名空间。
+
+| 接口 | 说明 |
+|------|------|
+| `ecs::tiered_sort<T>(data, n, cmp)` | 分级排序值数组 |
+| `ecs::tiered_sort_indices<T>(indices, values, n)` | 索引排序，按 values[indices[i]] 升序排列 indices |
+
+**分级策略**：
+
+| 数据量 n | tiered_sort 算法 | tiered_sort_indices 算法 |
+|----------|-----------------|------------------------|
+| n < 32 | 插入排序 | 插入排序 |
+| 32 ≤ n < 256 | 插入排序（ascending 特化，trivial 类型） | 3-way pdqsort |
+| 256 ≤ n < 4096 | 3-way pdqsort | 3-way pdqsort |
+| 4096 ≤ n < 65536 | 11位基数排序（3趟，trivial 类型） | 11位基数排序（3趟，算术类型） |
+| n ≥ 65536 | 11位基数排序 + 预取距离8 | 11位基数排序 + 预取距离8 |
+
+- `tiered_sort` 要求 `T` 满足 `std::is_trivially_copyable_v`
+- `tiered_sort_indices` 对算术类型在 n≥4096 时使用基数排序，否则 pdqsort
+- 基数排序使用 11-11-10 位配置（3趟完成 32 位），64 位类型 6 趟
+- 3-way pdqsort 使用 Dutch National Flag 分区，高效处理重复键
+- 两者均为 `noexcept`
+
+```cpp
+#include "part/tiered_sort.hpp"
+
+// 值排序
+int data[] = {5, 3, 1, 4, 2};
+ecs::tiered_sort(data, 5, std::less<int>{});
+
+// 索引排序
+size_t indices[] = {0, 1, 2, 3, 4};
+float values[] = {5.0f, 3.0f, 1.0f, 4.0f, 2.0f};
+ecs::tiered_sort_indices(indices, values, 5);
+// indices: {2, 1, 4, 3, 0}
+```
 
 ### Group系统
 
@@ -1165,7 +1361,7 @@ Position* p = mgr.get_ptr<Position>(e1);
 
 // 批量查询组件
 class_pool<Position*> results;
-results.resize(entities.size());
+results.reserve_exact(entities.size());
 mgr.get_ptr_batch<Position>(entities.data(), results.data(), entities.size());
 
 // 预取组件指针
@@ -1175,6 +1371,18 @@ mgr.prefetch_ptr_batch<Position>(entities.data(), entities.size());
 // 双级预取：先预取 sparse 条目，再预取组件数据
 mgr.prefetch_ptr<Position>(e1);
 mgr.prefetch_ptr_data<Position>(e1);
+
+// cached 双级预取：缓存 set 指针避免重复查找，适合批量循环查询
+auto* set = mgr.get_single_class_set<Position>();
+mgr.prefetch_ptr_cached<Position>(set, e1);
+mgr.prefetch_ptr_data_cached<Position>(set, e1);
+auto* p = mgr.get_ptr_fast_cached<Position>(set, e1);
+
+// query_context: 一次性缓存所有指针，内联查询
+ecs::query_context<Position> ctx(mgr);
+ctx.prefetch_sparse(e1);
+ctx.prefetch_data(e1);
+auto* p5 = ctx.get_ptr(e1);
 
 // 批量添加
 class_pool<entity> ents = {e1, e2};

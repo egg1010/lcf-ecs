@@ -14,7 +14,7 @@ struct entity
             uint32_t index_;
             uint32_t version_;
         } parts_;
-    };
+    }; 
 
     constexpr bool operator==(const entity& other) const noexcept { return handle_ == other.handle_; }
     constexpr bool operator!=(const entity& other) const noexcept { return handle_ != other.handle_; }

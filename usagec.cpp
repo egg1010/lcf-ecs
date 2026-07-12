@@ -12,6 +12,7 @@
 #include "include/part/arena_allocator.hpp"
 #include "include/part/slab_allocator.hpp"
 #include "include/part/layered_allocator.hpp"
+#include "include/part/tiered_sort.hpp"
 #include "include/part/id_.hpp"
 #include "include/part/type_id.hpp"
 
@@ -233,6 +234,17 @@ static void demo_class_pool()
     for (auto v : pool) std::cout << v << " ";
     std::cout << "\n";
 
+    print_sub("unchecked 快速追加（仅 dense 连续模式）");
+    class_pool<int> upool;
+    upool.emplace_back(1);
+    upool.emplace_back(2);
+    upool.push_back_unchecked(3);
+    upool.emplace_back_unchecked(4);
+    upool.emplace_back_dense_unchecked(5);
+    std::cout << "    push_back_unchecked + emplace_back_unchecked + emplace_back_dense_unchecked: ";
+    for (auto v : upool) std::cout << v << " ";
+    std::cout << "\n";
+
     print_sub("\u5143\u7d20\u8bbf\u95ee: operator[] / at / front / back / get / data / span");
     print_kv("pool[1]", pool[1]);
     print_kv("pool.at(2)", pool.at(2));
@@ -311,9 +323,9 @@ static void demo_class_pool()
     class_pool<int> pool7b;
     pool7b.emplace_back(1);
     pool7b.emplace_back(2);
-    pool7b.resize(100);
-    print_kv("resize(100) \u540e size", pool7b.size());
-    print_kv("resize(100) \u540e capacity", pool7b.capacity());
+    pool7b.reserve_exact(100);
+    print_kv("reserve_exact(100) \u540e size", pool7b.size());
+    print_kv("reserve_exact(100) \u540e capacity", pool7b.capacity());
 
     print_sub("emplace(pos, args...) / erase(pos) / \u63d2\u5165\u5220\u9664");
     class_pool<int> pool8;
@@ -884,20 +896,20 @@ static void demo_layered_allocator()
 
     print_sub("\u5927\u5c0f\u8def\u7531");
     layered_allocator la;
-    void* small = la.allocate(64);    // \u8d70 slab[3]
+    void* small_ptr = la.allocate(64);    // \u8d70 slab[3]
     void* big = la.allocate(256);     // \u8d70 memory_pool (TLSF)
-    print_kv("allocate(64) \u5c0f\u5bf9\u8c61", (small ? "\u6210\u529f" : "\u5931\u8d25"));
+    print_kv("allocate(64) \u5c0f\u5bf9\u8c61", (small_ptr ? "\u6210\u529f" : "\u5931\u8d25"));
     print_kv("allocate(256) \u5927\u5bf9\u8c61", (big ? "\u6210\u529f" : "\u5931\u8d25"));
     print_kv("slab_max()", la.slab_max());
 
     print_sub("owns() \u5224\u65ad\u5f52\u5c5e");
     int stack_var = 0;
-    print_kv("owns(\u5c0f\u5bf9\u8c61)", la.owns(small));
+    print_kv("owns(\u5c0f\u5bf9\u8c61)", la.owns(small_ptr));
     print_kv("owns(\u5927\u5bf9\u8c61)", la.owns(big));
     print_kv("owns(\u6808\u53d8\u91cf)", la.owns(&stack_var));
 
     print_sub("deallocate \u5f52\u5c5e\u5224\u65ad");
-    la.deallocate(small);  // \u904d\u5386 owns \u2192 slab[3]
+    la.deallocate(small_ptr);  // \u904d\u5386 owns \u2192 slab[3]
     la.deallocate(big);    // \u904d\u5386 owns \u2192 memory_pool
     print_kv("deallocate \u5b8c\u6210", true);
 
@@ -948,7 +960,7 @@ static void demo_single_class_set()
     print_kv("\u5b9e\u4f53+\u5bf9\u8c61\u6784\u9020 size()", set_eo.size());
 
     print_sub("sparse SOA");
-    print_kv("sparse_combined_ empty", set_default.get_sparse_combined().empty());
+    print_kv("sparse empty", set_default.get_sparse_size() == 0);
 
     single_class_set set;
     entity e1(1, 1), e2(2, 1), e3(3, 1);
@@ -1005,8 +1017,15 @@ static void demo_single_class_set()
     print_kv("get_version(1)", set.get_version(1));
     print_kv("get_version_unchecked(1)", set.get_version_unchecked(1));
 
-    print_sub("get_sparse_combined");
-    print_kv("get_sparse_combined().size()", (int)set.get_sparse_combined().size());
+    print_sub("sparse 分页稀疏 + 热集");
+    print_kv("get_sparse_size()", (int)set.get_sparse_size());
+    print_kv("get_page_directory_capacity()", (int)set.get_page_directory_capacity());
+    uint32_t sp_ver = set.sparse_version_at_public(1);
+    uint32_t sp_dense = set.sparse_dense_at_public(1);
+    print_kv("sparse_version_at_public(1)", (int)sp_ver);
+    print_kv("sparse_dense_at_public(1)", (int)sp_dense);
+    set.clear_hot_set();
+    print_kv("clear_hot_set() ok", true);
 
     print_sub("hard_remove / soft_remove");
     set.soft_remove(e1);
@@ -1102,7 +1121,7 @@ static void demo_manager()
     print_sub("get_ptr_batch<T> / prefetch_ptr<T>");
     class_pool<entity> q_ents = {e1, e2};
     class_pool<Position*> q_results;
-    q_results.resize(q_ents.size());
+    q_results.reserve_exact(q_ents.size());
     mgr.get_ptr_batch<Position>(q_ents.data(), q_results.data(), q_ents.size());
     std::cout << "    get_ptr_batch<Position>({e1,e2}):";
     for (size_t i = 0; i < q_ents.size(); ++i)
@@ -1117,6 +1136,57 @@ static void demo_manager()
     mgr.prefetch_ptr_data<Position>(e1);
     auto* p3 = mgr.get_ptr<Position>(e1);
     print_kv("prefetch_ptr + prefetch_ptr_data + get_ptr", (p3 ? std::to_string(p3->x) + "," + std::to_string(p3->y) : "null"));
+
+    print_sub("cached 预取查询");
+    auto* cached_set = mgr.get_single_class_set<Position>();
+    mgr.prefetch_ptr_cached<Position>(cached_set, e1);
+    mgr.prefetch_ptr_data_cached<Position>(cached_set, e1);
+    auto* p4 = mgr.get_ptr_fast_cached<Position>(cached_set, e1);
+    print_kv("cached+双级预取 get_ptr_fast_cached", (p4 ? std::to_string(p4->x) + "," + std::to_string(p4->y) : "null"));
+
+    print_sub("query_context 查询上下文");
+    ecs::query_context<Position> ctx(mgr);
+    ctx.prefetch_sparse(e1);
+    ctx.prefetch_data(e1);
+    auto* p5 = ctx.get_ptr(e1);
+    print_kv("query_context<Position> get_ptr", (p5 ? std::to_string(p5->x) + "," + std::to_string(p5->y) : "null"));
+
+    print_sub("get_ptr_fast_inline 机制");
+    std::cout << "    get_ptr/get_ptr_fast 内部自动使用 get_ptr_fast_inline\n";
+    std::cout << "    通过 typed_pool_data_ 直接访问，无需手动调用\n";
+
+    print_sub("分离稀疏表 (flat+paged 混合)");
+    auto* set = mgr.get_single_class_set<Position>();
+    print_kv("is_flat_mode()", set->is_flat_mode());
+    print_kv("get_sparse_size()", set->get_sparse_size());
+    uint32_t pub_dense = set->sparse_dense_at_public(0);
+    uint32_t pub_ver = set->sparse_version_at_public(0);
+    print_kv("sparse_dense_at_public(0)", (int)pub_dense);
+    print_kv("sparse_version_at_public(0)", (int)pub_ver);
+    set->clear_hot_set();
+    print_kv("clear_hot_set() 后", "已清空");
+
+    // dense/version 合并查询 (sparse_entry 合并存储, get_dense_page 与 get_version_page 返回同一指针)
+    const sparse_entry* dense_page = set->get_dense_page(0);
+    if (dense_page)
+    {
+        uint32_t dense = single_class_set::read_dense_from_page(dense_page, 0, set->page_mask);
+        print_kv("read_dense_from_page(0)", (int)dense);
+    }
+    const sparse_entry* ver_page = set->get_version_page(0);
+    if (ver_page)
+    {
+        uint32_t ver = single_class_set::read_version_from_page(ver_page, 0, set->page_mask);
+        print_kv("read_version_from_page(0)", (int)ver);
+    }
+
+    // 分页大小运行时可配置
+    print_kv("默认 page_shift", set->get_page_size_shift());
+    set->set_page_size_shift(12);
+    print_kv("set_page_size_shift(12) 后", set->get_page_size_shift());
+    mgr.set_component_page_size_shift<Position>(8);
+    print_kv("manager 设置 Position shift=8", mgr.get_component_page_size_shift<Position>());
+    set->set_page_size_shift(10);
 
     print_sub("add_batch \u4e09\u79cd\u91cd\u8f7d");
     class_pool<entity> batch_ents = {mgr.create_entity(), mgr.create_entity()};
@@ -2082,6 +2152,29 @@ static void demo_runtime_view()
 }
 
 // =============================================================================
+// 18. tiered_sort 分级排序
+// =============================================================================
+static void demo_tiered_sort()
+{
+    print_header(18, "tiered_sort 分级排序");
+
+    print_sub("tiered_sort 直接排序");
+    int data[] = {5, 3, 1, 4, 2};
+    ecs::tiered_sort(data, 5, std::less<int>{});
+    std::cout << "    排序后: ";
+    for (int v : data) std::cout << v << " ";
+    std::cout << "\n";
+
+    print_sub("tiered_sort_indices 索引排序");
+    size_t indices[] = {0, 1, 2, 3, 4};
+    float values[] = {5.0f, 3.0f, 1.0f, 4.0f, 2.0f};
+    ecs::tiered_sort_indices(indices, values, 5);
+    std::cout << "    索引: ";
+    for (size_t i : indices) std::cout << i << " ";
+    std::cout << "\n";
+}
+
+// =============================================================================
 // 17. command_buffer 延迟结构变更
 // =============================================================================
 static void demo_command_buffer()
@@ -2463,6 +2556,7 @@ int main()
     demo_function_storage();    // 15. 函数存储\u51fd\u6570\u5b58\u50a8
     demo_unlimited_components(); // 16. 组件类型无上限
     demo_command_buffer();      // 17. command_buffer
+    demo_tiered_sort();         // 18. tiered_sort 分级排序
 
     std::cout << "\n";
     std::cout << "\u250c";

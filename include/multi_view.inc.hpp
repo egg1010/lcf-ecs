@@ -56,26 +56,52 @@
                 return;
             }
 
-            auto& primary_sparse_pool = primary->get_sparse_combined();
-            const size_t primary_sparse_size = primary_sparse_pool.size();
-            auto* primary_sparse = primary_sparse_pool.data();
+            const size_t primary_sparse_size = primary->get_sparse_size();
 
             bool fast_aligned = true;
             for (size_t k = 0; k < N; ++k)
             {
                 if (k == primary_idx_) continue;
-                auto& other_sparse = sets_[k]->get_sparse_combined();
-                if (other_sparse.size() != primary_sparse_size)
+                if (sets_[k]->get_sparse_size() != primary_sparse_size)
                 {
                     fast_aligned = false;
                     break;
                 }
-                if (std::memcmp(other_sparse.data(), primary_sparse,
-                                primary_sparse_size * sizeof(uint64_t)) != 0)
+                // page-cached comparison for alignment check
+                const sparse_entry* pk_dense_page = nullptr;
+                const sparse_entry* pk_ver_page = nullptr;
+                size_t pk_page_idx = SIZE_MAX;
+                const sparse_entry* sk_dense_page = nullptr;
+                const sparse_entry* sk_ver_page = nullptr;
+                size_t sk_page_idx = SIZE_MAX;
+                for (size_t j = 0; j < primary_sparse_size; ++j)
                 {
-                    fast_aligned = false;
-                    break;
+                    size_t pid = j >> primary->page_shift;
+                    if (pid != pk_page_idx) [[unlikely]]
+                    {
+                        pk_dense_page = primary->get_dense_page(static_cast<uint32_t>(j));
+                        pk_ver_page = primary->get_version_page(static_cast<uint32_t>(j));
+                        pk_page_idx = pid;
+                    }
+                    if (pid != sk_page_idx) [[unlikely]]
+                    {
+                        sk_dense_page = sets_[k]->get_dense_page(static_cast<uint32_t>(j));
+                        sk_ver_page = sets_[k]->get_version_page(static_cast<uint32_t>(j));
+                        sk_page_idx = pid;
+                    }
+                    uint32_t pk_dense = (pk_dense_page) ? single_class_set::read_dense_from_page(pk_dense_page, static_cast<uint32_t>(j), primary->page_mask) : 0xFFFFFFFFu;
+                    uint32_t pk_ver = (pk_ver_page) ? single_class_set::read_version_from_page(pk_ver_page, static_cast<uint32_t>(j), primary->page_mask) : 0u;
+                    uint64_t pv = (static_cast<uint64_t>(pk_dense) << 32) | pk_ver;
+                    uint32_t sk_dense = (sk_dense_page) ? single_class_set::read_dense_from_page(sk_dense_page, static_cast<uint32_t>(j), sets_[k]->page_mask) : 0xFFFFFFFFu;
+                    uint32_t sk_ver = (sk_ver_page) ? single_class_set::read_version_from_page(sk_ver_page, static_cast<uint32_t>(j), sets_[k]->page_mask) : 0u;
+                    uint64_t sv = (static_cast<uint64_t>(sk_dense) << 32) | sk_ver;
+                    if (pv != sv)
+                    {
+                        fast_aligned = false;
+                        break;
+                    }
                 }
+                if (!fast_aligned) break;
             }
 
             if (fast_aligned)
@@ -88,67 +114,55 @@
                 return;
             }
 
-            std::array<const uint64_t*, N> set_sparse;
             std::array<size_t, N> set_sparse_size;
             for (size_t k = 0; k < N; ++k)
-            {
-                auto& sp = sets_[k]->get_sparse_combined();
-                set_sparse[k] = sp.data();
-                set_sparse_size[k] = sp.size();
-            }
+                set_sparse_size[k] = sets_[k]->get_sparse_size();
 
             auto* ver_data = cached_entity_versions_.data();
             all_valid_ = true;
             pools_aligned_ = true;
 
-            constexpr size_t build_pd = 16;
-            const size_t main_count = (n > build_pd) ? (n - build_pd) : 0;
+            // page caches for primary and each non-primary set
+            const sparse_entry* pri_cur_dense_page = nullptr;
+            const sparse_entry* pri_cur_ver_page = nullptr;
+            size_t pri_cur_page_idx = SIZE_MAX;
+            std::array<const sparse_entry*, N> k_dense_pages{};
+            std::array<const sparse_entry*, N> k_ver_pages{};
+            std::array<size_t, N> k_page_idxs{};
+            k_page_idxs.fill(SIZE_MAX);
 
-            for (size_t i = 0; i < main_count; ++i)
-            {
-                uint32_t next_idx = indices[i + build_pd];
-                PREFETCH_R(&primary_sparse[next_idx]);
-                for (size_t k = 0; k < N; ++k)
+            auto get_sparse_cached = [&](single_class_set* s, uint32_t idx,
+                                         const sparse_entry*& cur_dense_page, const sparse_entry*& cur_ver_page,
+                                         size_t& cur_page_idx) -> uint64_t {
+                size_t pid = idx >> s->page_shift;
+                if (pid != cur_page_idx) [[unlikely]]
                 {
-                    if (k == primary_idx_) continue;
-                    if (next_idx < set_sparse_size[k]) [[likely]]
-                        PREFETCH_R(&set_sparse[k][next_idx]);
+                    cur_dense_page = s->get_dense_page(idx);
+                    cur_ver_page = s->get_version_page(idx);
+                    cur_page_idx = pid;
                 }
+                uint32_t dense = (cur_dense_page) ? single_class_set::read_dense_from_page(cur_dense_page, idx, s->page_mask) : 0xFFFFFFFFu;
+                uint32_t ver = (cur_ver_page) ? single_class_set::read_version_from_page(cur_ver_page, idx, s->page_mask) : 0u;
+                return (static_cast<uint64_t>(dense) << 32) | ver;
+            };
 
+            for (size_t i = 0; i < n; ++i)
+            {
                 uint32_t idx = indices[i];
-                uint64_t pc = primary_sparse[idx];
+                // prefetch next entity's page directory entry for primary
+                if (i + 4 < n) [[likely]]
+                {
+                    uint32_t next_idx = indices[i + 4];
+                    PREFETCH_R(&primary->get_entry_pages()[next_idx >> primary->page_shift]);
+                }
+                uint64_t pc = get_sparse_cached(primary, idx, pri_cur_dense_page, pri_cur_ver_page, pri_cur_page_idx);
                 ver_data[i] = static_cast<uint32_t>(pc);
                 uint32_t pver = static_cast<uint32_t>(pc);
                 for (size_t k = 0; k < N; ++k)
                 {
                     if (k == primary_idx_) continue;
                     bool has = (idx < set_sparse_size[k]);
-                    uint64_t kc = has ? set_sparse[k][idx] : 0;
-                    uint32_t dense = static_cast<uint32_t>(kc >> 32);
-                    if (has && dense != 0xFFFFFFFFu && static_cast<uint32_t>(kc) == pver)
-                    {
-                        if (dense != static_cast<uint32_t>(i))
-                            pools_aligned_ = false;
-                    }
-                    else
-                    {
-                        all_valid_ = false;
-                        pools_aligned_ = false;
-                    }
-                }
-            }
-
-            for (size_t i = main_count; i < n; ++i)
-            {
-                uint32_t idx = indices[i];
-                uint64_t pc = primary_sparse[idx];
-                ver_data[i] = static_cast<uint32_t>(pc);
-                uint32_t pver = static_cast<uint32_t>(pc);
-                for (size_t k = 0; k < N; ++k)
-                {
-                    if (k == primary_idx_) continue;
-                    bool has = (idx < set_sparse_size[k]);
-                    uint64_t kc = has ? set_sparse[k][idx] : 0;
+                    uint64_t kc = has ? get_sparse_cached(sets_[k], idx, k_dense_pages[k], k_ver_pages[k], k_page_idxs[k]) : 0;
                     uint32_t dense = static_cast<uint32_t>(kc >> 32);
                     if (has && dense != 0xFFFFFFFFu && static_cast<uint32_t>(kc) == pver)
                     {
@@ -167,18 +181,24 @@
             {
                 dense_mappings_soa_.prepare_dense(n);
                 auto* soa_data = dense_mappings_soa_.data();
+                // reset page caches for second pass
+                pri_cur_dense_page = nullptr;
+                pri_cur_ver_page = nullptr;
+                pri_cur_page_idx = SIZE_MAX;
+                for (size_t k = 0; k < N; ++k) { k_dense_pages[k] = nullptr; k_ver_pages[k] = nullptr; k_page_idxs[k] = SIZE_MAX; }
+
                 for (size_t i = 0; i < n; ++i)
                 {
                     uint32_t idx = indices[i];
                     auto& m = soa_data[i];
                     m[primary_idx_] = static_cast<uint32_t>(i);
-                    uint64_t pc = primary_sparse[idx];
+                    uint64_t pc = get_sparse_cached(primary, idx, pri_cur_dense_page, pri_cur_ver_page, pri_cur_page_idx);
                     uint32_t pver = static_cast<uint32_t>(pc);
                     for (size_t k = 0; k < N; ++k)
                     {
                         if (k == primary_idx_) continue;
                         bool has = (idx < set_sparse_size[k]);
-                        uint64_t kc = has ? set_sparse[k][idx] : 0;
+                        uint64_t kc = has ? get_sparse_cached(sets_[k], idx, k_dense_pages[k], k_ver_pages[k], k_page_idxs[k]) : 0;
                         uint32_t dense = static_cast<uint32_t>(kc >> 32);
                         if (has && dense != 0xFFFFFFFFu && static_cast<uint32_t>(kc) == pver)
                             m[k] = dense;
@@ -277,18 +297,38 @@
                 const size_t main_count = (n > pd) ? (n - pd) : 0;
                 if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
                 {
-                    auto* primary_sparse = primary->get_sparse_combined().data();
+                    const sparse_entry* mv_cur_ver_page = nullptr;
+                    size_t mv_cur_page_idx = SIZE_MAX;
                     size_t i = 0;
                     for (; i < main_count; ++i)
                     {
                         (PREFETCH_R(&(*std::get<Is>(pools))[i + pd]), ...);
-                        PREFETCH_R(&primary_sparse[indices[i + pd]]);
-                        entity e(indices[i], static_cast<uint32_t>(primary_sparse[indices[i]]));
+                        uint32_t eid = indices[i];
+                        size_t pid = eid >> primary->page_shift;
+                        if (pid != mv_cur_page_idx) [[unlikely]]
+                        {
+                            mv_cur_ver_page = primary->get_version_page(eid);
+                            mv_cur_page_idx = pid;
+                        }
+                        uint32_t ver = 0;
+                        if (mv_cur_ver_page) [[likely]]
+                            ver = single_class_set::read_version_from_page(mv_cur_ver_page, eid, primary->page_mask);
+                        entity e(eid, ver);
                         func(e, (*std::get<Is>(pools))[i]...);
                     }
                     for (; i < n; ++i)
                     {
-                        entity e(indices[i], static_cast<uint32_t>(primary_sparse[indices[i]]));
+                        uint32_t eid = indices[i];
+                        size_t pid = eid >> primary->page_shift;
+                        if (pid != mv_cur_page_idx) [[unlikely]]
+                        {
+                            mv_cur_ver_page = primary->get_version_page(eid);
+                            mv_cur_page_idx = pid;
+                        }
+                        uint32_t ver = 0;
+                        if (mv_cur_ver_page) [[likely]]
+                            ver = single_class_set::read_version_from_page(mv_cur_ver_page, eid, primary->page_mask);
+                        entity e(eid, ver);
                         func(e, (*std::get<Is>(pools))[i]...);
                     }
                 }
@@ -430,23 +470,47 @@
             if (!all_sets_valid()) [[unlikely]] return entity{};
             auto* primary = sets_[primary_idx_];
             auto& indices = primary->get_entity_indices();
+            const sparse_entry* mv_cur_ver_page = nullptr;
+            size_t mv_cur_page_idx = SIZE_MAX;
             for (size_t i = 0; i < indices.size(); ++i)
-            {
-                entity e(indices[i], primary->get_version_unchecked(indices[i]));
-                if (contains_impl(e, std::index_sequence_for<First, Rest...>{})) return e;
+                {
+                    uint32_t eid = indices[i];
+                    size_t pid = eid >> primary->page_shift;
+                    if (pid != mv_cur_page_idx) [[unlikely]]
+                    {
+                        mv_cur_ver_page = primary->get_version_page(eid);
+                        mv_cur_page_idx = pid;
+                    }
+                    uint32_t ver = 0;
+                    if (mv_cur_ver_page) [[likely]]
+                        ver = single_class_set::read_version_from_page(mv_cur_ver_page, eid, primary->page_mask);
+                    entity e(eid, ver);
+                    if (contains_impl(e, std::index_sequence_for<First, Rest...>{})) return e;
+                }
+                return entity{};
             }
-            return entity{};
-        }
 
-        [[nodiscard]] entity get_last_entity() const noexcept
+            [[nodiscard]] entity get_last_entity() const noexcept
         {
             if (!all_sets_valid()) [[unlikely]] return entity{};
             auto* primary = sets_[primary_idx_];
             auto& indices = primary->get_entity_indices();
+            const sparse_entry* mv_cur_ver_page = nullptr;
+            size_t mv_cur_page_idx = SIZE_MAX;
             for (size_t i = indices.size(); i > 0; --i)
-            {
-                size_t idx = i - 1;
-                entity e(indices[idx], primary->get_version_unchecked(indices[idx]));
+                {
+                    size_t idx = i - 1;
+                    uint32_t eid = indices[idx];
+                    size_t pid = eid >> primary->page_shift;
+                if (pid != mv_cur_page_idx) [[unlikely]]
+                {
+                    mv_cur_ver_page = primary->get_version_page(eid);
+                    mv_cur_page_idx = pid;
+                }
+                uint32_t ver = 0;
+                if (mv_cur_ver_page) [[likely]]
+                    ver = single_class_set::read_version_from_page(mv_cur_ver_page, eid, primary->page_mask);
+                entity e(eid, ver);
                 if (contains_impl(e, std::index_sequence_for<First, Rest...>{})) return e;
             }
             return entity{};
@@ -600,7 +664,6 @@
             {
                 auto* primary = base_->sets_[base_->primary_idx_];
                 auto& indices = primary->get_entity_indices();
-                auto* sparse_combined = primary->get_sparse_combined().data();
 
                 auto original_pools = std::make_tuple(
                     base_->sets_[Is]->template get_typed_pool_ptr<std::tuple_element_t<Is, AllTypes>>()...
@@ -615,11 +678,22 @@
 
                 if (base_->pools_aligned_)
                 {
+                    const sparse_entry* mv_cur_ver_page = nullptr;
+                    size_t mv_cur_page_idx = SIZE_MAX;
                     for (size_t i = 0; i < n; ++i)
                     {
                         size_t primary_i = sorted_indices_[i];
-                        sorted_entities_.emplace_back(
-                            entity(indices[primary_i], static_cast<uint32_t>(sparse_combined[indices[primary_i]])));
+                        uint32_t eid = indices[primary_i];
+                        size_t pid = eid >> primary->page_shift;
+                        if (pid != mv_cur_page_idx) [[unlikely]]
+                        {
+                            mv_cur_ver_page = primary->get_version_page(eid);
+                            mv_cur_page_idx = pid;
+                        }
+                        uint32_t ver = 0;
+                        if (mv_cur_ver_page) [[likely]]
+                            ver = single_class_set::read_version_from_page(mv_cur_ver_page, eid, primary->page_mask);
+                        sorted_entities_.emplace_back(entity(eid, ver));
                         (std::get<Is>(sorted_pool_copies_).emplace_back(
                             (*std::get<Is>(original_pools))[primary_i]), ...);
                     }
@@ -628,14 +702,25 @@
                 {
                     auto* raw = reinterpret_cast<uint32_t*>(base_->dense_mappings_soa_.data());
                     constexpr size_t stride = N;
+                    const sparse_entry* mv_cur_ver_page = nullptr;
+                    size_t mv_cur_page_idx = SIZE_MAX;
                     for (size_t i = 0; i < n; ++i)
                     {
                         size_t primary_i = sorted_indices_[i];
                         const uint32_t* m = raw + primary_i * stride;
                         if (((m[Is] != UINT32_MAX) && ...))
                         {
-                            sorted_entities_.emplace_back(
-                                entity(indices[primary_i], static_cast<uint32_t>(sparse_combined[indices[primary_i]])));
+                            uint32_t eid = indices[primary_i];
+                            size_t pid = eid >> primary->page_shift;
+                            if (pid != mv_cur_page_idx) [[unlikely]]
+                            {
+                                mv_cur_ver_page = primary->get_version_page(eid);
+                                mv_cur_page_idx = pid;
+                            }
+                            uint32_t ver = 0;
+                            if (mv_cur_ver_page) [[likely]]
+                                ver = single_class_set::read_version_from_page(mv_cur_ver_page, eid, primary->page_mask);
+                            sorted_entities_.emplace_back(entity(eid, ver));
                             (std::get<Is>(sorted_pool_copies_).emplace_back(
                                 (*std::get<Is>(original_pools))[m[Is]]), ...);
                         }
@@ -660,7 +745,9 @@
                     return;
                 }
 
-                auto* sort_pool = base_->sets_[SortIdx]->template get_typed_pool_ptr<SortType>()->data();
+                auto* typed_pool = base_->sets_[SortIdx]->template get_typed_pool_ptr<SortType>();
+                if (!typed_pool) { std::terminate(); }
+                auto* sort_pool = typed_pool->data();
                 constexpr size_t stride = N;
 
                 sorted_indices_.increase_capacity(n);
@@ -671,23 +758,14 @@
 
                 if (base_->pools_aligned_)
                 {
-                    if constexpr (is_radix_sortable_v<SortType> &&
-                                   std::is_same_v<std::decay_t<Compare>, std::less<SortType>>)
+                    if constexpr (std::is_same_v<std::decay_t<Compare>, std::less<SortType>>)
                     {
-                        radix_keys_buf_.increase_capacity(n);
-                        if (radix_keys_buf_.size() < n) radix_keys_buf_.resize(n, SortType{});
-                        for (size_t i = 0; i < n; ++i)
-                        {
-                            radix_keys_buf_[i] = sort_pool[i];
-                        }
-                        radix_temp_buf_.increase_capacity(n);
-                        if (radix_temp_buf_.size() < n) radix_temp_buf_.resize(n, size_t{0});
-                        radix_sort_indices<SortType>(idx_data, radix_keys_buf_.data(), n, radix_temp_buf_.data());
+                        ecs::tiered_sort_indices<SortType>(idx_data, sort_pool, n);
                     }
                     else
                     {
-                        std::sort(idx_data, idx_data + n,
-                            [sort_pool, this](size_t a, size_t b) {
+                        ecs::pdqsort<size_t>(idx_data, n,
+                            [sort_pool, this](size_t a, size_t b) noexcept {
                                 return cmp_(sort_pool[a], sort_pool[b]);
                             });
                     }
@@ -695,8 +773,7 @@
                 else
                 {
                     auto* raw = reinterpret_cast<uint32_t*>(base_->dense_mappings_soa_.data());
-                    if constexpr (is_radix_sortable_v<SortType> &&
-                                   std::is_same_v<std::decay_t<Compare>, std::less<SortType>>)
+                    if constexpr (std::is_same_v<std::decay_t<Compare>, std::less<SortType>>)
                     {
                         radix_keys_buf_.increase_capacity(n);
                         if (radix_keys_buf_.size() < n) radix_keys_buf_.resize(n, SortType{});
@@ -705,15 +782,13 @@
                             uint32_t d = raw[i * stride + SortIdx];
                             radix_keys_buf_[i] = (d != UINT32_MAX) ? sort_pool[d] : SortType{};
                         }
-                        radix_temp_buf_.increase_capacity(n);
-                        if (radix_temp_buf_.size() < n) radix_temp_buf_.resize(n, size_t{0});
-                        radix_sort_indices<SortType>(idx_data, radix_keys_buf_.data(), n, radix_temp_buf_.data());
+                        ecs::tiered_sort_indices<SortType>(idx_data, radix_keys_buf_.data(), n);
                     }
                     else
                     {
                         SortType default_key{};
-                        std::sort(idx_data, idx_data + n,
-                            [raw, sort_pool, stride, &default_key, this](size_t a, size_t b) {
+                        ecs::pdqsort<size_t>(idx_data, n,
+                            [raw, sort_pool, stride, &default_key, this](size_t a, size_t b) noexcept {
                                 uint32_t da = raw[a * stride + SortIdx];
                                 uint32_t db = raw[b * stride + SortIdx];
                                 const SortType& ka = (da != UINT32_MAX) ? sort_pool[da] : default_key;
@@ -851,7 +926,8 @@
                 }
                 else
                 {
-                    std::sort(entries.data(), entries.data() + n, [](const sort_entry& a, const sort_entry& b) {
+                    // MinGW+AVX2 下 std::sort+lambda 会崩溃, 使用 ecs::tiered_sort 替代
+                    ecs::tiered_sort(entries.data(), n, [](const sort_entry& a, const sort_entry& b) {
                         return a.key < b.key;
                     });
                 }
@@ -900,7 +976,6 @@
                 base_->ensure_mappings();
                 auto* primary = base_->sets_[base_->primary_idx_];
                 auto& indices = primary->get_entity_indices();
-                auto* sparse_combined = primary->get_sparse_combined().data();
 
                 auto pools = std::make_tuple(
                     base_->sets_[Is]->template get_typed_pool_ptr<std::tuple_element_t<Is, AllTypes>>()...
@@ -910,6 +985,8 @@
 
                 if (base_->pools_aligned_)
                 {
+                    const sparse_entry* mv_cur_ver_page = nullptr;
+                    size_t mv_cur_page_idx = SIZE_MAX;
                     for (size_t i = 0; i < n; ++i)
                     {
                         if (i + 32 < n) [[likely]]
@@ -920,7 +997,17 @@
                         size_t primary_i = sorted_indices_[i];
                         if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
                         {
-                            entity e(indices[primary_i], static_cast<uint32_t>(sparse_combined[indices[primary_i]]));
+                            uint32_t eid = indices[primary_i];
+                            size_t pid = eid >> primary->page_shift;
+                            if (pid != mv_cur_page_idx) [[unlikely]]
+                            {
+                                mv_cur_ver_page = primary->get_version_page(eid);
+                                mv_cur_page_idx = pid;
+                            }
+                            uint32_t ver = 0;
+                            if (mv_cur_ver_page) [[likely]]
+                                ver = single_class_set::read_version_from_page(mv_cur_ver_page, eid, primary->page_mask);
+                            entity e(eid, ver);
                             func(e, (*std::get<Is>(pools))[primary_i]...);
                         }
                         else
@@ -933,6 +1020,8 @@
                 {
                     auto* raw = reinterpret_cast<uint32_t*>(base_->dense_mappings_soa_.data());
                     constexpr size_t stride = N;
+                    const sparse_entry* mv_cur_ver_page = nullptr;
+                    size_t mv_cur_page_idx = SIZE_MAX;
                     for (size_t i = 0; i < n; ++i)
                     {
                         if (i + 32 < n) [[likely]]
@@ -946,7 +1035,17 @@
                         if (((m[Is] == UINT32_MAX) || ...)) [[unlikely]] continue;
                         if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
                         {
-                            entity e(indices[primary_i], static_cast<uint32_t>(sparse_combined[indices[primary_i]]));
+                            uint32_t eid = indices[primary_i];
+                            size_t pid = eid >> primary->page_shift;
+                            if (pid != mv_cur_page_idx) [[unlikely]]
+                            {
+                                mv_cur_ver_page = primary->get_version_page(eid);
+                                mv_cur_page_idx = pid;
+                            }
+                            uint32_t ver = 0;
+                            if (mv_cur_ver_page) [[likely]]
+                                ver = single_class_set::read_version_from_page(mv_cur_ver_page, eid, primary->page_mask);
+                            entity e(eid, ver);
                             func(e, (*std::get<Is>(pools))[m[Is]]...);
                         }
                         else
@@ -1040,9 +1139,21 @@
                 auto& indices = primary->get_entity_indices();
                 const size_t n = indices.size();
 
+                const sparse_entry* mv_cur_ver_page = nullptr;
+                size_t mv_cur_page_idx = SIZE_MAX;
                 for (size_t i = 0; i < n; ++i)
                 {
-                    entity e(indices[i], primary->get_version_unchecked(indices[i]));
+                    uint32_t eid = indices[i];
+                    size_t pid = eid >> primary->page_shift;
+                    if (pid != mv_cur_page_idx) [[unlikely]]
+                    {
+                        mv_cur_ver_page = primary->get_version_page(eid);
+                        mv_cur_page_idx = pid;
+                    }
+                    uint32_t ver = 0;
+                    if (mv_cur_ver_page) [[likely]]
+                        ver = single_class_set::read_version_from_page(mv_cur_ver_page, eid, primary->page_mask);
+                    entity e(eid, ver);
                     if (base_->contains_impl(e, std::index_sequence_for<First, Rest...>{}))
                         changed_indices_.emplace_back(i);
                 }
@@ -1065,10 +1176,22 @@
                 auto* primary = base_->sets_[base_->primary_idx_];
                 auto& indices = primary->get_entity_indices();
 
+                const sparse_entry* mv_cur_ver_page = nullptr;
+                size_t mv_cur_page_idx = SIZE_MAX;
                 for (size_t i = 0; i < changed_indices_.size(); ++i)
                 {
                     size_t primary_i = changed_indices_[i];
-                    entity e(indices[primary_i], primary->get_version_unchecked(indices[primary_i]));
+                    uint32_t eid = indices[primary_i];
+                    size_t pid = eid >> primary->page_shift;
+                    if (pid != mv_cur_page_idx) [[unlikely]]
+                    {
+                        mv_cur_ver_page = primary->get_version_page(eid);
+                        mv_cur_page_idx = pid;
+                    }
+                    uint32_t ver = 0;
+                    if (mv_cur_ver_page) [[likely]]
+                        ver = single_class_set::read_version_from_page(mv_cur_ver_page, eid, primary->page_mask);
+                    entity e(eid, ver);
 
                     auto comps = std::make_tuple(
                         base_->template get_component<Is>(e, primary_i)...
@@ -1143,9 +1266,21 @@
 
                 auto* track_set = base_.sets_[TrackIdx];
 
+                const sparse_entry* mv_cur_ver_page = nullptr;
+                size_t mv_cur_page_idx = SIZE_MAX;
                 for (size_t i = 0; i < n; ++i)
                 {
-                    entity e(indices[i], primary->get_version_unchecked(indices[i]));
+                    uint32_t eid = indices[i];
+                    size_t pid = eid >> primary->page_shift;
+                    if (pid != mv_cur_page_idx) [[unlikely]]
+                    {
+                        mv_cur_ver_page = primary->get_version_page(eid);
+                        mv_cur_page_idx = pid;
+                    }
+                    uint32_t ver = 0;
+                    if (mv_cur_ver_page) [[likely]]
+                        ver = single_class_set::read_version_from_page(mv_cur_ver_page, eid, primary->page_mask);
+                    entity e(eid, ver);
                     if (!base_.contains_impl(e, std::index_sequence_for<First, Rest...>{})) continue;
 
                     uint32_t dense_idx = track_set->get_dense_at(e.parts_.index_);
@@ -1172,10 +1307,22 @@
                 auto* primary = base_.sets_[base_.primary_idx_];
                 auto& indices = primary->get_entity_indices();
 
+                const sparse_entry* mv_cur_ver_page = nullptr;
+                size_t mv_cur_page_idx = SIZE_MAX;
                 for (size_t i = 0; i < changed_indices_.size(); ++i)
                 {
                     size_t primary_i = changed_indices_[i];
-                    entity e(indices[primary_i], primary->get_version_unchecked(indices[primary_i]));
+                    uint32_t eid = indices[primary_i];
+                    size_t pid = eid >> primary->page_shift;
+                    if (pid != mv_cur_page_idx) [[unlikely]]
+                    {
+                        mv_cur_ver_page = primary->get_version_page(eid);
+                        mv_cur_page_idx = pid;
+                    }
+                    uint32_t ver = 0;
+                    if (mv_cur_ver_page) [[likely]]
+                        ver = single_class_set::read_version_from_page(mv_cur_ver_page, eid, primary->page_mask);
+                    entity e(eid, ver);
                     auto comps = std::make_tuple(base_.template get_component<Is>(e, primary_i)...);
                     if ((... && (std::get<Is>(comps) != nullptr))) [[likely]]
                     {
@@ -1248,9 +1395,21 @@
 
                 auto* track_set = base_.sets_[TrackIdx];
 
+                const sparse_entry* mv_cur_ver_page = nullptr;
+                size_t mv_cur_page_idx = SIZE_MAX;
                 for (size_t i = 0; i < n; ++i)
                 {
-                    entity e(indices[i], primary->get_version_unchecked(indices[i]));
+                    uint32_t eid = indices[i];
+                    size_t pid = eid >> primary->page_shift;
+                    if (pid != mv_cur_page_idx) [[unlikely]]
+                    {
+                        mv_cur_ver_page = primary->get_version_page(eid);
+                        mv_cur_page_idx = pid;
+                    }
+                    uint32_t ver = 0;
+                    if (mv_cur_ver_page) [[likely]]
+                        ver = single_class_set::read_version_from_page(mv_cur_ver_page, eid, primary->page_mask);
+                    entity e(eid, ver);
                     if (!base_.contains_impl(e, std::index_sequence_for<First, Rest...>{})) continue;
 
                     uint32_t dense_idx = track_set->get_dense_at(e.parts_.index_);
@@ -1277,10 +1436,22 @@
                 auto* primary = base_.sets_[base_.primary_idx_];
                 auto& indices = primary->get_entity_indices();
 
+                const sparse_entry* mv_cur_ver_page = nullptr;
+                size_t mv_cur_page_idx = SIZE_MAX;
                 for (size_t i = 0; i < added_indices_.size(); ++i)
                 {
                     size_t primary_i = added_indices_[i];
-                    entity e(indices[primary_i], primary->get_version_unchecked(indices[primary_i]));
+                    uint32_t eid = indices[primary_i];
+                    size_t pid = eid >> primary->page_shift;
+                    if (pid != mv_cur_page_idx) [[unlikely]]
+                    {
+                        mv_cur_ver_page = primary->get_version_page(eid);
+                        mv_cur_page_idx = pid;
+                    }
+                    uint32_t ver = 0;
+                    if (mv_cur_ver_page) [[likely]]
+                        ver = single_class_set::read_version_from_page(mv_cur_ver_page, eid, primary->page_mask);
+                    entity e(eid, ver);
                     auto comps = std::make_tuple(base_.template get_component<Is>(e, primary_i)...);
                     if ((... && (std::get<Is>(comps) != nullptr))) [[likely]]
                     {
@@ -1336,9 +1507,21 @@
             size_t match_count = 0;
             size_t last_match = 0;
 
+            const sparse_entry* mv_cur_ver_page = nullptr;
+            size_t mv_cur_page_idx = SIZE_MAX;
             for (size_t i = 0; i < indices.size(); ++i)
             {
-                entity e(indices[i], primary->get_version_unchecked(indices[i]));
+                uint32_t eid = indices[i];
+                size_t pid = eid >> primary->page_shift;
+                if (pid != mv_cur_page_idx) [[unlikely]]
+                {
+                    mv_cur_ver_page = primary->get_version_page(eid);
+                    mv_cur_page_idx = pid;
+                }
+                uint32_t ver = 0;
+                if (mv_cur_ver_page) [[likely]]
+                    ver = single_class_set::read_version_from_page(mv_cur_ver_page, eid, primary->page_mask);
+                entity e(eid, ver);
                 if (contains_impl(e, std::index_sequence_for<First, Rest...>{}))
                 {
                     last_match = i;

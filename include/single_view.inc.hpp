@@ -104,9 +104,21 @@
             {
                 auto& indices = set_->get_entity_indices();
                 const size_t n = indices.size();
+                const sparse_entry* cur_ver_page = nullptr;
+                size_t cur_page_idx = SIZE_MAX;
                 for (size_t i = 0; i < n; ++i)
                 {
-                    entity e(indices[i], set_->get_version_unchecked(indices[i]));
+                    uint32_t eid = indices[i];
+                    size_t pid = eid >> set_->page_shift;
+                    if (pid != cur_page_idx) [[unlikely]]
+                    {
+                        cur_ver_page = set_->get_version_page(eid);
+                        cur_page_idx = pid;
+                    }
+                    uint32_t ver = 0;
+                    if (cur_ver_page) [[likely]]
+                        ver = single_class_set::read_version_from_page(cur_ver_page, eid, set_->page_mask);
+                    entity e(eid, ver);
                     func(e, (*pool)[i]);
                 }
             }
@@ -205,32 +217,39 @@
 
                 size_t* idx_data = sorted_indices_.data();
 
-                if constexpr (is_radix_sortable_v<T> &&
-                               std::is_same_v<std::decay_t<Compare>, std::less<T>>)
+                if constexpr (std::is_same_v<std::decay_t<Compare>, std::less<T>>)
                 {
-                    radix_temp_buf_.increase_capacity(n);
-                    if (radix_temp_buf_.size() < n) radix_temp_buf_.resize(n, size_t{0});
-                    radix_sort_indices<T>(idx_data, pool_data, n, radix_temp_buf_.data());
+                    ecs::tiered_sort_indices<T>(idx_data, pool_data, n);
                 }
                 else
                 {
-                    std::sort(idx_data, idx_data + n,
+                    // MinGW+AVX2 下 std::sort+lambda 会崩溃, 使用 ecs::pdqsort 替代
+                    ecs::pdqsort<size_t>(idx_data, n,
                         [pool_data, this](size_t a, size_t b) {
                             return cmp_(pool_data[a], pool_data[b]);
                         });
                 }
 
                 auto& indices = base_->set_->get_entity_indices();
-                auto* sparse_combined = base_->set_->get_sparse_combined().data();
-
                 sorted_pool_copy_.increase_capacity(n);
                 sorted_entities_.increase_capacity(n);
+                const sparse_entry* cur_ver_page = nullptr;
+                size_t cur_page_idx = SIZE_MAX;
                 for (size_t i = 0; i < n; ++i)
                 {
                     size_t idx = sorted_indices_[i];
                     sorted_pool_copy_.emplace_back(pool_data[idx]);
-                    sorted_entities_.emplace_back(
-                        entity(indices[idx], static_cast<uint32_t>(sparse_combined[indices[idx]])));
+                    uint32_t eid = indices[idx];
+                    size_t pid = eid >> base_->set_->page_shift;
+                    if (pid != cur_page_idx) [[unlikely]]
+                    {
+                        cur_ver_page = base_->set_->get_version_page(eid);
+                        cur_page_idx = pid;
+                    }
+                    uint32_t ver = 0;
+                    if (cur_ver_page) [[likely]]
+                        ver = single_class_set::read_version_from_page(cur_ver_page, eid, base_->set_->page_mask);
+                    sorted_entities_.emplace_back(entity(eid, ver));
                 }
 
                 last_version_ = base_->set_->get_pool_version();
@@ -334,7 +353,8 @@
                 }
                 else
                 {
-                    std::sort(entries.data(), entries.data() + n, [](const sort_entry& a, const sort_entry& b) {
+                    // MinGW+AVX2 下 std::sort+lambda 会崩溃, 使用 ecs::tiered_sort 替代
+                    ecs::tiered_sort(entries.data(), n, [](const sort_entry& a, const sort_entry& b) {
                         return a.key < b.key;
                     });
                 }
@@ -384,20 +404,30 @@
                 auto* pool = base_->set_->template get_typed_pool_ptr<T>();
                 if (!pool) [[unlikely]] return;
                 auto& indices = base_->set_->get_entity_indices();
-                auto* sparse_combined = base_->set_->get_sparse_combined().data();
 
                 if constexpr (std::is_invocable_v<Func, entity, T&>)
                 {
+                    const sparse_entry* g_cur_ver_page = nullptr;
+                    size_t g_cur_page_idx = SIZE_MAX;
                     for (size_t i = 0; i < sorted_indices_.size(); ++i)
                     {
                         if (i + 32 < sorted_indices_.size()) [[likely]]
                         {
                             size_t next_idx = sorted_indices_[i + 32];
                             PREFETCH_R(&(*pool)[next_idx]);
-                            PREFETCH_R(&sparse_combined[indices[next_idx]]);
                         }
                         size_t idx = sorted_indices_[i];
-                        entity e(indices[idx], static_cast<uint32_t>(sparse_combined[indices[idx]]));
+                        uint32_t eid = indices[idx];
+                        size_t pid = eid >> base_->set_->page_shift;
+                        if (pid != g_cur_page_idx) [[unlikely]]
+                        {
+                            g_cur_ver_page = base_->set_->get_version_page(eid);
+                            g_cur_page_idx = pid;
+                        }
+                        uint32_t ver = 0;
+                        if (g_cur_ver_page) [[likely]]
+                            ver = single_class_set::read_version_from_page(g_cur_ver_page, eid, base_->set_->page_mask);
+                        entity e(eid, ver);
                         func(e, (*pool)[idx]);
                     }
                 }
@@ -508,10 +538,22 @@
 
                 if constexpr (std::is_invocable_v<Func, entity, T&>)
                 {
+                    const sparse_entry* ch_cur_ver_page = nullptr;
+                    size_t ch_cur_page_idx = SIZE_MAX;
                     for (size_t i = 0; i < changed_indices_.size(); ++i)
                     {
                         size_t idx = changed_indices_[i];
-                        entity e(indices[idx], base_->set_->get_version_unchecked(indices[idx]));
+                        uint32_t eid = indices[idx];
+                        size_t pid = eid >> base_->set_->page_shift;
+                        if (pid != ch_cur_page_idx) [[unlikely]]
+                        {
+                            ch_cur_ver_page = base_->set_->get_version_page(eid);
+                            ch_cur_page_idx = pid;
+                        }
+                        uint32_t ver = 0;
+                        if (ch_cur_ver_page) [[likely]]
+                            ver = single_class_set::read_version_from_page(ch_cur_ver_page, eid, base_->set_->page_mask);
+                        entity e(eid, ver);
                         func(e, (*pool)[idx]);
                     }
                 }
@@ -598,10 +640,22 @@
 
                 if constexpr (std::is_invocable_v<Func, entity, T&>)
                 {
+                    const sparse_entry* fc_cur_ver_page = nullptr;
+                    size_t fc_cur_page_idx = SIZE_MAX;
                     for (size_t i = 0; i < changed_indices_.size(); ++i)
                     {
                         size_t idx = changed_indices_[i];
-                        entity e(indices[idx], base_.set_->get_version_unchecked(indices[idx]));
+                        uint32_t eid = indices[idx];
+                        size_t pid = eid >> base_.set_->page_shift;
+                        if (pid != fc_cur_page_idx) [[unlikely]]
+                        {
+                            fc_cur_ver_page = base_.set_->get_version_page(eid);
+                            fc_cur_page_idx = pid;
+                        }
+                        uint32_t ver = 0;
+                        if (fc_cur_ver_page) [[likely]]
+                            ver = single_class_set::read_version_from_page(fc_cur_ver_page, eid, base_.set_->page_mask);
+                        entity e(eid, ver);
                         func(e, (*pool)[idx]);
                     }
                 }
@@ -695,10 +749,22 @@
 
                 if constexpr (std::is_invocable_v<Func, entity, T&>)
                 {
+                    const sparse_entry* fa_cur_ver_page = nullptr;
+                    size_t fa_cur_page_idx = SIZE_MAX;
                     for (size_t i = 0; i < added_indices_.size(); ++i)
                     {
                         size_t idx = added_indices_[i];
-                        entity e(indices[idx], base_.set_->get_version_unchecked(indices[idx]));
+                        uint32_t eid = indices[idx];
+                        size_t pid = eid >> base_.set_->page_shift;
+                        if (pid != fa_cur_page_idx) [[unlikely]]
+                        {
+                            fa_cur_ver_page = base_.set_->get_version_page(eid);
+                            fa_cur_page_idx = pid;
+                        }
+                        uint32_t ver = 0;
+                        if (fa_cur_ver_page) [[likely]]
+                            ver = single_class_set::read_version_from_page(fa_cur_ver_page, eid, base_.set_->page_mask);
+                        entity e(eid, ver);
                         func(e, (*pool)[idx]);
                     }
                 }

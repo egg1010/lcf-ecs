@@ -11,7 +11,7 @@
 #include <bit>
 #include <span>
 #include <utility>
-#ifdef __AVX2__
+#if defined(__AVX2__) || defined(__BMI__) || defined(_MSC_VER)
 #include <immintrin.h>
 #endif
 
@@ -22,6 +22,16 @@
 #else
 #define PREFETCH_R(ptr) __builtin_prefetch(ptr, 0, 3)
 #endif
+
+// 清除最低设置位 (BMI1 BLSR 指令, 不可用时回退到标量)
+[[nodiscard]] static inline uint64_t clear_lowest_bit(uint64_t x) noexcept
+{
+#if defined(__BMI__) || defined(_MSC_VER)
+    return _blsr_u64(x);
+#else
+    return x & (x - 1);
+#endif
+}
 
 template <typename T>
 class class_pool
@@ -300,15 +310,20 @@ private:
 					bits[first_dst_word] = bits[first_dst_word + shift_words];
 				}
 				{
-				size_t dw = last_dst_word;
+				// 左移: 数据从高地址移向低地址, 必须向上迭代 (先写低, 后读高)
+				// 原向下迭代在 shift_words∈[1,7] 时 AVX2 读取范围与上一轮写入范围重叠, 导致数据损坏
+				size_t dw = first_dst_word + 1;
 #ifdef __AVX2__
-				for (; dw >= first_dst_word + 4; dw -= 4)
+				if (shift_words >= 4)
 				{
-					__m256i v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(bits + dw + shift_words - 3));
-					_mm256_storeu_si256(reinterpret_cast<__m256i*>(bits + dw - 3), v);
+					for (; dw + 3 <= last_dst_word; dw += 4)
+					{
+						__m256i v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(bits + dw + shift_words));
+						_mm256_storeu_si256(reinterpret_cast<__m256i*>(bits + dw), v);
+					}
 				}
 #endif
-				for (; dw > first_dst_word; --dw) {
+				for (; dw <= last_dst_word; ++dw) {
 					bits[dw] = bits[dw + shift_words];
 				}
 			}
@@ -321,7 +336,8 @@ private:
 		}
 		else {
 			if (shift_words > 0) {
-				for (size_t dw = last_dst_word; dw >= first_dst_word; --dw) {
+				// 向上迭代: 先写低地址 (destination), 读高地址 (source 未被覆盖)
+				for (size_t dw = first_dst_word; dw <= last_dst_word; ++dw) {
 					size_t dst_bit_offset = (dw == first_dst_word) ? first_dst_bit : 0;
 					size_t bits_in_dst_word = (dw == last_dst_word)
 						? ((new_end - 1) % BITS_PER_WORD + 1 - dst_bit_offset)
@@ -353,8 +369,11 @@ private:
 				}
 			}
 
+			// bit 级移位: carry 从高字传向低字 (左移数据向低索引移动)
 			uint64_t carry = 0;
-			for (size_t w = first_dst_word; w <= last_dst_word; ++w) {
+			for (size_t w = last_dst_word + 1; w > first_dst_word; )
+			{
+				--w;
 				uint64_t word = bits[w];
 				uint64_t shifted = (word >> shift_bits) | carry;
 				carry = word << (BITS_PER_WORD - shift_bits);
@@ -414,7 +433,7 @@ private:
 			while (word != 0) {
 				const size_t offset = std::countr_zero(word);
 				data_ptr_[start_word * BITS_PER_WORD + offset].~T();
-				word &= word - 1;
+				word = clear_lowest_bit(word);
 			}
 			return;
 		}
@@ -424,7 +443,7 @@ private:
 			while (word != 0) {
 				const size_t offset = std::countr_zero(word);
 				data_ptr_[start_word * BITS_PER_WORD + offset].~T();
-				word &= word - 1;
+				word = clear_lowest_bit(word);
 			}
 		}
 
@@ -436,7 +455,7 @@ private:
 			while (word != 0) {
 				const size_t offset = std::countr_zero(word);
 				data_ptr_[w * BITS_PER_WORD + offset].~T();
-				word &= word - 1;
+				word = clear_lowest_bit(word);
 			}
 		}
 
@@ -445,7 +464,7 @@ private:
 			while (word != 0) {
 				const size_t offset = std::countr_zero(word);
 				data_ptr_[end_word * BITS_PER_WORD + offset].~T();
-				word &= word - 1;
+				word = clear_lowest_bit(word);
 			}
 		}
 	}
@@ -501,7 +520,7 @@ private:
 				else {
 					new (&dst[i]) T(src[i]);
 				}
-				word &= word - 1;
+				word = clear_lowest_bit(word);
 			}
 		}
 		const size_t tail = count % BITS_PER_WORD;
@@ -517,7 +536,7 @@ private:
 				else {
 					new (&dst[i]) T(src[i]);
 				}
-				word &= word - 1;
+				word = clear_lowest_bit(word);
 			}
 		}
 	}
@@ -624,7 +643,18 @@ public:
 
 		basic_iterator() noexcept : ptr_(nullptr), end_(nullptr), bits_(nullptr), origin_(nullptr) {}
 
-		basic_iterator(const basic_iterator&) = default;
+		// MinGW AVX2 codegen 变通: 标量拷贝构造防止 256-bit 结构体复制的 codegen bug
+		basic_iterator(const basic_iterator& other) noexcept
+			: ptr_(other.ptr_), end_(other.end_), bits_(other.bits_), origin_(other.origin_) {}
+
+		basic_iterator& operator=(const basic_iterator& other) noexcept
+		{
+			ptr_ = other.ptr_;
+			end_ = other.end_;
+			bits_ = other.bits_;
+			origin_ = other.origin_;
+			return *this;
+		}
 
 		basic_iterator(Ptr ptr, Ptr end, const uint64_t* bits, Ptr origin) noexcept
 			: ptr_(ptr), end_(end), bits_(bits), origin_(origin) {
@@ -1256,7 +1286,7 @@ public:
 		return data_ptr_[index_ - 1];
 	}
 
-	inline void resize(size_t new_capacity) noexcept {
+	inline void reserve_exact(size_t new_capacity) noexcept {
 		invalidate_count_cache();
 		grow_data_and_bitmap(new_capacity);
 	}
