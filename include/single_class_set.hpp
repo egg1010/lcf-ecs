@@ -46,7 +46,6 @@ namespace ecs
 {
 class manager;
 template <typename> class query_context;
-}
 
 // 合并存储: dense 索引 + version 同一 cache line, 减少 get_ptr 慢路径 cache miss
 struct sparse_entry
@@ -1292,7 +1291,7 @@ public:
         }
 
         // 按 entity_index 排序 (radix sort, O(n))
-        ecs::radix_sort_entries<uint32_t>(entries, count);
+        radix_sort_entries<uint32_t>(entries, count);
 
         // 顺序处理: entries[] 顺序读, sparse 表顺序访问, 无间接寻址
         constexpr size_t pf_dist = 8;
@@ -1937,3 +1936,5 @@ public:
         deallocate_all_pages_();
     }
 };
+
+} // namespace ecs

@@ -23,6 +23,8 @@
 #define PREFETCH_R(ptr) __builtin_prefetch(ptr, 0, 3)
 #endif
 
+namespace ecs { class single_class_set; }
+
 // 清除最低设置位 (BMI1 BLSR 指令, 不可用时回退到标量)
 [[nodiscard]] static inline uint64_t clear_lowest_bit(uint64_t x) noexcept
 {
@@ -36,7 +38,7 @@
 template <typename T>
 class class_pool
 {
-	friend class single_class_set;
+	friend class ecs::single_class_set;
 
 private:
 	static constexpr size_t BITS_PER_WORD = 64;
@@ -644,6 +646,8 @@ public:
 		basic_iterator() noexcept : ptr_(nullptr), end_(nullptr), bits_(nullptr), origin_(nullptr) {}
 
 		// MinGW AVX2 codegen 变通: 标量拷贝构造防止 256-bit 结构体复制的 codegen bug
+		// 仅 MinGW 启用, MSVC/Clang 用默认拷贝以保留向量优化
+#if defined(__MINGW32__) || defined(__MINGW64__)
 		basic_iterator(const basic_iterator& other) noexcept
 			: ptr_(other.ptr_), end_(other.end_), bits_(other.bits_), origin_(other.origin_) {}
 
@@ -655,6 +659,10 @@ public:
 			origin_ = other.origin_;
 			return *this;
 		}
+#else
+		basic_iterator(const basic_iterator&) noexcept = default;
+		basic_iterator& operator=(const basic_iterator&) noexcept = default;
+#endif
 
 		basic_iterator(Ptr ptr, Ptr end, const uint64_t* bits, Ptr origin) noexcept
 			: ptr_(ptr), end_(end), bits_(bits), origin_(origin) {
@@ -1139,6 +1147,8 @@ public:
 			data_ptr_ = new_data;
 			sparse_bits_ = new_bits;
 			maximum_quantity_ = index_;
+			hole_count_ = static_cast<size_t>(-1);
+			update_dense_status();
 		}
 	}
 
@@ -1162,7 +1172,12 @@ public:
 		}
 
 		if (new_capacity < index_) {
-			destroy_dense_range(new_capacity, index_);
+			if (is_dense()) {
+				destroy_dense_range(new_capacity, index_);
+			}
+			else {
+				destroy_sparse_range(new_capacity, index_);
+			}
 			for (size_t i = new_capacity; i < index_; ++i) {
 				bitmap_reset(sparse_bits_, i);
 			}
@@ -1491,7 +1506,7 @@ public:
 		--index_;
 		update_dense_status();
 		return iterator(data_ptr_ + index, data_ptr_ + index_,
-		                dense ? nullptr : sparse_bits_, data_ptr_);
+		                is_dense_ ? nullptr : sparse_bits_, data_ptr_);
 	}
 
 	inline iterator erase(const_iterator first, const_iterator last) noexcept {
@@ -1562,7 +1577,7 @@ public:
 
 		update_dense_status();
 		return iterator(data_ptr_ + start_index, data_ptr_ + index_,
-		                dense ? nullptr : sparse_bits_, data_ptr_);
+		                is_dense_ ? nullptr : sparse_bits_, data_ptr_);
 	}
 
 	inline void swap(class_pool& other) noexcept {
@@ -1597,8 +1612,11 @@ public:
 				data_ptr_[idx].~T();
 				bitmap_reset(sparse_bits_, idx);
 			}
-			else {
+			else if (hole_count_ > 0 && hole_count_ != static_cast<size_t>(-1)) {
 				--hole_count_;
+			}
+			else {
+				hole_count_ = static_cast<size_t>(-1);
 			}
 			--index_;
 		}
@@ -1993,13 +2011,13 @@ public:
 #ifdef __AVX2__
 			__m256i broadcast;
 			if constexpr (sizeof(T) == 2) {
-				broadcast = _mm256_set1_epi16(*reinterpret_cast<const int16_t*>(&value));
+				broadcast = _mm256_set1_epi16(std::bit_cast<int16_t>(value));
 			}
 			else if constexpr (sizeof(T) == 4) {
-				broadcast = _mm256_set1_epi32(*reinterpret_cast<const int32_t*>(&value));
+				broadcast = _mm256_set1_epi32(std::bit_cast<int32_t>(value));
 			}
 			else {
-				broadcast = _mm256_set1_epi64x(*reinterpret_cast<const int64_t*>(&value));
+				broadcast = _mm256_set1_epi64x(std::bit_cast<int64_t>(value));
 			}
 			__m256i* d = static_cast<__m256i*>(static_cast<void*>(data_ptr_ + start));
 			for (size_t i = 0; i < chunks; ++i)

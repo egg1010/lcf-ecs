@@ -219,12 +219,12 @@
 
                 if constexpr (std::is_same_v<std::decay_t<Compare>, std::less<T>>)
                 {
-                    ecs::tiered_sort_indices<T>(idx_data, pool_data, n);
+                    tiered_sort_indices<T>(idx_data, pool_data, n);
                 }
                 else
                 {
-                    // MinGW+AVX2 下 std::sort+lambda 会崩溃, 使用 ecs::pdqsort 替代
-                    ecs::pdqsort<size_t>(idx_data, n,
+                    // MinGW+AVX2 下 std::sort+lambda 会崩溃, 使用 pdqsort 替代
+                    pdqsort<size_t>(idx_data, n,
                         [pool_data, this](size_t a, size_t b) {
                             return cmp_(pool_data[a], pool_data[b]);
                         });
@@ -353,8 +353,8 @@
                 }
                 else
                 {
-                    // MinGW+AVX2 下 std::sort+lambda 会崩溃, 使用 ecs::tiered_sort 替代
-                    ecs::tiered_sort(entries.data(), n, [](const sort_entry& a, const sort_entry& b) {
+                    // MinGW+AVX2 下 std::sort+lambda 会崩溃, 使用 tiered_sort 替代
+                    tiered_sort(entries.data(), n, [](const sort_entry& a, const sort_entry& b) {
                         return a.key < b.key;
                     });
                 }

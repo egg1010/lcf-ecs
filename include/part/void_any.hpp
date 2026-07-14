@@ -10,9 +10,13 @@
 
 #if defined(VOID_ANY_USE_LAYERED_ALLOCATOR)
 #include "layered_allocator.hpp"
-inline layered_allocator void_any_pool_{};
 #elif defined(VOID_ANY_ENABLE_MEMORY_POOL)
 #include "memory_pool.hpp"
+#endif
+
+#if defined(VOID_ANY_USE_LAYERED_ALLOCATOR)
+inline layered_allocator void_any_pool_{};
+#elif defined(VOID_ANY_ENABLE_MEMORY_POOL)
 inline memory_pool void_any_pool_{};
 #endif
 

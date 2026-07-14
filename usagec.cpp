@@ -23,6 +23,11 @@
 #include <string>
 #include <windows.h>
 
+using ecs::entity;
+using ecs::entity_manager;
+using ecs::sparse_entry;
+using ecs::single_class_set;
+
 // =============================================================================
 // 示例组件定义
 // =============================================================================
@@ -2160,17 +2165,38 @@ static void demo_tiered_sort()
 
     print_sub("tiered_sort 直接排序");
     int data[] = {5, 3, 1, 4, 2};
-    ecs::tiered_sort(data, 5, std::less<int>{});
+    tiered_sort(data, 5, std::less<int>{});
     std::cout << "    排序后: ";
     for (int v : data) std::cout << v << " ";
+    std::cout << "\n";
+
+    print_sub("sort_n<5> 编译期零开销排序网络");
+    int data2[] = {5, 3, 1, 4, 2};
+    sort_n<5>(data2);
+    std::cout << "    排序后: ";
+    for (int v : data2) std::cout << v << " ";
+    std::cout << "\n";
+
+    print_sub("sort_n<10> 排序网络");
+    int data3[] = {9, 7, 5, 3, 1, 0, 2, 4, 6, 8};
+    sort_n<10>(data3);
+    std::cout << "    排序后: ";
+    for (int v : data3) std::cout << v << " ";
     std::cout << "\n";
 
     print_sub("tiered_sort_indices 索引排序");
     size_t indices[] = {0, 1, 2, 3, 4};
     float values[] = {5.0f, 3.0f, 1.0f, 4.0f, 2.0f};
-    ecs::tiered_sort_indices(indices, values, 5);
+    tiered_sort_indices(indices, values, 5);
     std::cout << "    索引: ";
     for (size_t i : indices) std::cout << i << " ";
+    std::cout << "\n";
+
+    print_sub("sort_indices_n<5> 编译期索引排序");
+    size_t indices2[] = {0, 1, 2, 3, 4};
+    sort_indices_n<5>(indices2, values);
+    std::cout << "    索引: ";
+    for (size_t i : indices2) std::cout << i << " ";
     std::cout << "\n";
 }
 

@@ -760,11 +760,11 @@
                 {
                     if constexpr (std::is_same_v<std::decay_t<Compare>, std::less<SortType>>)
                     {
-                        ecs::tiered_sort_indices<SortType>(idx_data, sort_pool, n);
+                        tiered_sort_indices<SortType>(idx_data, sort_pool, n);
                     }
                     else
                     {
-                        ecs::pdqsort<size_t>(idx_data, n,
+                        pdqsort<size_t>(idx_data, n,
                             [sort_pool, this](size_t a, size_t b) noexcept {
                                 return cmp_(sort_pool[a], sort_pool[b]);
                             });
@@ -782,12 +782,12 @@
                             uint32_t d = raw[i * stride + SortIdx];
                             radix_keys_buf_[i] = (d != UINT32_MAX) ? sort_pool[d] : SortType{};
                         }
-                        ecs::tiered_sort_indices<SortType>(idx_data, radix_keys_buf_.data(), n);
+                        tiered_sort_indices<SortType>(idx_data, radix_keys_buf_.data(), n);
                     }
                     else
                     {
                         SortType default_key{};
-                        ecs::pdqsort<size_t>(idx_data, n,
+                        pdqsort<size_t>(idx_data, n,
                             [raw, sort_pool, stride, &default_key, this](size_t a, size_t b) noexcept {
                                 uint32_t da = raw[a * stride + SortIdx];
                                 uint32_t db = raw[b * stride + SortIdx];
@@ -926,8 +926,8 @@
                 }
                 else
                 {
-                    // MinGW+AVX2 下 std::sort+lambda 会崩溃, 使用 ecs::tiered_sort 替代
-                    ecs::tiered_sort(entries.data(), n, [](const sort_entry& a, const sort_entry& b) {
+                    // MinGW+AVX2 下 std::sort+lambda 会崩溃, 使用 tiered_sort 替代
+                    tiered_sort(entries.data(), n, [](const sort_entry& a, const sort_entry& b) {
                         return a.key < b.key;
                     });
                 }

@@ -15,7 +15,7 @@
 #include "view_tags.hpp"
 
 template <typename T>
-concept IsEntity = std::same_as<T, entity>;
+concept IsEntity = std::same_as<T, ecs::entity>;
 
 namespace ecs
 {
@@ -532,12 +532,12 @@ public:
 
         if constexpr (std::is_same_v<std::decay_t<Compare>, std::less<T>>)
         {
-            ecs::tiered_sort_indices<T>(idx_data, pool_data, n);
+            tiered_sort_indices<T>(idx_data, pool_data, n);
         }
         else
         {
-            // MinGW+AVX2 下 std::sort+lambda 会崩溃, 使用 ecs::pdqsort 替代
-            ecs::pdqsort<size_t>(idx_data, n, [pool_data, &cmp](size_t a, size_t b) {
+            // MinGW+AVX2 下 std::sort+lambda 会崩溃, 使用 pdqsort 替代
+            pdqsort<size_t>(idx_data, n, [pool_data, &cmp](size_t a, size_t b) {
                 return cmp(pool_data[a], pool_data[b]);
             });
         }
@@ -567,8 +567,8 @@ public:
         size_t* idx_data = indices.data();
         Other default_other{};
 
-        // MinGW+AVX2 下 std::sort+lambda 会崩溃, 使用 ecs::pdqsort 替代
-        ecs::pdqsort<size_t>(idx_data, n,
+        // MinGW+AVX2 下 std::sort+lambda 会崩溃, 使用 pdqsort 替代
+        pdqsort<size_t>(idx_data, n,
             [t_indices_ptr = t_indices.data(), set_other, other_sparse_size, other_pool_data, &default_other, &cmp](size_t a, size_t b) {
                 uint32_t eid_a = t_indices_ptr[a];
                 uint32_t eid_b = t_indices_ptr[b];

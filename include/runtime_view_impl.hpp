@@ -621,8 +621,8 @@ inline void runtime_view::sort_by_component(Compare&& cmp) noexcept
         indices.emplace_back(i);
     }
 
-    // MinGW+AVX2 下 std::sort+lambda 会崩溃, 使用 ecs::pdqsort 替代
-    ecs::pdqsort<size_t>(indices.data(), n,
+    // MinGW+AVX2 下 std::sort+lambda 会崩溃, 使用 pdqsort 替代
+    pdqsort<size_t>(indices.data(), n,
         [&components, &cmp](size_t a, size_t b) {
             return cmp(components[a], components[b]);
         });

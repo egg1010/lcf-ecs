@@ -4,6 +4,9 @@
 #include "part/id_.hpp"
 #include "part/class_pool.hpp"
 
+namespace ecs
+{
+
 class entity_manager
 {
 public:
@@ -236,3 +239,5 @@ public:
         signal_overflow_chain_.increase_capacity(n);
     }
 };
+
+} // namespace ecs

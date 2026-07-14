@@ -1,4 +1,4 @@
-# lcf-ecs 库接口文档
+﻿# lcf-ecs 库接口文档
 
 包含 `component.hpp` 即可使用。
 
@@ -6,15 +6,15 @@
 
 - [lcf-ecs 库接口文档](#lcf-ecs-库接口文档)
   - [目录](#目录)
-  - [1. entity — 实体](#1-entity--实体)
+  - [1. ecs::entity — 实体](#1-ecsentity--实体)
     - [接口](#接口)
     - [使用](#使用)
     - [不要做什么](#不要做什么)
-  - [2. operating\_message — 操作消息](#2-operating_message--操作消息)
+  - [2. ecs::operating\_message — 操作消息](#2-ecsoperating_message--操作消息)
     - [接口](#接口-1)
     - [使用](#使用-1)
     - [不要做什么](#不要做什么-1)
-  - [3. class\_pool\<T\> — 核心容器](#3-class_poolt--核心容器)
+  - [3. ecs::class\_pool\<T\> — 核心容器](#3-ecsclass_poolt--核心容器)
     - [构造与赋值](#构造与赋值)
     - [元素访问](#元素访问)
     - [容量](#容量)
@@ -32,42 +32,42 @@
       - [接口](#接口-2)
       - [使用](#使用-3)
       - [不要做什么](#不要做什么-3)
-  - [4. void\_any — 类型擦除存储](#4-void_any--类型擦除存储)
+  - [4. ecs::void\_any — 类型擦除存储](#4-ecsvoid_any--类型擦除存储)
     - [内存布局](#内存布局)
     - [vtable 与函数指针跳过](#vtable-与函数指针跳过)
     - [构造与赋值](#构造与赋值-1)
     - [访问与操作](#访问与操作)
     - [使用](#使用-4)
     - [不要做什么](#不要做什么-4)
-  - [5. type\_id — 类型ID](#5-type_id--类型id)
+  - [5. ecs::type\_id — 类型ID](#5-ecstype_id--类型id)
     - [接口](#接口-3)
     - [使用](#使用-5)
-  - [6. id\_allocation\<T\> — ID分配器](#6-id_allocationt--id分配器)
+  - [6. ecs::id\_allocation\<T\> — ID分配器](#6-ecsid_allocationt--id分配器)
     - [接口](#接口-4)
     - [使用](#使用-6)
-  - [7. memory\_pool — 内存池](#7-memory_pool--内存池)
+  - [7. ecs::memory\_pool — 内存池](#7-ecsmemory_pool--内存池)
     - [内存布局](#内存布局-1)
-    - [memory\_block — 内存块](#memory_block--内存块)
-    - [pool\_stats — 统计信息](#pool_stats--统计信息)
-    - [memory\_pool — 内存池](#memory_pool--内存池)
+    - [ecs::memory\_block — 内存块](#ecsmemory_block--内存块)
+    - [ecs::pool\_stats — 统计信息](#ecspool_stats--统计信息)
+    - [ecs::memory\_pool — 内存池](#ecsmemory_pool--内存池)
     - [使用](#使用-7)
     - [不要做什么](#不要做什么-5)
-    - [arena\_allocator — 线性 bump 分配器](#arena_allocator--线性-bump-分配器)
+    - [ecs::arena\_allocator — 线性 bump 分配器](#ecsarena_allocator--线性-bump-分配器)
       - [内存布局](#内存布局-2)
       - [接口](#接口-5)
       - [使用](#使用-8)
       - [不要做什么](#不要做什么-6)
-    - [slab\_allocator — 固定块对象池](#slab_allocator--固定块对象池)
+    - [ecs::slab\_allocator — 固定块对象池](#ecsslab_allocator--固定块对象池)
       - [内存布局](#内存布局-3)
       - [接口](#接口-6)
       - [使用](#使用-9)
       - [不要做什么](#不要做什么-7)
-    - [layered\_allocator — 分层分配器](#layered_allocator--分层分配器)
+    - [ecs::layered\_allocator — 分层分配器](#ecslayered_allocator--分层分配器)
       - [路由表](#路由表)
       - [接口](#接口-7)
       - [使用](#使用-10)
       - [不要做什么](#不要做什么-8)
-  - [8. single\_class\_set — 单组件集合](#8-single_class_set--单组件集合)
+  - [8. ecs::single\_class\_set — 单组件集合](#8-ecssingle_class_set--单组件集合)
     - [sparse 访问](#sparse-访问)
     - [构造与赋值](#构造与赋值-2)
     - [添加组件](#添加组件)
@@ -83,7 +83,8 @@
     - [query\_context 查询上下文](#query_context-查询上下文)
     - [删除组件](#删除组件)
     - [容器访问](#容器访问)
-    - [single\_class\_set 分页稀疏+热集接口](#single_class_set-分页稀疏热集接口)
+    - [single\_class\_set 合并稀疏表+热集接口](#single_class_set-合并稀疏表热集接口)
+    - [manager 分页大小配置](#manager-分页大小配置)
     - [信号与追踪开关](#信号与追踪开关)
     - [信号溢出与容量](#信号溢出与容量)
     - [View系统](#view系统)
@@ -159,10 +160,28 @@
   - [17. command\_buffer — 延迟结构变更](#17-command_buffer--延迟结构变更)
     - [使用](#使用-14)
     - [不要做什么](#不要做什么-13)
+  - [18. tiered\_sort / pdqsort / sort\_n — 分级排序](#18-tiered_sort--pdqsort--sort_n--分级排序)
+    - [接口](#接口-8)
+    - [分级策略](#分级策略)
+    - [使用](#使用-15)
+    - [不要做什么](#不要做什么-14)
+  - [19. radix\_sort — 基数排序](#19-radix_sort--基数排序)
+    - [接口](#接口-9)
+    - [radix 配置](#radix-配置)
+    - [机制](#机制-1)
+    - [使用](#使用-16)
+    - [不要做什么](#不要做什么-15)
+  - [20. FORCE\_INLINE — 跨平台内联宏](#20-force_inline--跨平台内联宏)
+    - [使用](#使用-17)
+    - [不要做什么](#不要做什么-16)
+  - [21. view\_tags — 视图标签类型](#21-view_tags--视图标签类型)
+    - [接口](#接口-10)
+    - [使用](#使用-18)
+    - [不要做什么](#不要做什么-17)
 
 ---
 
-## 1. entity — 实体
+## 1. ecs::entity — 实体
 
 实体是轻量级句柄，由 32 位索引和 32 位版本号组成，合并存储在 64 位 `handle_` 中。
 
@@ -944,7 +963,7 @@ bool in_la = la.owns(small);
 
 ---
 
-## 8. single_class_set — 单组件集合
+## 8. ecs::single_class_set — 单组件集合
 
 管理单一类型组件的分页稀疏集存储。内部使用分页稀疏表（paged sparse table）+ 热集缓存（hot set cache），替代传统的连续稀疏数组。
 
@@ -1276,8 +1295,8 @@ size_t shift = mgr.get_component_page_size_shift<Position>();
 
 | 接口 | 说明 |
 |------|------|
-| `ecs::tiered_sort<T>(data, n, cmp)` | 分级排序值数组 |
-| `ecs::tiered_sort_indices<T>(indices, values, n)` | 索引排序，按 values[indices[i]] 升序排列 indices |
+| `tiered_sort<T>(data, n, cmp)` | 分级排序值数组 |
+| `tiered_sort_indices<T>(indices, values, n)` | 索引排序，按 values[indices[i]] 升序排列 indices |
 
 **分级策略**：
 
@@ -1300,12 +1319,12 @@ size_t shift = mgr.get_component_page_size_shift<Position>();
 
 // 值排序
 int data[] = {5, 3, 1, 4, 2};
-ecs::tiered_sort(data, 5, std::less<int>{});
+tiered_sort(data, 5, std::less<int>{});
 
 // 索引排序
 size_t indices[] = {0, 1, 2, 3, 4};
 float values[] = {5.0f, 3.0f, 1.0f, 4.0f, 2.0f};
-ecs::tiered_sort_indices(indices, values, 5);
+tiered_sort_indices(indices, values, 5);
 // indices: {2, 1, 4, 3, 0}
 ```
 
@@ -2875,3 +2894,218 @@ cb.flush();
 | `flush` 后继续使用已销毁实体的句柄 | version 已过期，操作无效 | `flush` 后重新获取有效实体 |
 | 跨 manager 使用 command_buffer | apply 函数绑定到创建时的 manager | 每个 manager 独立创建 command_buffer |
 | 在 `flush` 过程中向同一 command_buffer 录入新命令 | `flush` 结束时清空缓冲区，新命令丢失 | `flush` 完成后再录入新命令 |
+
+---
+
+## 18. tiered_sort / pdqsort / sort_n — 分级排序
+
+`#include "part/tiered_sort.hpp"`，位于 `ecs` 命名空间。所有函数 `noexcept`。
+
+### 接口
+
+| 接口 | 签名 | 说明 |
+|------|------|------|
+| `pdqsort` | `void pdqsort<T>(T* data, size_t n, Compare&& cmp)` | 3-way pdqsort，要求 `is_trivially_copyable_v<T>` |
+| `tiered_sort` | `void tiered_sort<T>(T* data, size_t n, Compare&& cmp)` | 分级排序值数组，按 `cmp` 升序 |
+| `tiered_sort_indices` | `void tiered_sort_indices<T>(size_t* indices, const T* values, size_t n)` | 索引排序，按 `values[indices[i]]` 升序排列 `indices` |
+| `sort_n` | `void sort_n<N, T>(T* data, Compare&& cmp)` | 编译期已知 N 的零开销排序，N≤16 时使用排序网络 |
+| `sort_indices_n` | `void sort_indices_n<N, T>(size_t* indices, const T* values)` | 编译期已知 N 的零开销索引排序 |
+| `sort` | `void sort<T>(T* data, size_t n, Compare&& cmp)` | `tiered_sort` 的别名 |
+| `sort_indices` | `void sort_indices<T>(size_t* indices, const T* values, size_t n)` | `tiered_sort_indices` 的别名 |
+
+### 分级策略
+
+| 数据量 n | tiered_sort | tiered_sort_indices |
+|----------|-------------|---------------------|
+| n < 2 | 直接返回 | 直接返回 |
+| 2 ≤ n ≤ 16 | 排序网络（Batcher 奇偶归并，编译期生成） | 排序网络 |
+| 16 < n < 32 | 插入排序 | 插入排序 |
+| 32 ≤ n < 1024 | 3-way pdqsort | 3-way pdqsort |
+| 1024 ≤ n < 1M | 基数排序 3-pass + keys 散射 + 4 路子直方图 | 基数排序 3-pass |
+| 1M ≤ n < 5M | 基数排序 3-pass + keys 重算 + NT store | 基数排序 3-pass + NT store |
+| n ≥ 5M | 基数排序 2-pass(16-16) + NT store + 8 路子直方图 | 基数排序 2-pass + NT store |
+
+- 排序网络使用 `constexpr` 在编译期生成 Batcher 奇偶归并网络，运行时无分支、无循环
+- `sort_n<N>` 在 N≤16 时编译期展开为排序网络，无派发开销
+- 基数排序分配失败时自动降级为 pdqsort
+- `pdqsort` 使用 3-way Dutch National Flag 分区，高效处理重复键
+
+### 机制
+
+- **排序网络**：n≤16 时，通过 `constexpr` 在编译期生成比较交换对序列，运行时通过 fold expression 完全展开为无分支指令序列。N=2 时 1 次比较，N=16 时 63 次比较
+- **`sort_n<N>`**：N 为编译期常量时，`if constexpr` 在编译期选择算法，无运行时派发开销。N≤16 时直接展开排序网络
+- **`tiered_sort`**：n 为运行时参数时，n≤16 通过 switch 跳转表派发到对应排序网络
+
+### 使用
+
+```cpp
+#include "part/tiered_sort.hpp"
+
+// 运行时 n: 分级排序
+int data[] = {5, 3, 1, 4, 2};
+tiered_sort(data, 5, std::less<int>{});
+// data: {1, 2, 3, 4, 5}
+
+// 编译期 N: 零开销排序网络
+sort_n<5>(data);  // N=5 已知，直接展开排序网络
+
+// 索引排序
+size_t indices[] = {0, 1, 2, 3, 4};
+float values[] = {5.0f, 3.0f, 1.0f, 4.0f, 2.0f};
+tiered_sort_indices(indices, values, 5);
+// indices: {2, 4, 1, 3, 0}  (按 values 升序)
+
+// 编译期 N 索引排序
+sort_indices_n<5>(indices, values);
+
+// 直接 pdqsort
+pdqsort(data, 5, std::less<int>{});
+```
+
+### 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 对非 trivially_copyable 类型调用 `pdqsort` | 编译错误（concept 约束） | 对复杂类型用 `tiered_sort`（无此约束） |
+| `tiered_sort_indices` 传入非算术类型 T | 非算术类型走 pdqsort，无法用基数排序 | 若需基数排序，确保 T 为整数或浮点 |
+| `data` 或 `indices` 为空指针且 n > 0 | 未定义行为 | 确保 n == 0 或指针有效 |
+| 排序期间并发读写同一数组 | 数据竞争 | 排序完成后再访问 |
+| `sort_n<N>` 传入 N=0 | 编译期返回，无操作 | 确保数组实际大小 ≥ N |
+
+---
+
+## 19. radix_sort — 基数排序
+
+`#include "part/radix_sort_helper.hpp"`，位于 `ecs` 命名空间。所有函数 `noexcept`。
+
+### 接口
+
+| 接口 | 签名 | 说明 |
+|------|------|------|
+| `is_radix_sortable_v<T>` | concept | `is_integral_v<T> \|\| is_floating_point_v<T>`，T 是否可基数排序 |
+| `radix_key(T val)` | `auto` | 将 T 转换为无序保持的 unsigned 值（负数翻转） |
+| `radix_sort_entries` | `void radix_sort_entries<KeyType>(void* entries, size_t n)` | 排序 `{KeyType key; size_t index;}` 数组，按 key 升序 |
+| `radix_sort_indices` | `void radix_sort_indices<KeyType>(size_t* indices, const KeyType* keys, size_t n, size_t* temp_buf)` | 索引基数排序，按 keys[indices[i]] 升序 |
+
+### radix 配置
+
+| 类型 | 趟数 | 每趟位数 | 总桶数 |
+|------|------|----------|--------|
+| uint32_t / float | 3 | 11-11-10 | 2048+2048+1024 |
+| uint64_t / double | 6 | 11-11-11-11-11-9 | 5×2048+512 |
+
+### 机制
+
+- `radix_key` 将有符号整数做 XOR 翻转（`u ^= (1 << (bits-1))`），浮点做 IEEE 754 无序保持转换（负数全翻转、正数翻转符号位），使排序后保持原始序
+- `radix_sort_entries` 分配临时缓冲区（entries + keys），失败时回退 `fallback_heap_sort`
+- `radix_sort_indices` 需调用方提供 `temp_buf`（`n * sizeof(size_t)` 字节），内部分配 keys 缓冲区
+- 所有函数要求 `requires is_radix_sortable_v<KeyType>`，n ≤ 1 直接返回
+
+### 使用
+
+```cpp
+#include "part/radix_sort_helper.hpp"
+
+// entries 排序: 结构体 { int key; size_t index; }
+struct entry { int key; size_t index; };
+entry entries[5] = {{5,0},{3,1},{1,2},{4,3},{2,4}};
+radix_sort_entries<int>(entries, 5);
+// entries 按 key 升序
+
+// 索引排序
+size_t indices[] = {0, 1, 2, 3, 4};
+float values[] = {5.0f, 3.0f, 1.0f, 4.0f, 2.0f};
+size_t temp[5];
+radix_sort_indices<float>(indices, values, 5, temp);
+// indices: {2, 4, 1, 3, 0}
+```
+
+### 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 对非算术/浮点类型调用 `radix_sort_*` | 编译错误（concept 约束） | 仅用于 `int`/`uint`/`float`/`double` |
+| `radix_sort_indices` 传入空 `temp_buf` | 写入无效内存 | 分配 `n * sizeof(size_t)` 字节的 temp 缓冲区 |
+| `radix_sort_entries` 的 entries 不是 `{KeyType key; size_t index;}` 布局 | 内存解释错误 | 确保结构体首字段为 KeyType、次字段为 size_t |
+| n = 0 时调用 | 安全返回（n ≤ 1 短路） | 无问题，但无意义 |
+
+---
+
+## 20. FORCE_INLINE — 跨平台内联宏
+
+`#include "part/force_inline.hpp"`
+
+| 宏 | 说明 |
+|------|------|
+| `FORCE_INLINE` | 强制函数内联，跨编译器适配 |
+
+| 编译器 | 展开为 |
+|--------|--------|
+| MSVC | `__forceinline` |
+| GCC / Clang | `inline __attribute__((always_inline))` |
+| 其他 | `inline` |
+
+### 使用
+
+```cpp
+#include "part/force_inline.hpp"
+
+FORCE_INLINE int add(int a, int b) noexcept
+{
+    return a + b;
+}
+```
+
+### 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 递归函数标记 `FORCE_INLINE` | 编译器可能忽略或导致代码膨胀 | 递归函数不使用 `FORCE_INLINE` |
+| 大函数标记 `FORCE_INLINE` | 代码膨胀，icache 压力增大 | 仅对热路径小函数使用 |
+
+---
+
+## 21. view_tags — 视图标签类型
+
+`#include "view_tags.hpp"`，位于 `ecs` 命名空间。用于构造 View / Group / runtime_view 的标签参数。
+
+### 接口
+
+| 标签 | 类型 | 说明 |
+|------|------|------|
+| `without<Types...>` | `without_t<Types...>` | 排除含有任一 Types 组件的实体 |
+| `with<Types...>` | `with_t<Types...>` | 额外获取 Types 组件的引用 |
+| `exclude<Types...>` | `without_t<Types...>` | `without` 的别名 |
+| `get<Types...>` | `with_t<Types...>` | `with` 的别名 |
+| `owned<Types...>` | `owned_t<Types...>` | 标记 Types 为 Group 所拥有（重排 dense 数组） |
+| `reorder<Types...>` | `reorder_t<Types...>` | 标记 Types 为 Group 可重排（轻量 owned 语义） |
+| `ordered<Types...>` | `struct` | 标记排序顺序 |
+| `Component<T>` | concept | `is_copy_constructible_v<T> \|\| is_move_constructible_v<T>` |
+
+### 使用
+
+```cpp
+// 单组件视图, 排除含 Static 标记的实体
+auto v = mgr.view<Position>(ecs::without<Static>{});
+
+// 多组件视图, 额外获取 Velocity 引用
+auto v = mgr.view<Position, Velocity>(ecs::with<Acceleration>{});
+
+// OwningGroup: Position 的 dense 数组与 Velocity 连续排布
+auto g = mgr.group<Position, Velocity>(ecs::owned<Position>{});
+
+// ReorderGroup: 允许重排 Position
+auto g = mgr.group<Position, Velocity>(ecs::reorder<Position>{});
+
+// runtime_view 排除
+auto rv = mgr.runtime_view_create({pos_id, vel_id}, {static_id});
+// 等价于 view<Position, Velocity>(without<Static>{})
+```
+
+### 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| `without` 和 `with` 传同一类型 | 语义矛盾，行为未定义 | 不要对同一类型同时使用 |
+| `owned` 标记非首模板参数 | Group 要求 owned 必须是首参数 | `group<First, Rest...>(owned<First>{})` |
+| `reorder` 和 `owned` 对同一 Group 混用 | 语义冲突 | 一个 Group 只用 `owned` 或 `reorder`，不混用 |

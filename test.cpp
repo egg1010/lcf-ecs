@@ -18,6 +18,11 @@
 #include <windows.h>
 #endif
 
+using ecs::entity;
+using ecs::entity_manager;
+using ecs::sparse_entry;
+using ecs::single_class_set;
+
 // ============================================================
 // 测试组件定义
 // ============================================================
@@ -4549,6 +4554,41 @@ int main()
                 size_t groups = 0;
                 gv.for_each_group([&](int, size_t, size_t) { groups++; });
                 print_perf("sorted_by_component_value 分组", groups, timer.elapsed_ms());
+            }
+
+            // sort_n / tiered_sort 小数量级性能
+            {
+                constexpr size_t small_n = 1000000;
+                int* v5 = static_cast<int*>(::operator new(small_n * 5 * sizeof(int)));
+                int* v10 = static_cast<int*>(::operator new(small_n * 10 * sizeof(int)));
+                int* v16 = static_cast<int*>(::operator new(small_n * 16 * sizeof(int)));
+                for (size_t i = 0; i < small_n * 5; ++i) v5[i] = rand();
+                for (size_t i = 0; i < small_n * 10; ++i) v10[i] = rand();
+                for (size_t i = 0; i < small_n * 16; ++i) v16[i] = rand();
+
+                timer.reset();
+                for (size_t i = 0; i < small_n; ++i)
+                    ::sort_n<5>(&v5[i * 5]);
+                print_perf("sort_n<5> 排序网络", small_n * 5, timer.elapsed_ms());
+
+                timer.reset();
+                for (size_t i = 0; i < small_n; ++i)
+                    tiered_sort(&v5[i * 5], 5, std::less<int>{});
+                print_perf("tiered_sort(n=5) 排序网络", small_n * 5, timer.elapsed_ms());
+
+                timer.reset();
+                for (size_t i = 0; i < small_n; ++i)
+                    ::sort_n<10>(&v10[i * 10]);
+                print_perf("sort_n<10> 排序网络", small_n * 10, timer.elapsed_ms());
+
+                timer.reset();
+                for (size_t i = 0; i < small_n; ++i)
+                    ::sort_n<16>(&v16[i * 16]);
+                print_perf("sort_n<16> 排序网络", small_n * 16, timer.elapsed_ms());
+
+                ::operator delete(v5);
+                ::operator delete(v10);
+                ::operator delete(v16);
             }
         }
 
