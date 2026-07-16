@@ -1,4 +1,4 @@
-﻿# lcf-ecs 库接口文档
+# lcf-ecs 库接口文档
 
 包含 `component.hpp` 即可使用。
 
@@ -943,11 +943,13 @@ void* small = la.allocate(64);   // 走 slab[3]
 void* big = la.allocate(256);    // 走 memory_pool
 la.deallocate(small);            // 遍历 owns → slab[3]
 la.deallocate(big);              // 遍历 owns → memory_pool
+la.deallocate(small, 64);        // size-aware 快速路径 → slab[3], O(1)
+la.deallocate(big, 256);         // size-aware 快速路径 → memory_pool, O(1)
 
 // construct/destroy
 struct Foo { int a; double b; Foo(int x, double y) : a(x), b(y) {} };
 Foo* foo = la.construct<Foo>(42, 3.14);
-la.destroy(foo);
+la.destroy(foo);                 // 内部走 size-aware 快速路径
 
 // owns
 bool in_la = la.owns(small);

@@ -244,6 +244,15 @@ private:
         add_to_free_list(header, fl, sl);
 
         memory_chunks_.emplace_back(chunk_ptr, new_chunk_size);
+        size_t pos = memory_chunks_.size() - 1;
+        while (pos > 0 && memory_chunks_[pos - 1].data_ > memory_chunks_[pos].data_)
+        {
+            memory_block tmp(std::move(memory_chunks_[pos - 1]));
+            memory_chunks_[pos - 1] = std::move(memory_chunks_[pos]);
+            memory_chunks_[pos] = std::move(tmp);
+            --pos;
+        }
+
         total_allocated_ += new_chunk_size;
     }
 
@@ -392,14 +401,26 @@ public:
     [[nodiscard]] bool owns(const void* ptr) const noexcept
     {
         const uint8_t* p = static_cast<const uint8_t*>(ptr);
-        for (const auto& chunk : memory_chunks_)
+        const size_t sz = memory_chunks_.size();
+        if (sz == 0) [[unlikely]] return false;
+
+        size_t lo = 0;
+        size_t hi = sz;
+        while (lo < hi)
         {
-            if (p >= chunk.data_ && p < chunk.data_ + chunk.size_)
+            size_t mid = lo + (hi - lo) / 2;
+            if (memory_chunks_[mid].data_ <= p)
             {
-                return true;
+                lo = mid + 1;
+            }
+            else
+            {
+                hi = mid;
             }
         }
-        return false;
+        if (lo == 0) [[unlikely]] return false;
+        const auto& c = memory_chunks_[lo - 1];
+        return p >= c.data_ && p < c.data_ + c.size_;
     }
 
     // 统计信息

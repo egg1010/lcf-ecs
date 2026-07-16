@@ -918,6 +918,13 @@ static void demo_layered_allocator()
     la.deallocate(big);    // \u904d\u5386 owns \u2192 memory_pool
     print_kv("deallocate \u5b8c\u6210", true);
 
+    print_sub("deallocate(p, n) size-aware \u5feb\u901f\u8def\u5f84");
+    void* sa_small = la.allocate(64);
+    void* sa_big = la.allocate(256);
+    la.deallocate(sa_small, 64);   // size-aware \u2192 slab[3], O(1)
+    la.deallocate(sa_big, 256);    // size-aware \u2192 memory_pool, O(1)
+    print_kv("deallocate(p, n) \u5b8c\u6210", true);
+
     print_sub("construct<T> / destroy<T>");
     struct Foo { int a; double b; Foo(int x, double y) : a(x), b(y) {} };
     Foo* foo = la.construct<Foo>(42, 3.14);

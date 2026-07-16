@@ -51,6 +51,7 @@ private:
 	bool is_dense_{true};
 	mutable size_t count_cache_{static_cast<size_t>(-1)};
 	size_t hole_count_{0};
+	size_t first_hole_hint_{0};
 	uint64_t inline_bits_{0};
 
 	static constexpr size_t DEFAULT_CAPACITY = 8;
@@ -203,9 +204,13 @@ private:
 
 		if (start_word == end_word) [[unlikely]] {
 			uint64_t word = bits[start_word];
-			uint64_t mask = ((1ull << (end_bit + 1)) - 1) ^ ((1ull << start_bit) - 1);
-			uint64_t preserve_below = word & ((1ull << start_bit) - 1);
-			uint64_t preserve_above = word & ~((1ull << (end_bit + 1)) - 1);
+			uint64_t mask_lo = (start_bit == 0) ? 0ull : ((1ull << start_bit) - 1);
+			uint64_t mask_hi = (end_bit == BITS_PER_WORD - 1)
+				? ~0ull
+				: ((1ull << (end_bit + 1)) - 1);
+			uint64_t mask = mask_hi ^ mask_lo;
+			uint64_t preserve_below = word & mask_lo;
+			uint64_t preserve_above = word & ~mask_hi;
 			uint64_t start_bit_val = word & (1ull << start_bit);
 			uint64_t range = word & mask;
 			uint64_t shifted = ((range << 1) & mask) | start_bit_val;
@@ -546,6 +551,8 @@ private:
 	static void copy_trivial_data(T* dst, const T* src, size_t count) noexcept {
 		const size_t bytes = count * sizeof(T);
 #ifdef __AVX2__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstringop-overflow"
 		if (bytes >= 2048)
 		{
 			const __m256i* s = static_cast<const __m256i*>(static_cast<const void*>(src));
@@ -572,6 +579,7 @@ private:
 			}
 			return;
 		}
+#pragma GCC diagnostic pop
 #endif
 		if (bytes != 0) [[likely]]
 		{
@@ -590,7 +598,7 @@ private:
 		uint64_t* new_bits = obtain_bitmap(new_capacity);
 		const bool was_inline = is_inline_bitmap();
 
-		if (data_ptr_ != nullptr) [[likely]] {
+		if (data_ptr_ != nullptr && index_ > 0) [[likely]] {
 			if constexpr (std::is_trivially_copyable_v<T>) {
 				copy_trivial_data(new_data, data_ptr_, index_);
 			}
@@ -601,6 +609,12 @@ private:
 				relocate_sparse<true>(new_data, data_ptr_, sparse_bits_, index_);
 			}
 			copy_bitmap(new_bits, sparse_bits_, maximum_quantity_);
+			deallocate_data(data_ptr_, maximum_quantity_);
+			if (!was_inline) {
+				deallocate_bitmap(sparse_bits_, maximum_quantity_);
+			}
+		}
+		else if (data_ptr_ != nullptr) {
 			deallocate_data(data_ptr_, maximum_quantity_);
 			if (!was_inline) {
 				deallocate_bitmap(sparse_bits_, maximum_quantity_);
@@ -1003,6 +1017,7 @@ public:
 		index_ = 0;
 		is_dense_ = true;
 		hole_count_ = 0;
+		first_hole_hint_ = 0;
 	}
 
 	[[nodiscard]] constexpr T* get(size_t index) noexcept {
@@ -1228,6 +1243,7 @@ public:
 			for (size_t i = new_capacity; i < index_; ++i) {
 				dst.emplace_back(std::move(data_ptr_[i]));
 			}
+			destroy_dense_range(new_capacity, index_);
 		}
 		else {
 			for (size_t i = new_capacity; i < index_; ++i) {
@@ -1235,9 +1251,8 @@ public:
 					dst.emplace_back(std::move(data_ptr_[i]));
 				}
 			}
+			destroy_sparse_range(new_capacity, index_);
 		}
-
-		destroy_dense_range(new_capacity, index_);
 		for (size_t i = new_capacity; i < index_; ++i) {
 			bitmap_reset(sparse_bits_, i);
 		}
@@ -1421,7 +1436,8 @@ public:
 		new (data_ptr_ + index) T(std::forward<Args>(args)...);
 		bitmap_set(sparse_bits_, index);
 		++index_;
-		return iterator(data_ptr_ + index, data_ptr_ + index_, nullptr, data_ptr_);
+		return iterator(data_ptr_ + index, data_ptr_ + index_,
+		                is_dense_ ? nullptr : sparse_bits_, data_ptr_);
 	}
 
 	inline iterator insert(const_iterator pos, const T& value) noexcept {
@@ -1553,12 +1569,46 @@ public:
 				}
 			}
 
-			if (dense) [[likely]] {
-				for (size_t i = index_ - gap; i < index_; ++i) {
-					bitmap_reset(sparse_bits_, i);
+			if (dense) [[likely]]
+			{
+				const size_t clear_start = index_ - gap;
+				const size_t clear_end = index_;
+				const size_t start_word = clear_start / BITS_PER_WORD;
+				const size_t end_word = clear_end / BITS_PER_WORD;
+				const size_t start_bit = clear_start % BITS_PER_WORD;
+				const size_t end_bit = clear_end % BITS_PER_WORD;
+
+				if (start_word == end_word)
+				{
+					uint64_t mask = ~0ull << start_bit;
+					if (end_bit != 0)
+					{
+						mask &= (1ull << end_bit) - 1;
+					}
+					sparse_bits_[start_word] &= ~mask;
+				}
+				else
+				{
+					if (start_bit != 0)
+					{
+						sparse_bits_[start_word] &= (1ull << start_bit) - 1;
+					}
+					else
+					{
+						sparse_bits_[start_word] = 0;
+					}
+					for (size_t w = start_word + 1; w < end_word; ++w)
+					{
+						sparse_bits_[w] = 0;
+					}
+					if (end_bit != 0)
+					{
+						sparse_bits_[end_word] &= ~((1ull << end_bit) - 1);
+					}
 				}
 			}
-			else {
+			else
+			{
 				bitmap_shift_left(sparse_bits_, start_index, index_, gap);
 				hole_count_ = static_cast<size_t>(-1);
 			}
@@ -1588,6 +1638,7 @@ public:
 		std::swap(is_dense_, other.is_dense_);
 		std::swap(count_cache_, other.count_cache_);
 		std::swap(hole_count_, other.hole_count_);
+		std::swap(first_hole_hint_, other.first_hole_hint_);
 		std::swap(inline_bits_, other.inline_bits_);
 
 		if (is_inline_bitmap()) {
@@ -1766,12 +1817,7 @@ public:
 		return is_dense_;
 	}
 
-	// 填洞或追加
-	// 有空洞: emplace_at 填第一个空洞, 自动 --hole_count_
-	// 无空洞: emplace_back 末尾追加
-	// fast path(hole_count_==0): find_first_hole_ 短路, 仅一次比较
-	// slow path(有洞): bitmap 扫描找首个 0 位, 平均 first word 命中
-	// 不新增成员变量, 不影响其他接口性能
+	// 填洞或追加: 有空洞填第一个洞, 无空洞末尾追加
 	template <typename... Args>
 	inline T& fill_the_hole(Args&&... args) noexcept {
 		static_assert(std::is_constructible_v<T, Args...>,
@@ -1785,25 +1831,39 @@ public:
 	}
 
 private:
-	// 找 [0, index_) 范围内第一个空洞(bitmap=0), 无洞返回 npos
-	// sparse_bits_ 始终有效(inline 或外部), 无需区分
-	// std::countr_one 单指令定位首个 0 位
-	[[nodiscard]] size_t find_first_hole_() const noexcept {
-		if (hole_count_ == 0) [[likely]] {
+	[[nodiscard]] size_t find_first_hole_() noexcept
+	{
+		if (hole_count_ == 0) [[likely]]
+		{
 			return static_cast<size_t>(-1);
 		}
 		const size_t full_words = index_ / BITS_PER_WORD;
-		for (size_t w = 0; w < full_words; ++w) {
+		for (size_t w = first_hole_hint_; w < full_words; ++w)
+		{
 			const uint64_t word = sparse_bits_[w];
-			if (word != ~0ull) {
+			if (word != ~0ull)
+			{
+				first_hole_hint_ = w;
+				return w * BITS_PER_WORD + std::countr_one(word);
+			}
+		}
+		for (size_t w = 0; w < first_hole_hint_ && w < full_words; ++w)
+		{
+			const uint64_t word = sparse_bits_[w];
+			if (word != ~0ull)
+			{
+				first_hole_hint_ = w;
 				return w * BITS_PER_WORD + std::countr_one(word);
 			}
 		}
 		const size_t tail = index_ % BITS_PER_WORD;
-		if (tail != 0) {
+		if (tail != 0)
+		{
 			const uint64_t mask = (1ull << tail) - 1;
 			const uint64_t valid = sparse_bits_[full_words] & mask;
-			if (valid != mask) {
+			if (valid != mask)
+			{
+				first_hole_hint_ = full_words;
 				return full_words * BITS_PER_WORD + std::countr_one(valid);
 			}
 		}
@@ -1902,6 +1962,7 @@ private:
 
 	void append_bulk(const T* src, size_t count) noexcept {
 		if (count == 0) { return; }
+		invalidate_count_cache();
 		if (index_ + count > maximum_quantity_) [[unlikely]] {
 			increase_capacity(index_ + count);
 		}
@@ -1922,6 +1983,7 @@ private:
 
 	void append_bulk_move(T* src, size_t count) noexcept {
 		if (count == 0) { return; }
+		invalidate_count_cache();
 		if (index_ + count > maximum_quantity_) [[unlikely]] {
 			increase_capacity(index_ + count);
 		}
@@ -1942,6 +2004,7 @@ private:
 
 	void append_incrementing(size_t count, uint64_t& counter) noexcept {
 		if (count == 0) { return; }
+		invalidate_count_cache();
 		if (index_ + count > maximum_quantity_) [[unlikely]] {
 			increase_capacity(index_ + count);
 		}
@@ -1958,6 +2021,7 @@ private:
 	template <typename F>
 	void append_generated(size_t count, F&& generator) noexcept {
 		if (count == 0) { return; }
+		invalidate_count_cache();
 		if (index_ + count > maximum_quantity_) [[unlikely]] {
 			increase_capacity(index_ + count);
 		}
@@ -1974,6 +2038,7 @@ private:
 	template <typename EntityLike>
 	void append_indices_from(const EntityLike* entities, size_t count) noexcept {
 		if (count == 0) { return; }
+		invalidate_count_cache();
 		if (index_ + count > maximum_quantity_) [[unlikely]] {
 			increase_capacity(index_ + count);
 		}
@@ -1990,6 +2055,7 @@ private:
 public:
 	void fill_bulk(const T& value, size_t start, size_t count) noexcept {
 		if (count == 0) { return; }
+		invalidate_count_cache();
 		size_t end = start + count;
 		if (end > maximum_quantity_) [[unlikely]] {
 			increase_capacity(end);
@@ -1997,7 +2063,7 @@ public:
 		if (end > index_) {
 			for (size_t i = index_; i < start; ++i) {
 				bitmap_set(sparse_bits_, i);
-				data_ptr_[i] = T{};
+				new (&data_ptr_[i]) T{};
 			}
 			index_ = end;
 		}

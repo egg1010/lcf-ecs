@@ -1,12 +1,11 @@
 #pragma once
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include "slab_allocator.hpp"
 #include "memory_pool.hpp"
 #include "force_inline.hpp"
 
-// 分层分配器: 小对象走 slab(0 header, O(1) push/pop), 大对象走 TLSF
-// 路由: n <= 128 走 slab, n > 128 走 memory_pool
 class layered_allocator
 {
 private:
@@ -17,12 +16,21 @@ private:
     std::array<slab_allocator, SLAB_COUNT> slabs_;
     memory_pool big_pool_;
 
-    // 查 size class 索引, 未命中返回 SLAB_COUNT
     [[nodiscard]] static constexpr size_t slab_index(size_t n) noexcept
     {
         for (size_t i = 0; i < SLAB_COUNT; ++i)
         {
             if (n <= SLAB_SIZES[i]) return i;
+        }
+        return SLAB_COUNT;
+    }
+
+    [[nodiscard]] FORCE_INLINE size_t find_slab(const void* p) const noexcept
+    {
+        const uint8_t* up = static_cast<const uint8_t*>(p);
+        for (size_t i = 0; i < SLAB_COUNT; ++i)
+        {
+            if (slabs_[i].owns(up)) return i;
         }
         return SLAB_COUNT;
     }
@@ -63,13 +71,23 @@ public:
     FORCE_INLINE void deallocate(void* p) noexcept
     {
         if (!p) [[unlikely]] return;
-        for (size_t i = 0; i < SLAB_COUNT; ++i)
+        size_t idx = find_slab(p);
+        if (idx < SLAB_COUNT) [[likely]]
         {
-            if (slabs_[i].owns(p)) [[unlikely]]
-            {
-                slabs_[i].deallocate(p);
-                return;
-            }
+            slabs_[idx].deallocate(p);
+            return;
+        }
+        big_pool_.deallocate(p);
+    }
+
+    FORCE_INLINE void deallocate(void* p, size_t n) noexcept
+    {
+        if (!p) [[unlikely]] return;
+        size_t idx = slab_index(n);
+        if (idx < SLAB_COUNT) [[likely]]
+        {
+            slabs_[idx].deallocate(p);
+            return;
         }
         big_pool_.deallocate(p);
     }
@@ -87,15 +105,13 @@ public:
     {
         if (!ptr) [[unlikely]] return;
         ptr->~T();
-        deallocate(ptr);
+        deallocate(ptr, sizeof(T));
     }
 
     [[nodiscard]] bool owns(const void* p) const noexcept
     {
-        for (size_t i = 0; i < SLAB_COUNT; ++i)
-        {
-            if (slabs_[i].owns(p)) return true;
-        }
+        size_t idx = find_slab(p);
+        if (idx < SLAB_COUNT) return true;
         return big_pool_.owns(p);
     }
 
