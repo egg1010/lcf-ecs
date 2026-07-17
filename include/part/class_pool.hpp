@@ -595,8 +595,14 @@ private:
 		}
 
 		T* new_data = allocate_data(new_capacity);
-		uint64_t* new_bits = obtain_bitmap(new_capacity);
 		const bool was_inline = is_inline_bitmap();
+		// obtain_bitmap 在 inline→inline 场景会清零 inline_bits_,
+		// 而 sparse_bits_ 仍指向它, 必须先备份再恢复
+		uint64_t saved_inline = was_inline ? inline_bits_ : 0;
+		uint64_t* new_bits = obtain_bitmap(new_capacity);
+		if (was_inline) {
+			inline_bits_ = saved_inline;
+		}
 
 		if (data_ptr_ != nullptr && index_ > 0) [[likely]] {
 			if constexpr (std::is_trivially_copyable_v<T>) {
@@ -608,7 +614,11 @@ private:
 			else {
 				relocate_sparse<true>(new_data, data_ptr_, sparse_bits_, index_);
 			}
-			copy_bitmap(new_bits, sparse_bits_, maximum_quantity_);
+			// inline→inline 时 new_bits == sparse_bits_ == &inline_bits_,
+			// 数据已通过 saved_inline 恢复, 跳过拷贝避免自拷贝 UB
+			if (new_bits != sparse_bits_) {
+				copy_bitmap(new_bits, sparse_bits_, maximum_quantity_);
+			}
 			deallocate_data(data_ptr_, maximum_quantity_);
 			if (!was_inline) {
 				deallocate_bitmap(sparse_bits_, maximum_quantity_);
@@ -651,7 +661,7 @@ public:
 		friend class class_pool;
 
 	public:
-		using iterator_category = std::forward_iterator_tag;
+		using iterator_category = std::bidirectional_iterator_tag;
 		using value_type = T;
 		using difference_type = std::ptrdiff_t;
 		using pointer = Ptr;
@@ -747,7 +757,6 @@ public:
 			}
 			else {
 				++ptr_;
-				PREFETCH_R(ptr_ + pf_dist);
 			}
 			return *this;
 		}
@@ -755,6 +764,50 @@ public:
 		basic_iterator operator++(int) noexcept {
 			basic_iterator tmp = *this;
 			++*this;
+			return tmp;
+		}
+
+		void skip_to_prev_valid() noexcept {
+			if (ptr_ < origin_) { return; }
+			const size_t idx = static_cast<size_t>(ptr_ - origin_);
+			const size_t total = static_cast<size_t>(end_ - origin_);
+			if (idx >= total) { ptr_ = origin_ - 1; return; }
+
+			size_t word_idx = idx / BITS_PER_WORD;
+			size_t bit_in_word = idx % BITS_PER_WORD;
+
+			uint64_t mask = (bit_in_word == 63) ? ~0ull : ((1ull << (bit_in_word + 1)) - 1);
+			uint64_t word = bits_[word_idx] & mask;
+			if (word != 0) {
+				ptr_ = origin_ + word_idx * BITS_PER_WORD + (63 - std::countl_zero(word));
+				return;
+			}
+
+			while (word_idx > 0) {
+				--word_idx;
+				word = bits_[word_idx];
+				if (word != 0) {
+					ptr_ = origin_ + word_idx * BITS_PER_WORD + (63 - std::countl_zero(word));
+					return;
+				}
+			}
+			ptr_ = origin_ - 1;
+		}
+
+		basic_iterator& operator--() noexcept {
+			if (bits_ != nullptr) {
+				--ptr_;
+				skip_to_prev_valid();
+			}
+			else {
+				--ptr_;
+			}
+			return *this;
+		}
+
+		basic_iterator operator--(int) noexcept {
+			basic_iterator tmp = *this;
+			--*this;
 			return tmp;
 		}
 
@@ -961,7 +1014,10 @@ public:
 
 	template <typename... Args>
 	inline void emplace_back(Args&&... args) noexcept {
-		invalidate_count_cache();
+		// 方案 A: 增量维护 count_cache_ (emplace_back 新增 set bit, count + 1)
+		if (count_cache_ != static_cast<size_t>(-1)) [[likely]] {
+			++count_cache_;
+		}
 		static_assert(std::is_constructible_v<T, Args...>,
 		             "T must be constructible from the provided arguments");
 
@@ -976,12 +1032,16 @@ public:
 		else
 		{
 			bitmap_set(sparse_bits_, index_);
-			--hole_count_;
+			// 修复: emplace_back 追加到末尾不填洞, [0, index_) 范围的 0-bit 数不变, hole_count_ 应保持
 		}
 		++index_;
 	}
 
 	inline void push_back_unchecked(const T& value) noexcept {
+		// 方案 A: 增量维护 count_cache_ (假设 dense, index_ 位置 bit 已为 1)
+		if (count_cache_ != static_cast<size_t>(-1)) [[likely]] {
+			++count_cache_;
+		}
 		if (index_ >= maximum_quantity_) [[unlikely]] {
 			grow_data_and_bitmap(calculate_new_capacity(maximum_quantity_));
 		}
@@ -991,6 +1051,10 @@ public:
 
 	template <typename... Args>
 	inline void emplace_back_unchecked(Args&&... args) noexcept {
+		// 方案 A: 增量维护 count_cache_
+		if (count_cache_ != static_cast<size_t>(-1)) [[likely]] {
+			++count_cache_;
+		}
 		if (index_ >= maximum_quantity_) [[unlikely]] {
 			grow_data_and_bitmap(calculate_new_capacity(maximum_quantity_));
 		}
@@ -1000,10 +1064,86 @@ public:
 
 	template <typename... Args>
 	inline void emplace_back_dense_unchecked(Args&&... args) noexcept {
-		invalidate_count_cache();
+		// 方案 A: 增量维护 count_cache_
+		if (count_cache_ != static_cast<size_t>(-1)) [[likely]] {
+			++count_cache_;
+		}
 		new (&data_ptr_[index_]) T(std::forward<Args>(args)...);
 		sparse_bits_[index_ / BITS_PER_WORD] |= (1ull << (index_ % BITS_PER_WORD));
 		++index_;
+	}
+
+	// 方案 J: AVX2 批量追加 n 个 value 副本
+	// 单次扩容检查 + 批量构造 + 批量 bitmap 设置, 预期比逐个 emplace_back 快 3-5x
+	void append_n(size_t n, const T& value) noexcept {
+		if (n == 0) [[unlikely]] { return; }
+
+		// 溢出安全扩容检查
+		if (n > maximum_quantity_ - index_) [[unlikely]] {
+			grow_data_and_bitmap(calculate_growth_for_reserve(index_ + n));
+		}
+
+		// 批量构造
+		if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) <= 8)
+		{
+			for (size_t i = 0; i < n; ++i)
+			{
+				std::memcpy(&data_ptr_[index_ + i], &value, sizeof(T));
+			}
+		}
+		else
+		{
+			for (size_t i = 0; i < n; ++i)
+			{
+				new (&data_ptr_[index_ + i]) T(value);
+			}
+		}
+
+		// 批量设置 bitmap
+		const size_t start = index_;
+		const size_t last = start + n - 1;
+		const size_t start_word = start / BITS_PER_WORD;
+		const size_t start_bit = start % BITS_PER_WORD;
+		const size_t end_word = last / BITS_PER_WORD;
+		const size_t end_bit = last % BITS_PER_WORD;
+
+		if (start_word == end_word)
+		{
+			// 同 word: mask = bits [start_bit, end_bit]
+			uint64_t mask = (~0ull >> (63 - end_bit)) & (~0ull << start_bit);
+			sparse_bits_[start_word] |= mask;
+		}
+		else
+		{
+			// 跨 word: 首 + 中间 + 尾
+			sparse_bits_[start_word] |= (~0ull << start_bit);
+			sparse_bits_[end_word] |= (~0ull >> (63 - end_bit));
+			// 中间 word 批量全 1 (这些位置原 bit 必然为 0, 可用 = 覆盖)
+			if (end_word > start_word + 1)
+			{
+				const size_t mid_end = end_word;
+#ifdef __AVX2__
+				__m256i ones = _mm256_set1_epi64x(~0ull);
+				size_t w = start_word + 1;
+				for (; w + 4 <= mid_end; w += 4)
+				{
+					_mm256_storeu_si256(reinterpret_cast<__m256i*>(sparse_bits_ + w), ones);
+				}
+				for (; w < mid_end; ++w) { sparse_bits_[w] = ~0ull; }
+#else
+				for (size_t w = start_word + 1; w < mid_end; ++w)
+				{
+					sparse_bits_[w] = ~0ull;
+				}
+#endif
+			}
+		}
+
+		// 更新状态 (is_dense_ / hole_count_ 不变: 追加不改变 dense/sparse 状态)
+		if (count_cache_ != static_cast<size_t>(-1)) [[likely]] {
+			count_cache_ += n;
+		}
+		index_ += n;
 	}
 
 	inline void clear() noexcept {
@@ -1696,7 +1836,7 @@ public:
 
 	iterator end() noexcept {
 		return iterator(data_ptr_ + index_, data_ptr_ + index_,
-		                nullptr, data_ptr_);
+		                is_dense_ ? nullptr : sparse_bits_, data_ptr_);
 	}
 
 	const_iterator begin() const noexcept {
@@ -1706,7 +1846,7 @@ public:
 
 	const_iterator end() const noexcept {
 		return const_iterator(data_ptr_ + index_, data_ptr_ + index_,
-		                      nullptr, data_ptr_);
+		                      is_dense_ ? nullptr : sparse_bits_, data_ptr_);
 	}
 
 	const_iterator cbegin() const noexcept {
@@ -1716,7 +1856,59 @@ public:
 
 	const_iterator cend() const noexcept {
 		return const_iterator(data_ptr_ + index_, data_ptr_ + index_,
-		                      nullptr, data_ptr_);
+		                      is_dense_ ? nullptr : sparse_bits_, data_ptr_);
+	}
+
+	using reverse_iterator = std::reverse_iterator<iterator>;
+	using const_reverse_iterator = std::reverse_iterator<const_iterator>;
+
+	reverse_iterator rbegin() noexcept { return reverse_iterator(end()); }
+	reverse_iterator rend() noexcept { return reverse_iterator(begin()); }
+	const_reverse_iterator rbegin() const noexcept { return const_reverse_iterator(end()); }
+	const_reverse_iterator rend() const noexcept { return const_reverse_iterator(begin()); }
+	const_reverse_iterator crbegin() const noexcept { return const_reverse_iterator(cend()); }
+	const_reverse_iterator crend() const noexcept { return const_reverse_iterator(cbegin()); }
+
+	template <typename F>
+	void for_each(F&& f) noexcept
+	{
+		if (is_dense_) [[likely]]
+		{
+			T* p = std::assume_aligned<alignof(T)>(data_ptr_);
+			const size_t n = index_;
+			for (size_t i = 0; i < n; ++i)
+			{
+				f(p[i]);
+			}
+		}
+		else
+		{
+			for (auto it = begin(), e = end(); it != e; ++it)
+			{
+				f(*it);
+			}
+		}
+	}
+
+	template <typename F>
+	void for_each(F&& f) const noexcept
+	{
+		if (is_dense_) [[likely]]
+		{
+			const T* p = std::assume_aligned<alignof(T)>(data_ptr_);
+			const size_t n = index_;
+			for (size_t i = 0; i < n; ++i)
+			{
+				f(p[i]);
+			}
+		}
+		else
+		{
+			for (auto it = begin(), e = end(); it != e; ++it)
+			{
+				f(*it);
+			}
+		}
 	}
 
 	template <typename... Args>
@@ -1828,6 +2020,21 @@ public:
 			return back();
 		}
 		return emplace_at(idx, std::forward<Args>(args)...);
+	}
+
+	// 与 fill_the_hole 语义等价, 但返回被填补位置的索引 (填洞或追加)
+	// 调用方可通过 operator[](idx) 或 data_ptr_[idx] 访问元素
+	template <typename... Args>
+	size_t fill_the_hole_at(Args&&... args) noexcept {
+		static_assert(std::is_constructible_v<T, Args...>,
+			"T must be constructible from the provided arguments");
+		const size_t idx = find_first_hole_();
+		if (idx == static_cast<size_t>(-1)) {
+			emplace_back(std::forward<Args>(args)...);
+			return index_ - 1;
+		}
+		emplace_at(idx, std::forward<Args>(args)...);
+		return idx;
 	}
 
 private:

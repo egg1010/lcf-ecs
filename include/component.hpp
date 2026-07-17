@@ -34,7 +34,6 @@ class manager
 private:
     class_pool<single_class_set> components_c_;
     class_pool<component_meta> component_metas_;
-    operating_message component_message;
     entity_manager entity_manager_;
     size_t default_component_capacity_{0};
 
@@ -121,7 +120,7 @@ private:
         if (bit == 0) return;
         if (entitys.is_valid()) [[likely]]
         {
-            entity_manager_.set_mask_bit(entitys.parts_.index_, bit);
+            entity_manager_.set_mask_bit_no_bounds_check(entitys.parts_.index_, bit);
         }
     }
 
@@ -130,7 +129,7 @@ private:
         if (bit == 0) return;
         if (entitys.is_valid()) [[likely]]
         {
-            entity_manager_.clear_mask_bit(entitys.parts_.index_, bit);
+            entity_manager_.clear_mask_bit_no_bounds_check(entitys.parts_.index_, bit);
         }
     }
 
@@ -178,10 +177,6 @@ public:
     {
         return entity_manager_.get_entity();
     }
-    [[nodiscard]] operating_message& get_operating_message() noexcept
-    {
-        return component_message;
-    }
 
     manager(manager&&) noexcept = default;
     manager(manager const&) = delete;
@@ -189,15 +184,15 @@ public:
     manager& operator=(manager const&) = delete;
 
     template <typename T>
-    operating_message& add(entity entitys, T&& component) noexcept
+    operating_message add(entity entitys, T&& component) noexcept
     {
         using DecayedT = std::decay_t<T>;
         int type_id = type_id::get_type_id<DecayedT>();
         register_component_meta<DecayedT>();
-        component_message = components_c_[type_id].add(entitys, std::forward<T>(component));
+        operating_message result = components_c_[type_id].add(entitys, std::forward<T>(component));
         set_entity_mask_bit(entitys, component_metas_[type_id].bit);
         if (!components_c_[type_id].on_add_) push_comp_signal(0, entitys.parts_.index_, static_cast<uint32_t>(type_id));
-        return component_message;
+        return result;
     }
 
     template <typename T>
@@ -207,13 +202,13 @@ public:
         int type_id = type_id::get_type_id<DecayedT>();
         register_component_meta<DecayedT>();
         ensure_type_exists(type_id);
-        component_message = components_c_[type_id].add_batch(entities, components);
+        operating_message result = components_c_[type_id].add_batch(entities, components);
         uint64_t bit = component_metas_[type_id].bit;
         for (const auto& e : entities)
         {
             set_entity_mask_bit(e, bit);
         }
-        return component_message;
+        return result;
     }
 
     template <typename T>
@@ -230,32 +225,39 @@ public:
         int type_id = type_id::get_type_id<DecayedT>();
         register_component_meta<DecayedT>();
         ensure_type_exists(type_id);
-        component_message = components_c_[type_id].add_batch(std::move(entities), std::move(components));
         uint64_t bit = component_metas_[type_id].bit;
         for (size_t i = 0; i < entities.size(); ++i)
         {
             set_entity_mask_bit(entities[i], bit);
         }
-        return component_message;
+        operating_message result = components_c_[type_id].add_batch(std::move(entities), std::move(components));
+        return result;
     }
 
     template <IsEntity EE, typename T>
-    operating_message& add(T&& component, EE entitys) noexcept
+    operating_message add(T&& component, EE entitys) noexcept
     {
-        add_component_without_message(entitys, std::forward<T>(component));
-        return component_message;
+        return add(entitys, std::forward<T>(component));
     }
-    template <IsEntity EE, typename T>
-    manager& addc(T&& component, EE entitys) noexcept
+    // 正向变参: 单组件 + 多实体  addc(comp, e1, e2, ...)
+    // 一个组件添加到多个实体, 第一个参数为组件, 后续为实体参数包
+    // 同时覆盖 2 参 addc(comp, e) 场景
+    template <typename T, IsEntity... EEs>
+        requires (!IsEntity<std::decay_t<T>>)
+    manager& addc(T&& component, EEs... entities) noexcept
     {
-        add_component_without_message(entitys, std::forward<T>(component));
+        (add_component_without_message(entities, component), ...);
         return *this;
     }
 
-    template <typename T>
-    manager& addc(entity entitys, T&& component) noexcept
+    // 反向变参: 单实体 + 多组件  addc(e, comp1, comp2, ...)
+    // 多个组件添加到同一实体, 第一个参数为实体, 后续为组件参数包
+    // 同时覆盖 2 参 addc(e, comp) 场景
+    template <IsEntity EE, typename... TT>
+        requires (sizeof...(TT) >= 1)
+    manager& addc(EE entitys, TT&&... components) noexcept
     {
-        add_component_without_message(entitys, std::forward<T>(component));
+        (add_component_without_message(entitys, std::forward<TT>(components)), ...);
         return *this;
     }
     template <typename T>
@@ -370,7 +372,9 @@ public:
             // soft_remove 仅逻辑隐藏,组件未析构,不触发 on_remove_ 也不入队
             return set->soft_remove(entitys);
         }
-        return component_message;
+        operating_message result;
+        result.write_message(false, "manager::soft_remove(): component set does not exist, type=", std::to_string(type_id::get_type_id<T>()));
+        return result;
     }
 
     template <typename T>
@@ -388,20 +392,34 @@ public:
             if (!set->on_remove_) push_comp_signal(1, entitys.parts_.index_, static_cast<uint32_t>(type_id));
             return set->hard_remove(entitys);
         }
-        return component_message;
+        operating_message result;
+        result.write_message(false, "manager::hard_remove(): component set does not exist, type=", std::to_string(type_id::get_type_id<T>()));
+        return result;
     }
 
-    template <typename T, IsEntity EE>
-    manager& hard_removec(EE args) noexcept
+    // 变参: 多类型 × 多实体 笛卡尔积  hard_removec<T1, T2>(e1, e2, ...)
+    // 每个类型 T 从每个实体上移除, 同时覆盖单类型单实体 hard_removec<T>(e) 场景
+    template <typename... TT, IsEntity... EEs>
+        requires (sizeof...(TT) >= 1)
+    manager& hard_removec(EEs... entities) noexcept
     {
-        hard_remove<T>(args);
+        auto remove_one = [&](auto&& e) {
+            (hard_remove<TT>(e), ...);
+        };
+        (remove_one(entities), ...);
         return *this;
     }
 
-    template <typename T, IsEntity EE>
-    manager& soft_removec(EE args) noexcept
+    // 变参: 多类型 × 多实体 笛卡尔积  soft_removec<T1, T2>(e1, e2, ...)
+    // 同时覆盖单类型单实体 soft_removec<T>(e) 场景
+    template <typename... TT, IsEntity... EEs>
+        requires (sizeof...(TT) >= 1)
+    manager& soft_removec(EEs... entities) noexcept
     {
-        soft_remove<T>(args);
+        auto remove_one = [&](auto&& e) {
+            (soft_remove<TT>(e), ...);
+        };
+        (remove_one(entities), ...);
         return *this;
     }
 
@@ -412,7 +430,6 @@ public:
         int type_id = type_id::get_type_id<DecayedT>();
         if (type_id >= static_cast<int>(components_c_.size())) [[unlikely]]
         {
-            component_message.write_message(false, "manager::get_single_class_set(): component set does not exist for type_id=", std::to_string(type_id));
             return nullptr;
         }
         return &components_c_[type_id];
@@ -567,17 +584,36 @@ public:
         size_t* idx_data = indices.data();
         Other default_other{};
 
-        // MinGW+AVX2 下 std::sort+lambda 会崩溃, 使用 pdqsort 替代
-        pdqsort<size_t>(idx_data, n,
-            [t_indices_ptr = t_indices.data(), set_other, other_sparse_size, other_pool_data, &default_other, &cmp](size_t a, size_t b) {
-                uint32_t eid_a = t_indices_ptr[a];
-                uint32_t eid_b = t_indices_ptr[b];
-                uint32_t od_a = (eid_a < other_sparse_size) ? set_other->sparse_dense_at_public(eid_a) : UINT32_MAX;
-                uint32_t od_b = (eid_b < other_sparse_size) ? set_other->sparse_dense_at_public(eid_b) : UINT32_MAX;
-                Other& ra = (od_a != UINT32_MAX) ? other_pool_data[od_a] : default_other;
-                Other& rb = (od_b != UINT32_MAX) ? other_pool_data[od_b] : default_other;
-                return cmp(ra, rb);
+        if constexpr (std::is_trivially_copyable_v<Other> && sizeof(Other) <= 64)
+        {
+            class_pool<Other> other_values;
+            other_values.increase_capacity(n);
+            for (size_t i = 0; i < n; ++i)
+            {
+                uint32_t eid = t_indices[i];
+                uint32_t od = (eid < other_sparse_size) ? set_other->sparse_dense_at_public(eid) : UINT32_MAX;
+                other_values.emplace_back(od != UINT32_MAX ? other_pool_data[od] : default_other);
+            }
+            Other* ov_data = other_values.data();
+            // MinGW+AVX2 下 std::sort+lambda 会崩溃, 使用 pdqsort 替代
+            pdqsort<size_t>(idx_data, n, [ov_data, &cmp](size_t a, size_t b) {
+                return cmp(ov_data[a], ov_data[b]);
             });
+        }
+        else
+        {
+            // MinGW+AVX2 下 std::sort+lambda 会崩溃, 使用 pdqsort 替代
+            pdqsort<size_t>(idx_data, n,
+                [t_indices_ptr = t_indices.data(), set_other, other_sparse_size, other_pool_data, &default_other, &cmp](size_t a, size_t b) {
+                    uint32_t eid_a = t_indices_ptr[a];
+                    uint32_t eid_b = t_indices_ptr[b];
+                    uint32_t od_a = (eid_a < other_sparse_size) ? set_other->sparse_dense_at_public(eid_a) : UINT32_MAX;
+                    uint32_t od_b = (eid_b < other_sparse_size) ? set_other->sparse_dense_at_public(eid_b) : UINT32_MAX;
+                    Other& ra = (od_a != UINT32_MAX) ? other_pool_data[od_a] : default_other;
+                    Other& rb = (od_b != UINT32_MAX) ? other_pool_data[od_b] : default_other;
+                    return cmp(ra, rb);
+                });
+        }
 
         set_t->template reorder_dense_by_indices<T>(indices);
     }

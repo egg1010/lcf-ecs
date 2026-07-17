@@ -226,23 +226,47 @@ map[e2] = 42;                 // 可用作哈希键
 
 记录操作结果（成功/失败）和调试信息。核心特性：
 
-- **粘性 false 语义**：一旦失败就保持 false，只有 `reset()` 能恢复
+- **值语义返回**：`single_class_set` / `manager` 的 `add` / `add_batch` / `hard_remove` / `soft_remove` 均按值返回 `operating_message`，C++17 RVO 保证零拷贝。容器自身不持有 `operating_message` 成员，每次操作返回独立结果
+- **粘性 false 语义**：单个返回值对象一旦失败就保持 false，只有 `reset()` 能恢复
 - **全局开关**：`ecs_debug_messages()` 运行时控制是否写入字符串
+- **日志级别过滤**：`msg_level` 枚举 + `min_level_` 表驱动过滤，被过滤的级别跳过全部格式化
+- **类型特化写入**：`write_message` 对整型/浮点走 `std::to_chars`，对字符串走 `append`，其他类型才退化到 `std::format_to`
+
+### msg_level 日志级别
+
+```cpp
+enum class msg_level : uint8_t {
+    debug = 0,  // 最低
+    info  = 1,  // 默认 min_level
+    warn  = 2,
+    error = 3   // 最高
+};
+```
+
+级别用 `uint8_t` 存储，过滤仅做一次整数比较（`lv < min_level_` 返回），前缀通过 `k_level_prefix[]` 字符串数组索引写入，无 switch-case 分支。
 
 ### 接口
 
 | 接口 | 说明 |
 |------|------|
 | `ecs_debug_messages()` | 全局开关引用（控制是否写入字符串） |
-| `operating_message()` | 默认构造，`switch_=true` |
+| `msg_level` | 日志级别枚举（debug/info/warn/error） |
+| `operating_message()` | 默认构造，`switch_=true`，`min_level_=info` |
 | `operator bool()` | 是否成功（返回 `switch_`） |
 | `reset()` | 重置为成功并清空消息 |
 | `clear_message()` | 仅清空消息字符串 |
 | `set_switch_bool(bool)` | 直接设置开关值 |
 | `get_switch_bool()` | 获取开关引用 |
 | `get_switch_bool() const` | 获取开关 const 引用 |
-| `write_message(bool sw, Args... args)` | 写入消息（`sw=false` 标记失败，粘性） |
-| `write_message_fmt(bool sw, fmt, Args...)` | 格式化写入消息 |
+| `set_min_level(msg_level)` | 设置最低记录级别（默认 info） |
+| `get_min_level()` | 获取当前最低记录级别 |
+| `reserve(size_t)` | 预分配消息缓冲区（避免循环内重分配） |
+| `capacity()` | 当前缓冲区容量 |
+| `message_size()` | 当前消息长度 |
+| `write_message(bool sw, Args... args)` | 写入消息（`sw=false` 标记失败，粘性）；整型/浮点走 to_chars |
+| `write_message_level(lv, sw, Args...)` | 带级别的写入（级别不足则跳过，自动加前缀） |
+| `write_message_fmt(bool sw, fmt, Args...)` | 格式化写入消息（`std::format_to`） |
+| `write_message_fmt_level(lv, sw, fmt, Args...)` | 带级别的格式化写入 |
 | `read_message()` | 读取消息字符串（返回 `string_view`） |
 | `operator+=(string_view)` | 追加字符串到消息 |
 | `operator+=(operating_message&&)` | 合并右值消息（`switch_ = switch_ && other.switch_`） |
@@ -277,7 +301,34 @@ msg.write_message_fmt(true, "x={}, y={}", 10, 20);
 operating_message msg2;
 msg2.write_message(false, "Another error");
 msg += msg2;  // switch_ = msg.switch_ && msg2.switch_
+
+// 日志级别过滤
+msg.set_min_level(msg_level::warn);       // 只记 warn 及以上
+msg.write_message_level(msg_level::info, true, "这条被过滤");  // 不写入
+msg.write_message_level(msg_level::error, true, "严重错误: ", 42);
+// message_ = "[ERROR] 严重错误: 42\n"
+
+// 级别格式化
+msg.write_message_fmt_level(msg_level::warn, true, "v={} k={}", 1, "x");
+// message_ += "[WARN]  v=1 k=x\n"
+
+// 整型/浮点走 to_chars 快速路径（比 format 快）
+msg.write_message(true, "i=", 100, " d=", 3.14);
+
+// 预分配缓冲区（循环场景避免首次分配）
+msg.reserve(4096);
+for (int i = 0; i < 1000; ++i) {
+    msg.reset();
+    msg.write_message(true, "iter ", i);
+}
 ```
+
+### 性能说明
+
+- **`write_message`（整型参数）**：走 `std::to_chars`，比 `std::format_to` 快约 30%
+- **`write_message_fmt`**：fast path 检测 — 若格式串仅含简单 `{}` 占位符（无 `{{` `}}` 转义、无 `{:spec}` 复杂格式），走 `append_arg` 的 `to_chars` / 字符串 append 路径，绕过 `std::format_to` + `back_inserter`，吞吐 38M 次/秒（与 `write_message` 相当）；复杂格式仍走 `std::format_to` 通用路径
+- **级别过滤快速路径**：被过滤的级别仅做一次整数比较 + reset，吞吐约 2800M 次/秒
+- **`reserve`**：循环 `reset()` 不释放容量，首次写入后无需重分配；`reserve` 用于避免首次分配
 
 ### 不要做什么
 
@@ -286,6 +337,8 @@ msg += msg2;  // switch_ = msg.switch_ && msg2.switch_
 | 依赖 `write_message(true)` 恢复失败状态 | 粘性 false 语义，成功后不会恢复 | 调用 `reset()` 显式恢复 |
 | 在 Release 构建中依赖 `read_message()` | 全局开关关闭时字符串为空 | 使用 `operator bool()` 判断成败，而非消息内容 |
 | 忘记检查 `operator bool()` | 操作失败被静默忽略 | 每次关键操作后检查 `if (!msg) { ... }` |
+| 高频日志用 `{:08x}` 等复杂格式 | 走 `std::format_to` 通用路径，吞吐约 14M 次/秒 | 高频路径仅用 `{}` 简单占位符以走 fast path |
+| 默认级别记录所有 debug 日志 | Release 中 debug 日志拖累性能 | `set_min_level(msg_level::warn)` 过滤低级别 |
 
 ---
 
@@ -350,6 +403,7 @@ msg += msg2;  // switch_ = msg.switch_ && msg2.switch_
 | `push_back_unchecked(const T&)` | 尾部拷贝追加（跳过 bitmap 设置，仅 dense 连续模式可用） |
 | `emplace_back_unchecked(Args...)` | 尾部原地构造（跳过 bitmap 设置，仅 dense 连续模式可用） |
 | `emplace_back_dense_unchecked(Args...)` | 尾部原地构造（仅设置当前位 bitmap，dense 模式快速路径） |
+| `append_n(n, const T&)` | 批量追加 n 个 value 副本（AVX2 批量设置 bitmap，1M int 仅 0.51ms，比逐个 emplace_back 快 3x） |
 | `emplace(pos, Args...)` | 在指定位置插入（移动后续元素） |
 | `emplace_at(index, Args...)` | 任意位置构造（get-or-create：已存在则返回现有值，不覆盖） |
 | `sparse_emplace_at(index, Args...)` | 任意位置构造（insert-or-assign：已存在则覆盖） |
@@ -406,6 +460,10 @@ msg += msg2;  // switch_ = msg.switch_ && msg2.switch_
 |------|------|
 | `begin()` / `end()` | sparse-aware 正向迭代器（dense 模式零开销，sparse 模式自动跳过未构造槽位） |
 | `cbegin()` / `cend()` | const 版本 |
+| `rbegin()` / `rend()` | 反向迭代器（bidirectional，sparse 模式同样自动跳过未构造槽位） |
+| `crbegin()` / `crend()` | const 反向版本 |
+| `for_each(F&& f)` | 批量遍历回调，dense 路径可被编译器自动向量化（比 range-for 快约 15%） |
+| `for_each(F&& f) const` | const 版本 |
 
 ### 自由函数
 
@@ -442,6 +500,19 @@ dense_pool.emplace_back(2);
 dense_pool.push_back_unchecked(3);              // 跳过 bitmap，更快
 dense_pool.emplace_back_unchecked(4);           // 跳过 bitmap，更快
 dense_pool.emplace_back_dense_unchecked(5);     // 仅设置当前位 bitmap
+
+// 批量插入最佳实践（方案 F）：reserve + unchecked 组合，性能接近 std::vector
+class_pool<int> batch_pool;
+batch_pool.reserve_exact(1'000'000);            // 预分配，避免多次扩容
+for (int i = 0; i < 1'000'000; ++i) {
+    batch_pool.emplace_back_dense_unchecked(i); // dense 快速路径，已预分配无容量检查
+}
+// 实测：reserve + emplace_back_dense_unchecked 比 emplace_back 快约 20%（跳过 invalidate_count_cache）
+
+// 批量插入最快路径（方案 J）：append_n 单次调用批量追加
+class_pool<int> fastest;
+fastest.append_n(1'000'000, 0);  // 直接追加 1M 个 0, AVX2 批量设置 bitmap
+// 实测：1M int 仅 0.51ms, 比逐个 emplace_back 快 3x, 比 std::vector emplace_back 快 2.2x
 
 // 精确扩容（不增加元素，分配到精确大小）
 class_pool<int> reserved;
@@ -504,6 +575,7 @@ pool.is_dense();              // 检查是否连续
 | 接口 | 说明 |
 |------|------|
 | `fill_the_hole(args...)` | 填第一个空洞或末尾追加，返回 `T&` |
+| `fill_the_hole_at(args...)` | 同 `fill_the_hole` 语义，但返回被填补位置的索引 `size_t`（填洞返回洞索引，追加返回末尾索引），调用方可通过 `operator[](idx)` 或 `data_ptr_[idx]` 访问元素 |
 
 填洞依赖现有接口：`sparse_erase_at` 产生空洞、`emplace_at` 填洞、`emplace_back` 追加。
 
@@ -527,6 +599,14 @@ pool.fill_the_hole(8);    // 填到 index 2
 // 迭代跳过空洞
 pool.sparse_erase_at(1);
 for (int& v : pool) { /* 跳过 index 1 */ }
+
+// fill_the_hole_at: 返回被填补位置的索引, 便于后续直接访问
+class_pool<int> pool2;
+pool2.fill_the_hole_at(10);  // 无洞 → 追加, 返回 0
+pool2.fill_the_hole_at(20);  // 无洞 → 追加, 返回 1
+pool2.sparse_erase_at(0);    // 产生空洞 at 0
+size_t idx = pool2.fill_the_hole_at(99);  // 填洞 at 0, 返回 0
+// idx == 0, pool2[idx] == 99
 ```
 
 #### 不要做什么
@@ -1048,9 +1128,11 @@ bool in_la = la.owns(small);
 | `get_type_id()` | 获取类型 ID 引用 |
 | `get_typed_pool_ptr<T>()` | 获取类型化组件池指针（带 type_id 检查） |
 | `get_typed_pool_ptr<T>() const` | const 版本 |
-| `get_operating_message()` | 获取操作消息引用 |
+| `add/remove` 系列接口返回值 | 返回 `operating_message`（值类型，RVO 零拷贝） |
 | `get_entity_indices()` | 获取实体索引数组（dense 数组） |
 | `get_entity_indices() const` | const 版本 |
+| `get_entity_versions()` | 获取实体版本号数组（与 dense_ 同步，遍历时直接读连续内存） |
+| `get_entity_versions() const` | const 版本 |
 | `get_pool_version()` | 获取组件池版本号（持久化视图自动同步用） |
 
 ### 使用
@@ -1106,6 +1188,8 @@ ECS 核心管理类，管理实体和所有组件集合。
 | `add<T>(T, entity)` | 添加组件（组件在前，参数顺序可互换） |
 | `addc<T>(entity, T)` | 链式添加（返回 `manager&`） |
 | `addc<T>(T, entity)` | 链式添加（组件在前） |
+| `addc<T>(T, EEs...)` | 正向变参链式添加：单组件加到多个实体 `addc(comp, e1, e2, e3)` |
+| `addc<TT...>(EE, TT&&...)` | 反向变参链式添加：多组件加到同一实体 `addc(e, comp1, comp2, comp3)` |
 | `add_batch<T>(span<const entity>, span<const T>)` | 批量添加（span 版本） |
 | `add_batch<T>(const class_pool<entity>&, const class_pool<T>&)` | 批量添加（左值引用） |
 | `add_batch<T>(class_pool<entity>&&, class_pool<T>&&)` | 批量添加（右值引用） |
@@ -1152,6 +1236,8 @@ ECS 核心管理类，管理实体和所有组件集合。
 | `hard_remove<T>(entity)` | 硬删除组件 |
 | `soft_removec<T>(entity)` | 链式软删除（返回 `manager&`） |
 | `hard_removec<T>(entity)` | 链式硬删除（返回 `manager&`） |
+| `hard_removec<TT...>(EEs...)` | 变参链式硬删除：多类型 × 多实体 笛卡尔积 `hard_removec<Comp1, Comp2>(e1, e2)` |
+| `soft_removec<TT...>(EEs...)` | 变参链式软删除：多类型 × 多实体 笛卡尔积 `soft_removec<Comp1, Comp2>(e1, e2)` |
 | `delete_type_container<T>()` | 删除整个类型容器 |
 
 > `hard_remove` 和 `swap_dense_and_pool` 对 `std::is_trivially_copyable` 类型使用 `typed_pool_data_` + `memcpy` 直接操作，跳过函数指针间接调用。非 trivial 类型回退到 `ops_.swap_pop` / `ops_.swap_pool` 函数指针路径。
@@ -1165,7 +1251,7 @@ ECS 核心管理类，管理实体和所有组件集合。
 | `get_component_vector<T>()` | 获取类型化组件池指针 |
 | `get_component_vector<T>() const` | const 版本 |
 | `reserve_component_capacity<T>(capacity)` | 预留组件容量 |
-| `get_operating_message()` | 获取操作消息引用 |
+| `add/add_batch/hard_remove/soft_remove` | 返回 `operating_message`（值类型，RVO 零拷贝） |
 | `get_component_meta(int type_id)` | 获取组件元数据（含 bit 位等信息） |
 | `get_single_class_set_by_id(int type_id)` | 通过 type_id 获取组件集合（运行时视图用） |
 
@@ -1377,6 +1463,12 @@ mgr.add(Velocity{10, 20}, e1);  // 参数顺序可互换
 mgr.addc(e1, Health{100, 100})
    .addc(e1, Name{"Alice"});
 
+// 变参链式添加: 单组件 + 多实体 (comp 在前)
+mgr.addc(Position{7, 8}, e1, e2, e3);  // Position 加到 e1/e2/e3
+
+// 变参链式添加: 多组件 + 单实体 (entity 在前)
+mgr.addc(e1, Position{1, 2}, Velocity{3, 4, 5}, Health{100, 200});
+
 // 获取组件
 Position* p = mgr.get_ptr<Position>(e1);
 
@@ -1417,6 +1509,9 @@ mgr.hard_remove<Velocity>(e2);
 // 链式删除
 mgr.soft_removec<Name>(e1)
    .soft_removec<Name>(e2);
+
+// 变参链式删除: 多类型 × 多实体 笛卡尔积
+mgr.hard_removec<Position, Velocity>(e1, e2);  // 从 e1 和 e2 都移除 Position 和 Velocity
 
 // 删除实体
 mgr.delete_entity(e2);

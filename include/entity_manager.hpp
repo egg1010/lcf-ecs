@@ -178,6 +178,13 @@ public:
         }
     }
 
+    // 前置条件: entity_index < entity_masks_.size()
+    // 调用方须先通过 is_version_valid 检查 (version_v_.size() <= entity_masks_.size() 不变量保证)
+    void clear_mask_bit_no_bounds_check(uint32_t entity_index, uint64_t bit) noexcept
+    {
+        entity_masks_[entity_index] &= ~bit;
+    }
+
     [[nodiscard]] uint64_t get_mask(uint32_t entity_index) const noexcept
     {
         if (entity_index >= entity_masks_.size()) [[unlikely]] return 0;

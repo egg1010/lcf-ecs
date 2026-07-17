@@ -231,6 +231,32 @@ int main()
         om.write_message_fmt(true, "格式化: {} + {} = {}", 1, 2, 3);
         print_item("write_message_fmt()", om.read_message().find("格式化: 1 + 2 = 3") != std::string::npos);
 
+        om.reset();
+        om.set_min_level(msg_level::warn);
+        print_item("set_min_level(warn)", om.get_min_level() == msg_level::warn);
+        om.write_message_level(msg_level::info, true, "不应写入的info");
+        print_item("level过滤: info被过滤", om.read_message().empty());
+        om.write_message_level(msg_level::error, true, "error消息");
+        print_item("level通过: error写入", om.read_message().find("[ERROR]") != std::string::npos);
+        print_item("level前缀: [ERROR]存在", om.read_message().find("[ERROR] error消息") != std::string::npos);
+        om.reset();
+        om.set_min_level(msg_level::debug);
+        om.write_message_level(msg_level::debug, true, "debug", 42);
+        print_item("write_message_level 整型参数", om.read_message().find("debug42") != std::string::npos);
+        om.reset();
+        om.write_message_fmt_level(msg_level::warn, true, "fmt: {}={}", "k", 1);
+        print_item("write_message_fmt_level", om.read_message().find("[WARN]  fmt: k=1") != std::string::npos);
+
+        om.reset();
+        om.reserve(4096);
+        print_item("reserve(4096)", om.capacity() >= 4096);
+        for (int i = 0; i < 100; ++i) om.write_message(true, "msg", i);
+        print_item("reserve后批量写入", om.message_size() > 0 && om.capacity() >= 4096);
+
+        om.reset();
+        om.write_message(true, "int=", 42, " dbl=", 3.14, " str=", std::string("hi"));
+        print_item("write_message 混合类型(to_chars)", om.read_message().find("int=42 dbl=3.14 str=hi") != std::string::npos);
+
         // 拷贝构造
         operating_message om_src;
         om_src.write_message(true, "拷贝源");
@@ -326,6 +352,63 @@ int main()
         class_pool<int> cp_move_src = {7, 8, 9};
         class_pool<int> cp_move_dst(std::move(cp_move_src));
         print_item("移动构造", (cp_move_dst.size() == 3 && cp_move_dst[0] == 7));
+    }
+
+    // --- append_n 批量追加 ---
+    std::cout << "\n  [append_n 批量追加]\n";
+    {
+        // n=0
+        class_pool<int> cp0;
+        cp0.append_n(0, 42);
+        print_item("append_n(0)", cp0.size() == 0);
+
+        // n=1 单元素
+        class_pool<int> cp1;
+        cp1.append_n(1, 42);
+        print_item("append_n(1)", (cp1.size() == 1 && cp1[0] == 42 && cp1.count() == 1));
+
+        // n=64 恰好 1 word (同 word 边界)
+        class_pool<int> cp64;
+        cp64.append_n(64, 7);
+        print_item("append_n(64) 同 word", (cp64.size() == 64 && cp64.count() == 64 && cp64.is_dense()));
+
+        // n=128 跨 2 word
+        class_pool<int> cp128;
+        cp128.append_n(128, 9);
+        print_item("append_n(128) 跨 word", (cp128.size() == 128 && cp128.count() == 128));
+
+        // 部分填充后 append_n (首 word 非对齐)
+        class_pool<int> cp_partial;
+        cp_partial.append_n(60, 1);   // start_bit=60
+        cp_partial.append_n(70, 2);  // 跨 word, start=60, n=70, last=129
+        bool ok = (cp_partial.size() == 130);
+        for (size_t i = 0; i < 60 && ok; ++i) ok = (cp_partial[i] == 1);
+        for (size_t i = 60; i < 130 && ok; ++i) ok = (cp_partial[i] == 2);
+        print_item("append_n 首非对齐+跨 word", (ok && cp_partial.count() == 130));
+
+        // append_n 自动扩容
+        class_pool<int> cp_grow;
+        cp_grow.append_n(10000, 5);  // 从 0 容量自动扩容
+        print_item("append_n 自动扩容", (cp_grow.size() == 10000 && cp_grow[9999] == 5 && cp_grow.count() == 10000));
+
+        // sparse 模式下 append_n (有洞)
+        class_pool<int> cp_sp = {0, 1, 2, 3, 4, 5, 6, 7};
+        cp_sp.sparse_erase_at(2);  // 产生洞
+        size_t holes_before = cp_sp.size() - cp_sp.count();  // 应为 1
+        cp_sp.append_n(100, 9);
+        bool sp_ok = (cp_sp.size() == 108);
+        bool sp_count_ok = (cp_sp.count() == 107);  // 7 原 + 100 追加 - 0 新洞
+        bool sp_holes_ok = (cp_sp.size() - cp_sp.count() == holes_before);  // 洞数不变
+        print_item("append_n (sparse 有洞) size", sp_ok);
+        print_item("append_n (sparse 有洞) count", sp_count_ok);
+        print_item("append_n (sparse 有洞) 洞数不变", sp_holes_ok);
+
+        // append_n 后迭代器正确性
+        class_pool<int> cp_it;
+        cp_it.append_n(200, 3);
+        size_t it_count = 0;
+        for (auto v : cp_it) { (void)v; ++it_count; }
+        print_item("append_n 迭代器正确", it_count == 200);
     }
 
     // --- 赋值 ---
@@ -504,6 +587,48 @@ int main()
         print_item("cbegin/cend", cfwd == 60);
     }
 
+    // --- 反向迭代器 ---
+    std::cout << "\n  [反向迭代器]\n";
+    {
+        // dense 模式
+        class_pool<int> cp = {10, 20, 30};
+        std::vector<int> rev_list;
+        for (auto it = cp.rbegin(); it != cp.rend(); ++it) rev_list.push_back(*it);
+        print_item("rbegin/rend (dense)", rev_list.size() == 3 && rev_list[0] == 30 && rev_list[1] == 20 && rev_list[2] == 10);
+
+        std::vector<int> crev_list;
+        for (auto it = cp.crbegin(); it != cp.crend(); ++it) crev_list.push_back(*it);
+        print_item("crbegin/crend (dense)", crev_list.size() == 3 && crev_list[0] == 30 && crev_list[1] == 20 && crev_list[2] == 10);
+
+        // 空池
+        class_pool<int> empty;
+        int empty_cnt = 0;
+        for (auto it = empty.rbegin(); it != empty.rend(); ++it) ++empty_cnt;
+        print_item("rbegin/rend (空)", empty_cnt == 0);
+
+        // 单元素
+        class_pool<int> single = {42};
+        int single_val = 0;
+        for (auto it = single.rbegin(); it != single.rend(); ++it) single_val = *it;
+        print_item("rbegin/rend (单元素)", single_val == 42);
+    }
+    {
+        // sparse 模式: 创建洞后反向遍历
+        class_pool<int> cp = {0, 1, 2, 3, 4, 5, 6, 7};
+        cp.erase(std::next(cp.begin()));      // 删索引1
+        cp.erase(std::next(cp.begin(), 3));   // 删索引3
+
+        // 验证反向遍历 = 正向遍历的逆序
+        std::vector<int> fwd_list;
+        for (auto it = cp.begin(); it != cp.end(); ++it) fwd_list.push_back(*it);
+        bool match = true;
+        auto rit = cp.rbegin();
+        for (size_t i = fwd_list.size(); i > 0; --i, ++rit) {
+            if (rit == cp.rend() || *rit != fwd_list[i - 1]) { match = false; break; }
+        }
+        print_item("rbegin/rend (sparse 逆序一致)", match && rit == cp.rend());
+    }
+
     // --- 自由函数 ---
     std::cout << "\n  [自由函数]\n";
     {
@@ -590,10 +715,56 @@ int main()
         std::cout.flush();
     }
 
-    // ========================================================
-    // 6. void_any 类型擦除容器
-    // ========================================================
-    print_section(6, "void_any 类型擦除容器");
+    // --- class_pool::fill_the_hole_at 返回索引版本 ---
+    std::cout << "\n  [class_pool::fill_the_hole_at 返回索引]\n";
+    {
+        // 无洞 → 追加, 返回末尾索引
+        class_pool<int> p1;
+        size_t i0 = p1.fill_the_hole_at(10);
+        size_t i1 = p1.fill_the_hole_at(20);
+        size_t i2 = p1.fill_the_hole_at(30);
+        print_item("fill_the_hole_at (无洞) 索引连续",
+                  (i0 == 0 && i1 == 1 && i2 == 2 && p1[i0] == 10 && p1[i2] == 30));
+
+        // 有洞 → 填第一个洞, 返回洞索引
+        class_pool<int> p2;
+        p2.fill_the_hole_at(0);
+        p2.fill_the_hole_at(1);
+        p2.fill_the_hole_at(2);
+        p2.sparse_erase_at(1);  // 产生洞 at 1
+        size_t filled = p2.fill_the_hole_at(99);
+        print_item("fill_the_hole_at (有洞) 返回洞索引",
+                  (filled == 1 && p2[filled] == 99 && p2.size() == 3));
+
+        // 返回索引与 fill_the_hole 一致性
+        class_pool<int> p3;
+        p3.fill_the_hole_at(0);
+        p3.fill_the_hole_at(1);
+        p3.sparse_erase_at(0);
+        size_t idx = p3.fill_the_hole_at(42);
+        print_item("fill_the_hole_at 返回索引可访问", (p3[idx] == 42 && idx == 0));
+
+        // 填满所有洞后, fill_the_hole_at 走 emplace_back 路径
+        class_pool<int> p4;
+        p4.fill_the_hole_at(1);
+        p4.sparse_erase_at(0);
+        size_t a = p4.fill_the_hole_at(2);  // 填洞 at 0
+        size_t b = p4.fill_the_hole_at(3);  // 无洞, 追加 at 1
+        print_item("填满后 fill_the_hole_at 追加",
+                  (a == 0 && b == 1 && p4[a] == 2 && p4[b] == 3 && p4.size() == 2));
+
+        // 索引一致性: fill_the_hole_at 与 operator[] 访问
+        class_pool<int> p5;
+        for (int i = 0; i < 10; ++i) p5.fill_the_hole_at(i);
+        p5.sparse_erase_at(3);
+        p5.sparse_erase_at(7);
+        size_t h1 = p5.fill_the_hole_at(100);
+        size_t h2 = p5.fill_the_hole_at(200);
+        print_item("fill_the_hole_at 多洞顺序填",
+                  (h1 == 3 && h2 == 7 && p5[h1] == 100 && p5[h2] == 200));
+
+        std::cout.flush();
+    }
     {
         void_any va_def;
         print_item("默认构造", !va_def.has_value());
@@ -1122,7 +1293,7 @@ int main()
         const class_pool<Health>* ctpp = cscs.get_typed_pool_ptr<Health>();
         print_item("get_typed_pool_ptr() const", (ctpp && ctpp->size() == 1));
 
-        print_item("get_operating_message()", (bool)scs.get_operating_message());
+        print_item("add() 返回 operating_message", (bool)scs.add(entity(0, 1), Health{200}));
 
         print_item("size()", scs.size() == 1);
         print_item("empty()", !scs.empty());
@@ -1287,6 +1458,97 @@ int main()
         mgr.add(e5, Name{"测试"});
         mgr.delete_type_container<Name>();
         print_item("delete_type_container()", mgr.get_ptr<Name>(e5) == nullptr);
+
+        // --- 变参 addc / hard_removec / soft_removec ---
+        std::cout << "\n  [变参 addc / hard_removec / soft_removec]\n";
+        {
+            // 正向 addc: 单组件 + 多实体
+            ecs::manager m1;
+            auto a1 = m1.create_entity();
+            auto a2 = m1.create_entity();
+            auto a3 = m1.create_entity();
+            m1.addc(Position{7, 8}, a1, a2, a3);
+            print_item("addc(comp, e1, e2, e3) 正向变参",
+                      (m1.get_ptr<Position>(a1) && m1.get_ptr<Position>(a2) &&
+                       m1.get_ptr<Position>(a3) &&
+                       m1.get_ptr<Position>(a1)->x == 7 &&
+                       m1.get_ptr<Position>(a3)->y == 8));
+
+            // 反向 addc: 单实体 + 多组件
+            ecs::manager m2;
+            auto b1 = m2.create_entity();
+            m2.addc(b1, Position{1, 2}, Velocity{3, 4, 5}, Health{100, 200});
+            print_item("addc(e, comp1, comp2, comp3) 反向变参",
+                      (m2.get_ptr<Position>(b1) && m2.get_ptr<Velocity>(b1) &&
+                       m2.get_ptr<Health>(b1) &&
+                       m2.get_ptr<Velocity>(b1)->vz == 5 &&
+                       m2.get_ptr<Health>(b1)->max == 200));
+
+            // 2 参兼容性 (替换原 addc 不破坏旧用法)
+            ecs::manager m3;
+            auto c1 = m3.create_entity();
+            m3.addc(c1, Position{9, 9});
+            m3.addc(Velocity{1, 1, 1}, c1);
+            print_item("addc 2参 兼容",
+                      (m3.get_ptr<Position>(c1) && m3.get_ptr<Velocity>(c1)));
+
+            // 链式: 多次 addc 串联
+            ecs::manager m4;
+            auto d1 = m4.create_entity();
+            auto d2 = m4.create_entity();
+            m4.addc(Position{1, 1}, d1).addc(d2, Velocity{2, 2, 2});
+            print_item("addc 链式",
+                      (m4.get_ptr<Position>(d1) != nullptr &&
+                       m4.get_ptr<Velocity>(d2) != nullptr));
+
+            // hard_removec 变参: 多类型 × 多实体 笛卡尔积
+            ecs::manager m5;
+            auto r1 = m5.create_entity();
+            auto r2 = m5.create_entity();
+            m5.addc(r1, Position{1, 1}, Velocity{1, 1, 1}, Health{50, 100});
+            m5.addc(r2, Position{2, 2}, Velocity{2, 2, 2}, Health{75, 100});
+            m5.hard_removec<Position, Velocity>(r1, r2);
+            print_item("hard_removec<T1,T2>(e1,e2) 笛卡尔积",
+                      (m5.get_ptr<Position>(r1) == nullptr &&
+                       m5.get_ptr<Position>(r2) == nullptr &&
+                       m5.get_ptr<Velocity>(r1) == nullptr &&
+                       m5.get_ptr<Velocity>(r2) == nullptr &&
+                       m5.get_ptr<Health>(r1) != nullptr &&
+                       m5.get_ptr<Health>(r2) != nullptr));
+
+            // soft_removec 变参: 多类型 × 多实体
+            ecs::manager m6;
+            auto s1 = m6.create_entity();
+            auto s2 = m6.create_entity();
+            m6.addc(s1, Position{1, 1}, Velocity{1, 1, 1});
+            m6.addc(s2, Position{2, 2}, Velocity{2, 2, 2});
+            m6.soft_removec<Position, Velocity>(s1, s2);
+            print_item("soft_removec<T1,T2>(e1,e2) 笛卡尔积",
+                      (m6.get_ptr<Position>(s1) == nullptr &&
+                       m6.get_ptr<Velocity>(s2) == nullptr));
+
+            // 单类型 × 多实体 (原 hard_removec<T>(e) 兼容)
+            ecs::manager m7;
+            auto h1 = m7.create_entity();
+            auto h2 = m7.create_entity();
+            m7.addc(Position{5, 5}, h1, h2);
+            m7.hard_removec<Position>(h1, h2);
+            print_item("hard_removec<T>(e1,e2) 单类型多实体",
+                      (m7.get_ptr<Position>(h1) == nullptr &&
+                       m7.get_ptr<Position>(h2) == nullptr));
+
+            // 多类型 × 单实体 (与 addc 反向变参 配套)
+            ecs::manager m8;
+            auto k1 = m8.create_entity();
+            m8.addc(k1, Position{1, 1}, Velocity{1, 1, 1}, Health{50, 100});
+            m8.hard_removec<Position, Velocity, Health>(k1);
+            print_item("hard_removec<T1,T2,T3>(e) 多类型单实体",
+                      (m8.get_ptr<Position>(k1) == nullptr &&
+                       m8.get_ptr<Velocity>(k1) == nullptr &&
+                       m8.get_ptr<Health>(k1) == nullptr));
+
+            std::cout.flush();
+        }
     }
 
     // --- 池访问 ---
@@ -1297,7 +1559,7 @@ int main()
         auto e = mgr.create_entity();
         mgr.add(e, Position{1, 2, 3});
 
-        print_item("get_operating_message()", (bool)mgr.get_operating_message());
+        print_item("add() 返回 operating_message", (bool)mgr.add(e, Velocity{1.0f, 0, 0}));
 
         single_class_set* set = mgr.get_single_class_set<Position>();
         print_item("get_single_class_set()", set != nullptr);
@@ -4104,14 +4366,65 @@ int main()
             cp_cl.clear();
             print_perf("class_pool clear", cp_count, timer.elapsed_ms());
 
-            // 遍历
-            timer.reset();
-            class_pool<int> cp_tr;
-            cp_tr.increase_capacity(cp_count);
-            for (size_t i = 0; i < cp_count; ++i) cp_tr.emplace_back(static_cast<int>(i));
-            volatile long long sum = 0;
-            for (auto it = cp_tr.begin(); it != cp_tr.end(); ++it) sum += *it;
-            print_perf("class_pool 遍历 begin/end", cp_count, timer.elapsed_ms());
+            // 遍历 (dense)
+            {
+                class_pool<int> cp_tr;
+                cp_tr.increase_capacity(cp_count);
+                for (size_t i = 0; i < cp_count; ++i) cp_tr.emplace_back(static_cast<int>(i));
+                volatile long long sum = 0;
+                timer.reset();
+                for (auto it = cp_tr.begin(); it != cp_tr.end(); ++it) sum += *it;
+                print_perf("class_pool 遍历 begin/end (dense)", cp_count, timer.elapsed_ms());
+            }
+
+            // 遍历 (sparse 50%)
+            {
+                class_pool<int> cp_sp;
+                cp_sp.increase_capacity(cp_count);
+                for (size_t i = 0; i < cp_count; ++i) cp_sp.emplace_back(static_cast<int>(i));
+                for (size_t i = 0; i < cp_count; i += 2) cp_sp.sparse_erase_at(i);
+                volatile long long sum = 0;
+                timer.reset();
+                for (auto it = cp_sp.begin(); it != cp_sp.end(); ++it) sum += *it;
+                print_perf("class_pool 遍历 begin/end (sparse 50%)", cp_count / 2, timer.elapsed_ms());
+            }
+
+            // for_each (dense, 单次) - 原始基线, sum += v 读改写
+            {
+                class_pool<int> cp_fe;
+                cp_fe.increase_capacity(cp_count);
+                for (size_t i = 0; i < cp_count; ++i) cp_fe.emplace_back(static_cast<int>(i));
+                volatile long long sum = 0;
+                timer.reset();
+                cp_fe.for_each([&sum](int& v) { sum += v; });
+                print_perf("class_pool for_each (dense)", cp_count, timer.elapsed_ms());
+            }
+
+            // for_each (dense, 10x) - 与 cbegin/cend 对齐 (sum = v, cache-hot)
+            {
+                class_pool<int> cp_fe10;
+                cp_fe10.increase_capacity(cp_count);
+                for (size_t i = 0; i < cp_count; ++i) cp_fe10.emplace_back(static_cast<int>(i));
+                volatile int sum = 0;
+                timer.reset();
+                for (int iter = 0; iter < 10; ++iter)
+                {
+                    cp_fe10.for_each([&sum](int& v) { sum = v; });
+                }
+                print_perf("class_pool for_each (dense, 10x)", cp_count * 10, timer.elapsed_ms());
+            }
+
+            // for_each (sparse 50%)
+            {
+                class_pool<int> cp_fe2;
+                cp_fe2.increase_capacity(cp_count);
+                for (size_t i = 0; i < cp_count; ++i) cp_fe2.emplace_back(static_cast<int>(i));
+                for (size_t i = 0; i < cp_count; i += 2) cp_fe2.sparse_erase_at(i);
+                volatile long long sum = 0;
+                timer.reset();
+                cp_fe2.for_each([&sum](int& v) { sum += v; });
+                print_perf("class_pool for_each (sparse 50%)", cp_count / 2, timer.elapsed_ms());
+            }
 
             // count (sparse)
             timer.reset();
@@ -4125,7 +4438,7 @@ int main()
             // is_constructed_at
             timer.reset();
             volatile bool bv = false;
-            for (size_t i = 0; i < cp_count; ++i) bv = cp_tr.is_constructed_at(i);
+            for (size_t i = 0; i < cp_count; ++i) bv = cp_cnt.is_constructed_at(i);
             print_perf("class_pool is_constructed_at", cp_count, timer.elapsed_ms());
         }
 
@@ -4282,15 +4595,17 @@ int main()
         print_perf_sub("15.15 operating_message 操作消息");
         {
             const size_t om_count = 1000000;
+            volatile size_t sink = 0;
 
-            // write_message
+            // write_message (to_chars 整型路径)
             timer.reset();
             operating_message om1;
             for (size_t i = 0; i < om_count; ++i) {
                 om1.reset();
                 om1.write_message(true, "msg", i);
             }
-            print_perf("operating_message write_message", om_count, timer.elapsed_ms());
+            sink += om1.message_size();
+            print_perf("operating_message write_message (to_chars)", om_count, timer.elapsed_ms());
 
             // write_message_fmt
             timer.reset();
@@ -4299,14 +4614,70 @@ int main()
                 om2.reset();
                 om2.write_message_fmt(true, "fmt: {} + {}", i, i + 1);
             }
+            sink += om2.message_size();
             print_perf("operating_message write_message_fmt", om_count, timer.elapsed_ms());
 
-            // operator+=(string_view)
+            // write_message with reserve (无重分配)
+            timer.reset();
+            operating_message om_rsv;
+            om_rsv.reserve(4096);
+            for (size_t i = 0; i < om_count; ++i) {
+                om_rsv.reset();
+                om_rsv.write_message(true, "msg", i);
+            }
+            sink += om_rsv.message_size();
+            print_perf("operating_message write_message (reserve)", om_count, timer.elapsed_ms());
+
+            // write_message_level (带前缀)
+            timer.reset();
+            operating_message om_lv;
+            om_lv.set_min_level(msg_level::debug);
+            for (size_t i = 0; i < om_count; ++i) {
+                om_lv.reset();
+                om_lv.write_message_level(msg_level::info, true, "msg", i);
+            }
+            sink += om_lv.message_size();
+            print_perf("operating_message write_message_level", om_count, timer.elapsed_ms());
+
+            // write_message_fmt_level (带前缀)
+            timer.reset();
+            operating_message om_lv2;
+            om_lv2.set_min_level(msg_level::debug);
+            for (size_t i = 0; i < om_count; ++i) {
+                om_lv2.reset();
+                om_lv2.write_message_fmt_level(msg_level::warn, true, "v={}", i);
+            }
+            sink += om_lv2.message_size();
+            print_perf("operating_message write_message_fmt_level", om_count, timer.elapsed_ms());
+
+            // level 过滤快速路径 (全部被过滤)
+            timer.reset();
+            operating_message om_f;
+            om_f.set_min_level(msg_level::error);
+            for (size_t i = 0; i < om_count; ++i) {
+                om_f.reset();
+                om_f.write_message_level(msg_level::debug, true, "filtered", i);
+            }
+            sink += om_f.message_size();
+            print_perf("operating_message level过滤快速路径", om_count, timer.elapsed_ms());
+
+            // 混合类型 write_message (to_chars 多类型)
+            timer.reset();
+            operating_message om_mix;
+            for (size_t i = 0; i < om_count; ++i) {
+                om_mix.reset();
+                om_mix.write_message(true, "i=", i, " d=", 3.14, " s=", std::string_view("x"));
+            }
+            sink += om_mix.message_size();
+            print_perf("operating_message write_message (混合类型)", om_count, timer.elapsed_ms());
+
+            // operator+=(string_view)  修复 DCE
             timer.reset();
             for (size_t i = 0; i < om_count; ++i) {
                 operating_message om3;
                 om3 += "hello";
                 om3 += " world";
+                sink += om3.message_size();
             }
             print_perf("operating_message operator+=(str)", om_count * 2, timer.elapsed_ms());
 
@@ -4316,6 +4687,7 @@ int main()
                 operating_message om4, om5;
                 om5.write_message(true, "src");
                 om4 += std::move(om5);
+                sink += om4.message_size();
             }
             print_perf("operating_message operator+=(om&&)", om_count, timer.elapsed_ms());
 
@@ -4341,6 +4713,8 @@ int main()
                 (void)sv; (void)b;
             }
             print_perf("operating_message read/bool", om_count, timer.elapsed_ms());
+
+            (void)sink;
         }
 
         // ---- 15.16 id_allocation 性能 ----
@@ -4553,8 +4927,12 @@ int main()
                 auto gv = sv.sorted_by_component_value(
                     [](Position& p) -> int { return static_cast<int>(p.x) / 1000; });
                 size_t groups = 0;
-                gv.for_each_group([&](int, size_t, size_t) { groups++; });
-                print_perf("sorted_by_component_value 分组", groups, timer.elapsed_ms());
+                size_t grouped_cnt = 0;
+                gv.for_each_group([&](int, size_t begin, size_t end) {
+                    groups++;
+                    grouped_cnt += end - begin;
+                });
+                print_perf("sorted_by_component_value 分组", grouped_cnt, timer.elapsed_ms());
             }
 
             // sort_n / tiered_sort 小数量级性能
@@ -4653,13 +5031,13 @@ int main()
             }
             print_perf("get_entity_manager", 1000000, timer.elapsed_ms());
 
-            // get_operating_message
+            // add 返回 operating_message (RVO 零拷贝)
             timer.reset();
             for (int i = 0; i < 1000000; ++i) {
-                auto& omr = mgr_m.get_operating_message();
+                auto omr = mgr_m.add(ents_m[0], Velocity{1.0f, 0, 0});
                 (void)omr;
             }
-            print_perf("get_operating_message", 1000000, timer.elapsed_ms());
+            print_perf("manager::add 返回 operating_message (RVO)", 1000000, timer.elapsed_ms());
 
             // reserve_component_capacity
             timer.reset();
@@ -4763,7 +5141,7 @@ int main()
                 scs_d.clear();
                 print_perf("single_class_set clear", misc_count, timer.elapsed_ms());
 
-                // size / empty / get_type_id / get_operating_message
+                // size / empty / get_type_id
                 timer.reset();
                 volatile size_t sz = 0;
                 volatile bool ey = false;
@@ -4882,6 +5260,23 @@ int main()
                 for (size_t i = 0; i < cp_count; ++i)
                     cp_db.emplace_back_dense_unchecked(static_cast<int>(i));
                 print_perf("class_pool emplace_back_dense_unchecked", cp_count, timer.elapsed_ms());
+            }
+
+            // append_n (方案 J: AVX2 批量追加)
+            {
+                class_pool<int> cp_an;
+                cp_an.increase_capacity(cp_count + 1);
+                timer.reset();
+                cp_an.append_n(cp_count, 42);
+                print_perf("class_pool append_n", cp_count, timer.elapsed_ms());
+
+                // 验证正确性
+                bool ok = (cp_an.size() == cp_count);
+                for (size_t i = 0; i < cp_count && ok; ++i)
+                    ok = (cp_an[i] == 42);
+                print_item("append_n 正确性", ok);
+                print_item("append_n is_dense", cp_an.is_dense());
+                print_item("append_n count", cp_an.count() == cp_count);
             }
 
             // at / operator[] / front / back / data / span / get

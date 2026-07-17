@@ -103,31 +103,44 @@
             if constexpr (std::is_invocable_v<Func, entity, T&>)
             {
                 auto& indices = set_->get_entity_indices();
+                auto& versions = set_->get_entity_versions();
                 const size_t n = indices.size();
-                const sparse_entry* cur_ver_page = nullptr;
-                size_t cur_page_idx = SIZE_MAX;
-                for (size_t i = 0; i < n; ++i)
+                // 若 versions_ 已同步, 走连续读快速路径, 避免 sparse_entry 间接查找
+                if (versions.size() >= n) [[likely]]
                 {
-                    uint32_t eid = indices[i];
-                    size_t pid = eid >> set_->page_shift;
-                    if (pid != cur_page_idx) [[unlikely]]
+                    const uint32_t* idx_data = indices.data();
+                    const uint32_t* ver_data = versions.data();
+                    for (size_t i = 0; i < n; ++i)
                     {
-                        cur_ver_page = set_->get_version_page(eid);
-                        cur_page_idx = pid;
+                        entity e(idx_data[i], ver_data[i]);
+                        func(e, (*pool)[i]);
                     }
-                    uint32_t ver = 0;
-                    if (cur_ver_page) [[likely]]
-                        ver = single_class_set::read_version_from_page(cur_ver_page, eid, set_->page_mask);
-                    entity e(eid, ver);
-                    func(e, (*pool)[i]);
+                }
+                else
+                {
+                    // 回退路径: versions_ 未同步 (旧数据), 走 sparse_entry 查找
+                    const sparse_entry* cur_ver_page = nullptr;
+                    size_t cur_page_idx = SIZE_MAX;
+                    for (size_t i = 0; i < n; ++i)
+                    {
+                        uint32_t eid = indices[i];
+                        size_t pid = eid >> set_->page_shift;
+                        if (pid != cur_page_idx) [[unlikely]]
+                        {
+                            cur_ver_page = set_->get_version_page(eid);
+                            cur_page_idx = pid;
+                        }
+                        uint32_t ver = 0;
+                        if (cur_ver_page) [[likely]]
+                            ver = single_class_set::read_version_from_page(cur_ver_page, eid, set_->page_mask);
+                        entity e(eid, ver);
+                        func(e, (*pool)[i]);
+                    }
                 }
             }
             else
             {
-                T* it = pool->data();
-                T* end = it + pool->size();
-                for (; it != end; ++it)
-                    func(*it);
+                pool->for_each(std::forward<Func>(func));
             }
         }
 

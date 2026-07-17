@@ -297,39 +297,62 @@
                 const size_t main_count = (n > pd) ? (n - pd) : 0;
                 if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
                 {
-                    const sparse_entry* mv_cur_ver_page = nullptr;
-                    size_t mv_cur_page_idx = SIZE_MAX;
-                    size_t i = 0;
-                    for (; i < main_count; ++i)
+                    // H1: 优先使用 primary 的连续 versions_ 数组, 避免 sparse_entry 间接查找
+                    auto& primary_versions = primary->get_entity_versions();
+                    const uint32_t* ver_data = primary_versions.data();
+                    const size_t ver_size = primary_versions.size();
+                    if (ver_size >= n) [[likely]]
                     {
-                        (PREFETCH_R(&(*std::get<Is>(pools))[i + pd]), ...);
-                        uint32_t eid = indices[i];
-                        size_t pid = eid >> primary->page_shift;
-                        if (pid != mv_cur_page_idx) [[unlikely]]
+                        size_t i = 0;
+                        for (; i < main_count; ++i)
                         {
-                            mv_cur_ver_page = primary->get_version_page(eid);
-                            mv_cur_page_idx = pid;
+                            (PREFETCH_R(&(*std::get<Is>(pools))[i + pd]), ...);
+                            entity e(indices[i], ver_data[i]);
+                            func(e, (*std::get<Is>(pools))[i]...);
                         }
-                        uint32_t ver = 0;
-                        if (mv_cur_ver_page) [[likely]]
-                            ver = single_class_set::read_version_from_page(mv_cur_ver_page, eid, primary->page_mask);
-                        entity e(eid, ver);
-                        func(e, (*std::get<Is>(pools))[i]...);
+                        for (; i < n; ++i)
+                        {
+                            entity e(indices[i], ver_data[i]);
+                            func(e, (*std::get<Is>(pools))[i]...);
+                        }
                     }
-                    for (; i < n; ++i)
+                    else
                     {
-                        uint32_t eid = indices[i];
-                        size_t pid = eid >> primary->page_shift;
-                        if (pid != mv_cur_page_idx) [[unlikely]]
+                        // 回退路径: versions_ 未同步, 走 sparse_entry 查找
+                        const sparse_entry* mv_cur_ver_page = nullptr;
+                        size_t mv_cur_page_idx = SIZE_MAX;
+                        size_t i = 0;
+                        for (; i < main_count; ++i)
                         {
-                            mv_cur_ver_page = primary->get_version_page(eid);
-                            mv_cur_page_idx = pid;
+                            (PREFETCH_R(&(*std::get<Is>(pools))[i + pd]), ...);
+                            uint32_t eid = indices[i];
+                            size_t pid = eid >> primary->page_shift;
+                            if (pid != mv_cur_page_idx) [[unlikely]]
+                            {
+                                mv_cur_ver_page = primary->get_version_page(eid);
+                                mv_cur_page_idx = pid;
+                            }
+                            uint32_t ver = 0;
+                            if (mv_cur_ver_page) [[likely]]
+                                ver = single_class_set::read_version_from_page(mv_cur_ver_page, eid, primary->page_mask);
+                            entity e(eid, ver);
+                            func(e, (*std::get<Is>(pools))[i]...);
                         }
-                        uint32_t ver = 0;
-                        if (mv_cur_ver_page) [[likely]]
-                            ver = single_class_set::read_version_from_page(mv_cur_ver_page, eid, primary->page_mask);
-                        entity e(eid, ver);
-                        func(e, (*std::get<Is>(pools))[i]...);
+                        for (; i < n; ++i)
+                        {
+                            uint32_t eid = indices[i];
+                            size_t pid = eid >> primary->page_shift;
+                            if (pid != mv_cur_page_idx) [[unlikely]]
+                            {
+                                mv_cur_ver_page = primary->get_version_page(eid);
+                                mv_cur_page_idx = pid;
+                            }
+                            uint32_t ver = 0;
+                            if (mv_cur_ver_page) [[likely]]
+                                ver = single_class_set::read_version_from_page(mv_cur_ver_page, eid, primary->page_mask);
+                            entity e(eid, ver);
+                            func(e, (*std::get<Is>(pools))[i]...);
+                        }
                     }
                 }
                 else

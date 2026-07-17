@@ -14,8 +14,7 @@
 #include "part/type_id.hpp"
 #include "part/tiered_sort.hpp"
 
-// 非时间存储填充 uint32_t 数组 (大块写入绕过缓存, 避免污染)
-// dst 必须 32 字节对齐, count 为元素数
+
 static inline void nt_fill_uint32_(uint32_t* dst, size_t count, uint32_t value) noexcept
 {
 #if defined(__AVX2__)
@@ -96,8 +95,9 @@ private:
 
     // dense array
     class_pool<uint32_t> dense_;
+    // 与 dense_ 同步的 version 数组, 用于遍历时直接读连续内存, 避免 sparse_entry 间接查找
+    class_pool<uint32_t> versions_;
     int type_id_{-1};
-    operating_message message;
 
     void* typed_pool_{nullptr};
     void* typed_pool_data_{nullptr};
@@ -717,6 +717,7 @@ private:
     template <typename T, typename Entities, typename F>
     operating_message add_batch_impl(Entities& entities, size_t count, F&& get_component) noexcept
     {
+        operating_message result;
         using DT = std::decay_t<T>;
         const int tid = type_id::get_type_id<DT>();
         if (type_id_ == -1) [[unlikely]]
@@ -732,8 +733,8 @@ private:
             const entity& e = entities[i];
             if (!e.is_valid()) [[unlikely]]
             {
-                message.write_message(false, "single_class_set::add_batch(): invalid entity index ", std::to_string(e.parts_.index_));
-                return message;
+                result.write_message(false, "single_class_set::add_batch(): invalid entity index ", std::to_string(e.parts_.index_));
+                return result;
             }
             if (e.parts_.index_ > max_index) max_index = e.parts_.index_;
             if (all_new && e.parts_.index_ < sparse_size_ && sparse_version_at(e.parts_.index_) == e.parts_.version_)
@@ -769,10 +770,13 @@ private:
         {
             size_t dense_start = dense_.size();
             dense_.increase_capacity(dense_start + count);
+            versions_.increase_capacity(dense_start + count);
             pool->increase_capacity(pool->size() + count);
             typed_pool_data_ = pool->data();
 
             dense_.append_indices_from(entities.data(), count);
+            for (size_t i = 0; i < count; ++i)
+                versions_.emplace_back_unchecked(entities[i].parts_.version_);
 
             using component_return_t = decltype(get_component(0));
             if constexpr (std::is_lvalue_reference_v<component_return_t>)
@@ -826,20 +830,26 @@ private:
             {
                 size_t dense_old = dense_.size();
                 dense_.increase_capacity(dense_old + new_count);
+                versions_.increase_capacity(dense_old + new_count);
                 pool->increase_capacity(pool->size() + new_count);
                 typed_pool_data_ = pool->data();
 
                 class_pool<uint32_t> new_entity_indices;
+                class_pool<uint32_t> new_entity_versions;
                 class_pool<DT> new_components;
                 new_entity_indices.increase_capacity(new_count);
+                new_entity_versions.increase_capacity(new_count);
                 new_components.increase_capacity(new_count);
                 for (size_t j = 0; j < new_count; ++j)
                 {
                     size_t i = new_positions[j];
                     new_entity_indices.push_back_unchecked(entities[i].parts_.index_);
+                    new_entity_versions.push_back_unchecked(entities[i].parts_.version_);
                     new_components.push_back_unchecked(get_component(i));
                 }
                 dense_.append_bulk(new_entity_indices.data(), new_count);
+                for (size_t j = 0; j < new_count; ++j)
+                    versions_.emplace_back_unchecked(new_entity_versions[j]);
                 using component_return_t = decltype(get_component(0));
                 if constexpr (std::is_rvalue_reference_v<component_return_t>)
                     pool->append_bulk_move(new_components.data(), new_count);
@@ -872,7 +882,7 @@ private:
         ++version_;
         if (typed_pool_ && ops_.get_pool_data) typed_pool_data_ = ops_.get_pool_data(typed_pool_);
         check_mode_switch_();
-        return message;
+        return result;
     }
 
 public:
@@ -881,6 +891,7 @@ public:
         deallocate_all_pages_();
         hot_set_clear_();
         dense_.clear();
+        versions_.clear();
         entity_change_tracking_.clear();
         if (typed_pool_ && ops_.clear_pool) ops_.clear_pool(typed_pool_);
     }
@@ -900,8 +911,9 @@ public:
     }
 
     template <typename T>
-    operating_message& add(entity e, T&& object) noexcept
+    operating_message add(entity e, T&& object) noexcept
     {
+        operating_message result;
         using DT = std::decay_t<T>;
         const int tid = type_id::get_type_id<DT>();
         if (type_id_ == -1) [[unlikely]]
@@ -911,14 +923,14 @@ public:
         }
         else if (type_id_ != tid) [[unlikely]]
         {
-            message.write_message(false, "single_class_set::add(): type mismatch");
-            return message;
+            result.write_message(false, "single_class_set::add(): type mismatch");
+            return result;
         }
 
         if (!e.is_valid()) [[unlikely]]
         {
-            message.write_message(false, "single_class_set::add(): ID is invalid, index=", std::to_string(e.parts_.index_));
-            return message;
+            result.write_message(false, "single_class_set::add(): ID is invalid, index=", std::to_string(e.parts_.index_));
+            return result;
         }
 
         auto* pool = get_typed_pool<DT>();
@@ -929,6 +941,7 @@ public:
             uint32_t dense_idx = static_cast<uint32_t>(dense_.size());
             sparse_set_at(e.parts_.index_, dense_idx, e.parts_.version_);
             dense_.emplace_back_unchecked(e.parts_.index_);
+            versions_.emplace_back_unchecked(e.parts_.version_);
             pool->emplace_back_unchecked(std::forward<T>(object));
             ++version_;
             if (track_changes_enabled_) [[likely]] {
@@ -937,7 +950,7 @@ public:
             }
             if (on_add_) [[unlikely]] on_add_(e, &(*pool)[dense_idx], on_add_data_);
             check_mode_switch_();
-            return message;
+            return result;
         }
 
         // slow path: index may be beyond current size or within existing range
@@ -983,6 +996,7 @@ public:
             dense_.emplace_back(e.parts_.index_);
             dense_idx = static_cast<uint32_t>(dense_.size() - 1);
             ver = e.parts_.version_;
+            versions_.emplace_back(ver);
             sparse_set_at(e.parts_.index_, dense_idx, ver);
             pool->emplace_back(std::forward<T>(object));
             if (on_add_) [[unlikely]] on_add_(e, &(*pool)[dense_idx], on_add_data_);
@@ -997,7 +1011,7 @@ public:
         }
         typed_pool_data_ = pool->data();
         check_mode_switch_();
-        return message;
+        return result;
     }
 
     template <typename T>
@@ -1005,8 +1019,9 @@ public:
     {
         if (entities.size() != components.size()) [[unlikely]]
         {
-            message.write_message(false, "single_class_set::add_batch(): entities and components size mismatch");
-            return message;
+            operating_message result;
+            result.write_message(false, "single_class_set::add_batch(): entities and components size mismatch");
+            return result;
         }
         return add_batch_impl<T>(entities, entities.size(),
             [&components](size_t i) -> const T& { return components[i]; });
@@ -1017,8 +1032,9 @@ public:
     {
         if (entities.size() != components.size()) [[unlikely]]
         {
-            message.write_message(false, "single_class_set::add_batch(): entities and components size mismatch");
-            return message;
+            operating_message result;
+            result.write_message(false, "single_class_set::add_batch(): entities and components size mismatch");
+            return result;
         }
         return add_batch_impl<T>(entities, entities.size(),
             [&components](size_t i) -> const T& { return components[i]; });
@@ -1029,8 +1045,9 @@ public:
     {
         if (entities.size() != components.size()) [[unlikely]]
         {
-            message.write_message(false, "single_class_set::add_batch(): entities and components size mismatch");
-            return message;
+            operating_message result;
+            result.write_message(false, "single_class_set::add_batch(): entities and components size mismatch");
+            return result;
         }
         return add_batch_impl<T>(entities, entities.size(),
             [&components](size_t i) -> T&& { return std::move(components[i]); });
@@ -1467,10 +1484,11 @@ public:
 
     operating_message hard_remove(entity e) noexcept
     {
+        operating_message result;
         if (!e.is_valid() || e.parts_.index_ >= sparse_size_ || sparse_version_at(e.parts_.index_) != e.parts_.version_) [[unlikely]]
         {
-            message.write_message(false, "single_class_set::hard_remove(): invalid entity or version mismatch, index=", std::to_string(e.parts_.index_));
-            return message;
+            result.write_message(false, "single_class_set::hard_remove(): invalid entity or version mismatch, index=", std::to_string(e.parts_.index_));
+            return result;
         }
 
         auto index = sparse_dense_at(e.parts_.index_);
@@ -1480,6 +1498,12 @@ public:
 
         auto moved_entity_id = dense_.back();
         dense_[index] = dense_.back();
+        if (index < versions_.size() && !versions_.empty())
+        {
+            if (index < versions_.size() - 1)
+                versions_[index] = versions_.back();
+            versions_.pop_back();
+        }
 
         // invalidate hot set for removed entity
         hot_set_invalidate_(e.parts_.index_);
@@ -1520,21 +1544,22 @@ public:
 
         sparse_set_at_unchecked(e.parts_.index_, dense_invalid, 0);
         ++version_;
-        return message;
+        return result;
     }
 
     operating_message soft_remove(entity e) noexcept
     {
+        operating_message result;
         if (!e.is_valid() || e.parts_.index_ >= sparse_size_ || sparse_version_at(e.parts_.index_) != e.parts_.version_) [[unlikely]]
         {
-            message.write_message(false, "single_class_set::soft_remove(): invalid entity or version mismatch, index=", std::to_string(e.parts_.index_));
-            return message;
+            result.write_message(false, "single_class_set::soft_remove(): invalid entity or version mismatch, index=", std::to_string(e.parts_.index_));
+            return result;
         }
 
         hot_set_invalidate_(e.parts_.index_);
         sparse_set_at_unchecked(e.parts_.index_, dense_invalid, 0);
         ++version_;
-        return message;
+        return result;
     }
 
     [[nodiscard]] bool contains_entity(entity e) const noexcept
@@ -1576,7 +1601,6 @@ public:
     , sparse_size_(other.sparse_size_)
     , dense_(std::move(other.dense_))
     , type_id_(other.type_id_)
-    , message(std::move(other.message))
     , typed_pool_(other.typed_pool_)
     , pending_increase_capacity_(other.pending_increase_capacity_)
     , component_size_(other.component_size_)
@@ -1640,7 +1664,6 @@ public:
             ops_ = other.ops_;
             pending_increase_capacity_ = other.pending_increase_capacity_;
             component_size_ = other.component_size_;
-            message = std::move(other.message);
             type_id_ = other.type_id_;
             version_ = other.version_;
             entity_change_tracking_ = std::move(other.entity_change_tracking_);
@@ -1678,11 +1701,6 @@ public:
             other.on_modify_data_ = nullptr;
         }
         return *this;
-    }
-
-    [[nodiscard]] operating_message& get_operating_message() noexcept
-    {
-        return message;
     }
 
     single_class_set(const single_class_set&) = delete;
@@ -1741,6 +1759,17 @@ public:
         return dense_;
     }
 
+    // 与 dense_ 同步的 version 数组, 遍历时直接读连续内存
+    [[nodiscard]] class_pool<uint32_t>& get_entity_versions() noexcept
+    {
+        return versions_;
+    }
+
+    [[nodiscard]] const class_pool<uint32_t>& get_entity_versions() const noexcept
+    {
+        return versions_;
+    }
+
     // sparse intersection check for >64 types slow path
     [[nodiscard]] static bool sparse_contains_version(const single_class_set* set,
                                                      uint32_t idx,
@@ -1764,6 +1793,12 @@ public:
         uint32_t tmp = dense_[i];
         dense_[i] = dense_[j];
         dense_[j] = tmp;
+        if (i < versions_.size() && j < versions_.size())
+        {
+            uint32_t tmp_v = versions_[i];
+            versions_[i] = versions_[j];
+            versions_[j] = tmp_v;
+        }
         sparse_set_unchecked(dense_[i], sparse_version_at_unchecked(dense_[i]), static_cast<uint32_t>(i));
         sparse_set_unchecked(dense_[j], sparse_version_at_unchecked(dense_[j]), static_cast<uint32_t>(j));
         if (i < entity_change_tracking_.size() && j < entity_change_tracking_.size())
@@ -1801,6 +1836,14 @@ public:
         for (size_t i = 0; i < n; ++i)
             new_dense.emplace_back(dense_[sorted_indices[i]]);
 
+        class_pool<uint32_t> new_versions;
+        if (versions_.size() >= n)
+        {
+            new_versions.increase_capacity(n);
+            for (size_t i = 0; i < n; ++i)
+                new_versions.emplace_back(versions_[sorted_indices[i]]);
+        }
+
         class_pool<T>* typed_pool = get_typed_pool_ptr<T>();
         if (typed_pool)
         {
@@ -1827,6 +1870,8 @@ public:
             sparse_set_unchecked(new_dense[i], sparse_version_at_unchecked(new_dense[i]), static_cast<uint32_t>(i));
 
         dense_ = std::move(new_dense);
+        if (new_versions.size() > 0)
+            versions_ = std::move(new_versions);
         ++version_;
         clear_hot_set();
     }

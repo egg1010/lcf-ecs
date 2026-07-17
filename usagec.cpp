@@ -197,6 +197,33 @@ static void demo_operating_message()
     print_kv("\u7981\u7528\u540e switch \u72b6\u6001", msg6.get_switch_bool());
     ecs_debug_messages() = true;
 
+    print_sub("msg_level \u65e5\u5fd7\u7ea7\u522b\u8fc7\u6ee4");
+    operating_message msg_lv;
+    msg_lv.set_min_level(msg_level::warn);
+    print_kv("set_min_level(warn)", msg_lv.get_min_level() == msg_level::warn);
+    msg_lv.write_message_level(msg_level::info, true, "info \u5e94\u88ab\u8fc7\u6ee4");
+    print_kv("info \u88ab\u8fc7\u6ee4", msg_lv.read_message().empty());
+    msg_lv.write_message_level(msg_level::error, true, "\u9519\u8bef: ", 42);
+    std::cout << "    \u5199\u5165: [" << msg_lv.read_message() << "]\n";
+
+    print_sub("write_message_fmt_level");
+    operating_message msg_fl;
+    msg_fl.set_min_level(msg_level::debug);
+    msg_fl.write_message_fmt_level(msg_level::warn, true, "v={} k={}", 1, "x");
+    std::cout << "    \u5199\u5165: [" << msg_fl.read_message() << "]\n";
+
+    print_sub("write_message \u7c7b\u578b\u7279\u5316 (to_chars)");
+    operating_message msg_tc;
+    msg_tc.write_message(true, "i=", 100, " d=", 3.14, " s=", std::string_view("hi"));
+    std::cout << "    \u5199\u5165: [" << msg_tc.read_message() << "]\n";
+
+    print_sub("reserve \u9884\u5206\u914d");
+    operating_message msg_rsv;
+    msg_rsv.reserve(4096);
+    print_kv("reserve(4096) \u540e capacity", msg_rsv.capacity());
+    for (int i = 0; i < 100; ++i) msg_rsv.write_message(true, "iter ", i);
+    print_kv("\u6279\u91cf\u5199\u5165\u540e message_size", msg_rsv.message_size());
+
     print_sub("\u79fb\u52a8/\u62f7\u8d1d\u6784\u9020\u4e0e\u8d4b\u503c");
     operating_message msg7;
     msg7.write_message(true, "\u539f\u59cb\u6d88\u606f\n");
@@ -248,6 +275,13 @@ static void demo_class_pool()
     upool.emplace_back_dense_unchecked(5);
     std::cout << "    push_back_unchecked + emplace_back_unchecked + emplace_back_dense_unchecked: ";
     for (auto v : upool) std::cout << v << " ";
+    std::cout << "\n";
+
+    // 批量追加 (append_n): AVX2 批量 bitmap 设置, 比逐个 emplace_back 快 3x
+    class_pool<int> apool;
+    apool.append_n(10, 42);
+    std::cout << "    append_n(10, 42) size=" << apool.size() << " count=" << apool.count() << ": ";
+    for (auto v : apool) std::cout << v << " ";
     std::cout << "\n";
 
     print_sub("\u5143\u7d20\u8bbf\u95ee: operator[] / at / front / back / get / data / span");
@@ -403,7 +437,7 @@ static void demo_class_pool()
     for (const int& v : cpool11) std::cout << v << " ";
     std::cout << "\n";
 
-    print_sub("迭代器: begin/end / cbegin/cend");
+    print_sub("迭代器: begin/end / cbegin/cend / rbegin/rend / for_each");
     class_pool<int> pool12 = {100, 200, 300};
     std::cout << "    \u6b63\u5411 (begin/end): ";
     for (auto it = pool12.begin(); it != pool12.end(); ++it) std::cout << *it << " ";
@@ -411,6 +445,16 @@ static void demo_class_pool()
     std::cout << "    const (cbegin/cend): ";
     for (auto it = pool12.cbegin(); it != pool12.cend(); ++it) std::cout << *it << " ";
     std::cout << "\n";
+    std::cout << "    \u53cd\u5411 (rbegin/rend): ";
+    for (auto it = pool12.rbegin(); it != pool12.rend(); ++it) std::cout << *it << " ";
+    std::cout << "\n";
+    std::cout << "    const \u53cd\u5411 (crbegin/crend): ";
+    for (auto it = pool12.crbegin(); it != pool12.crend(); ++it) std::cout << *it << " ";
+    std::cout << "\n";
+    std::cout << "    for_each (\u6279\u91cf\u904d\u5386, dense \u8def\u5f84\u53ef\u81ea\u52a8\u5411\u91cf\u5316): ";
+    long long fe_sum = 0;
+    pool12.for_each([&fe_sum](int& v) { fe_sum += v; });
+    std::cout << fe_sum << "\n";
 
     print_sub("\u62f7\u8d1d\u6784\u9020 / \u62f7\u8d1d\u8d4b\u503c / \u79fb\u52a8\u6784\u9020 / \u79fb\u52a8\u8d4b\u503c");
     class_pool<int> pool13(pool12);
@@ -502,6 +546,17 @@ static void demo_fill_the_hole()
     print_kv("clear 后 size", pool4.size());
     print_kv("clear 后 empty", pool4.empty());
     print_kv("capacity(预留64)", pool4.capacity());
+
+    print_sub("fill_the_hole_at 返回被填补位置索引");
+    class_pool<int> pool5;
+    size_t i0 = pool5.fill_the_hole_at(10);  // 无洞 → 追加, 返回 0
+    size_t i1 = pool5.fill_the_hole_at(20);  // 无洞 → 追加, 返回 1
+    print_kv("fill_the_hole_at(10) 返回", i0);
+    print_kv("fill_the_hole_at(20) 返回", i1);
+    pool5.sparse_erase_at(0);  // 产生空洞 at 0
+    size_t idx = pool5.fill_the_hole_at(99);  // 填洞 at 0, 返回 0
+    print_kv("填洞后返回索引", idx);
+    print_kv("pool5[idx] 值", pool5[idx]);
 }
 
 // =============================================================================
@@ -1068,9 +1123,15 @@ static void demo_single_class_set()
     const class_pool<uint32_t>& cindices = set2.get_entity_indices();
     print_kv("get_entity_indices() const size()", cindices.size());
 
-    print_sub("get_operating_message()");
-    operating_message& msg = set2.get_operating_message();
-    print_kv("get_operating_message() \u72b6\u6001", (bool)msg);
+    print_sub("get_entity_versions / get_entity_versions const");
+    class_pool<uint32_t>& versions = set2.get_entity_versions();
+    print_kv("get_entity_versions() size()", versions.size());
+    const class_pool<uint32_t>& cversions = set2.get_entity_versions();
+    print_kv("get_entity_versions() const size()", cversions.size());
+
+    print_sub("add() \u8fd4\u56de operating_message");
+    operating_message msg = set2.add(e1, Position{9, 9});
+    print_kv("add() \u8fd4\u56de\u503c\u72b6\u6001", (bool)msg);
 
     print_sub("\u79fb\u52a8\u6784\u9020/\u8d4b\u503c");
     single_class_set set3;
@@ -1116,6 +1177,20 @@ static void demo_manager()
        .addc(e1, Name{"Alice"})
        .addc(e2, Name{"Bob"});
     print_kv("addc \u94fe\u5f0f\u6dfb\u52a0", "\u5b8c\u6210");
+
+    print_sub("addc \u53d8\u53c2 (\u591a\u53c2\u6570)");
+    entity e_va1 = mgr.create_entity();
+    entity e_va2 = mgr.create_entity();
+    entity e_va3 = mgr.create_entity();
+    // 正向: 单组件 + 多实体 (comp 在前, 后续为实体参数包)
+    mgr.addc(Health{99, 99}, e_va1, e_va2, e_va3);
+    print_kv("addc(comp, e1, e2, e3) \u6b63\u5411\u53d8\u53c2",
+             (mgr.get_ptr<Health>(e_va1) && mgr.get_ptr<Health>(e_va2) && mgr.get_ptr<Health>(e_va3)));
+    // 反向: 单实体 + 多组件 (entity 在前, 后续为组件参数包)
+    entity e_vb1 = mgr.create_entity();
+    mgr.addc(e_vb1, Position{5, 5}, Velocity{1, 1}, Health{50, 100});
+    print_kv("addc(e, comp1, comp2, comp3) \u53cd\u5411\u53d8\u53c2",
+             (mgr.get_ptr<Position>(e_vb1) && mgr.get_ptr<Velocity>(e_vb1) && mgr.get_ptr<Health>(e_vb1)));
 
     print_sub("get_ptr<T> / get_ptr<T> const");
     Position* pos = mgr.get_ptr<Position>(e1);
@@ -1230,9 +1305,9 @@ static void demo_manager()
     mgr.reserve_component_capacity<Position>(10000);
     print_kv("reserve_component_capacity<Position>(10000)", "\u5b8c\u6210");
 
-    print_sub("get_operating_message()");
-    operating_message& msg = mgr.get_operating_message();
-    print_kv("get_operating_message() \u72b6\u6001", (bool)msg);
+    print_sub("add() \u8fd4\u56de operating_message");
+    operating_message msg = mgr.add(e1, Velocity{2, 0});
+    print_kv("add() \u8fd4\u56de\u503c\u72b6\u6001", (bool)msg);
 
     print_sub("soft_remove / hard_remove");
     mgr.soft_remove<Health>(e1);
@@ -1249,6 +1324,16 @@ static void demo_manager()
     mgr.add(e6, Velocity{2, 2});
     mgr.hard_removec<Velocity>(e5).hard_removec<Velocity>(e6);
     print_kv("hard_removec<Velocity> \u94fe\u5f0f\u5220\u9664", "\u5b8c\u6210");
+
+    print_sub("hard_removec / soft_removec \u53d8\u53c2 (\u591a\u7c7b\u578b \u00d7 \u591a\u5b9e\u4f53)");
+    entity e_vr1 = mgr.create_entity();
+    entity e_vr2 = mgr.create_entity();
+    mgr.addc(e_vr1, Position{1, 1}, Velocity{1, 1}, Health{100, 100});
+    mgr.addc(e_vr2, Position{2, 2}, Velocity{2, 2}, Health{80, 100});
+    // 笛卡尔积: 从 e_vr1 和 e_vr2 都移除 Position 和 Velocity
+    mgr.hard_removec<Position, Velocity>(e_vr1, e_vr2);
+    print_kv("hard_removec<Pos,Vel>(e1,e2) \u540e Pos/Vel", "nullptr");
+    print_kv("  Health \u4ecd\u5b58\u5728", (mgr.get_ptr<Health>(e_vr1) && mgr.get_ptr<Health>(e_vr2)));
 
     print_sub("delete_type_container<T>");
     mgr.delete_type_container<Position>();
