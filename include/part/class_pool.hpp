@@ -11,16 +11,21 @@
 #include <bit>
 #include <span>
 #include <utility>
-#if defined(__AVX2__) || defined(__BMI__) || defined(_MSC_VER)
+#if defined(__AVX2__) || defined(__BMI__) || (defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64)))
 #include <immintrin.h>
 #endif
 
-// Cross-platform prefetch macro (MSVC + Clang/GCC)
-#ifdef _MSC_VER
+// 跨平台预取宏
+#if defined(__GNUC__) || defined(__clang__)
+#define PREFETCH_R(ptr) __builtin_prefetch(ptr, 0, 3)
+#elif defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
 #include <intrin.h>
 #define PREFETCH_R(ptr) _mm_prefetch(reinterpret_cast<const char*>(ptr), _MM_HINT_T0)
+#elif defined(_MSC_VER)
+#include <intrin.h>
+#define PREFETCH_R(ptr) __prefetch(ptr)
 #else
-#define PREFETCH_R(ptr) __builtin_prefetch(ptr, 0, 3)
+#define PREFETCH_R(ptr) ((void)0)
 #endif
 
 namespace ecs { class single_class_set; }
@@ -28,7 +33,7 @@ namespace ecs { class single_class_set; }
 // 清除最低设置位 (BMI1 BLSR 指令, 不可用时回退到标量)
 [[nodiscard]] static inline uint64_t clear_lowest_bit(uint64_t x) noexcept
 {
-#if defined(__BMI__) || defined(_MSC_VER)
+#if defined(__BMI__) || (defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64)))
     return _blsr_u64(x);
 #else
     return x & (x - 1);
@@ -551,8 +556,10 @@ private:
 	static void copy_trivial_data(T* dst, const T* src, size_t count) noexcept {
 		const size_t bytes = count * sizeof(T);
 #ifdef __AVX2__
+#if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wstringop-overflow"
+#endif
 		if (bytes >= 2048)
 		{
 			const __m256i* s = static_cast<const __m256i*>(static_cast<const void*>(src));
@@ -579,7 +586,9 @@ private:
 			}
 			return;
 		}
+#if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic pop
+#endif
 #endif
 		if (bytes != 0) [[likely]]
 		{

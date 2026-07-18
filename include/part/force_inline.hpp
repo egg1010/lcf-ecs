@@ -9,3 +9,13 @@
 #define FORCE_INLINE inline
 #endif
 #endif
+
+#ifndef NOINLINE
+#if defined(_MSC_VER)
+#define NOINLINE __declspec(noinline)
+#elif defined(__GNUC__) || defined(__clang__)
+#define NOINLINE __attribute__((noinline))
+#else
+#define NOINLINE
+#endif
+#endif

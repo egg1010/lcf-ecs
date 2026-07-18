@@ -98,7 +98,7 @@ void print_item(const char* name, const char* result) {
               << ": " << result << "\n";
 }
 
-__attribute__((noinline)) void print_perf(const std::string& op, size_t count, double ms) {
+NOINLINE void print_perf(const std::string& op, size_t count, double ms) {
     std::cout << std::fixed << std::setprecision(2);
     std::cout << "  " << std::left << std::setw(30) << op
               << ": " << std::right << std::setw(8) << count

@@ -83,7 +83,66 @@ inline runtime_query::runtime_query(manager* mgr, class_pool<runtime_term> terms
     if (terms.empty()) [[unlikely]] return;
 
     use_mask_path_ = true;
-    size_t min_size = std::numeric_limits<size_t>::max();
+
+    // term 分发上下文: 封装构造函数局部状态, 供 4 个 op 处理函数共享
+    struct term_ctx
+    {
+        runtime_query* self;
+        size_t min_size;
+    } ctx{this, std::numeric_limits<size_t>::max()};
+
+    // 统一的 op 处理函数签名
+    using term_handler = void(*)(term_ctx&, const runtime_term&, const component_meta*, single_class_set*) noexcept;
+
+    // 4 个 op 处理函数, 通过 dispatch[term.op] 直接索引调用, 消除 if-else 链
+    static constexpr term_handler dispatch[4] = {
+        // op=0 AND
+        [](term_ctx& c, const runtime_term& t, const component_meta* meta, single_class_set* set) noexcept
+        {
+            c.self->required_ids_.emplace_back(t.type_id);
+            c.self->req_sets_.emplace_back(set);
+            c.self->req_access_.emplace_back(t.access);
+            if (meta && meta->bit != 0)
+            {
+                c.self->req_mask_ |= meta->bit;
+            }
+            else
+            {
+                c.self->use_mask_path_ = false;
+            }
+            if (set && set->size() < c.min_size)
+            {
+                c.min_size = set->size();
+                c.self->primary_set_ = set;
+            }
+        },
+        // op=1 OR
+        [](term_ctx& c, const runtime_term&, const component_meta*, single_class_set* set) noexcept
+        {
+            c.self->has_or_ = true;
+            c.self->or_sets_.emplace_back(set);
+            c.self->use_mask_path_ = false;
+        },
+        // op=2 NOT
+        [](term_ctx& c, const runtime_term&, const component_meta* meta, single_class_set* set) noexcept
+        {
+            c.self->exc_sets_.emplace_back(set);
+            if (meta && meta->bit != 0)
+            {
+                c.self->exc_mask_ |= meta->bit;
+            }
+            else
+            {
+                c.self->use_mask_path_ = false;
+            }
+        },
+        // op=3 OPTIONAL
+        [](term_ctx& c, const runtime_term&, const component_meta*, single_class_set* set) noexcept
+        {
+            c.self->has_optional_ = true;
+            c.self->opt_sets_.emplace_back(set);
+        }
+    };
 
     for (const auto& term : terms)
     {
@@ -91,47 +150,9 @@ inline runtime_query::runtime_query(manager* mgr, class_pool<runtime_term> terms
         const auto* meta = mgr->get_component_meta(term.type_id);
         auto* set = mgr->get_single_class_set_by_id(term.type_id);
 
-        if (term.op == 0) // AND
+        if (term.op < 4) [[likely]]
         {
-            required_ids_.emplace_back(term.type_id);
-            req_sets_.emplace_back(set);
-            req_access_.emplace_back(term.access);
-            if (meta && meta->bit != 0)
-            {
-                req_mask_ |= meta->bit;
-            }
-            else
-            {
-                use_mask_path_ = false;
-            }
-            if (set && set->size() < min_size)
-            {
-                min_size = set->size();
-                primary_set_ = set;
-            }
-        }
-        else if (term.op == 1) // OR
-        {
-            has_or_ = true;
-            or_sets_.emplace_back(set);
-            use_mask_path_ = false;
-        }
-        else if (term.op == 2) // NOT
-        {
-            exc_sets_.emplace_back(set);
-            if (meta && meta->bit != 0)
-            {
-                exc_mask_ |= meta->bit;
-            }
-            else
-            {
-                use_mask_path_ = false;
-            }
-        }
-        else if (term.op == 3) // OPTIONAL
-        {
-            has_optional_ = true;
-            opt_sets_.emplace_back(set);
+            dispatch[term.op](ctx, term, meta, set);
         }
     }
 }

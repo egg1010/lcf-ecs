@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
-#if defined(__AVX2__) || defined(_MSC_VER)
+#if defined(__AVX2__) || (defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64)))
 #include <immintrin.h>
 #endif
 #include "part/operating_message.hpp"

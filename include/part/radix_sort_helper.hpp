@@ -7,6 +7,12 @@
 #include <bit>
 #include <type_traits>
 #include <utility>
+#if defined(__SSE2__) || (defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64)))
+#include <immintrin.h>
+#define LCF_HAS_SSE2 1
+#else
+#define LCF_HAS_SSE2 0
+#endif
 
 namespace detail
 {
@@ -287,7 +293,7 @@ inline void scatter_large(Entry* dst, const Entry* src, size_t n,
         {
             PREFETCH_R(&dst[pos + 1]);
         }
-        if constexpr (sizeof(Entry) == 16)
+        if constexpr (sizeof(Entry) == 16 && LCF_HAS_SSE2)
         {
             __m128i v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(&src[i]));
             _mm_stream_si128(reinterpret_cast<__m128i*>(&dst[pos]), v);
@@ -298,7 +304,9 @@ inline void scatter_large(Entry* dst, const Entry* src, size_t n,
         }
         ++count[bucket];
     }
+#if LCF_HAS_SSE2
     _mm_sfence();
+#endif
 }
 
 template <typename KeyType, typename Cfg>
