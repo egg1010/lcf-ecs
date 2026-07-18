@@ -21,6 +21,8 @@
 #include <span>
 #include <functional>
 #include <string>
+#include <vector>
+#include <array>
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -302,6 +304,27 @@ static void demo_class_pool()
     const class_pool<int>& cpool = pool;
     std::span<const int> cs = cpool.span();
     print_kv("pool.span() const \u5927\u5c0f", cs.size());
+
+    print_sub("dense_view: \u5bc6\u96c6\u904d\u5386\u89c6\u56fe (\u4ec5 dense \u6a21\u5f0f\u53ef\u7528)");
+    if (pool.is_dense())
+    {
+        int dv_sum = 0;
+        for (auto& x : pool.dense_view())
+        {
+            dv_sum += x;
+        }
+        print_kv("dense_view \u904d\u5386\u6c42\u548c", dv_sum);
+    }
+    const class_pool<int>& cpool_dv = pool;
+    if (cpool_dv.is_dense())
+    {
+        int cdv_sum = 0;
+        for (auto& x : cpool_dv.dense_view())
+        {
+            cdv_sum += x;
+        }
+        print_kv("const dense_view \u904d\u5386\u6c42\u548c", cdv_sum);
+    }
 
     print_sub("\u5bb9\u91cf\u67e5\u8be2: size / capacity / sparse_capacity / empty / count / valid");
     print_kv("pool.size()", pool.size());
@@ -1220,6 +1243,32 @@ static void demo_manager()
         std::cout << " " << (q_results[i] ? "ok" : "null");
     std::cout << "\n";
 
+    print_sub("get_ptr_batch / prefetch_ptr_batch \u5bb9\u5668\u5165\u53c2\u91cd\u8f7d");
+    // vector \u5165\u53c2
+    std::vector<entity> vq_ents = {e1, e2};
+    std::vector<Position*> vq_results = {nullptr, nullptr};
+    mgr.get_ptr_batch<Position>(vq_ents, vq_results);
+    print_kv("get_ptr_batch(vector, vector)", (vq_results[0] && vq_results[1]) ? "\u5b8c\u6210" : "null");
+
+    // array \u5165\u53c2
+    std::array<entity, 2> aq_ents = {e1, e2};
+    std::array<Position*, 2> aq_results = {nullptr, nullptr};
+    mgr.get_ptr_batch<Position>(aq_ents, aq_results);
+    print_kv("get_ptr_batch(array, array)", (aq_results[0] && aq_results[1]) ? "\u5b8c\u6210" : "null");
+
+    // span \u5165\u53c2
+    std::span<Position*> sp_results(aq_results.data(), aq_results.size());
+    mgr.get_ptr_batch<Position>(std::span<const entity>(aq_ents.data(), 2), sp_results);
+    print_kv("get_ptr_batch(span, span)", (sp_results[0] && sp_results[1]) ? "\u5b8c\u6210" : "null");
+
+    // prefetch_ptr_batch \u5bb9\u5668\u5165\u53c2
+    mgr.prefetch_ptr_batch<Position>(vq_ents);
+    print_kv("prefetch_ptr_batch(vector)", "\u5b8c\u6210");
+    mgr.prefetch_ptr_batch<Position>(aq_ents);
+    print_kv("prefetch_ptr_batch(array)", "\u5b8c\u6210");
+    mgr.prefetch_ptr_batch<Position>(std::span<const entity>(vq_ents.data(), vq_ents.size()));
+    print_kv("prefetch_ptr_batch(span)", "\u5b8c\u6210");
+
     mgr.prefetch_ptr<Position>(e1);
     auto* p2 = mgr.get_ptr<Position>(e1);
     print_kv("prefetch_ptr<Position>(e1) + get_ptr", (p2 ? std::to_string(p2->x) + "," + std::to_string(p2->y) : "null"));
@@ -1295,6 +1344,25 @@ static void demo_manager()
     class_pool<Health> rv_comps = {Health{33, 33}};
     mgr.add_batch(std::move(rv_ents), std::move(rv_comps));
     print_kv("add_batch(&&, &&)", "\u5b8c\u6210");
+
+    print_sub("add_batch \u5bb9\u5668\u5165\u53c2\u91cd\u8f7d(vector/array/\u88f8\u6307\u9488)");
+    // std::vector \u5165\u53c2
+    std::vector<entity> vec_ents = {mgr.create_entity(), mgr.create_entity()};
+    std::vector<Health> vec_comps = {Health{11, 11}, Health{22, 22}};
+    mgr.add_batch<Health>(vec_ents, vec_comps);
+    print_kv("add_batch(vector, vector)", "\u5b8c\u6210");
+
+    // std::array \u5165\u53c2
+    std::array<entity, 2> arr_ents = {mgr.create_entity(), mgr.create_entity()};
+    std::array<Health, 2> arr_comps = {Health{44, 44}, Health{55, 55}};
+    mgr.add_batch<Health>(arr_ents, arr_comps);
+    print_kv("add_batch(array, array)", "\u5b8c\u6210");
+
+    // \u88f8\u6307\u9488 + \u957f\u5ea6
+    entity raw_ents[2] = {mgr.create_entity(), mgr.create_entity()};
+    Health raw_comps[2] = {Health{66, 66}, Health{77, 77}};
+    mgr.add_batch<Health>(raw_ents, raw_comps, 2);
+    print_kv("add_batch(ptr, ptr, count)", "\u5b8c\u6210");
 
     print_sub("get_single_class_set<T> / get_single_class_set<T> const");
     single_class_set* pos_set = mgr.get_single_class_set<Position>();
@@ -2138,6 +2206,71 @@ static void demo_runtime_view()
         rv.for_each([&](entity e) {
             std::cout << "    [" << e.parts_.index_ << "] 有Position无Velocity\n";
         });
+    }
+
+    print_sub("runtime_view_create \u5bb9\u5668\u5165\u53c2\u91cd\u8f7d");
+    {
+        int pos_id = type_id::get_type_id<Position>();
+        int vel_id = type_id::get_type_id<Velocity>();
+
+        // vector \u5165\u53c2
+        std::vector<int> v_req = {pos_id};
+        std::vector<int> v_exc = {vel_id};
+        auto rv_vec = mgr.runtime_view_create(v_req);
+        print_kv("runtime_view_create(vector)", rv_vec.size() > 0 ? "\u5b8c\u6210" : "empty");
+        auto rv_vec2 = mgr.runtime_view_create(v_req, v_exc);
+        print_kv("runtime_view_create(vector, vector)", "\u5b8c\u6210");
+
+        // array \u5165\u53c2 (\u4ec5 required)
+        std::array<int, 1> a_req = {pos_id};
+        auto rv_arr = mgr.runtime_view_create(a_req);
+        print_kv("runtime_view_create(array)", rv_arr.size() > 0 ? "\u5b8c\u6210" : "empty");
+
+        // array \u5165\u53c2 (required + excluded)
+        std::array<int, 1> a_req2 = {pos_id};
+        std::array<int, 1> a_exc = {vel_id};
+        auto rv_arr2 = mgr.runtime_view_create(a_req2, a_exc);
+        print_kv("runtime_view_create(array, array)", "\u5b8c\u6210");
+
+        // span \u5165\u53c2
+        auto rv_sp = mgr.runtime_view_create(std::span<const int>(v_req.data(), v_req.size()));
+        print_kv("runtime_view_create(span)", rv_sp.size() > 0 ? "\u5b8c\u6210" : "empty");
+
+        // \u88f8\u6307\u9488 + \u957f\u5ea6
+        auto rv_ptr = mgr.runtime_view_create(&pos_id, 1);
+        print_kv("runtime_view_create(ptr, count)", rv_ptr.size() > 0 ? "\u5b8c\u6210" : "empty");
+        auto rv_ptr2 = mgr.runtime_view_create(&pos_id, 1, &vel_id, 1);
+        print_kv("runtime_view_create(ptr, count, ptr, count)", "\u5b8c\u6210");
+    }
+
+    print_sub("runtime_view_create_from_terms \u5bb9\u5668\u5165\u53c2\u91cd\u8f7d");
+    {
+        int pos_id = type_id::get_type_id<Position>();
+        int vel_id = type_id::get_type_id<Velocity>();
+
+        // vector \u5165\u53c2
+        std::vector<ecs::runtime_term> v_terms = {
+            ecs::runtime_term{pos_id, 0, ecs::access_mode::read_write},
+            ecs::runtime_term{vel_id, 1, ecs::access_mode::read_only}
+        };
+        auto rv_v = mgr.runtime_view_create_from_terms(v_terms);
+        print_kv("runtime_view_create_from_terms(vector)", "\u5b8c\u6210");
+
+        // array \u5165\u53c2
+        std::array<ecs::runtime_term, 1> a_terms = {
+            ecs::runtime_term{pos_id, 0, ecs::access_mode::read_write}
+        };
+        auto rv_a = mgr.runtime_view_create_from_terms(a_terms);
+        print_kv("runtime_view_create_from_terms(array)", "\u5b8c\u6210");
+
+        // span \u5165\u53c2
+        auto rv_s = mgr.runtime_view_create_from_terms(
+            std::span<const ecs::runtime_term>(v_terms.data(), v_terms.size()));
+        print_kv("runtime_view_create_from_terms(span)", "\u5b8c\u6210");
+
+        // \u88f8\u6307\u9488 + \u957f\u5ea6
+        auto rv_p = mgr.runtime_view_create_from_terms(v_terms.data(), v_terms.size());
+        print_kv("runtime_view_create_from_terms(ptr, count)", "\u5b8c\u6210");
     }
 
     print_sub("删除后掩码自动更新");

@@ -3,6 +3,7 @@
 #include "entity.hpp"
 #include "part/id_.hpp"
 #include "part/class_pool.hpp"
+#include "part/ring_buffer.hpp"
 
 namespace ecs
 {
@@ -31,9 +32,7 @@ private:
     static constexpr size_t signal_buffer_size = 1024;
     static_assert((signal_buffer_size & (signal_buffer_size - 1)) == 0,
                   "signal_buffer_size must be power of 2");
-    signal_event signal_buffer_[signal_buffer_size]{};
-    uint32_t signal_write_{0};
-    uint32_t signal_read_{0};
+    ring_buffer<signal_event, signal_buffer_size> signal_buf_;
     class_pool<signal_event> signal_overflow_chain_;
     size_t signal_overflow_read_{0};
     uint64_t signal_overflow_count_{0};
@@ -44,15 +43,11 @@ private:
     void push_signal(uint32_t type, uint32_t entity_idx) noexcept
     {
         if (!entity_signal_enabled_) [[unlikely]] return;
-        uint32_t next = (signal_write_ + 1) & (signal_buffer_size - 1);
-        if (next == signal_read_) [[unlikely]]
+        if (!signal_buf_.push(signal_event{type, entity_idx})) [[unlikely]]
         {
             ++signal_overflow_count_;
             signal_overflow_chain_.emplace_back(signal_event{type, entity_idx});
-            return;
         }
-        signal_buffer_[signal_write_] = {type, entity_idx};
-        signal_write_ = next;
     }
 
     // 即时回调与延迟队列互斥:注册了即时回调且非重入时同步调用,否则入队
@@ -208,13 +203,10 @@ public:
         entity_signal_flushing_ = true;
         // 循环上限防止 handler 内追加导致无限循环
         uint64_t budget = signal_buffer_size * 4 + signal_overflow_chain_.size();
-        while (budget > 0 && signal_read_ != signal_write_)
-        {
-            auto& ev = signal_buffer_[signal_read_];
-            handler(ev.type, ev.entity_idx);
-            signal_read_ = (signal_read_ + 1) & (signal_buffer_size - 1);
-            --budget;
-        }
+        size_t processed = signal_buf_.drain_with_budget(
+            static_cast<size_t>(budget),
+            [&](const signal_event& ev) noexcept { handler(ev.type, ev.entity_idx); });
+        budget -= processed;
         while (budget > 0 && signal_overflow_read_ < signal_overflow_chain_.size())
         {
             auto& ev = signal_overflow_chain_[signal_overflow_read_];
@@ -232,7 +224,7 @@ public:
 
     [[nodiscard]] bool has_pending_signals() const noexcept
     {
-        return signal_read_ != signal_write_ || signal_overflow_read_ < signal_overflow_chain_.size();
+        return signal_buf_.has_pending() || signal_overflow_read_ < signal_overflow_chain_.size();
     }
 
     void enable_entity_signals() noexcept { entity_signal_enabled_ = true; }

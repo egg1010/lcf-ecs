@@ -6,180 +6,40 @@
 
 - [lcf-ecs 库接口文档](#lcf-ecs-库接口文档)
   - [目录](#目录)
-  - [1. ecs::entity — 实体](#1-ecsentity--实体)
-    - [接口](#接口)
-    - [使用](#使用)
-    - [不要做什么](#不要做什么)
-  - [2. ecs::operating\_message — 操作消息](#2-ecsoperating_message--操作消息)
-    - [接口](#接口-1)
-    - [使用](#使用-1)
-    - [不要做什么](#不要做什么-1)
-  - [3. ecs::class\_pool\<T\> — 核心容器](#3-ecsclass_poolt--核心容器)
-    - [构造与赋值](#构造与赋值)
-    - [元素访问](#元素访问)
-    - [容量](#容量)
-    - [修改器](#修改器)
-    - [稀疏集/Bitmap](#稀疏集bitmap)
-    - [各操作对 contiguity 的影响](#各操作对-contiguity-的影响)
-    - [插入/删除](#插入删除)
-    - [迭代器](#迭代器)
-    - [自由函数](#自由函数)
-    - [使用](#使用-2)
-    - [应该用什么操作？](#应该用什么操作)
-    - [不要做什么](#不要做什么-2)
-    - [fill\_the\_hole — 填洞或追加](#fill_the_hole--填洞或追加)
-      - [机制](#机制)
-      - [接口](#接口-2)
-      - [使用](#使用-3)
-      - [不要做什么](#不要做什么-3)
-  - [4. ecs::void\_any — 类型擦除存储](#4-ecsvoid_any--类型擦除存储)
-    - [内存布局](#内存布局)
-    - [vtable 与函数指针跳过](#vtable-与函数指针跳过)
-    - [构造与赋值](#构造与赋值-1)
-    - [访问与操作](#访问与操作)
-    - [使用](#使用-4)
-    - [不要做什么](#不要做什么-4)
-  - [5. ecs::type\_id — 类型ID](#5-ecstype_id--类型id)
-    - [接口](#接口-3)
-    - [使用](#使用-5)
-  - [6. ecs::id\_allocation\<T\> — ID分配器](#6-ecsid_allocationt--id分配器)
-    - [接口](#接口-4)
-    - [使用](#使用-6)
-  - [7. ecs::memory\_pool — 内存池](#7-ecsmemory_pool--内存池)
-    - [内存布局](#内存布局-1)
-    - [ecs::memory\_block — 内存块](#ecsmemory_block--内存块)
-    - [ecs::pool\_stats — 统计信息](#ecspool_stats--统计信息)
-    - [ecs::memory\_pool — 内存池](#ecsmemory_pool--内存池)
-    - [使用](#使用-7)
-    - [不要做什么](#不要做什么-5)
-    - [ecs::arena\_allocator — 线性 bump 分配器](#ecsarena_allocator--线性-bump-分配器)
-      - [内存布局](#内存布局-2)
-      - [接口](#接口-5)
-      - [使用](#使用-8)
-      - [不要做什么](#不要做什么-6)
-    - [ecs::slab\_allocator — 固定块对象池](#ecsslab_allocator--固定块对象池)
-      - [内存布局](#内存布局-3)
-      - [接口](#接口-6)
-      - [使用](#使用-9)
-      - [不要做什么](#不要做什么-7)
-    - [ecs::layered\_allocator — 分层分配器](#ecslayered_allocator--分层分配器)
-      - [路由表](#路由表)
-      - [接口](#接口-7)
-      - [使用](#使用-10)
-      - [不要做什么](#不要做什么-8)
-  - [8. ecs::single\_class\_set — 单组件集合](#8-ecssingle_class_set--单组件集合)
-    - [sparse 访问](#sparse-访问)
-    - [构造与赋值](#构造与赋值-2)
-    - [添加组件](#添加组件)
-    - [获取组件](#获取组件)
-    - [删除与清空](#删除与清空)
-    - [容量与查询](#容量与查询)
-    - [使用](#使用-11)
-    - [不要做什么](#不要做什么-9)
-  - [9. ecs::manager — ECS管理器](#9-ecsmanager--ecs管理器)
-    - [实体管理](#实体管理)
-    - [添加组件](#添加组件-1)
-    - [获取组件](#获取组件-1)
-    - [query\_context 查询上下文](#query_context-查询上下文)
-    - [删除组件](#删除组件)
-    - [容器访问](#容器访问)
-    - [single\_class\_set 合并稀疏表+热集接口](#single_class_set-合并稀疏表热集接口)
-    - [manager 分页大小配置](#manager-分页大小配置)
-    - [信号与追踪开关](#信号与追踪开关)
-    - [信号溢出与容量](#信号溢出与容量)
-    - [View系统](#view系统)
-    - [分级排序](#分级排序)
-    - [Group系统](#group系统)
-    - [runtime\_view](#runtime_view)
-    - [生命周期信号](#生命周期信号)
-    - [使用](#使用-12)
-    - [不要做什么](#不要做什么-10)
-  - [10. View系统](#10-view系统)
-    - [10.1 single\_view\<T\> — 单组件视图](#101-single_viewt--单组件视图)
-    - [10.2 multi\_view\<T1, T2, ...\> — 多组件视图](#102-multi_viewt1-t2---多组件视图)
-    - [10.3 single\_view\_without — 排除视图](#103-single_view_without--排除视图)
-    - [10.4 single\_view\_with — 获取视图](#104-single_view_with--获取视图)
-    - [10.5 or\_view\<A, B\> — OR视图（零分配）](#105-or_viewa-b--or视图零分配)
-    - [10.6 filter\_view\<T, Pred\> — 谓词过滤视图](#106-filter_viewt-pred--谓词过滤视图)
-    - [10.7 filter\_and\_view — 过滤+AND组合视图](#107-filter_and_view--过滤and组合视图)
-    - [10.8 filter\_or\_view — 过滤+OR组合视图](#108-filter_or_view--过滤or组合视图)
-    - [10.9 sort\_entities\_by\_component / reorder\_by\_component — 排序工具](#109-sort_entities_by_component--reorder_by_component--排序工具)
-    - [10.10 page — 分页视图](#1010-page--分页视图)
-    - [10.11 sorted\_by\_component — 排序视图](#1011-sorted_by_component--排序视图)
-    - [10.12 sorted\_by\_component\_value — 分组视图](#1012-sorted_by_component_value--分组视图)
-    - [10.13 track\_changes — 变更检测视图](#1013-track_changes--变更检测视图)
-    - [10.14 链式组合](#1014-链式组合)
-    - [10.15 filter\_changed — 逐实体变更检测](#1015-filter_changed--逐实体变更检测)
-    - [10.16 filter\_added — 逐实体添加检测](#1016-filter_added--逐实体添加检测)
-    - [10.17 view\_any\_of — N元OR视图](#1017-view_any_of--n元or视图)
-    - [10.18 exactly\_one — 精确获取单个实体](#1018-exactly_one--精确获取单个实体)
-    - [10.19 find\_one — 查询指定实体](#1019-find_one--查询指定实体)
-    - [10.20 iter\_over\_entities — 批量指定实体查询](#1020-iter_over_entities--批量指定实体查询)
-    - [View 不要做什么](#view-不要做什么)
-  - [11. Group系统](#11-group系统)
-    - [11.1 Non-OwningGroup (`group`)](#111-non-owninggroup-group)
-    - [11.2 OwningGroup (`group` + `owned`)](#112-owninggroup-group--owned)
-    - [11.3 ReorderGroup (`group` + `reorder`)](#113-reordergroup-group--reorder)
-    - [Group 不要做什么](#group-不要做什么)
-  - [12. runtime\_view — 运行时视图](#12-runtime_view--运行时视图)
-    - [12.1 实体掩码](#121-实体掩码)
-    - [12.2 运行时视图](#122-运行时视图)
-    - [12.3 排除视图](#123-排除视图)
-    - [12.4 接口](#124-接口)
-    - [12.5 组件类型无上限](#125-组件类型无上限)
-    - [12.6 for\_each\_typed — 组件引用回传](#126-for_each_typed--组件引用回传)
-    - [12.7 for\_each\_parallel — 并行迭代](#127-for_each_parallel--并行迭代)
-    - [12.8 for\_each\_paged — 分页遍历](#128-for_each_paged--分页遍历)
-    - [12.9 变更检测](#129-变更检测)
-    - [12.10 sort\_by\_component — 按组件排序](#1210-sort_by_component--按组件排序)
-    - [12.11 count — 精确命中数](#1211-count--精确命中数)
-    - [12.12 iterator — 迭代器](#1212-iterator--迭代器)
-    - [12.13 runtime\_term — OR / OPTIONAL / NOT 查询](#1213-runtime_term--or--optional--not-查询)
-    - [12.14 access\_mode — 读写标注](#1214-access_mode--读写标注)
-    - [不要做什么](#不要做什么-11)
-  - [13. 函数存储（回调作为组件）](#13-函数存储回调作为组件)
-    - [使用](#使用-13)
-    - [通过 View 批量调用](#通过-view-批量调用)
-  - [14. 生命周期信号](#14-生命周期信号)
-    - [14.1 实体级即时信号](#141-实体级即时信号)
-    - [14.2 组件级即时信号](#142-组件级即时信号)
-    - [14.3 覆盖写与 on\_modify](#143-覆盖写与-on_modify)
-    - [14.4 实体级延迟信号](#144-实体级延迟信号)
-    - [14.5 组件级延迟信号](#145-组件级延迟信号)
-    - [14.6 即时/延迟互斥机制](#146-即时延迟互斥机制)
-    - [14.7 信号开关与溢出](#147-信号开关与溢出)
-    - [14.8 delete\_entity 的组件清理](#148-delete_entity-的组件清理)
-    - [14.9 即时信号 vs 延迟信号 选择指南](#149-即时信号-vs-延迟信号-选择指南)
-    - [不要做什么](#不要做什么-12)
-  - [15. 编译与运行](#15-编译与运行)
-    - [CMake](#cmake)
-    - [运行示例](#运行示例)
-    - [编译要求](#编译要求)
-  - [16. 可选宏配置](#16-可选宏配置)
-    - [配置示例](#配置示例)
-  - [17. command\_buffer — 延迟结构变更](#17-command_buffer--延迟结构变更)
-    - [使用](#使用-14)
-    - [不要做什么](#不要做什么-13)
-  - [18. tiered\_sort / pdqsort / sort\_n — 分级排序](#18-tiered_sort--pdqsort--sort_n--分级排序)
-    - [接口](#接口-8)
-    - [分级策略](#分级策略)
-    - [使用](#使用-15)
-    - [不要做什么](#不要做什么-14)
-  - [19. radix\_sort — 基数排序](#19-radix_sort--基数排序)
-    - [接口](#接口-9)
-    - [radix 配置](#radix-配置)
-    - [机制](#机制-1)
-    - [使用](#使用-16)
-    - [不要做什么](#不要做什么-15)
-  - [20. FORCE\_INLINE — 跨平台内联宏](#20-force_inline--跨平台内联宏)
-    - [使用](#使用-17)
-    - [不要做什么](#不要做什么-16)
-  - [21. view\_tags — 视图标签类型](#21-view_tags--视图标签类型)
-    - [接口](#接口-10)
-    - [使用](#使用-18)
-    - [不要做什么](#不要做什么-17)
+  - [一、库使用接口](#一库使用接口)
+    - [1. ecs::entity — 实体](#1-ecsentity--实体)
+    - [2. operating_message — 操作消息](#2-operating_message--操作消息)
+    - [3. class_pool\<T\> — 核心容器](#3-class_poolt--核心容器)
+    - [4. void_any — 类型擦除存储](#4-void_any--类型擦除存储)
+    - [5. type_id — 类型ID](#5-type_id--类型id)
+    - [6. id_allocation\<T\> — ID分配器](#6-id_allocationt--id分配器)
+    - [7. memory_pool — 内存池](#7-memory_pool--内存池)
+    - [8. ecs::single_class_set — 单组件集合](#8-ecssingle_class_set--单组件集合)
+    - [9. ecs::manager — ECS管理器](#9-ecsmanager--ecs管理器)
+    - [10. View系统](#10-view系统)
+    - [11. Group系统](#11-group系统)
+    - [12. runtime_view — 运行时视图](#12-runtime_view--运行时视图)
+    - [13. 函数存储（回调作为组件）](#13-函数存储回调作为组件)
+    - [14. 生命周期信号](#14-生命周期信号)
+    - [15. command_buffer — 延迟结构变更](#15-command_buffer--延迟结构变更)
+  - [二、宏配置](#二宏配置)
+    - [16. 编译与运行](#16-编译与运行)
+    - [17. 可选宏配置](#17-可选宏配置)
+  - [三、各种模块](#三各种模块)
+    - [18. tiered_sort / pdqsort / sort_n — 分级排序](#18-tiered_sort--pdqsort--sort_n--分级排序)
+    - [19. radix_sort — 基数排序](#19-radix_sort--基数排序)
+    - [20. FORCE_INLINE — 跨平台内联宏](#20-force_inline--跨平台内联宏)
+    - [21. view_tags — 视图标签类型](#21-view_tags--视图标签类型)
+    - [22. arena_allocator — 线性 bump 分配器](#22-arena_allocator--线性-bump-分配器)
+    - [23. slab_allocator — 固定块分配器](#23-slab_allocator--固定块分配器)
+    - [24. layered_allocator — 分层分配器](#24-layered_allocator--分层分配器)
+    - [25. ring_buffer — 环形缓冲区](#25-ring_buffer--环形缓冲区)
+    - [26. time — 计时与基准测量](#26-time--计时与基准测量)
 
 ---
+
+
+# 一、库使用接口
 
 ## 1. ecs::entity — 实体
 
@@ -381,6 +241,8 @@ for (int i = 0; i < 1000; ++i) {
 | `data()` | 原始数据指针 |
 | `span()` | 返回 `std::span<T>` |
 | `span() const` | 返回 `std::span<const T>` |
+| `dense_view()` | 返回 `dense_view`（原始指针范围视图，仅 dense 模式可用） |
+| `dense_view() const` | 返回 `const_dense_view`（const 版本） |
 
 ### 容量
 
@@ -465,6 +327,42 @@ for (int i = 0; i < 1000; ++i) {
 | `for_each(F&& f)` | 批量遍历回调，dense 路径可被编译器自动向量化（比 range-for 快约 15%） |
 | `for_each(F&& f) const` | const 版本 |
 
+### dense_view — 密集遍历视图
+
+`dense_view` 是一个轻量视图类型，持有两个原始指针 `begin_ptr` / `end_ptr`，`begin()` / `end()` 直接返回裸 `T*`。与迭代器不同，它不携带 bitmap 指针，编译器可将其完全放入寄存器，遍历开销与 `std::vector` 的 range-for 相同。
+
+#### 机制
+
+- `dense_view()` 返回 `{data_ptr_, data_ptr_ + index_}`，不检查 `is_dense_`
+- 基于范围的 for 循环展开后等价于 `for (T* p = data_ptr_; p != data_ptr_ + index_; ++p)`
+- 无 bitmap 分支判断，无 `skip_to_next_valid()` 调用
+
+#### 何时使用
+
+| 条件 | 推荐 |
+|------|------|
+| 已确认 `is_dense() == true` | `for (auto& x : pool.dense_view())` |
+| 不确定模式 | `for (auto& x : pool)` 或 `pool.for_each(cb)` |
+| sparse 模式 | `pool.for_each(cb)`（word 级批量提取） |
+
+#### 前置条件
+
+**调用前必须确认 `is_dense()` 为 true。** 在 sparse 模式下使用 `dense_view()` 会遍历到未初始化槽位的垃圾数据，导致未定义行为。
+
+```cpp
+class_pool<int> pool;
+pool.append_n(1'000'000, 0);
+
+if (pool.is_dense())
+{
+    // 安全: 已确认 dense 模式
+    for (auto& x : pool.dense_view())
+    {
+        x += 1;
+    }
+}
+```
+
 ### 自由函数
 
 | 接口 | 说明 |
@@ -528,6 +426,15 @@ for (auto v : pool) { /* ... */ }
 // span
 std::span<int> s = pool.span();
 
+// dense_view: 已确认 dense 模式时的最快遍历
+if (pool.is_dense())
+{
+    for (auto& x : pool.dense_view())
+    {
+        x += 1;
+    }
+}
+
 // 稀疏集查询
 pool.is_constructed_at(100);  // true
 pool.is_dense();              // 检查是否连续
@@ -551,6 +458,7 @@ pool.is_dense();              // 检查是否连续
 | 频繁 `sparse_erase_at()` + `emplace_at()` 来回切换 | 每次切换触发模式扫描 | 批量操作，或统一使用 `erase()`/`emplace()` 保持连续 |
 | `emplace_at()` 在远超 `index_` 的索引上构造 | 中间留大量未初始化槽位，`size()` 暴增 | 用 `resize(n, value)` 预填充，或改用 `sparse_emplace_at()` |
 | 在 sparse 模式下使用 `data()` + `span()` 做线性遍历 | 未初始化槽位包含垃圾数据 | 始终通过迭代器遍历，或先确认 `is_dense()` 为 true |
+| 在未确认 `is_dense()` 的情况下使用 `dense_view()` 遍历 | sparse 模式下会访问到未初始化槽位的垃圾数据，属于未定义行为 | 调用前必须判断 `is_dense() == true`，或使用 `for_each(cb)` / 迭代器 |
 | `emplace_at()` 期望覆盖已有值 | `emplace_at` 是 get-or-create，不覆盖 | 使用 `sparse_emplace_at()` 实现 insert-or-assign |
 | 在 sparse 模式下使用 `push_back_unchecked` / `emplace_back_unchecked` | 不设置 bitmap 位，迭代器无法看到新元素 | 仅在已知 dense 连续模式下使用，或用 `emplace_back()` 替代 |
 
@@ -1193,6 +1101,9 @@ ECS 核心管理类，管理实体和所有组件集合。
 | `add_batch<T>(span<const entity>, span<const T>)` | 批量添加（span 版本） |
 | `add_batch<T>(const class_pool<entity>&, const class_pool<T>&)` | 批量添加（左值引用） |
 | `add_batch<T>(class_pool<entity>&&, class_pool<T>&&)` | 批量添加（右值引用） |
+| `add_batch<T>(const std::vector<entity>&, const std::vector<T>&)` | 批量添加（vector 入参，内部转 span） |
+| `add_batch<T>(const std::array<entity, N>&, const std::array<T, N>&)` | 批量添加（array 入参，编译期固定长度） |
+| `add_batch<T>(const entity*, const T*, size_t)` | 批量添加（裸指针 + 长度，内部转 span） |
 
 ### 获取组件
 
@@ -1202,9 +1113,15 @@ ECS 核心管理类，管理实体和所有组件集合。
 | `get_ptr<T>(entity) const` | const 版本 |
 | `get_ptr_fast<T>(entity)` | 快速获取（跳过 type_id 检查） |
 | `get_ptr_fast<T>(entity) const` | const 版本 |
-| `get_ptr_batch<T>(entities, results, count)` | 批量查询组件指针（管线化预取） |
+| `get_ptr_batch<T>(entities, results, count)` | 批量查询组件指针（裸指针 + 长度，管线化预取） |
+| `get_ptr_batch<T>(span<const entity>, span<T*>)` | 批量查询（span 入参，长度需一致） |
+| `get_ptr_batch<T>(const vector<entity>&, vector<T*>&)` | 批量查询（vector 入参） |
+| `get_ptr_batch<T>(const array<entity, N>&, array<T*, N>&)` | 批量查询（array 入参） |
 | `prefetch_ptr<T>(entity)` | 预取实体 sparse 条目 |
-| `prefetch_ptr_batch<T>(entities, count)` | 批量预取实体 sparse 条目 |
+| `prefetch_ptr_batch<T>(entities, count)` | 批量预取（裸指针 + 长度） |
+| `prefetch_ptr_batch<T>(span<const entity>)` | 批量预取（span 入参） |
+| `prefetch_ptr_batch<T>(const vector<entity>&)` | 批量预取（vector 入参） |
+| `prefetch_ptr_batch<T>(const array<entity, N>&)` | 批量预取（array 入参） |
 | `prefetch_ptr_data<T>(entity)` | 预取组件数据（需先加载 sparse 条目获取 dense 索引） |
 | `get_ptr_fast_cached<T>(set, entity)` | 用缓存的 set 指针快速查询（避免重复 get_single_class_set） |
 | `prefetch_ptr_cached<T>(set, entity)` | 用缓存的 set 指针预取 sparse 条目 |
@@ -1379,7 +1296,7 @@ size_t shift = mgr.get_component_page_size_shift<Position>();
 
 ### 分级排序
 
-`#include "part/tiered_sort.hpp"`，位于 `ecs` 命名空间。
+`#include "part/tiered_sort.hpp"`，位于 `detail` 命名空间。
 
 | 接口 | 说明 |
 |------|------|
@@ -1427,10 +1344,21 @@ tiered_sort_indices(indices, values, 5);
 
 | 接口 | 说明 |
 |------|------|
-| `runtime_view_create({ids...})` | 运行时视图（位掩码匹配） |
-| `runtime_view_create({ids}, {exclude_ids})` | 排除式运行时视图 |
+| `runtime_view_create(class_pool<int>, class_pool<int> = {})` | 运行时视图（class_pool 入参，位掩码匹配） |
+| `runtime_view_create(span<const int>, span<const int> = {})` | 运行时视图（span 入参，内部构造 class_pool） |
+| `runtime_view_create(const vector<int>&, const vector<int>& = {})` | 运行时视图（vector 入参） |
+| `runtime_view_create(const array<int, N>&)` | 运行时视图（array 入参，仅 required） |
+| `runtime_view_create(const array<int, N>&, const array<int, M>&)` | 运行时视图（array 入参，required + excluded） |
+| `runtime_view_create(const int*, size_t, const int* = nullptr, size_t = 0)` | 运行时视图（裸指针 + 长度） |
+| `runtime_view_create_from_terms(class_pool<runtime_term>)` | term 查询（支持 OR/OPTIONAL/NOT） |
+| `runtime_view_create_from_terms(span<const runtime_term>)` | term 查询（span 入参） |
+| `runtime_view_create_from_terms(const vector<runtime_term>&)` | term 查询（vector 入参） |
+| `runtime_view_create_from_terms(const array<runtime_term, N>&)` | term 查询（array 入参） |
+| `runtime_view_create_from_terms(const runtime_term*, size_t)` | term 查询（裸指针 + 长度） |
 | `get_entity_mask(entity)` | 获取实体组件位掩码 |
 | `get_component_bit<T>()` | 获取类型的位掩码位 |
+
+> 批量入参重载说明:`add_batch` / `get_ptr_batch` / `prefetch_ptr_batch` / `runtime_view_create` / `runtime_view_create_from_terms` 均支持 `std::vector` / `std::array` / 裸指针 + 长度 / `std::span` 入参。内部统一转 `std::span` 委托现有实现,不持久持有外部容器。`runtime_view_create` 的非 class_pool 重载内部构造 `class_pool<int>` 填充后移动给现有实现。
 
 ### 生命周期信号
 
@@ -2871,68 +2799,7 @@ mgr.flush_component_signals([&](uint32_t type, uint32_t, uint32_t) noexcept {
 
 ---
 
-## 15. 编译与运行
-
-### CMake
-
-```bash
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-cmake --build . --config Release
-```
-
-### 运行示例
-
-```bash
-./build/usagec.exe    # 完整接口示例
-./build/test.exe      # 测试
-```
-
-### 编译要求
-
-- C++20（需支持 `std::format`）
-- CMake 3.16+
-
----
-
-## 16. 可选宏配置
-
-在 `void_any_config.hpp` 中配置，影响 `void_any` 的存储策略。
-
-| 宏 | 说明 |
-|------|------|
-| `VOID_ANY_ENABLE_SSO` | 启用 void_any 小对象存储（SSO），小对象内联存储 |
-| `VOID_ANY_ENABLE_MEMORY_POOL` | 启用 void_any 内存池，使用 `memory_pool` 替代 `::operator new` |
-| `VOID_ANY_USE_LAYERED_ALLOCATOR` | 启用分层分配器：小对象（≤128B）走 slab，大对象走 TLSF（优先级高于 `VOID_ANY_ENABLE_MEMORY_POOL`） |
-| `VOID_ANY_SSO_BUFFER_SIZE` | SSO 缓冲区大小（默认 56 字节，与 `vtable_sso_type_` 共 64 字节 = 1 cache line） |
-| `VOID_ANY_SSO_ALIGNMENT` | SSO 对齐（默认 8 字节；设为 32 会破坏 `sizeof==64` 不变量） |
-| `VOID_ANY_MEMORY_POOL_NOT_ENABLED` | 禁用内存池（与 `VOID_ANY_ENABLE_MEMORY_POOL` 互斥） |
-| `VOID_ANY_SSO_NOT_ENABLED` | 禁用 SSO（与 `VOID_ANY_ENABLE_SSO` 互斥） |
-
-### 配置示例
-
-```cpp
-// void_any_config.hpp
-
-// 启用内存池
-#define VOID_ANY_ENABLE_MEMORY_POOL
-
-// 启用分层分配器（小对象走 slab, 大对象走 TLSF, 优先级高于 memory_pool）
-#define VOID_ANY_USE_LAYERED_ALLOCATOR
-
-// 启用小对象存储
-#define VOID_ANY_ENABLE_SSO
-
-// SSO 缓冲区大小: 56 + 8(vtable_sso_type_) = 64 (1 cache line)
-#define VOID_ANY_SSO_BUFFER_SIZE 56
-
-// SSO 对齐: 8 确保 sizeof(void_any)==64
-#define VOID_ANY_SSO_ALIGNMENT 8
-```
-
----
-
-## 17. command_buffer — 延迟结构变更
+## 15. command_buffer — 延迟结构变更
 
 将组件添加、移除、实体销毁等结构变更操作暂存，在 `flush` 时一次性应用到 manager。适用于帧末批量提交、主循环延迟执行等场景。
 
@@ -2994,9 +2861,107 @@ cb.flush();
 
 ---
 
+
+# 二、宏配置
+
+## 16. 编译与运行
+
+### CMake
+
+```bash
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+cmake --build . --config Release
+```
+
+### 运行示例
+
+```bash
+./build/usagec.exe    # 完整接口示例
+./build/test.exe      # 测试
+```
+
+### 编译要求
+
+- C++20（需支持 `std::format`）
+- CMake 3.16+
+
+---
+
+## 17. 可选宏配置
+
+### 17.1 栈内存控制（`config/ecs_config.hpp`）
+
+嵌入式 / RTOS 环境通过 `LCF_MINIMAL_STACK` 关闭所有栈优化，将基数排序的大数组从栈分配切换到堆分配。桌面环境默认 `0`，保留栈分配以获得最佳性能。
+
+| 宏 | 默认值 | 说明 |
+|------|--------|------|
+| `LCF_MINIMAL_STACK` | `0` | `1` 关闭栈优化：基数排序直方图（16KB×2）与 `count_stack`（16KB×2）改走堆分配 |
+
+```cmake
+# 嵌入式项目在 CMakeLists.txt 中定义
+target_compile_definitions(my_target PRIVATE LCF_MINIMAL_STACK=1)
+```
+
+| 受控点 | 栈占用（默认） | 嵌入式回退 |
+|--------|---------------|-----------|
+| `radix_count_pass` bc≤512 分支 | 16KB（h0-h3 局部直方图） | `::operator new` 堆分配，失败回退单直方图 |
+| `radix_count_pass` bc≤1024 分支 | 16KB（h0-h1 局部直方图） | `::operator new` 堆分配，失败回退单直方图 |
+| `radix_sort_entries_with_cfg` count_stack | 16KB（2048 个 size_t） | `::operator new` 堆分配 |
+| `radix_sort_indices_with_cfg` count_stack | 16KB（2048 个 size_t） | `::operator new` 堆分配 |
+
+### 17.2 void_any 存储策略（`config/void_any_config.hpp`）
+
+影响 `void_any` 的存储策略与内存分配方式。
+
+| 宏 | 说明 |
+|------|------|
+| `VOID_ANY_ENABLE_SSO` | 启用 void_any 小对象存储（SSO），小对象内联存储 |
+| `VOID_ANY_ENABLE_MEMORY_POOL` | 启用 void_any 内存池，使用 `memory_pool` 替代 `::operator new` |
+| `VOID_ANY_USE_LAYERED_ALLOCATOR` | 启用分层分配器：小对象（≤128B）走 slab，大对象走 TLSF（优先级高于 `VOID_ANY_ENABLE_MEMORY_POOL`） |
+| `VOID_ANY_SSO_BUFFER_SIZE` | SSO 缓冲区大小（默认 56 字节，与 `vtable_sso_type_` 共 64 字节 = 1 cache line） |
+| `VOID_ANY_SSO_ALIGNMENT` | SSO 对齐（默认 8 字节；设为 32 会破坏 `sizeof==64` 不变量） |
+| `VOID_ANY_MEMORY_POOL_NOT_ENABLED` | 禁用内存池（与 `VOID_ANY_ENABLE_MEMORY_POOL` 互斥） |
+| `VOID_ANY_SSO_NOT_ENABLED` | 禁用 SSO（与 `VOID_ANY_ENABLE_SSO` 互斥） |
+
+### 17.3 配置示例
+
+```cpp
+// config/void_any_config.hpp
+
+// 启用内存池
+#define VOID_ANY_ENABLE_MEMORY_POOL
+
+// 启用分层分配器（小对象走 slab, 大对象走 TLSF, 优先级高于 memory_pool）
+#define VOID_ANY_USE_LAYERED_ALLOCATOR
+
+// 启用小对象存储
+#define VOID_ANY_ENABLE_SSO
+
+// SSO 缓冲区大小: 56 + 8(vtable_sso_type_) = 64 (1 cache line)
+#define VOID_ANY_SSO_BUFFER_SIZE 56
+
+// SSO 对齐: 8 确保 sizeof(void_any)==64
+#define VOID_ANY_SSO_ALIGNMENT 8
+```
+
+### 17.4 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| `VOID_ANY_SSO_ALIGNMENT` 设为 32 | storage padding 至 64，总大小变 96，破坏 1 cache line 不变量 | 保持默认 8，现代 x86 unaligned AVX2 已接近 aligned 性能 |
+| 同时定义 `VOID_ANY_ENABLE_MEMORY_POOL` 和 `VOID_ANY_MEMORY_POOL_NOT_ENABLED` | 互斥宏冲突 | 二选一 |
+| `LCF_MINIMAL_STACK=1` 后期望排序性能不变 | 堆分配有额外开销，且失去栈直方图并行计数加速 | 嵌入式场景排序非热路径，可接受 |
+| 在 `config/` 文件夹外查找配置文件 | `ecs_config.hpp` 和 `void_any_config.hpp` 均在 `include/config/` | include 路径为 `"config/ecs_config.hpp"` 和 `"config/void_any_config.hpp"` |
+
+---
+
+
+# 三、各种模块
+
 ## 18. tiered_sort / pdqsort / sort_n — 分级排序
 
-`#include "part/tiered_sort.hpp"`，位于 `ecs` 命名空间。所有函数 `noexcept`。
+`#include "part/tiered_sort.hpp"`，位于 `detail` 命名空间。所有函数 `noexcept`。
 
 ### 接口
 
@@ -3073,7 +3038,7 @@ pdqsort(data, 5, std::less<int>{});
 
 ## 19. radix_sort — 基数排序
 
-`#include "part/radix_sort_helper.hpp"`，位于 `ecs` 命名空间。所有函数 `noexcept`。
+`#include "part/radix_sort_helper.hpp"`，位于 `detail` 命名空间。所有函数 `noexcept`。
 
 ### 接口
 
@@ -3206,3 +3171,333 @@ auto rv = mgr.runtime_view_create({pos_id, vel_id}, {static_id});
 | `without` 和 `with` 传同一类型 | 语义矛盾，行为未定义 | 不要对同一类型同时使用 |
 | `owned` 标记非首模板参数 | Group 要求 owned 必须是首参数 | `group<First, Rest...>(owned<First>{})` |
 | `reorder` 和 `owned` 对同一 Group 混用 | 语义冲突 | 一个 Group 只用 `owned` 或 `reorder`，不混用 |
+
+---
+
+## 22. arena_allocator — 线性 bump 分配器
+
+`#include "part/arena_allocator.hpp"`，全局命名空间。`noexcept`。
+
+线性 bump 分配器：无 header，无单个 `deallocate`，仅 `reset` 整体回收。两种模式：自有内存（析构释放）和借用外部 buffer（零所有权）。`base_` 64 字节对齐，支持 `align <= 64` 的分配请求。
+
+### 接口
+
+| 接口 | 说明 |
+|------|------|
+| `arena_allocator()` | 默认构造，空状态 |
+| `arena_allocator(size_t capacity)` | 自有模式：分配 capacity 字节，析构释放 |
+| `arena_allocator(void* buffer, size_t size)` | 借用模式：使用外部 buffer，不分配不释放 |
+| `allocate(n, align=16)` | bump 分配，位运算对齐，返回指针或 nullptr |
+| `reset()` | 整体回收，不调用析构 |
+| `used()` | 已使用字节数 |
+| `capacity()` | 总容量 |
+| `remaining()` | 剩余字节数 |
+| `empty()` | 是否未分配（offset==0） |
+| `owns(p)` | 指针 p 是否属于本 arena |
+
+### 使用
+
+```cpp
+#include "part/arena_allocator.hpp"
+
+// 自有模式
+arena_allocator arena(4096);
+void* p1 = arena.allocate(128, 16);
+void* p2 = arena.allocate(256, 32);
+// arena.used() == 384 (对齐后)
+arena.reset();  // 整体回收，不析构
+// arena.empty() == true
+
+// 借用模式（零所有权）
+alignas(64) uint8_t buffer[2048];
+arena_allocator borrowed(buffer, sizeof(buffer));
+void* p3 = borrowed.allocate(100);
+// 析构时不释放 buffer
+```
+
+### 机制
+
+- 分配仅移动 offset 指针，无链表无 header，O(1)
+- `reset` 将 offset 归零，不调用任何析构函数
+- `owns` 通过指针范围比较，O(1)
+- 不支持单个 deallocate，仅支持整体 reset
+
+### 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 对 arena 分配的对象调用 `deallocate` | 接口不存在 | 用 `reset` 整体回收 |
+| `reset` 后继续使用之前分配的指针 | 内存已回收，数据未定义 | `reset` 后丢弃所有指针 |
+| 借用模式下析构后访问 buffer | buffer 生命周期由外部管理 | 确保外部 buffer 生命周期覆盖 arena 使用期 |
+| 分配超过 `remaining()` 的内存 | 返回 nullptr | 先检查 `remaining()` 或预分配足够容量 |
+
+---
+
+## 23. slab_allocator — 固定块分配器
+
+`#include "part/slab_allocator.hpp"`，全局命名空间。`noexcept`。
+
+固定块大小分配器，侵入式 free list，O(1) allocate/deallocate。每个 chunk 按序插入 `class_pool<chunk_node>` 保持地址有序，`owns` 用二分查找定位。
+
+### 接口
+
+| 接口 | 说明 |
+|------|------|
+| `slab_allocator(block_size, alignment=16, blocks_per_chunk=256)` | 构造，block_size 向上对齐到 alignment |
+| `allocate()` | 分配一个块，返回指针或 nullptr |
+| `deallocate(p)` | 释放一个块 |
+| `owns(p)` | 指针 p 是否属于本 slab |
+| `block_size()` | 实际块大小（对齐后） |
+| `total_blocks()` | 总块数 |
+| `free_blocks()` | 空闲块数 |
+| `empty()` | 是否全部空闲 |
+| `min_addr()` / `max_addr()` | 地址范围 |
+
+### 使用
+
+```cpp
+#include "part/slab_allocator.hpp"
+
+// 64 字节块分配器
+slab_allocator slab(64);
+void* p1 = slab.allocate();
+void* p2 = slab.allocate();
+// slab.total_blocks() >= 2, free_blocks() 减 2
+slab.deallocate(p1);
+// slab.free_blocks() 增 1
+
+// 检查指针归属
+bool mine = slab.owns(p2);  // true
+```
+
+### 机制
+
+- 每个 chunk 分配 `block_size * blocks_per_chunk` 字节，按序插入 `chunks_` 保持地址有序
+- free list 是侵入式的：空闲块的起始字节存储下一个空闲块指针，零 header 开销
+- `allocate` 从 free list 头部取，`deallocate` 插入 free list 头部
+- `owns` 先用 `min_addr/max_addr` 快速排除，单 chunk 直接范围判断，多 chunk 二分查找
+- 自动 `grow`：free list 空时分配新 chunk
+
+### 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| `deallocate` 非本 slab 分配的指针 | free list 损坏，后续崩溃 | 先 `owns(p)` 验证 |
+| `deallocate` 同一指针两次 | 双重释放，free list 损坏 | 确保每块只释放一次 |
+| 跨 `block_size` 混用分配器 | 块大小不匹配 | 每种块大小用独立 slab_allocator |
+
+---
+
+## 24. layered_allocator — 分层分配器
+
+`#include "part/layered_allocator.hpp"`，全局命名空间。`noexcept`。
+
+组合 8 个 slab_allocator（16/32/48/64/80/96/112/128 字节）和 1 个 memory_pool（TLSF）。小对象（≤128B）走 slab，大对象走 TLSF。`deallocate` 通过 `find_slab` 遍历判断归属。
+
+### 接口
+
+| 接口 | 说明 |
+|------|------|
+| `layered_allocator()` | 默认构造，初始化 8 个 slab + 1 个 TLSF |
+| `allocate(n)` | 按大小路由：≤128 走 slab，>128 走 TLSF |
+| `deallocate(p)` | 通过 `find_slab` 判断归属，路由到 slab 或 TLSF |
+| `deallocate(p, n)` | 按 size 直接路由，避免遍历 slab |
+| `construct<T>(args...)` | 分配 + placement new 构造 T |
+| `destroy<T>(p)` | 析构 + 释放 |
+| `owns(p)` | 指针 p 是否属于本分层分配器 |
+| `slab_max()` | slab 上限（128） |
+| `big_pool()` | 内部 TLSF memory_pool 引用 |
+
+### 使用
+
+```cpp
+#include "part/layered_allocator.hpp"
+
+layered_allocator alloc;
+void* small = alloc.allocate(64);   // 走 slab (64B 块)
+void* large = alloc.allocate(256);  // 走 TLSF
+
+// 带构造
+auto* obj = alloc.construct<MyStruct>(arg1, arg2);
+alloc.destroy(obj);
+
+// 带 size 的 deallocate 更高效
+alloc.deallocate(small, 64);  // 直接路由到 slab
+```
+
+### 机制
+
+- 8 个 slab 大小固定：16/32/48/64/80/96/112/128，`slab_index(n)` 线性查找第一个 `n <= SLAB_SIZES[i]`
+- `find_slab(p)` 遍历 8 个 slab 的 `owns`，O(8)
+- `deallocate(p, n)` 用 `slab_index(n)` 直接定位，避免遍历
+- TLSF `big_pool_` 处理 >128B 的分配
+
+### 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 用 `deallocate(p)` 释放大对象 | 遍历 8 个 slab 后才路由到 TLSF，慢 | 用 `deallocate(p, n)` 直接路由 |
+| 修改 `memory_pool` 与 `slab_allocator` 的关系 | 项目规范禁止 | 保持分层路由不变 |
+
+---
+
+## 25. ring_buffer — 环形缓冲区
+
+`#include "part/ring_buffer.hpp"`，全局命名空间。`noexcept`。
+
+通用固定容量环形缓冲区，堆分配存储，栈上仅占指针大小。容量 N 必须为 2 的幂，内部用位掩码取模。不做元素零初始化，调用方仅在 `[read_, write_)` 区间读取。
+
+### 接口
+
+| 接口 | 说明 |
+|------|------|
+| `ring_buffer()` | 默认构造，堆分配 N 个元素 |
+| `push(const T&)` / `push(T&&)` | 写入一个事件，满返回 false |
+| `emplace(args...)` | 原位构造写入，满返回 false |
+| `drain(handler)` | 读取并处理所有待处理事件，返回处理数 |
+| `drain_with_budget(budget, handler)` | 带预算的 drain，防止 handler 内追加导致无限循环 |
+| `peek()` | 仅读队首（不推进），空返回 nullptr |
+| `pop()` | 弹出队首，空返回 false |
+| `empty()` / `has_pending()` | 是否空 / 是否有待处理 |
+| `pending_count()` | 待处理数量 |
+| `capacity()` | 容量（编译期常量 N） |
+| `clear()` | 清空（read_=write_=0） |
+
+### 使用
+
+```cpp
+#include "part/ring_buffer.hpp"
+
+struct event { int type; int data; };
+ring_buffer<event, 1024> buf;
+
+// 写入
+buf.push({1, 100});
+buf.emplace(2, 200);
+
+// 批量处理
+size_t n = buf.drain([](const event& e) {
+    std::cout << "type=" << e.type << " data=" << e.data << "\n";
+});
+// n == 2
+
+// 带预算处理（防重入）
+buf.push({3, 300});
+buf.drain_with_budget(1, [](const event& e) {
+    // 只处理 1 个，即使 handler 内追加也不会无限循环
+});
+```
+
+### 机制
+
+- 存储用 `std::unique_ptr<T[]>`，栈上仅 `unique_ptr` + 2 个 `uint32_t`（read_/write_）≈ 16 字节
+- 容量 N 必须为 2 的幂，取模用 `& (N-1)` 位运算
+- `drain_with_budget` 限制最大处理数，防止 handler 内 `push` 导致无限循环
+- 不做元素零初始化，trivial 类型不 memset
+
+### 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 容量 N 不是 2 的幂 | `static_assert` 编译失败 | N 必须为 2, 4, 8, ..., 1024, ... |
+| `drain` 的 handler 内 `push` 新事件 | 可能无限循环 | 用 `drain_with_budget` 限制处理数 |
+| 依赖 `peek()` 指针在 `pop` 后有效 | `pop` 推进 read_，指针指向数据未定义 | `peek` 后立即处理或先拷贝 |
+
+---
+
+## 26. time — 计时与基准测量
+
+`#include "part/time.hpp"`，全局命名空间。`noexcept`。
+
+计时与基准测量工具：墙钟计时、CPU 周期计数、统计分布、缓存延迟测量。x86/x64 提供 `rdtsc`/`rdtscp`，其他平台返回 0。
+
+### 26.1 timer — 墙钟计时器
+
+| 接口 | 说明 |
+|------|------|
+| `timer()` | 构造并记录起始时间点 |
+| `reset()` | 重置起始时间点 |
+| `elapsed_ns()` | 纳秒数 |
+| `elapsed_us()` | 微秒数 |
+| `elapsed_ms()` | 毫秒数 |
+| `elapsed_s()` | 秒数 |
+
+```cpp
+timer t;
+// ... 执行操作 ...
+double ns = t.elapsed_ns();
+```
+
+### 26.2 cycle_timer — CPU 周期计时器
+
+| 接口 | 说明 |
+|------|------|
+| `cycle_timer()` | 构造并记录起始周期 |
+| `reset()` | 重置起始周期 |
+| `elapsed_cycles()` | CPU 周期数 |
+| `elapsed_ns_estimated(cpu_ghz)` | 按 CPU 频率估算纳秒 |
+
+```cpp
+cycle_timer ct;
+// ... 执行操作 ...
+uint64_t cycles = ct.elapsed_cycles();
+double ns = ct.elapsed_ns_estimated(3.5);  // 3.5 GHz
+```
+
+### 26.3 stats — 统计分布
+
+| 字段 | 说明 |
+|------|------|
+| `min` / `max` / `mean` / `median` | 基本统计量 |
+| `p50` / `p90` / `p95` / `p99` | 百分位 |
+| `stddev` | 标准差 |
+| `count` | 样本数 |
+
+```cpp
+class_pool<double> samples;
+samples.emplace_back(1.0);
+samples.emplace_back(2.0);
+samples.emplace_back(3.0);
+stats s = compute_stats(std::move(samples));
+// s.mean == 2.0, s.median == 2.0
+```
+
+### 26.4 benchmark — 基准测量
+
+| 接口 | 说明 |
+|------|------|
+| `benchmark_ns(iterations, warmup, fn)` | 纳秒级基准，运行 fn iterations 次 |
+| `benchmark_cycles(iterations, warmup, fn)` | 周期级基准，精度更高（无 RDTSC 平台回退到 ns） |
+
+```cpp
+auto s = benchmark_ns(1000, 10, []() {
+    // 被测代码
+});
+// s.p99 为 99 百分位延迟
+```
+
+### 26.5 缓存命中测量
+
+| 接口 | 说明 |
+|------|------|
+| `measure_cache_hits(addresses, thresholds)` | 测量一组地址访问的缓存命中情况 |
+| `latency_thresholds` | 阈值：l1_max=4, l2_max=15, l3_max=50 周期 |
+| `cache_report` | 报告：l1/l2/l3 命中数与率、miss 数与率、周期统计 |
+
+```cpp
+class_pool<const void*> addrs;
+// 填充地址列表
+addrs.emplace_back(&some_data);
+
+cache_report r = measure_cache_hits(addrs);
+// r.l1_hit_rate, r.miss_rate, r.avg_cycles 等
+```
+
+### 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 非 x86 平台依赖 `rdtsc` 精度 | `TIME_HAS_RDTSC=0`，返回 0 | 非 x86 平台用 `benchmark_ns` 而非 `benchmark_cycles` |
+| `compute_stats` 传入空 samples | count=0，所有统计量为 0 | 先检查 samples 非空 |
+| `measure_cache_hits` 地址列表含无效指针 | 访问野指针崩溃 | 确保所有地址有效 |
+| `cycle_timer` 跨 CPU 频率变化测量 | 频率动态调整导致估算不准 | 短时间测量或锁定频率 |

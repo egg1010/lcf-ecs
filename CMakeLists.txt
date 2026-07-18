@@ -29,61 +29,83 @@ if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 endif()
 
 # ==========================================================================
-# 可执行文件
-# ==========================================================================
-add_executable(usagec usagec.cpp)
-add_executable(test test.cpp)
-
-# ==========================================================================
-# 栈大小: AVX2 增加寄存器溢出开销, 提升栈大小防止溢出
-# ==========================================================================
-if(WIN32)
-    # 检测链接器类型选择栈大小标志
-    get_filename_component(_linker_name "${CMAKE_LINKER}" NAME_WE)
-    string(TOLOWER "${_linker_name}" _linker_lower)
-    if(_linker_lower STREQUAL "lld-link")
-        # clang++ + lld-link: 通过 -Wl, 传递 /STACK:
-        set(_stack_flag "-Wl,/STACK:33554432")
-    elseif(MSVC)
-        # MSVC link.exe 直接接受 /STACK:
-        set(_stack_flag "/STACK:33554432")
-    else()
-        # GNU ld / lld: 使用 --stack
-        set(_stack_flag "-Wl,--stack,33554432")
-    endif()
-    target_link_options(test PRIVATE ${_stack_flag})
-    target_link_options(usagec PRIVATE ${_stack_flag})
-    unset(_linker_name)
-    unset(_linker_lower)
-    unset(_stack_flag)
-elseif(APPLE)
-    target_link_options(test PRIVATE -Wl,-stack_size,0x2000000)
-    target_link_options(usagec PRIVATE -Wl,-stack_size,0x2000000)
-endif()
-
-# ==========================================================================
-# MSVC 兼容编译器 (MSVC / clang-cl): UTF-8 源码编码
+# 并行编译: 编译器原生多线程编译支持
+# MSVC: /MP (cl.exe 单次调用并行编译多个源文件)
+# GCC/Clang: 编译器本身单文件编译单线程, 并行由构建系统负责 (cmake --build --parallel N)
 # ==========================================================================
 if(MSVC)
-    target_compile_options(usagec PRIVATE /utf-8)
-    target_compile_options(test PRIVATE /utf-8)
+    add_compile_options(/MP)
+    message(STATUS "Parallel compile: enabled (/MP)")
+else()
+    message(STATUS "Parallel compile: via build system (--parallel N)")
 endif()
 
 # ==========================================================================
-# Windows: 编译前终止正在运行的进程
-# 用批处理脚本避免 Ninja 生成器的引号嵌套问题
+# 构建选项: 可独立控制每个目标的构建
+#   cmake -DBUILD_USAGEC=OFF -DBUILD_FUNCTIONAL_TESTS=OFF -DBUILD_PERF_TESTS=OFF ..
 # ==========================================================================
-if(WIN32)
-    file(WRITE "${CMAKE_BINARY_DIR}/kill_usagec.bat" "@taskkill /F /IM usagec.exe /T >nul 2>&1\n@exit /b 0\n")
-    file(WRITE "${CMAKE_BINARY_DIR}/kill_test.bat" "@taskkill /F /IM test.exe /T >nul 2>&1\n@exit /b 0\n")
-    add_custom_command(
-        TARGET usagec PRE_BUILD
-        COMMAND "${CMAKE_BINARY_DIR}/kill_usagec.bat"
-        COMMENT "Terminating usagec.exe if it is running..."
-    )
-    add_custom_command(
-        TARGET test PRE_BUILD
-        COMMAND "${CMAKE_BINARY_DIR}/kill_test.bat"
-        COMMENT "Terminating test.exe if it is running..."
-    )
+option(BUILD_USAGEC "构建 usagec 示例程序" ON)
+option(BUILD_FUNCTIONAL_TESTS "构建功能测试 (test_functional)" ON)
+option(BUILD_PERF_TESTS "构建性能测试 (test_perf)" ON)
+
+message(STATUS "Build targets:")
+message(STATUS "  usagec         : ${BUILD_USAGEC}")
+message(STATUS "  test_functional: ${BUILD_FUNCTIONAL_TESTS}")
+message(STATUS "  test_perf      : ${BUILD_PERF_TESTS}")
+
+# ==========================================================================
+# 可执行文件: usagec 示例程序
+# ==========================================================================
+if(BUILD_USAGEC)
+    add_executable(usagec usagec.cpp)
+    if(MSVC)
+        target_compile_options(usagec PRIVATE /utf-8)
+    endif()
+    if(WIN32)
+        file(WRITE "${CMAKE_BINARY_DIR}/kill_usagec.bat"
+             "@taskkill /F /IM usagec.exe /T >nul 2>&1\n@exit /b 0\n")
+        add_custom_command(
+            TARGET usagec PRE_BUILD
+            COMMAND "${CMAKE_BINARY_DIR}/kill_usagec.bat"
+            COMMENT "Terminating usagec.exe if it is running..."
+        )
+    endif()
+endif()
+
+# ==========================================================================
+# 可执行文件: 功能测试 (test_functional)
+# ==========================================================================
+if(BUILD_FUNCTIONAL_TESTS)
+    add_executable(test_functional test_functional.cpp)
+    if(MSVC)
+        target_compile_options(test_functional PRIVATE /utf-8)
+    endif()
+    if(WIN32)
+        file(WRITE "${CMAKE_BINARY_DIR}/kill_test_functional.bat"
+             "@taskkill /F /IM test_functional.exe /T >nul 2>&1\n@exit /b 0\n")
+        add_custom_command(
+            TARGET test_functional PRE_BUILD
+            COMMAND "${CMAKE_BINARY_DIR}/kill_test_functional.bat"
+            COMMENT "Terminating test_functional.exe if it is running..."
+        )
+    endif()
+endif()
+
+# ==========================================================================
+# 可执行文件: 性能测试 (test_perf)
+# ==========================================================================
+if(BUILD_PERF_TESTS)
+    add_executable(test_perf test_perf.cpp)
+    if(MSVC)
+        target_compile_options(test_perf PRIVATE /utf-8)
+    endif()
+    if(WIN32)
+        file(WRITE "${CMAKE_BINARY_DIR}/kill_test_perf.bat"
+             "@taskkill /F /IM test_perf.exe /T >nul 2>&1\n@exit /b 0\n")
+        add_custom_command(
+            TARGET test_perf PRE_BUILD
+            COMMAND "${CMAKE_BINARY_DIR}/kill_test_perf.bat"
+            COMMENT "Terminating test_perf.exe if it is running..."
+        )
+    endif()
 endif()

@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include "type_id.hpp"
-#include "void_any_config.hpp"
+#include "../config/void_any_config.hpp"
 #include "force_inline.hpp"
 
 #if defined(VOID_ANY_USE_LAYERED_ALLOCATOR)

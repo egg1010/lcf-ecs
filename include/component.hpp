@@ -2,6 +2,7 @@
 #include <concepts>
 #include <tuple>
 #include <array>
+#include <vector>
 #include <limits>
 #include <type_traits>
 #include "single_class_set.hpp"
@@ -12,6 +13,7 @@
 #include "runtime_view.hpp"
 #include "part/radix_sort_helper.hpp"
 #include "part/tiered_sort.hpp"
+#include "part/ring_buffer.hpp"
 #include "view_tags.hpp"
 
 template <typename T>
@@ -28,6 +30,24 @@ struct component_meta
     size_t   size{0};
     uint64_t bit{0};
 };
+
+// 辅助: 判断 C 是否为任意 class_pool 特化
+template <typename C>
+struct is_class_pool : std::false_type {};
+template <typename T>
+struct is_class_pool<class_pool<T>> : std::true_type {};
+
+template <typename C>
+concept not_class_pool = !is_class_pool<std::remove_cvref_t<C>>::value;
+
+// 连续容器 concept: 有 value_type/data()/size(), 且非 class_pool (避免与 class_pool 重载冲突)
+// 花括号初始化列表 {a,b} 无法推导模板参数 C, 故 class_pool 花括号惯用法不受影响
+template <typename C>
+concept range_container = requires(const C& c) {
+    typename C::value_type;
+    { c.data() } -> std::same_as<const typename C::value_type*>;
+    { c.size() } -> std::convertible_to<size_t>;
+} && not_class_pool<C>;
 
 class manager
 {
@@ -46,9 +66,7 @@ private:
     static constexpr size_t comp_signal_buffer_size = 1024;
     static_assert((comp_signal_buffer_size & (comp_signal_buffer_size - 1)) == 0,
                   "comp_signal_buffer_size must be power of 2");
-    component_signal_event comp_signal_buffer_[comp_signal_buffer_size]{};
-    uint32_t comp_signal_write_{0};
-    uint32_t comp_signal_read_{0};
+    ring_buffer<component_signal_event, comp_signal_buffer_size> comp_signal_buf_;
     class_pool<component_signal_event> comp_signal_overflow_chain_;
     size_t comp_signal_overflow_read_{0};
     uint64_t comp_signal_overflow_count_{0};
@@ -59,15 +77,11 @@ private:
     void push_comp_signal(uint32_t type, uint32_t entity_idx, uint32_t component_id) noexcept
     {
         if (!comp_signal_enabled_) [[unlikely]] return;
-        uint32_t next = (comp_signal_write_ + 1) & (comp_signal_buffer_size - 1);
-        if (next == comp_signal_read_) [[unlikely]]
+        if (!comp_signal_buf_.push(component_signal_event{type, entity_idx, component_id})) [[unlikely]]
         {
             ++comp_signal_overflow_count_;
             comp_signal_overflow_chain_.emplace_back(component_signal_event{type, entity_idx, component_id});
-            return;
         }
-        comp_signal_buffer_[comp_signal_write_] = {type, entity_idx, component_id};
-        comp_signal_write_ = next;
     }
 
     void ensure_type_exists(int type_id) noexcept
@@ -234,6 +248,26 @@ public:
         return result;
     }
 
+    // 通用容器入参 (vector/array 等): 内部转 span 委托
+    // 花括号初始化 {a,b} 不匹配此重载 (无法推导 C), 仍走 class_pool 路径
+    template <typename T, range_container C1, range_container C2>
+        requires std::same_as<typename C1::value_type, entity>
+              && std::same_as<typename C2::value_type, T>
+    operating_message add_batch(const C1& entities, const C2& components) noexcept
+    {
+        return add_batch<T>(std::span<const entity>(entities.data(), entities.size()),
+                            std::span<const T>(components.data(), components.size()));
+    }
+
+    // 裸指针 + 长度: 内部转 span 委托
+    template <typename T>
+    operating_message add_batch(const entity* entities, const T* components,
+                                size_t count) noexcept
+    {
+        return add_batch<T>(std::span<const entity>(entities, count),
+                            std::span<const T>(components, count));
+    }
+
     template <IsEntity EE, typename T>
     operating_message add(T&& component, EE entitys) noexcept
     {
@@ -304,6 +338,21 @@ public:
         if (set) set->prefetch_ptr_batch(entities, count);
     }
 
+    // span 入参: 委托裸指针版本
+    template <typename T>
+    void prefetch_ptr_batch(std::span<const entity> entities) const noexcept
+    {
+        prefetch_ptr_batch<T>(entities.data(), entities.size());
+    }
+
+    // 通用容器入参 (vector/array 等): 委托裸指针版本
+    template <typename T, range_container C>
+        requires std::same_as<typename C::value_type, entity>
+    void prefetch_ptr_batch(const C& entities) const noexcept
+    {
+        prefetch_ptr_batch<T>(entities.data(), entities.size());
+    }
+
     template <typename T>
     void prefetch_ptr_data(entity entitys) const noexcept
     {
@@ -320,6 +369,28 @@ public:
         {
             for (size_t i = 0; i < count; ++i) results[i] = nullptr;
         }
+    }
+
+    // span 入参: 输入实体 span + 输出指针 span, 长度需一致
+    template <typename T>
+    void get_ptr_batch(std::span<const entity> entities, std::span<T*> results) noexcept
+    {
+        if (entities.size() != results.size()) [[unlikely]]
+        {
+            for (size_t i = 0; i < results.size(); ++i) results[i] = nullptr;
+            return;
+        }
+        get_ptr_batch<T>(entities.data(), results.data(), entities.size());
+    }
+
+    // 通用容器入参 (vector/array 等): entities 只读, results 可写
+    template <typename T, range_container C1, range_container C2>
+        requires std::same_as<typename C1::value_type, entity>
+              && std::same_as<typename C2::value_type, T*>
+    void get_ptr_batch(const C1& entities, C2& results) noexcept
+    {
+        get_ptr_batch<T>(std::span<const entity>(entities.data(), entities.size()),
+                         std::span<T*>(results.data(), results.size()));
     }
 
     template <typename T>
@@ -714,10 +785,81 @@ public:
         return ecs::runtime_view(this, ecs::runtime_query(this, std::move(required_ids), std::move(excluded_ids)));
     }
 
+    // span 入参: 内部构造 class_pool<int> 委托现有实现
+    [[nodiscard]] ecs::runtime_view runtime_view_create(std::span<const int> required_ids,
+                                                    std::span<const int> excluded_ids = {}) noexcept
+    {
+        class_pool<int> req;
+        req.increase_capacity(required_ids.size());
+        for (int id : required_ids) req.emplace_back(id);
+        class_pool<int> exc;
+        if (!excluded_ids.empty())
+        {
+            exc.increase_capacity(excluded_ids.size());
+            for (int id : excluded_ids) exc.emplace_back(id);
+        }
+        return runtime_view_create(std::move(req), std::move(exc));
+    }
+
+    // 通用容器入参 (vector/array 等, 仅 required): 委托 span 版本
+    template <range_container C>
+        requires std::same_as<typename C::value_type, int>
+    [[nodiscard]] ecs::runtime_view runtime_view_create(const C& required_ids) noexcept
+    {
+        return runtime_view_create(std::span<const int>(required_ids.data(), required_ids.size()));
+    }
+
+    // 通用容器入参 (vector/array 等, required + excluded): 委托 span 版本
+    template <range_container C1, range_container C2>
+        requires std::same_as<typename C1::value_type, int>
+              && std::same_as<typename C2::value_type, int>
+    [[nodiscard]] ecs::runtime_view runtime_view_create(const C1& required_ids,
+                                                    const C2& excluded_ids) noexcept
+    {
+        return runtime_view_create(std::span<const int>(required_ids.data(), required_ids.size()),
+                                   std::span<const int>(excluded_ids.data(), excluded_ids.size()));
+    }
+
+    // 裸指针 + 长度
+    [[nodiscard]] ecs::runtime_view runtime_view_create(const int* required_ids, size_t req_count,
+                                                    const int* excluded_ids = nullptr,
+                                                    size_t exc_count = 0) noexcept
+    {
+        return runtime_view_create(std::span<const int>(required_ids, req_count),
+                                   std::span<const int>(excluded_ids, exc_count));
+    }
+
     // 运行时 term 查询(支持 OR/OPTIONAL/NOT 与读写标注)
     [[nodiscard]] ecs::runtime_view runtime_view_create_from_terms(class_pool<ecs::runtime_term> terms) noexcept
     {
         return ecs::runtime_view(this, ecs::runtime_query(this, std::move(terms)));
+    }
+
+    // span 入参: 内部构造 class_pool<runtime_term> 委托
+    [[nodiscard]] ecs::runtime_view runtime_view_create_from_terms(
+        std::span<const ecs::runtime_term> terms) noexcept
+    {
+        class_pool<ecs::runtime_term> pool;
+        pool.increase_capacity(terms.size());
+        for (const auto& t : terms) pool.emplace_back(t);
+        return runtime_view_create_from_terms(std::move(pool));
+    }
+
+    // 通用容器入参 (vector/array 等): 委托 span 版本
+    template <range_container C>
+        requires std::same_as<typename C::value_type, ecs::runtime_term>
+    [[nodiscard]] ecs::runtime_view runtime_view_create_from_terms(const C& terms) noexcept
+    {
+        return runtime_view_create_from_terms(
+            std::span<const ecs::runtime_term>(terms.data(), terms.size()));
+    }
+
+    // 裸指针 + 长度
+    [[nodiscard]] ecs::runtime_view runtime_view_create_from_terms(
+        const ecs::runtime_term* terms, size_t count) noexcept
+    {
+        return runtime_view_create_from_terms(
+            std::span<const ecs::runtime_term>(terms, count));
     }
 
     // ======================== command_buffer 工厂方法 ========================
@@ -812,13 +954,10 @@ public:
         comp_signal_flushing_ = true;
         // 循环上限防止 handler 内追加导致无限循环
         uint64_t budget = comp_signal_buffer_size * 4 + comp_signal_overflow_chain_.size();
-        while (budget > 0 && comp_signal_read_ != comp_signal_write_)
-        {
-            auto& ev = comp_signal_buffer_[comp_signal_read_];
-            handler(ev.type, ev.entity_idx, ev.component_id);
-            comp_signal_read_ = (comp_signal_read_ + 1) & (comp_signal_buffer_size - 1);
-            --budget;
-        }
+        size_t processed = comp_signal_buf_.drain_with_budget(
+            static_cast<size_t>(budget),
+            [&](const component_signal_event& ev) noexcept { handler(ev.type, ev.entity_idx, ev.component_id); });
+        budget -= processed;
         while (budget > 0 && comp_signal_overflow_read_ < comp_signal_overflow_chain_.size())
         {
             auto& ev = comp_signal_overflow_chain_[comp_signal_overflow_read_];
@@ -835,7 +974,7 @@ public:
     }
     [[nodiscard]] bool has_pending_component_signals() const noexcept
     {
-        return comp_signal_read_ != comp_signal_write_ || comp_signal_overflow_read_ < comp_signal_overflow_chain_.size();
+        return comp_signal_buf_.has_pending() || comp_signal_overflow_read_ < comp_signal_overflow_chain_.size();
     }
 
     ~manager() = default;

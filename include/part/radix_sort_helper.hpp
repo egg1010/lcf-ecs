@@ -13,6 +13,7 @@
 #else
 #define LCF_HAS_SSE2 0
 #endif
+#include "../config/ecs_config.hpp"
 
 namespace detail
 {
@@ -139,7 +140,27 @@ inline void radix_count_pass(size_t* count, const U* keys, size_t n,
 
     if (bc <= 512)
     {
+#if LCF_MINIMAL_STACK
+        size_t* h = static_cast<size_t*>(::operator new(4 * bc * sizeof(size_t), std::align_val_t{alignof(size_t)}, std::nothrow));
+        if (!h) [[unlikely]]
+        {
+            size_t i = 0;
+            for (; i + 3 < n; i += 4)
+            {
+                if (i + prefetch_dist < n) [[likely]] { PREFETCH_R(&keys[i + prefetch_dist]); }
+                ++count[(keys[i]     >> shift) & mask];
+                ++count[(keys[i + 1] >> shift) & mask];
+                ++count[(keys[i + 2] >> shift) & mask];
+                ++count[(keys[i + 3] >> shift) & mask];
+            }
+            for (; i < n; ++i) { ++count[(keys[i] >> shift) & mask]; }
+            return;
+        }
+        size_t* h0 = h; size_t* h1 = h + bc; size_t* h2 = h + 2 * bc; size_t* h3 = h + 3 * bc;
+        std::memset(h, 0, 4 * bc * sizeof(size_t));
+#else
         size_t h0[512] = {}, h1[512] = {}, h2[512] = {}, h3[512] = {};
+#endif
         size_t i = 0;
         for (; i + 3 < n; i += 4)
         {
@@ -160,10 +181,31 @@ inline void radix_count_pass(size_t* count, const U* keys, size_t n,
         {
             count[b] = h0[b] + h1[b] + h2[b] + h3[b];
         }
+#if LCF_MINIMAL_STACK
+        ::operator delete(h, 4 * bc * sizeof(size_t), std::align_val_t{alignof(size_t)});
+#endif
     }
     else if (bc <= 1024)
     {
+#if LCF_MINIMAL_STACK
+        size_t* h = static_cast<size_t*>(::operator new(2 * bc * sizeof(size_t), std::align_val_t{alignof(size_t)}, std::nothrow));
+        if (!h) [[unlikely]]
+        {
+            size_t i = 0;
+            for (; i + 1 < n; i += 2)
+            {
+                if (i + prefetch_dist < n) [[likely]] { PREFETCH_R(&keys[i + prefetch_dist]); }
+                ++count[(keys[i]     >> shift) & mask];
+                ++count[(keys[i + 1] >> shift) & mask];
+            }
+            for (; i < n; ++i) { ++count[(keys[i] >> shift) & mask]; }
+            return;
+        }
+        size_t* h0 = h; size_t* h1 = h + bc;
+        std::memset(h, 0, 2 * bc * sizeof(size_t));
+#else
         size_t h0[1024] = {}, h1[1024] = {};
+#endif
         size_t i = 0;
         for (; i + 1 < n; i += 2)
         {
@@ -182,6 +224,9 @@ inline void radix_count_pass(size_t* count, const U* keys, size_t n,
         {
             count[b] = h0[b] + h1[b];
         }
+#if LCF_MINIMAL_STACK
+        ::operator delete(h, 2 * bc * sizeof(size_t), std::align_val_t{alignof(size_t)});
+#endif
     }
     else
     {
@@ -362,17 +407,21 @@ void radix_sort_entries_with_cfg(void* entries_data, size_t n,
     entry_t* src = entries;
     entry_t* dst = temp;
 
+    #if LCF_MINIMAL_STACK
+    size_t* count = large_pass ? hist_buf : static_cast<size_t*>(::operator new(max_buckets * sizeof(size_t), std::align_val_t{alignof(size_t)}));
+#else
+    size_t count_stack[max_buckets] = {};
+    size_t* count = large_pass ? hist_buf : count_stack;
+#endif
+
     for (size_t pass = 0; pass < cfg::passes; ++pass)
     {
         const size_t shift = cfg::digit_shifts[pass];
         const size_t bc = cfg::bucket_counts[pass];
         const size_t mask = bc - 1;
 
-        size_t count_stack[max_buckets] = {};
-        size_t* count = count_stack;
         if (large_pass)
         {
-            count = hist_buf;
             size_t* sub_hists = hist_buf + max_buckets_large;
             std::memset(hist_buf, 0, (1 + large_sub_count) * max_buckets_large * sizeof(size_t));
             radix_count_pass_large(count, k_src, n, shift, mask, sub_hists);
@@ -407,6 +456,13 @@ void radix_sort_entries_with_cfg(void* entries_data, size_t n,
 
         std::swap(src, dst);
     }
+
+#if LCF_MINIMAL_STACK
+    if (!large_pass)
+    {
+        ::operator delete(count, max_buckets * sizeof(size_t), std::align_val_t{alignof(size_t)});
+    }
+#endif
 
     if constexpr (cfg::passes % 2 == 1)
     {
@@ -481,17 +537,21 @@ void radix_sort_indices_with_cfg(size_t* indices, const KeyType* keys, size_t n,
     size_t* src = indices;
     size_t* dst = temp_buf;
 
+    #if LCF_MINIMAL_STACK
+    size_t* count = large_pass ? hist_buf : static_cast<size_t*>(::operator new(max_buckets * sizeof(size_t), std::align_val_t{alignof(size_t)}));
+#else
+    size_t count_stack[max_buckets] = {};
+    size_t* count = large_pass ? hist_buf : count_stack;
+#endif
+
     for (size_t pass = 0; pass < cfg::passes; ++pass)
     {
         const size_t shift = cfg::digit_shifts[pass];
         const size_t bc = cfg::bucket_counts[pass];
         const size_t mask = bc - 1;
 
-        size_t count_stack[max_buckets] = {};
-        size_t* count = count_stack;
         if (large_pass)
         {
-            count = hist_buf;
             size_t* sub_hists = hist_buf + max_buckets_large;
             std::memset(hist_buf, 0, (1 + large_sub_count) * max_buckets_large * sizeof(size_t));
             radix_count_pass_large(count, k_src, n, shift, mask, sub_hists);
@@ -558,6 +618,13 @@ void radix_sort_indices_with_cfg(size_t* indices, const KeyType* keys, size_t n,
 
         std::swap(src, dst);
     }
+
+#if LCF_MINIMAL_STACK
+    if (!large_pass)
+    {
+        ::operator delete(count, max_buckets * sizeof(size_t), std::align_val_t{alignof(size_t)});
+    }
+#endif
 
     if constexpr (cfg::passes % 2 == 1)
     {

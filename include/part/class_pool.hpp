@@ -1830,6 +1830,46 @@ public:
 	[[nodiscard]] constexpr std::span<T> span() noexcept { return std::span<T>(data_ptr_, index_); }
 	[[nodiscard]] constexpr std::span<const T> span() const noexcept { return std::span<const T>(data_ptr_, index_); }
 
+	// 密集遍历视图: 返回原始指针范围, 跳过迭代器开销
+	struct dense_view
+	{
+		T* begin_ptr;
+		T* end_ptr;
+		[[nodiscard]] T* begin() const noexcept
+		{
+			return begin_ptr;
+		}
+		[[nodiscard]] T* end() const noexcept
+		{
+			return end_ptr;
+		}
+	};
+
+	struct const_dense_view
+	{
+		const T* begin_ptr;
+		const T* end_ptr;
+		[[nodiscard]] const T* begin() const noexcept
+		{
+			return begin_ptr;
+		}
+		[[nodiscard]] const T* end() const noexcept
+		{
+			return end_ptr;
+		}
+	};
+
+	// 获取密集遍历视图, 仅在 is_dense() 为 true 时使用
+	[[nodiscard]] dense_view dense_view() noexcept
+	{
+		return {data_ptr_, data_ptr_ + index_};
+	}
+
+	[[nodiscard]] const_dense_view dense_view() const noexcept
+	{
+		return {data_ptr_, data_ptr_ + index_};
+	}
+
 	[[nodiscard]] constexpr T& operator[](size_t index) noexcept {
 		return data_ptr_[index];
 	}
@@ -1883,7 +1923,7 @@ public:
 	{
 		if (is_dense_) [[likely]]
 		{
-			T* p = std::assume_aligned<alignof(T)>(data_ptr_);
+			T* __restrict p = std::assume_aligned<(alignof(T) > 64 ? alignof(T) : 64)>(data_ptr_);
 			const size_t n = index_;
 			for (size_t i = 0; i < n; ++i)
 			{
@@ -1892,10 +1932,7 @@ public:
 		}
 		else
 		{
-			for (auto it = begin(), e = end(); it != e; ++it)
-			{
-				f(*it);
-			}
+			for_each_sparse(std::forward<F>(f));
 		}
 	}
 
@@ -1904,7 +1941,7 @@ public:
 	{
 		if (is_dense_) [[likely]]
 		{
-			const T* p = std::assume_aligned<alignof(T)>(data_ptr_);
+			const T* __restrict p = std::assume_aligned<(alignof(T) > 64 ? alignof(T) : 64)>(data_ptr_);
 			const size_t n = index_;
 			for (size_t i = 0; i < n; ++i)
 			{
@@ -1913,9 +1950,51 @@ public:
 		}
 		else
 		{
-			for (auto it = begin(), e = end(); it != e; ++it)
+			for_each_sparse(std::forward<F>(f));
+		}
+	}
+
+	// sparse 遍历: word 级批量提取, 消除 iterator 逐元素开销
+	template <typename F>
+	void for_each_sparse(F&& f) noexcept
+	{
+		T* p = std::assume_aligned<alignof(T)>(data_ptr_);
+		const uint64_t* bits = sparse_bits_;
+		const size_t total_words = (index_ + BITS_PER_WORD - 1) / BITS_PER_WORD;
+		for (size_t w = 0; w < total_words; ++w)
+		{
+			if (w + 4 < total_words)
 			{
-				f(*it);
+				PREFETCH_R(&bits[w + 4]);
+			}
+			uint64_t word = bits[w];
+			while (word != 0)
+			{
+				const size_t offset = std::countr_zero(word);
+				f(p[w * BITS_PER_WORD + offset]);
+				word = clear_lowest_bit(word);
+			}
+		}
+	}
+
+	template <typename F>
+	void for_each_sparse(F&& f) const noexcept
+	{
+		const T* p = std::assume_aligned<alignof(T)>(data_ptr_);
+		const uint64_t* bits = sparse_bits_;
+		const size_t total_words = (index_ + BITS_PER_WORD - 1) / BITS_PER_WORD;
+		for (size_t w = 0; w < total_words; ++w)
+		{
+			if (w + 4 < total_words)
+			{
+				PREFETCH_R(&bits[w + 4]);
+			}
+			uint64_t word = bits[w];
+			while (word != 0)
+			{
+				const size_t offset = std::countr_zero(word);
+				f(p[w * BITS_PER_WORD + offset]);
+				word = clear_lowest_bit(word);
 			}
 		}
 	}
