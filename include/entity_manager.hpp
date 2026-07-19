@@ -213,6 +213,11 @@ public:
         return masks_.get_block(entity_index, 0);
     }
 
+    [[nodiscard]] uint64_t get_block(uint32_t entity_index, uint32_t block_idx) const noexcept
+    {
+        return masks_.get_block(entity_index, block_idx);
+    }
+
     [[nodiscard]] entity get_entity() noexcept
     {
         entity e = current_preallocated_index_ < preallocated_entities_.size()

@@ -167,6 +167,8 @@ private:
             component_metas_[type_id].size = sizeof(T);
             component_metas_[type_id].mask_block = static_cast<uint32_t>(type_id - 1) / 64;
             component_metas_[type_id].mask_offset = static_cast<uint32_t>(type_id - 1) % 64;
+            if (component_metas_[type_id].mask_block >= entity_manager_.num_mask_blocks())
+                entity_manager_.reserve_mask_blocks(component_metas_[type_id].mask_block + 1);
         }
     }
 
@@ -594,6 +596,16 @@ public:
     [[nodiscard]] uint64_t get_entity_mask(entity entitys) const noexcept
     {
         return entity_manager_.get_mask(entitys.parts_.index_);
+    }
+
+    [[nodiscard]] uint64_t get_entity_block(entity entitys, uint32_t block_idx) const noexcept
+    {
+        return entity_manager_.get_block(entitys.parts_.index_, block_idx);
+    }
+
+    [[nodiscard]] uint64_t get_entity_block_by_idx(uint32_t entity_index, uint32_t block_idx) const noexcept
+    {
+        return entity_manager_.get_block(entity_index, block_idx);
     }
 
     [[nodiscard]] const component_meta* get_component_meta(int type_id) const noexcept

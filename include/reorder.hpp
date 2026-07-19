@@ -35,10 +35,14 @@ private:
     size_t                         primary_idx_{0};
     reorder_state<N>               state_;
     reorder_state<N>*              shared_{nullptr};
-    uint64_t                       required_mask_{0};
-    bool                           use_mask_path_{true};
+    class_pool<uint64_t>              required_masks_;
+    uint32_t                       max_block_{0};
+    bool                           use_mask_path_{false};
+    class_pool<single_class_set*>     req_sets_;
 
     reorder_state<N>* st() noexcept { return shared_ ? shared_ : &state_; }
+
+    [[nodiscard]] bool check_blocks(uint32_t entity_index) const noexcept;
 
     void find_smallest() noexcept
     {

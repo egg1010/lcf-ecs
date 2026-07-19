@@ -16,8 +16,26 @@ inline group<First, Rest...>::group(manager* mgr, std::array<single_class_set*, 
     : mgr_(mgr), sets_(sets)
 {
     find_smallest();
-    use_mask_path_ = (((static_cast<uint32_t>(type_id::get_type_id<First>() - 1) / 64) == 0) && ... && ((static_cast<uint32_t>(type_id::get_type_id<Rest>() - 1) / 64) == 0));
-    required_mask_ = (mgr_->template get_component_bit<First>() | ... | mgr_->template get_component_bit<Rest>());
+    auto block_of = [](int tid) noexcept -> uint32_t {
+        return static_cast<uint32_t>(tid - 1) / 64;
+    };
+    max_block_ = block_of(type_id::get_type_id<First>());
+    auto update_block = [&](int tid) noexcept {
+        uint32_t b = block_of(tid);
+        if (b > max_block_) max_block_ = b;
+    };
+    (update_block(type_id::get_type_id<Rest>()), ...);
+    required_masks_.resize(max_block_ + 1, 0);
+    auto fill_mask = [&](int tid) noexcept {
+        uint32_t block = block_of(tid);
+        uint32_t offset = static_cast<uint32_t>(tid - 1) % 64;
+        required_masks_[block] |= (1ULL << offset);
+    };
+    fill_mask(type_id::get_type_id<First>());
+    (fill_mask(type_id::get_type_id<Rest>()), ...);
+    use_mask_path_ = (N >= 3) || ((max_block_ + 1) <= 5);
+    req_sets_.resize(N, nullptr);
+    for (size_t i = 0; i < N; ++i) req_sets_[i] = sets_[i];
     rebuild();
 }
 
@@ -35,8 +53,7 @@ inline void group<First, Rest...>::rebuild() noexcept
     {
         for (size_t i = 0; i < n; ++i)
         {
-            entity e(indices[i], primary->get_version_unchecked(indices[i]));
-            if ((mgr_->get_entity_mask(e) & required_mask_) == required_mask_)
+            if (check_blocks(indices[i]))
                 cached_.emplace_back(static_cast<uint32_t>(i));
         }
     }
@@ -44,19 +61,18 @@ inline void group<First, Rest...>::rebuild() noexcept
     {
         for (size_t i = 0; i < n; ++i)
         {
-            uint32_t idx = indices[i];
-            uint32_t ver = primary->get_version_unchecked(idx);
-            bool all_in = true;
+            uint32_t eid = indices[i];
+            bool has_all = true;
             for (size_t k = 0; k < N; ++k)
             {
                 if (k == primary_idx_) continue;
-                if (!single_class_set::sparse_contains_version(sets_[k], idx, ver))
+                if (req_sets_[k]->sparse_dense_at_public(eid) == single_class_set::dense_invalid)
                 {
-                    all_in = false;
+                    has_all = false;
                     break;
                 }
             }
-            if (all_in)
+            if (has_all)
                 cached_.emplace_back(static_cast<uint32_t>(i));
         }
     }
@@ -99,8 +115,26 @@ inline owning_group<First, Rest...>::owning_group(manager* mgr, std::array<singl
     : mgr_(mgr), sets_(sets)
 {
     find_smallest();
-    use_mask_path_ = (((static_cast<uint32_t>(type_id::get_type_id<First>() - 1) / 64) == 0) && ... && ((static_cast<uint32_t>(type_id::get_type_id<Rest>() - 1) / 64) == 0));
-    required_mask_ = (mgr_->template get_component_bit<First>() | ... | mgr_->template get_component_bit<Rest>());
+    auto block_of = [](int tid) noexcept -> uint32_t {
+        return static_cast<uint32_t>(tid - 1) / 64;
+    };
+    max_block_ = block_of(type_id::get_type_id<First>());
+    auto update_block = [&](int tid) noexcept {
+        uint32_t b = block_of(tid);
+        if (b > max_block_) max_block_ = b;
+    };
+    (update_block(type_id::get_type_id<Rest>()), ...);
+    required_masks_.resize(max_block_ + 1, 0);
+    auto fill_mask = [&](int tid) noexcept {
+        uint32_t block = block_of(tid);
+        uint32_t offset = static_cast<uint32_t>(tid - 1) % 64;
+        required_masks_[block] |= (1ULL << offset);
+    };
+    fill_mask(type_id::get_type_id<First>());
+    (fill_mask(type_id::get_type_id<Rest>()), ...);
+    use_mask_path_ = (N >= 3) || ((max_block_ + 1) <= 5);
+    req_sets_.resize(N, nullptr);
+    for (size_t i = 0; i < N; ++i) req_sets_[i] = sets_[i];
     rebuild();
 }
 
@@ -122,8 +156,7 @@ inline void owning_group<First, Rest...>::rebuild() noexcept
     {
         for (size_t read = 0; read < n; ++read)
         {
-            entity e(indices[read], primary->get_version_unchecked(indices[read]));
-            if ((mgr_->get_entity_mask(e) & required_mask_) == required_mask_)
+            if (check_blocks(indices[read]))
             {
                 if (read != write)
                 {
@@ -137,19 +170,18 @@ inline void owning_group<First, Rest...>::rebuild() noexcept
     {
         for (size_t read = 0; read < n; ++read)
         {
-            uint32_t idx = indices[read];
-            uint32_t ver = primary->get_version_unchecked(idx);
-            bool all_in = true;
+            uint32_t eid = indices[read];
+            bool has_all = true;
             for (size_t k = 0; k < N; ++k)
             {
                 if (k == primary_idx_) continue;
-                if (!single_class_set::sparse_contains_version(sets_[k], idx, ver))
+                if (req_sets_[k]->sparse_dense_at_public(eid) == single_class_set::dense_invalid)
                 {
-                    all_in = false;
+                    has_all = false;
                     break;
                 }
             }
-            if (all_in)
+            if (has_all)
             {
                 if (read != write)
                 {
@@ -173,8 +205,26 @@ inline reorder_group<First, Rest...>::reorder_group(manager* mgr, std::array<sin
     : mgr_(mgr), sets_(sets)
 {
     find_smallest();
-    use_mask_path_ = (((static_cast<uint32_t>(type_id::get_type_id<First>() - 1) / 64) == 0) && ... && ((static_cast<uint32_t>(type_id::get_type_id<Rest>() - 1) / 64) == 0));
-    required_mask_ = (mgr_->template get_component_bit<First>() | ... | mgr_->template get_component_bit<Rest>());
+    auto block_of = [](int tid) noexcept -> uint32_t {
+        return static_cast<uint32_t>(tid - 1) / 64;
+    };
+    max_block_ = block_of(type_id::get_type_id<First>());
+    auto update_block = [&](int tid) noexcept {
+        uint32_t b = block_of(tid);
+        if (b > max_block_) max_block_ = b;
+    };
+    (update_block(type_id::get_type_id<Rest>()), ...);
+    required_masks_.resize(max_block_ + 1, 0);
+    auto fill_mask = [&](int tid) noexcept {
+        uint32_t block = block_of(tid);
+        uint32_t offset = static_cast<uint32_t>(tid - 1) % 64;
+        required_masks_[block] |= (1ULL << offset);
+    };
+    fill_mask(type_id::get_type_id<First>());
+    (fill_mask(type_id::get_type_id<Rest>()), ...);
+    use_mask_path_ = (N >= 3) || ((max_block_ + 1) <= 5);
+    req_sets_.resize(N, nullptr);
+    for (size_t i = 0; i < N; ++i) req_sets_[i] = sets_[i];
     rebuild();
 }
 
@@ -197,8 +247,7 @@ inline void reorder_group<First, Rest...>::rebuild() noexcept
     {
         for (size_t read = 0; read < n; ++read)
         {
-            entity e(indices[read], primary->get_version_unchecked(indices[read]));
-            if ((mgr_->get_entity_mask(e) & required_mask_) == required_mask_)
+            if (check_blocks(indices[read]))
             {
                 if (read != write)
                 {
@@ -212,19 +261,18 @@ inline void reorder_group<First, Rest...>::rebuild() noexcept
     {
         for (size_t read = 0; read < n; ++read)
         {
-            uint32_t idx = indices[read];
-            uint32_t ver = primary->get_version_unchecked(idx);
-            bool all_in = true;
+            uint32_t eid = indices[read];
+            bool has_all = true;
             for (size_t k = 0; k < N; ++k)
             {
                 if (k == primary_idx_) continue;
-                if (!single_class_set::sparse_contains_version(sets_[k], idx, ver))
+                if (req_sets_[k]->sparse_dense_at_public(eid) == single_class_set::dense_invalid)
                 {
-                    all_in = false;
+                    has_all = false;
                     break;
                 }
             }
-            if (all_in)
+            if (has_all)
             {
                 if (read != write)
                 {
@@ -241,6 +289,45 @@ inline void reorder_group<First, Rest...>::rebuild() noexcept
     {
         if (sets_[i]) s->cached_versions[i] = sets_[i]->get_pool_version();
     }
+}
+
+template <typename First, typename... Rest>
+[[nodiscard]] inline bool group<First, Rest...>::check_blocks(uint32_t entity_index) const noexcept
+{
+    for (uint32_t b = 0; b <= max_block_; ++b)
+    {
+        if (required_masks_[b] == 0) continue;
+        uint64_t mask = mgr_->get_entity_block_by_idx(entity_index, b);
+        if ((mask & required_masks_[b]) != required_masks_[b])
+            return false;
+    }
+    return true;
+}
+
+template <typename First, typename... Rest>
+[[nodiscard]] inline bool owning_group<First, Rest...>::check_blocks(uint32_t entity_index) const noexcept
+{
+    for (uint32_t b = 0; b <= max_block_; ++b)
+    {
+        if (required_masks_[b] == 0) continue;
+        uint64_t mask = mgr_->get_entity_block_by_idx(entity_index, b);
+        if ((mask & required_masks_[b]) != required_masks_[b])
+            return false;
+    }
+    return true;
+}
+
+template <typename First, typename... Rest>
+[[nodiscard]] inline bool reorder_group<First, Rest...>::check_blocks(uint32_t entity_index) const noexcept
+{
+    for (uint32_t b = 0; b <= max_block_; ++b)
+    {
+        if (required_masks_[b] == 0) continue;
+        uint64_t mask = mgr_->get_entity_block_by_idx(entity_index, b);
+        if ((mask & required_masks_[b]) != required_masks_[b])
+            return false;
+    }
+    return true;
 }
 
 } // namespace ecs

@@ -7,21 +7,32 @@
     private:
         single_class_set* set_;
         manager* mgr_;
-        uint64_t exclude_mask_{0};
+        class_pool<uint64_t> exclude_masks_;
         std::array<single_class_set*, sizeof...(ExcludeTypes)> exclude_sets_{};
-        bool use_mask_path_{true};
+        uint32_t max_block_{0};
+        bool use_mask_path_{false};
 
-        // 双轨:mask 快路径(mask_block==0)+ sparse 交集慢路径(mask_block>0)
-        [[nodiscard]] bool is_excluded(uint32_t idx, uint32_t ver) const noexcept
+        [[nodiscard]] bool is_excluded(uint32_t idx) const noexcept
         {
-            if (use_mask_path_)
-                return (mgr_->get_entity_manager().get_mask(idx) & exclude_mask_) != 0;
-            for (size_t k = 0; k < sizeof...(ExcludeTypes); ++k)
+            if (use_mask_path_) [[likely]]
             {
-                if (single_class_set::sparse_contains_version(exclude_sets_[k], idx, ver))
-                    return true;
+                for (uint32_t b = 0; b <= max_block_; ++b)
+                {
+                    if (exclude_masks_[b] == 0) continue;
+                    if ((mgr_->get_entity_manager().get_block(idx, b) & exclude_masks_[b]) != 0)
+                        return true;
+                }
+                return false;
             }
-            return false;
+            else
+            {
+                for (auto* set : exclude_sets_)
+                {
+                    if (set && set->sparse_dense_at_public(idx) != single_class_set::dense_invalid)
+                        return true;
+                }
+                return false;
+            }
         }
 
     public:
@@ -30,13 +41,28 @@
         {
             if (mgr_)
             {
-                use_mask_path_ = (... && ((static_cast<uint32_t>(type_id::get_type_id<ExcludeTypes>() - 1) / 64) == 0));
-                exclude_mask_ = (... | mgr_->template get_component_bit<ExcludeTypes>());
+                auto block_of = [](int tid) noexcept -> uint32_t {
+                    return static_cast<uint32_t>(tid - 1) / 64;
+                };
+                max_block_ = 0;
+                auto update_block = [&](int tid) noexcept {
+                    uint32_t b = block_of(tid);
+                    if (b > max_block_) max_block_ = b;
+                };
+                (update_block(type_id::get_type_id<ExcludeTypes>()), ...);
+                exclude_masks_.resize(max_block_ + 1, 0);
+                auto fill_mask = [&](int tid) noexcept {
+                    uint32_t block = block_of(tid);
+                    uint32_t offset = static_cast<uint32_t>(tid - 1) % 64;
+                    exclude_masks_[block] |= (1ULL << offset);
+                };
+                (fill_mask(type_id::get_type_id<ExcludeTypes>()), ...);
                 if constexpr (sizeof...(ExcludeTypes) > 0)
                 {
                     size_t idx = 0;
                     ((exclude_sets_[idx++] = mgr_->template get_single_class_set<ExcludeTypes>()), ...);
                 }
+                use_mask_path_ = (sizeof...(ExcludeTypes) >= 3) || ((max_block_ + 1) <= 5);
             }
         }
 
@@ -46,7 +72,7 @@
         [[nodiscard]] bool contains(entity e) const noexcept
         {
             if (!set_ || !set_->template get_ptr<T>(e)) return false;
-            return !is_excluded(e.parts_.index_, e.parts_.version_);
+            return !is_excluded(e.parts_.index_);
         }
 
         [[nodiscard]] T* get_component_for_entity(entity e) noexcept
@@ -64,7 +90,7 @@
             {
                 uint32_t idx = indices[i];
                 uint32_t ver = set_->get_version_unchecked(idx);
-                if (!is_excluded(idx, ver)) return entity(idx, ver);
+                if (!is_excluded(idx)) return entity(idx, ver);
             }
             return entity{};
         }
@@ -98,7 +124,7 @@
                     uint32_t ver = 0;
                     if (cv_cur_ver_page) [[likely]]
                         ver = single_class_set::read_version_from_page(cv_cur_ver_page, idx, set_->page_mask);
-                    if (is_excluded(idx, ver)) [[unlikely]] continue;
+                    if (is_excluded(idx)) [[unlikely]] continue;
                     entity e(idx, ver);
                     func(e, (*pool)[i]);
                 }
@@ -111,7 +137,7 @@
                         PREFETCH_R(&(*pool)[i + 32]);
                     uint32_t idx = indices[i];
                     uint32_t ver = set_->get_version_unchecked(idx);
-                    if (is_excluded(idx, ver)) [[unlikely]] continue;
+                    if (is_excluded(idx)) [[unlikely]] continue;
                     func((*pool)[i]);
                 }
             }

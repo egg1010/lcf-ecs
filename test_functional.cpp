@@ -3184,11 +3184,11 @@ int main()
     }
 
     // ========================================================
-    // 14. >64 组件类型双轨测试 (mask + sparse)
+    // 14. >64 组件类型多块掩码查询测试
     // ========================================================
     {
         using namespace ecs;
-        print_section(14, ">64 组件类型双轨测试 (mask + sparse)");
+        print_section(14, ">64 组件类型多块掩码查询测试");
 
         manager mgr;
         mgr.append_preallocated_entities(256);
@@ -3245,7 +3245,7 @@ int main()
             print_item("get_first_entity 有效", first.is_valid());
         }
 
-        print_sub("runtime_view sparse 慢路径 (req B, type_id 65 > 64)");
+        print_sub("runtime_view 多块掩码路径 (req B, type_id 65 > 64)");
         {
             auto rv = mgr.runtime_view_create({tid_b});
             int cnt = 0;
@@ -3256,7 +3256,7 @@ int main()
             print_item("!contains(only_a[0])", !rv.contains(only_a[0]));
         }
 
-        print_sub("runtime_view sparse 慢路径 (req A+B, B > 64)");
+        print_sub("runtime_view 多块掩码路径 (req A+B, B > 64)");
         {
             auto rv = mgr.runtime_view_create({tid_a, tid_b});
             int cnt = 0;
@@ -3267,7 +3267,7 @@ int main()
             print_item("!contains(only_b[0])", !rv.contains(only_b[0]));
         }
 
-        print_sub("runtime_view sparse 慢路径 (req A exclude B, B > 64)");
+        print_sub("runtime_view 多块掩码路径 (req A exclude B, B > 64)");
         {
             auto rv = mgr.runtime_view_create({tid_a}, {tid_b});
             int cnt = 0;
@@ -3277,7 +3277,7 @@ int main()
             print_item("contains(only_a[0])", rv.contains(only_a[0]));
         }
 
-        print_sub("runtime_view sparse 慢路径 (req B exclude A, B > 64)");
+        print_sub("runtime_view 多块掩码路径 (req B exclude A, B > 64)");
         {
             auto rv = mgr.runtime_view_create({tid_b}, {tid_a});
             int cnt = 0;
@@ -3370,7 +3370,7 @@ int main()
             print_item("runtime_view_create_from_terms(ptr, count) 匹配 20", cnt_p == 20);
         }
 
-        print_sub("group<A,B> sparse 慢路径 (B > 64)");
+        print_sub("group<A,B> 多块掩码路径 (B > 64)");
         {
             auto g = mgr.group<A, B>();
             int cnt = 0;
@@ -3380,7 +3380,7 @@ int main()
             print_item("!contains(only_a[0])", !g.contains(only_a[0]));
         }
 
-        print_sub("owning_group<A,B> sparse 慢路径 (B > 64)");
+        print_sub("owning_group<A,B> 多块掩码路径 (B > 64)");
         {
             auto og = mgr.group<A, B>(ecs::owned<A>);
             int cnt = 0;
@@ -3389,7 +3389,7 @@ int main()
             print_item("contains(both[0])", og.contains(both[0]));
         }
 
-        print_sub("reorder_group<A,B> sparse 慢路径 (B > 64)");
+        print_sub("reorder_group<A,B> 多块掩码路径 (B > 64)");
         {
             auto rg = mgr.group<A, B>(ecs::reorder<A>);
             int cnt = 0;
@@ -3398,7 +3398,7 @@ int main()
             print_item("contains(both[0])", rg.contains(both[0]));
         }
 
-        print_sub("view<A>(without<B>) sparse 慢路径 (B > 64)");
+        print_sub("view<A>(without<B>) 多块掩码路径 (B > 64)");
         {
             auto vw = mgr.view<A>(ecs::without<B>);
             int cnt = 0;
@@ -3408,7 +3408,7 @@ int main()
             print_item("contains(only_a[0])", vw.contains(only_a[0]));
         }
 
-        print_sub("view<B>(without<A>) sparse 慢路径 (A=64 B=65)");
+        print_sub("view<B>(without<A>) 多块掩码路径 (A=64 B=65)");
         {
             auto vw = mgr.view<B>(ecs::without<A>);
             int cnt = 0;
@@ -3418,7 +3418,7 @@ int main()
             print_item("contains(only_b[0])", vw.contains(only_b[0]));
         }
 
-        print_sub("mask 快路径仍正常 (>64 注册后前 64 种不受影响)");
+        print_sub("mask 快路径仍正常 (前 64 种类型不受影响)");
         {
             entity e = mgr.create_entity();
             mgr.add(e, Position{1, 2, 3});
@@ -3427,6 +3427,52 @@ int main()
             rv.for_each([&cnt](entity) { ++cnt; });
             print_item("req Position 匹配数 == 1", cnt == 1);
             print_item("contains(Position 实体)", rv.contains(e));
+        }
+
+        print_sub("新增 API: get_entity_block / get_entity_block_by_idx / get_block");
+        {
+            entity e_test = mgr.create_entity();
+            mgr.add(e_test, A{1});
+            mgr.add(e_test, B{2});
+            uint32_t idx = e_test.parts_.index_;
+            uint32_t block_a = static_cast<uint32_t>(tid_a - 1) / 64;
+            uint32_t block_b = static_cast<uint32_t>(tid_b - 1) / 64;
+
+            uint64_t blk0 = mgr.get_entity_block(e_test, 0);
+            uint64_t blk_a = mgr.get_entity_block(e_test, block_a);
+            uint64_t blk_b = mgr.get_entity_block(e_test, block_b);
+            uint64_t blk0_by_idx = mgr.get_entity_block_by_idx(idx, 0);
+            uint64_t blk_a_by_idx = mgr.get_entity_block_by_idx(idx, block_a);
+            auto& em = mgr.get_entity_manager();
+            uint64_t blk0_em = em.get_block(idx, 0);
+            uint64_t blk_a_em = em.get_block(idx, block_a);
+
+            print_item("get_entity_block(e, 0) == get_entity_mask", blk0 == mgr.get_entity_mask(e_test));
+            print_item("get_entity_block(e, block_a) != 0 (A 块)", blk_a != 0);
+            print_item("get_entity_block(e, block_b) != 0 (B 块)", blk_b != 0);
+            print_item("get_entity_block_by_idx(idx, 0) 一致", blk0_by_idx == blk0);
+            print_item("get_entity_block_by_idx(idx, block_a) 一致", blk_a_by_idx == blk_a);
+            print_item("entity_manager::get_block(idx, 0) 一致", blk0_em == blk0);
+            print_item("entity_manager::get_block(idx, block_a) 一致", blk_a_em == blk_a);
+            // 块 0 不含 A/B (都在高位块)
+            uint64_t a_bit = 1ULL << (static_cast<uint32_t>(tid_a - 1) % 64);
+            uint64_t b_bit = 1ULL << (static_cast<uint32_t>(tid_b - 1) % 64);
+            print_item("block 0 不含 A 位", (blk0 & a_bit) == 0);
+            print_item("block 0 不含 B 位", (blk0 & b_bit) == 0);
+            print_item("block_a 含 A 位", (blk_a & a_bit) != 0);
+            print_item("block_b 含 B 位", (blk_b & b_bit) != 0);
+            // 越界块返回 0
+            uint64_t blk_out = mgr.get_entity_block(e_test, 99);
+            print_item("get_entity_block(e, 99) == 0", blk_out == 0);
+            uint64_t blk_out_em = em.get_block(idx, 99);
+            print_item("entity_manager::get_block(idx, 99) == 0", blk_out_em == 0);
+        }
+
+        print_sub("新增 API: num_mask_blocks 自动扩容");
+        {
+            // 200 个 extra 组件 + Position/Velocity/Health + A/B
+            // 总计 >64 种类型, 自动扩容到 2 块
+            print_item("num_mask_blocks() >= 2", mgr.num_mask_blocks() >= 2);
         }
     }
     print_summary("功能测试");

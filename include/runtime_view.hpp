@@ -32,8 +32,9 @@ class runtime_query
 {
 public:
     class_pool<int> required_ids_;
-    uint64_t req_mask_{0};
-    uint64_t exc_mask_{0};
+    class_pool<uint64_t> req_masks_;
+    class_pool<uint64_t> exc_masks_;
+    uint32_t max_block_{0};
     single_class_set* primary_set_{nullptr};
     bool use_mask_path_{true};
     class_pool<single_class_set*> req_sets_;
@@ -54,6 +55,9 @@ public:
 
     // term 构造(支持 OR/OPTIONAL)
     runtime_query(manager* mgr, class_pool<runtime_term> terms) noexcept;
+
+    // 多块掩码检查(entity_index 已保证有效)
+    [[nodiscard]] bool check_blocks(uint32_t entity_index, const manager* mgr) const noexcept;
 };
 
 // ======================== runtime_view ========================

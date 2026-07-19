@@ -41,19 +41,15 @@ inline runtime_query::runtime_query(manager* mgr, class_pool<int> required_ids,
 {
     if (required_ids_.empty()) [[unlikely]] return;
 
-    use_mask_path_ = true;
+    auto block_of = [](int tid) noexcept -> uint32_t {
+        return static_cast<uint32_t>(tid - 1) / 64;
+    };
+
     size_t min_size = std::numeric_limits<size_t>::max();
     for (int tid : required_ids_)
     {
-        const auto* meta = mgr->get_component_meta(tid);
-        if (meta && meta->mask_block == 0)
-        {
-            req_mask_ |= (1ULL << meta->mask_offset);
-        }
-        else
-        {
-            use_mask_path_ = false;
-        }
+        uint32_t b = block_of(tid);
+        if (b > max_block_) max_block_ = b;
         auto* set = mgr->get_single_class_set_by_id(tid);
         req_sets_.emplace_back(set);
         if (set && set->size() < min_size)
@@ -65,51 +61,66 @@ inline runtime_query::runtime_query(manager* mgr, class_pool<int> required_ids,
 
     for (int tid : excluded_ids)
     {
-        const auto* meta = mgr->get_component_meta(tid);
-        if (meta && meta->mask_block == 0)
-        {
-            exc_mask_ |= (1ULL << meta->mask_offset);
-        }
-        else
-        {
-            use_mask_path_ = false;
-        }
+        uint32_t b = block_of(tid);
+        if (b > max_block_) max_block_ = b;
         exc_sets_.emplace_back(mgr->get_single_class_set_by_id(tid));
     }
+
+    req_masks_.resize(max_block_ + 1, 0);
+    exc_masks_.resize(max_block_ + 1, 0);
+    for (int tid : required_ids_)
+    {
+        uint32_t block = block_of(tid);
+        uint32_t offset = static_cast<uint32_t>(tid - 1) % 64;
+        req_masks_[block] |= (1ULL << offset);
+    }
+    for (int tid : excluded_ids)
+    {
+        uint32_t block = block_of(tid);
+        uint32_t offset = static_cast<uint32_t>(tid - 1) % 64;
+        exc_masks_[block] |= (1ULL << offset);
+    }
+
+    use_mask_path_ = (req_sets_.size() >= 3) || ((max_block_ + 1) <= 5);
 }
 
 inline runtime_query::runtime_query(manager* mgr, class_pool<runtime_term> terms) noexcept
 {
     if (terms.empty()) [[unlikely]] return;
 
-    use_mask_path_ = true;
+    auto block_of = [](int tid) noexcept -> uint32_t {
+        return static_cast<uint32_t>(tid - 1) / 64;
+    };
 
-    // term 分发上下文: 封装构造函数局部状态, 供 4 个 op 处理函数共享
+    // 第一遍: 收集所有类型, 计算 max_block
+    for (const auto& term : terms)
+    {
+        uint32_t b = block_of(term.type_id);
+        if (b > max_block_) max_block_ = b;
+    }
+
+    req_masks_.resize(max_block_ + 1, 0);
+    exc_masks_.resize(max_block_ + 1, 0);
+
+    // term 分发上下文
     struct term_ctx
     {
         runtime_query* self;
         size_t min_size;
     } ctx{this, std::numeric_limits<size_t>::max()};
 
-    // 统一的 op 处理函数签名
-    using term_handler = void(*)(term_ctx&, const runtime_term&, const component_meta*, single_class_set*) noexcept;
+    using term_handler = void(*)(term_ctx&, const runtime_term&, single_class_set*) noexcept;
 
-    // 4 个 op 处理函数, 通过 dispatch[term.op] 直接索引调用, 消除 if-else 链
     static constexpr term_handler dispatch[4] = {
         // op=0 AND
-        [](term_ctx& c, const runtime_term& t, const component_meta* meta, single_class_set* set) noexcept
+        [](term_ctx& c, const runtime_term& t, single_class_set* set) noexcept
         {
             c.self->required_ids_.emplace_back(t.type_id);
             c.self->req_sets_.emplace_back(set);
             c.self->req_access_.emplace_back(t.access);
-            if (meta && meta->mask_block == 0)
-            {
-                c.self->req_mask_ |= (1ULL << meta->mask_offset);
-            }
-            else
-            {
-                c.self->use_mask_path_ = false;
-            }
+            uint32_t block = static_cast<uint32_t>(t.type_id - 1) / 64;
+            uint32_t offset = static_cast<uint32_t>(t.type_id - 1) % 64;
+            c.self->req_masks_[block] |= (1ULL << offset);
             if (set && set->size() < c.min_size)
             {
                 c.min_size = set->size();
@@ -117,27 +128,21 @@ inline runtime_query::runtime_query(manager* mgr, class_pool<runtime_term> terms
             }
         },
         // op=1 OR
-        [](term_ctx& c, const runtime_term&, const component_meta*, single_class_set* set) noexcept
+        [](term_ctx& c, const runtime_term&, single_class_set* set) noexcept
         {
             c.self->has_or_ = true;
             c.self->or_sets_.emplace_back(set);
-            c.self->use_mask_path_ = false;
         },
         // op=2 NOT
-        [](term_ctx& c, const runtime_term&, const component_meta* meta, single_class_set* set) noexcept
+        [](term_ctx& c, const runtime_term& t, single_class_set* set) noexcept
         {
             c.self->exc_sets_.emplace_back(set);
-            if (meta && meta->mask_block == 0)
-            {
-                c.self->exc_mask_ |= (1ULL << meta->mask_offset);
-            }
-            else
-            {
-                c.self->use_mask_path_ = false;
-            }
+            uint32_t block = static_cast<uint32_t>(t.type_id - 1) / 64;
+            uint32_t offset = static_cast<uint32_t>(t.type_id - 1) % 64;
+            c.self->exc_masks_[block] |= (1ULL << offset);
         },
         // op=3 OPTIONAL
-        [](term_ctx& c, const runtime_term&, const component_meta*, single_class_set* set) noexcept
+        [](term_ctx& c, const runtime_term&, single_class_set* set) noexcept
         {
             c.self->has_optional_ = true;
             c.self->opt_sets_.emplace_back(set);
@@ -147,14 +152,15 @@ inline runtime_query::runtime_query(manager* mgr, class_pool<runtime_term> terms
     for (const auto& term : terms)
     {
         terms_.emplace_back(term);
-        const auto* meta = mgr->get_component_meta(term.type_id);
         auto* set = mgr->get_single_class_set_by_id(term.type_id);
 
         if (term.op < 4) [[likely]]
         {
-            dispatch[term.op](ctx, term, meta, set);
+            dispatch[term.op](ctx, term, set);
         }
     }
+
+    use_mask_path_ = !has_or_ && ((req_sets_.size() >= 3) || ((max_block_ + 1) <= 5));
 }
 
 // ======================== runtime_view out-of-line 定义 ========================
@@ -202,10 +208,7 @@ inline bool runtime_view::contains(entity e) noexcept
     if (!all_sets_valid()) [[unlikely]] return false;
     if (query_.use_mask_path_)
     {
-        uint64_t mask = mgr_->get_entity_manager().get_mask(e.parts_.index_);
-        if ((mask & query_.req_mask_) != query_.req_mask_) return false;
-        if (query_.exc_mask_ != 0 && (mask & query_.exc_mask_) != 0) return false;
-        return true;
+        return query_.check_blocks(e.parts_.index_, mgr_);
     }
     return is_entity_hit(e.parts_.index_, e.parts_.version_);
 }
@@ -220,15 +223,12 @@ inline entity runtime_view::get_first_entity() noexcept
 
     if (query_.use_mask_path_ && !query_.has_or_)
     {
-        auto& em = mgr_->get_entity_manager();
         const sparse_entry* rv_cur_ver_page = nullptr;
         size_t rv_cur_page_idx = SIZE_MAX;
         for (size_t i = 0; i < indices.size(); ++i)
         {
             uint32_t idx = indices[i];
-            uint64_t mask = em.get_mask(idx);
-            if ((mask & query_.req_mask_) != query_.req_mask_) continue;
-            if (query_.exc_mask_ != 0 && (mask & query_.exc_mask_) != 0) continue;
+            if (!query_.check_blocks(idx, mgr_)) continue;
             size_t pid = idx >> primary->page_shift;
             if (pid != rv_cur_page_idx) [[unlikely]]
             {
@@ -359,15 +359,12 @@ inline void runtime_view::for_each_hit_impl(Func&& func) noexcept
 
     if (query_.use_mask_path_ && !query_.has_or_)
     {
-        auto& em = mgr_->get_entity_manager();
         const sparse_entry* rv_cur_ver_page = nullptr;
         size_t rv_cur_page_idx = SIZE_MAX;
         for (size_t i = 0; i < n; ++i)
         {
             uint32_t idx = indices[i];
-            uint64_t mask = em.get_mask(idx);
-            if ((mask & query_.req_mask_) != query_.req_mask_) continue;
-            if (query_.exc_mask_ != 0 && (mask & query_.exc_mask_) != 0) continue;
+            if (!query_.check_blocks(idx, mgr_)) continue;
             size_t pid = idx >> primary->page_shift;
             if (pid != rv_cur_page_idx) [[unlikely]]
             {
@@ -406,15 +403,12 @@ inline void runtime_view::for_each_hit_range(size_t start, size_t end, Func&& fu
 
     if (query_.use_mask_path_ && !query_.has_or_)
     {
-        auto& em = mgr_->get_entity_manager();
         const sparse_entry* rv_cur_ver_page = nullptr;
         size_t rv_cur_page_idx = SIZE_MAX;
         for (size_t i = start; i < end; ++i)
         {
             uint32_t idx = indices[i];
-            uint64_t mask = em.get_mask(idx);
-            if ((mask & query_.req_mask_) != query_.req_mask_) continue;
-            if (query_.exc_mask_ != 0 && (mask & query_.exc_mask_) != 0) continue;
+            if (!query_.check_blocks(idx, mgr_)) continue;
             size_t pid = idx >> primary->page_shift;
             if (pid != rv_cur_page_idx) [[unlikely]]
             {
@@ -737,6 +731,26 @@ template <typename B>
 auto manager::filter_view<T, Pred>::or_() noexcept
 {
     return filter_or_view<T, B, Pred>(mgr_, std::move(pred_));
+}
+
+[[nodiscard]] inline bool runtime_query::check_blocks(uint32_t entity_index, const manager* mgr) const noexcept
+{
+    for (uint32_t b = 0; b <= max_block_; ++b)
+    {
+        if (req_masks_[b] != 0)
+        {
+            uint64_t mask = mgr->get_entity_block_by_idx(entity_index, b);
+            if ((mask & req_masks_[b]) != req_masks_[b])
+                return false;
+        }
+        if (exc_masks_[b] != 0)
+        {
+            uint64_t mask = mgr->get_entity_block_by_idx(entity_index, b);
+            if ((mask & exc_masks_[b]) != 0)
+                return false;
+        }
+    }
+    return true;
 }
 
 } // namespace ecs

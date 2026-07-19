@@ -3077,6 +3077,19 @@ int main()
     print_kv("mgr7 mask 含 Position+Velocity",
              (m7 & mgr7.get_component_bit<Position>()) != 0 &&
              (m7 & mgr7.get_component_bit<Velocity>()) != 0);
+    // get_entity_block 按块读取掩码
+    uint64_t b0 = mgr7.get_entity_block(e7, 0);
+    uint64_t b1 = mgr7.get_entity_block(e7, 1);
+    print_kv("get_entity_block(e7, 0) == get_entity_mask", b0 == m7);
+    print_kv("get_entity_block(e7, 1) == 0", b1 == 0);
+    // get_entity_block_by_idx 不传 entity 句柄
+    uint32_t e7_idx = e7.parts_.index_;
+    print_kv("get_entity_block_by_idx(idx, 0) 一致",
+             mgr7.get_entity_block_by_idx(e7_idx, 0) == b0);
+    // get_block 通过 entity_manager 直接访问
+    auto& em7 = mgr7.get_entity_manager();
+    print_kv("entity_manager::get_block(idx, 0) 一致",
+             em7.get_block(e7_idx, 0) == b0);
 
     std::cout << "\u2551  " << std::left << std::setw(BOX_WIDTH - 2)
               << "\u6240\u6709\u793a\u4f8b\u6267\u884c\u5b8c\u6bd5"

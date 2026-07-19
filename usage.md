@@ -1532,12 +1532,14 @@ mgr.register_system(ecs::system_context{
 
 | 接口 | 说明 |
 |------|------|
-| `get_entity_mask(entity)` | 获取实体块 0 掩码（`uint64_t`，type_id 1-64） |
+| `get_entity_mask(entity)` | 获取实体块 0 掩码（`uint64_t`，type_id 1-64；等价于 `get_entity_block(e, 0)`） |
+| `get_entity_block(entity, uint32_t block_idx)` | 获取实体指定块的掩码（`uint64_t`，block_idx 块对应 type_id `block_idx*64+1` 到 `block_idx*64+64`） |
+| `get_entity_block_by_idx(uint32_t entity_index, uint32_t block_idx)` | 同上，接受 entity_index 而非 entity 句柄 |
 | `get_component_bit<T>()` | 获取组件 T 的掩码位（`mask_block==0` 时返回 `1ULL<<offset`，否则返回 0） |
 | `get_component_meta(int type_id)` | 获取 `component_meta*`（含 `mask_block`/`mask_offset`，type_id 越界返回 nullptr） |
-| `reserve_mask_blocks(uint32_t num_blocks)` | 预分配每实体掩码块数（每块 64 种组件；注册组件前调用避免 reshape） |
+| `reserve_mask_blocks(uint32_t num_blocks)` | 预分配每实体掩码块数（每块 64 种组件；注册组件前调用避免 reshape；`register_component_meta` 在 type_id 超出时自动扩容） |
 | `num_mask_blocks() const` | 当前每实体掩码块数 |
-| `get_entity_manager()` | 获取 `entity_manager&`，可继续调用 `set_mask_bit` / `clear_mask_bit` / `get_mask` / `set_entity_flag` 等 |
+| `get_entity_manager()` | 获取 `entity_manager&`，可继续调用 `set_mask_bit` / `clear_mask_bit` / `get_mask` / `get_block` / `set_entity_flag` 等 |
 
 ```cpp
 uint64_t mask = mgr.get_entity_mask(e);
@@ -1559,7 +1561,7 @@ if (meta && meta->mask_block == 0)
 mgr.reserve_mask_blocks(2);
 ```
 
-> 默认块数为 1（支持 64 种组件）。详见 [§ 27. entity_mask_manager](#27-entity_mask_manager--无上限实体掩码存储)。
+> 默认块数为 1（支持 64 种组件）。组件注册时 `register_component_meta` 自动扩容掩码块数，无需手动调用 `reserve_mask_blocks`。手动预分配可避免运行中 reshape 的开销。多块掩码查询通过 `get_entity_block(e, block_idx)` 或 `get_entity_block_by_idx(idx, block_idx)` 访问任意块。详见 [§ 27. entity_mask_manager](#27-entity_mask_manager--无上限实体掩码存储)。
 
 ### 不要做什么
 
@@ -2537,7 +2539,7 @@ rv.for_each([](entity e) {
 | 2 | NOT | 必须不拥有 |
 | 3 | OPTIONAL | 可选，不影响命中 |
 
-机制：纯 OR 查询（无 AND term）时遍历所有 OR 集合并集去重。有 AND term 时以最小 AND 集合为 primary_set 遍历，对每个实体检查 OR / NOT 条件。OR 查询会关闭 mask 快路径，走 sparse 交集。
+机制：纯 OR 查询（无 AND term）时遍历所有 OR 集合并集去重。有 AND term 时以最小 AND 集合为 primary_set 遍历，对每个实体检查 OR / NOT 条件。OR 查询以及 1-2 个 AND term 的简单查询走 sparse 交集；3+ AND term 且 block 数合理时走实体掩码快路径。
 
 ### 12.14 access_mode — 读写标注
 
