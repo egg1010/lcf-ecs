@@ -28,7 +28,31 @@ class command_buffer;
 struct component_meta
 {
     size_t   size{0};
-    uint64_t bit{0};
+    uint32_t mask_block{0};   // 掩码块索引 (type_id-1)/64
+    uint32_t mask_offset{0};  // 块内位偏移 (type_id-1)%64
+};
+
+// 系统上下文（48 bytes，内联 4 个依赖）
+struct system_context
+{
+    uint64_t required_mask;
+    uint64_t excluded_mask;
+    uint32_t order;
+    uint16_t phase;          // 0=pre_update, 1=update, 2=post_update, 3=render
+    uint16_t parallel_group; // 0=sequential, 1+=parallel group
+    uint32_t dependency_count;
+    uint32_t dependencies[4];
+};
+
+// 变更日志记录（16 bytes）
+struct change_record
+{
+    uint32_t entity_index;
+    uint32_t type_id;
+    uint8_t  op;            // 0=add, 1=remove, 2=modify
+    uint8_t  pad;
+    uint16_t frame;
+    uint32_t dense_index;
 };
 
 // 辅助: 判断 C 是否为任意 class_pool 特化
@@ -56,6 +80,7 @@ private:
     class_pool<component_meta> component_metas_;
     entity_manager entity_manager_;
     size_t default_component_capacity_{0};
+    class_pool<system_context> system_contexts_;
 
     struct component_signal_event
     {
@@ -73,6 +98,25 @@ private:
     bool comp_signal_enabled_{true};
     bool comp_signal_flushing_{false};
     bool track_changes_enabled_default_{true};
+
+    // 变更日志池
+    static constexpr size_t change_log_capacity = 4096;
+    static_assert((change_log_capacity & (change_log_capacity - 1)) == 0,
+                  "change_log_capacity must be power of 2");
+    ring_buffer<change_record, change_log_capacity> change_log_;
+    class_pool<change_record> change_log_overflow_;
+    size_t change_log_overflow_read_{0};
+    uint16_t current_frame_{0};
+    bool change_log_enabled_{true};
+
+    void push_change_record(uint32_t op, uint32_t entity_idx, uint32_t type_id, uint32_t dense_index) noexcept
+    {
+        if (!change_log_enabled_) [[unlikely]] return;
+        if (!change_log_.push(change_record{entity_idx, type_id, static_cast<uint8_t>(op), 0, current_frame_, dense_index})) [[unlikely]]
+        {
+            change_log_overflow_.emplace_back(change_record{entity_idx, type_id, static_cast<uint8_t>(op), 0, current_frame_, dense_index});
+        }
+    }
 
     void push_comp_signal(uint32_t type, uint32_t entity_idx, uint32_t component_id) noexcept
     {
@@ -121,29 +165,24 @@ private:
         if (component_metas_[type_id].size == 0) [[unlikely]]
         {
             component_metas_[type_id].size = sizeof(T);
-            // type_id <= 64 进 mask 快路径;>64 不进 mask,走 sparse 交集
-            if (type_id <= 64)
-            {
-                component_metas_[type_id].bit = 1ULL << (type_id - 1);
-            }
+            component_metas_[type_id].mask_block = static_cast<uint32_t>(type_id - 1) / 64;
+            component_metas_[type_id].mask_offset = static_cast<uint32_t>(type_id - 1) % 64;
         }
     }
 
-    void set_entity_mask_bit(entity entitys, uint64_t bit) noexcept
+    void set_entity_mask_bit(entity entitys, uint32_t block_idx, uint32_t bit_offset) noexcept
     {
-        if (bit == 0) return;
         if (entitys.is_valid()) [[likely]]
         {
-            entity_manager_.set_mask_bit_no_bounds_check(entitys.parts_.index_, bit);
+            entity_manager_.set_mask_bit_no_bounds_check(entitys.parts_.index_, block_idx, bit_offset);
         }
     }
 
-    void clear_entity_mask_bit(entity entitys, uint64_t bit) noexcept
+    void clear_entity_mask_bit(entity entitys, uint32_t block_idx, uint32_t bit_offset) noexcept
     {
-        if (bit == 0) return;
         if (entitys.is_valid()) [[likely]]
         {
-            entity_manager_.clear_mask_bit_no_bounds_check(entitys.parts_.index_, bit);
+            entity_manager_.clear_mask_bit_no_bounds_check(entitys.parts_.index_, block_idx, bit_offset);
         }
     }
 
@@ -154,7 +193,8 @@ private:
         int type_id = type_id::get_type_id<DecayedT>();
         register_component_meta<DecayedT>();
         components_c_[type_id].add(entitys, std::forward<T>(component));
-        set_entity_mask_bit(entitys, component_metas_[type_id].bit);
+        set_entity_mask_bit(entitys, component_metas_[type_id].mask_block, component_metas_[type_id].mask_offset);
+        push_change_record(0, entitys.parts_.index_, static_cast<uint32_t>(type_id), components_c_[type_id].size() - 1);
         if (!components_c_[type_id].on_add_) push_comp_signal(0, entitys.parts_.index_, static_cast<uint32_t>(type_id));
     }
 
@@ -204,7 +244,7 @@ public:
         int type_id = type_id::get_type_id<DecayedT>();
         register_component_meta<DecayedT>();
         operating_message result = components_c_[type_id].add(entitys, std::forward<T>(component));
-        set_entity_mask_bit(entitys, component_metas_[type_id].bit);
+        set_entity_mask_bit(entitys, component_metas_[type_id].mask_block, component_metas_[type_id].mask_offset);
         if (!components_c_[type_id].on_add_) push_comp_signal(0, entitys.parts_.index_, static_cast<uint32_t>(type_id));
         return result;
     }
@@ -217,10 +257,11 @@ public:
         register_component_meta<DecayedT>();
         ensure_type_exists(type_id);
         operating_message result = components_c_[type_id].add_batch(entities, components);
-        uint64_t bit = component_metas_[type_id].bit;
+        uint32_t block = component_metas_[type_id].mask_block;
+        uint32_t offset = component_metas_[type_id].mask_offset;
         for (const auto& e : entities)
         {
-            set_entity_mask_bit(e, bit);
+            set_entity_mask_bit(e, block, offset);
         }
         return result;
     }
@@ -239,10 +280,11 @@ public:
         int type_id = type_id::get_type_id<DecayedT>();
         register_component_meta<DecayedT>();
         ensure_type_exists(type_id);
-        uint64_t bit = component_metas_[type_id].bit;
+        uint32_t block = component_metas_[type_id].mask_block;
+        uint32_t offset = component_metas_[type_id].mask_offset;
         for (size_t i = 0; i < entities.size(); ++i)
         {
-            set_entity_mask_bit(entities[i], bit);
+            set_entity_mask_bit(entities[i], block, offset);
         }
         operating_message result = components_c_[type_id].add_batch(std::move(entities), std::move(components));
         return result;
@@ -438,7 +480,7 @@ public:
             int type_id = type_id::get_type_id<T>();
             if (type_id < static_cast<int>(component_metas_.size()))
             {
-                clear_entity_mask_bit(entitys, component_metas_[type_id].bit);
+                clear_entity_mask_bit(entitys, component_metas_[type_id].mask_block, component_metas_[type_id].mask_offset);
             }
             // soft_remove 仅逻辑隐藏,组件未析构,不触发 on_remove_ 也不入队
             return set->soft_remove(entitys);
@@ -457,8 +499,9 @@ public:
             int type_id = type_id::get_type_id<T>();
             if (type_id < static_cast<int>(component_metas_.size()))
             {
-                clear_entity_mask_bit(entitys, component_metas_[type_id].bit);
+                clear_entity_mask_bit(entitys, component_metas_[type_id].mask_block, component_metas_[type_id].mask_offset);
             }
+            push_change_record(1, entitys.parts_.index_, static_cast<uint32_t>(type_id), 0);
             // 即时回调与延迟队列互斥:注册了 on_remove_ 则同步触发,否则入队
             if (!set->on_remove_) push_comp_signal(1, entitys.parts_.index_, static_cast<uint32_t>(type_id));
             return set->hard_remove(entitys);
@@ -542,7 +585,7 @@ public:
     }
 
     template <typename T>
-    [[nodiscard]] class_pool<T>* get_component_vector() noexcept
+    [[nodiscard]] class_pool<T>* get_component_container() noexcept
     {
         single_class_set* set = get_single_class_set<T>();
         return set ? set->get_typed_pool_ptr<T>() : nullptr;
@@ -566,12 +609,57 @@ public:
         int type_id = type_id::get_type_id<T>();
         if (type_id >= static_cast<int>(component_metas_.size())) [[unlikely]]
             return 0;
-        return component_metas_[type_id].bit;
+        const auto& meta = component_metas_[type_id];
+        if (meta.mask_block == 0) [[likely]]
+            return 1ULL << meta.mask_offset;
+        return 0;
     }
 
     [[nodiscard]] entity_manager& get_entity_manager() noexcept
     {
         return entity_manager_;
+    }
+
+    [[nodiscard]] const entity_manager& get_entity_manager() const noexcept
+    {
+        return entity_manager_;
+    }
+
+    // 预分配实体掩码块数 — 注册组件前调用避免 reshape（每块支持 64 种组件类型）
+    void reserve_mask_blocks(uint32_t num_blocks) noexcept
+    {
+        entity_manager_.reserve_mask_blocks(num_blocks);
+    }
+
+    [[nodiscard]] uint32_t num_mask_blocks() const noexcept
+    {
+        return entity_manager_.num_mask_blocks();
+    }
+
+    // 实体状态池委托
+    [[nodiscard]] entity_state& get_entity_state(uint32_t entity_index) noexcept
+    {
+        return entity_manager_.get_entity_state(entity_index);
+    }
+
+    [[nodiscard]] const entity_state& get_entity_state(uint32_t entity_index) const noexcept
+    {
+        return entity_manager_.get_entity_state(entity_index);
+    }
+
+    void set_entity_flag(uint32_t entity_index, entity_flag f) noexcept
+    {
+        entity_manager_.set_entity_flag(entity_index, f);
+    }
+
+    void clear_entity_flag(uint32_t entity_index, entity_flag f) noexcept
+    {
+        entity_manager_.clear_entity_flag(entity_index, f);
+    }
+
+    [[nodiscard]] bool has_entity_flag(uint32_t entity_index, entity_flag f) const noexcept
+    {
+        return entity_manager_.has_entity_flag(entity_index, f);
     }
 
     template <typename T>
@@ -586,19 +674,15 @@ public:
     void delete_entity(entity& entitys) noexcept
     {
         if (!entitys.is_valid()) [[unlikely]] return;
-        // 先触发实体身上所有组件的 on_remove_ 与 comp_signal(顺序:组件 remove 先于 entity destroyed)
-        uint64_t mask = entity_manager_.get_mask(entitys.parts_.index_);
-        for (size_t i = 0; i < components_c_.size(); ++i)
-        {
-            // type_id<=64 用 mask 位图加速跳过未持有的 set;>64 仍需 contains_entity 检查
-            if (i >= 1 && i <= 64 && !(mask & (1ULL << (i - 1)))) [[likely]] continue;
-            single_class_set& set = components_c_[i];
-            if (set.contains_entity(entitys))
-            {
-                if (!set.on_remove_) push_comp_signal(1, entitys.parts_.index_, static_cast<uint32_t>(i));
-                set.hard_remove(entitys);
-            }
-        }
+        // 仅遍历实体实际拥有的组件类型 (O(实体组件数) 而非 O(类型总数))
+        // 迭代副本 block, hard_remove 修改原掩码不影响循环
+        entity_manager_.for_each_set_bit(entitys.parts_.index_, [&](uint32_t block_idx, uint32_t bit_offset) {
+            size_t type_id = static_cast<size_t>(block_idx) * 64 + bit_offset + 1;
+            if (type_id >= components_c_.size()) [[unlikely]] return;
+            single_class_set& set = components_c_[type_id];
+            if (!set.on_remove_) push_comp_signal(1, entitys.parts_.index_, static_cast<uint32_t>(type_id));
+            set.hard_remove(entitys);
+        });
         entity_manager_.destroy_entity(entitys);
     }
 
@@ -977,6 +1061,52 @@ public:
         return comp_signal_buf_.has_pending() || comp_signal_overflow_read_ < comp_signal_overflow_chain_.size();
     }
 
+    // 变更日志池 — 帧末消费
+    void enable_change_log() noexcept { change_log_enabled_ = true; }
+    void disable_change_log() noexcept { change_log_enabled_ = false; }
+
+    template <typename Func>
+    void flush_change_log(Func&& handler) noexcept
+    {
+        uint64_t budget = change_log_capacity * 4 + change_log_overflow_.size();
+        size_t processed = change_log_.drain_with_budget(
+            static_cast<size_t>(budget),
+            [&](const change_record& r) noexcept { handler(r); });
+        budget -= processed;
+        while (budget > 0 && change_log_overflow_read_ < change_log_overflow_.size())
+        {
+            handler(change_log_overflow_[change_log_overflow_read_]);
+            ++change_log_overflow_read_;
+            --budget;
+        }
+        if (change_log_overflow_read_ == change_log_overflow_.size() && change_log_overflow_.size() > 0)
+        {
+            change_log_overflow_.clear();
+            change_log_overflow_read_ = 0;
+        }
+    }
+
+    void end_frame() noexcept
+    {
+        ++current_frame_;
+    }
+
+    [[nodiscard]] bool has_pending_change_records() const noexcept
+    {
+        return change_log_.has_pending() || change_log_overflow_read_ < change_log_overflow_.size();
+    }
+
+    // 系统上下文池 — 注册与调度
+    void register_system(const system_context& ctx) noexcept
+    {
+        system_contexts_.emplace_back(ctx);
+    }
+
+    [[nodiscard]] const class_pool<system_context>& get_system_contexts() const noexcept
+    {
+        return system_contexts_;
+    }
+
     ~manager() = default;
 };
 
@@ -986,12 +1116,14 @@ class query_context
     single_class_set* set_;
     size_t sparse_size_;
     T* pool_data_;
+    uint64_t pool_version_;
 
 public:
     query_context(manager& mgr) noexcept
         : set_(mgr.get_single_class_set<T>())
         , sparse_size_(set_ ? set_->sparse_size_ : 0)
         , pool_data_(set_ ? set_->get_typed_pool<T>()->data() : nullptr)
+        , pool_version_(set_ ? set_->get_pool_version() : 0)
     {}
 
     [[nodiscard]] T* get_ptr(entity e) noexcept
@@ -1000,7 +1132,7 @@ public:
             return nullptr;
         const size_t slot = e.parts_.index_ & (single_class_set::hot_set_capacity_ - 1);
         const auto& entry = set_->hot_set_[slot];
-        if (entry.entity_index == e.parts_.index_ && entry.version == e.parts_.version_) [[likely]]
+        if (entry.entity_index == e.parts_.index_ && entry.version == e.parts_.version_ && entry.pool_version == pool_version_) [[likely]]
         {
             return &pool_data_[entry.dense_index];
         }
@@ -1010,7 +1142,7 @@ public:
         const uint32_t ver = set_->sparse_version_at(e.parts_.index_);
         if (ver != e.parts_.version_) [[unlikely]]
             return nullptr;
-        set_->hot_set_[slot] = {e.parts_.index_, dense, ver, 0};
+        set_->hot_set_[slot] = {e.parts_.index_, dense, ver, pool_version_};
         return &pool_data_[dense];
     }
 
@@ -1020,7 +1152,7 @@ public:
             return nullptr;
         const size_t slot = e.parts_.index_ & (single_class_set::hot_set_capacity_ - 1);
         const auto& entry = set_->hot_set_[slot];
-        if (entry.entity_index == e.parts_.index_ && entry.version == e.parts_.version_) [[likely]]
+        if (entry.entity_index == e.parts_.index_ && entry.version == e.parts_.version_ && entry.pool_version == pool_version_) [[likely]]
         {
             return &pool_data_[entry.dense_index];
         }

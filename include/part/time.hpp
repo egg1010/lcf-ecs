@@ -1,12 +1,14 @@
 #pragma once
 
 // 计时与基准测量工具
-// 墙钟计时 / CPU 周期计数 / 统计分布 / 缓存延迟测量
+// 墙钟计时 / CPU 周期计数 / 缓存屏障 / 统计分布 / 在线分位数 / 缓存延迟测量
 
 #include <chrono>
 #include <cstdint>
 #include <cstring>
-#include <algorithm>
+#include <memory>
+#include <new>
+#include "tiered_sort.hpp"
 #include <cmath>
 #include "force_inline.hpp"
 #include "class_pool.hpp"
@@ -88,6 +90,65 @@ public:
     }
 #endif
 
+// ============================================================
+// x86 缓存行刷新 / 内存屏障 / 精确计时栅栏
+// ============================================================
+#if TIME_HAS_RDTSC
+    #if defined(_MSC_VER)
+        FORCE_INLINE void cache_flush(const void* p) noexcept { _mm_clflush(p); }
+        FORCE_INLINE void mfence() noexcept { _mm_mfence(); }
+        FORCE_INLINE void lfence() noexcept { _mm_lfence(); }
+        // Intel 推荐: lfence; rdtsc; lfence 全屏障周期测量
+        FORCE_INLINE uint64_t rdtsc_fenced() noexcept
+        {
+            _mm_lfence();
+            uint64_t t = __rdtsc();
+            _mm_lfence();
+            return t;
+        }
+    #else
+        FORCE_INLINE void cache_flush(const void* p) noexcept
+        {
+            __asm__ __volatile__("clflush %0" : : "m"(*(const volatile char*)p));
+        }
+        FORCE_INLINE void mfence() noexcept
+        {
+            __asm__ __volatile__("mfence" ::: "memory");
+        }
+        FORCE_INLINE void lfence() noexcept
+        {
+            __asm__ __volatile__("lfence" ::: "memory");
+        }
+        FORCE_INLINE uint64_t rdtsc_fenced() noexcept
+        {
+            __asm__ __volatile__("lfence" ::: "memory");
+            uint32_t lo, hi;
+            __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
+            __asm__ __volatile__("lfence" ::: "memory");
+            return (static_cast<uint64_t>(hi) << 32) | lo;
+        }
+    #endif
+
+    // 逐缓存行刷新范围 [p, p+bytes)
+    FORCE_INLINE void cache_flush_range(const void* p, size_t bytes) noexcept
+    {
+        const char* cp = static_cast<const char*>(p);
+        const char* end = cp + bytes;
+        while (cp < end)
+        {
+            cache_flush(cp);
+            cp += 64;
+        }
+        mfence();
+    }
+#else
+    FORCE_INLINE void cache_flush(const void*) noexcept {}
+    FORCE_INLINE void cache_flush_range(const void*, size_t) noexcept {}
+    FORCE_INLINE void mfence() noexcept {}
+    FORCE_INLINE void lfence() noexcept {}
+    FORCE_INLINE uint64_t rdtsc_fenced() noexcept { return 0; }
+#endif
+
 // 周期计时器
 class cycle_timer
 {
@@ -141,10 +202,10 @@ inline stats compute_stats(class_pool<double> samples) noexcept
     {
         return s;
     }
-    // class_pool 迭代器为双向, 不支持 std::sort 的随机访问
+    // class_pool 迭代器为双向, 不支持 sort 的随机访问
     // 用 data() 取连续裸指针排序 (emplace_back 填充保证密集)
     double* p = samples.data();
-    std::sort(p, p + s.count);
+    sort(p, s.count);
     s.min = p[0];
     s.max = p[s.count - 1];
     double sum = 0;
@@ -176,6 +237,122 @@ inline stats compute_stats(class_pool<double> samples) noexcept
     return s;
 }
 
+// ============================================================
+// P² 在线分位数估计器 (Jain & Chlamtac, 1985)
+// O(1) 空间, O(1) 每次观测, 无需存储全部样本
+// 适用: 流式基准 / 大样本 / 实时监控
+// ============================================================
+class p2_quantile
+{
+    double q_[5] = {};
+    size_t n_[5] = {};
+    double ns_[5] = {};
+    size_t count_ = 0;
+    double p_;
+
+public:
+    explicit p2_quantile(double quantile) noexcept : p_(quantile) {}
+
+    void add(double x) noexcept
+    {
+        ++count_;
+        if (count_ <= 5)
+        {
+            q_[count_ - 1] = x;
+            if (count_ == 5)
+            {
+                // 前 5 个值就地插入排序
+                for (size_t i = 1; i < 5; ++i)
+                {
+                    double key = q_[i];
+                    size_t j = i;
+                    while (j > 0 && key < q_[j - 1])
+                    {
+                        q_[j] = q_[j - 1];
+                        --j;
+                    }
+                    q_[j] = key;
+                }
+                n_[0] = 1; n_[1] = 2; n_[2] = 3; n_[3] = 4; n_[4] = 5;
+                ns_[0] = 1; ns_[4] = 5;
+                ns_[1] = 1 + 2 * p_;
+                ns_[2] = 1 + 4 * p_;
+                ns_[3] = 3 + 2 * p_;
+            }
+            return;
+        }
+
+        // 找区间 k
+        int k = -1;
+        if (x < q_[0]) [[unlikely]] { k = 0; }
+        else if (x >= q_[4]) [[unlikely]] { k = 3; }
+        else
+        {
+            for (int i = 0; i < 4; ++i)
+            {
+                if (q_[i] <= x && x < q_[i + 1])
+                {
+                    k = i;
+                    break;
+                }
+            }
+        }
+
+        // 更新标记位置
+        for (int i = k + 1; i < 5; ++i) { ++n_[i]; }
+        ns_[0] = 1;
+        ns_[1] = 1 + static_cast<double>(count_ - 1) * p_ / 2;
+        ns_[2] = 1 + static_cast<double>(count_ - 1) * p_;
+        ns_[3] = 1 + static_cast<double>(count_ - 1) * (1 + p_) / 2;
+        ns_[4] = static_cast<double>(count_);
+
+        // 调整中间标记 1/2/3
+        for (int i = 1; i <= 3; ++i)
+        {
+            double d = ns_[i] - static_cast<double>(n_[i]);
+            if ((d >= 1.0 && n_[i + 1] - n_[i] > 1) ||
+                (d <= -1.0 && n_[i] - n_[i - 1] > 1))
+            {
+                int ds = (d > 0) ? 1 : -1;
+                // 抛物线插值
+                double qs = q_[i] + static_cast<double>(ds) /
+                    static_cast<double>(n_[i + 1] - n_[i - 1]) *
+                    ((static_cast<double>(n_[i] - n_[i - 1] + ds) * (q_[i + 1] - q_[i]) /
+                      static_cast<double>(n_[i + 1] - n_[i])) +
+                     (static_cast<double>(n_[i + 1] - n_[i] - ds) * (q_[i] - q_[i - 1]) /
+                      static_cast<double>(n_[i] - n_[i - 1])));
+                if (q_[i - 1] < qs && qs < q_[i + 1])
+                {
+                    q_[i] = qs;
+                }
+                else
+                {
+                    // 线性回退 (有符号分母处理负向移动)
+                    int64_t denom = static_cast<int64_t>(n_[i + ds]) - static_cast<int64_t>(n_[i]);
+                    q_[i] = q_[i] + static_cast<double>(ds) *
+                        (q_[i + ds] - q_[i]) / static_cast<double>(denom);
+                }
+                n_[i] = static_cast<size_t>(static_cast<int64_t>(n_[i]) + ds);
+            }
+        }
+    }
+
+    [[nodiscard]] double estimate() const noexcept
+    {
+        if (count_ == 0) [[unlikely]] return 0;
+        if (count_ <= 5) [[unlikely]] return q_[count_ - 1];
+        return q_[2];
+    }
+
+    [[nodiscard]] size_t count() const noexcept { return count_; }
+
+    void reset() noexcept
+    {
+        count_ = 0;
+        for (size_t i = 0; i < 5; ++i) { q_[i] = 0; n_[i] = 0; ns_[i] = 0; }
+    }
+};
+
 // 纳秒级基准: 运行 fn iterations 次
 template <typename F>
 stats benchmark_ns(size_t iterations, size_t warmup, F&& fn) noexcept
@@ -188,9 +365,10 @@ stats benchmark_ns(size_t iterations, size_t warmup, F&& fn) noexcept
     samples.increase_capacity(iterations);
     for (size_t i = 0; i < iterations; ++i)
     {
-        timer t;
+        auto t0 = std::chrono::high_resolution_clock::now();
         fn();
-        samples.emplace_back(t.elapsed_ns());
+        auto t1 = std::chrono::high_resolution_clock::now();
+        samples.emplace_back(std::chrono::duration<double, std::nano>(t1 - t0).count());
     }
     return compute_stats(std::move(samples));
 }
@@ -221,14 +399,17 @@ stats benchmark_cycles(size_t iterations, size_t warmup, F&& fn) noexcept
 
 // ============================================================
 // 缓存延迟分级 (基于访问周期估算命中层级)
-//   L1 ~4 周期, L2 ~12 周期, L3 ~40 周期, DRAM ~200+ 周期
+//   默认假设三级缓存: L1 ~4, L2 ~12, L3 ~40, DRAM ~200+
+//   不同 CPU 缓存层级不同 (嵌入式可能仅 1-2 级), 可通过 cache_levels 配置
+//   亦可调用 detect_cache_latency_thresholds() 自动检测
 // ============================================================
 struct latency_thresholds
 {
     double l1_max = 4.0;    // < 此值视为 L1 命中
-    double l2_max = 15.0;   // < 此值视为 L2 命中
-    double l3_max = 50.0;   // < 此值视为 L3 命中
-    // >= l3_max 视为 DRAM 未命中
+    double l2_max = 15.0;   // < 此值视为 L2 命中 (cache_levels<2 时忽略)
+    double l3_max = 50.0;   // < 此值视为 L3 命中 (cache_levels<3 时忽略)
+    uint32_t cache_levels = 3;  // 实际缓存层级: 1=仅L1, 2=L1+L2, 3=L1+L2+L3
+    // >= 最后一级阈值视为 DRAM 未命中
 };
 
 struct cache_report
@@ -249,6 +430,7 @@ struct cache_report
     double p95_cycles = 0;
     double p99_cycles = 0;
     latency_thresholds thresholds;
+    uint32_t active_levels = 3;  // 实际使用的层级数 (由 thresholds.cache_levels 决定)
 };
 
 // 测量一组地址访问的缓存命中情况
@@ -258,6 +440,7 @@ inline cache_report measure_cache_hits(const class_pool<const void*>& addresses,
 {
     cache_report r;
     r.thresholds = th;
+    r.active_levels = th.cache_levels;
     r.total_accesses = addresses.size();
     if (r.total_accesses == 0)
     {
@@ -278,15 +461,16 @@ inline cache_report measure_cache_hits(const class_pool<const void*>& addresses,
         double cyc = static_cast<double>(c1 - c0);
         cycles.emplace_back(cyc);
         sum += cyc;
+        // 根据 cache_levels 决定分级逻辑
         if (cyc < th.l1_max)
         {
             ++l1;
         }
-        else if (cyc < th.l2_max)
+        else if (th.cache_levels >= 2 && cyc < th.l2_max)
         {
             ++l2;
         }
-        else if (cyc < th.l3_max)
+        else if (th.cache_levels >= 3 && cyc < th.l3_max)
         {
             ++l3;
         }
@@ -301,7 +485,7 @@ inline cache_report measure_cache_hits(const class_pool<const void*>& addresses,
     r.misses = miss;
     r.avg_cycles = sum / static_cast<double>(r.total_accesses);
     double* cp = cycles.data();
-    std::sort(cp, cp + r.total_accesses);
+    sort(cp, r.total_accesses);
     r.min_cycles = cp[0];
     r.max_cycles = cp[r.total_accesses - 1];
     auto pct = [&](double q) noexcept -> double
@@ -446,7 +630,62 @@ inline batch_cache_result measure_cache_batch(const class_pool<const void*>& add
     return r;
 }
 
+// 自适应检测缓存层级和阈值
+// 通过步进扫描不同工作集大小 (1KB → 16MB), 检测延迟跳变推断缓存层级
+// 返回值: cache_levels 为实际检测到的层级数 (1/2/3)
+inline latency_thresholds detect_cache_latency_thresholds() noexcept
+{
+    latency_thresholds th;
+#if TIME_HAS_RDTSC
+    constexpr size_t buf_size = 16 * 1024 * 1024;  // 16MB 覆盖 L1/L2/L3
+    constexpr size_t cache_line = 64;
+    std::unique_ptr<uint8_t[]> buf(new (std::nothrow) uint8_t[buf_size]);
+    if (!buf) [[unlikely]] return th;
+
+    // 页故障预热
+    for (size_t i = 0; i < buf_size; i += cache_line) { buf[i] = 0; }
+
+    double prev_lat = 0;
+    uint32_t levels = 0;
+
+    for (size_t sz = 1024; sz <= buf_size; sz *= 2)
+    {
+        size_t count = sz / cache_line;
+        auto addrs = make_sequential_addresses(buf.get(), count, cache_line);
+        batch_cache_result bcr = measure_cache_batch(addrs, 3);
+        double cur = bcr.net_cycles_per_access;
+
+        if (levels == 0)
+        {
+            th.l1_max = cur * 1.5;
+            levels = 1;
+        }
+        else if (levels < 3 && cur > prev_lat * 1.3)
+        {
+            // 延迟跳变 → 新缓存层级边界
+            if (levels == 1)
+            {
+                th.l2_max = cur * 0.8;
+                levels = 2;
+            }
+            else if (levels == 2)
+            {
+                th.l3_max = cur * 0.8;
+                levels = 3;
+            }
+        }
+        prev_lat = cur;
+    }
+    th.cache_levels = levels;
+#endif
+    return th;
+}
+
 // CPU 频率估算 (GHz)
+// 注: 测量的是 invariant TSC 频率 (恒定), 而非核心频率 (受 Turbo Boost/DVFS 影响)
+//     rdtsc 计数速率 = TSC 频率, 不随核心频率变化
+//     cycle_timer::elapsed_ns_estimated() 基于 TSC 频率, 适合相对比较
+//     若需精确墙钟时间, 优先使用 timer (high_resolution_clock)
 inline double estimate_cpu_ghz(size_t calibration_ms = 100) noexcept
 {
 #if TIME_HAS_RDTSC
@@ -467,4 +706,73 @@ inline double estimate_cpu_ghz(size_t calibration_ms = 100) noexcept
     (void)calibration_ms;
     return 0;
 #endif
+}
+
+// CPU 频率缓存 (首次调用校准, 后续零开销)
+// 缓存的是 TSC 频率, 非核心频率 (参见 estimate_cpu_ghz 注释)
+inline double cpu_ghz_cached() noexcept
+{
+    static double cached = estimate_cpu_ghz();
+    return cached;
+}
+
+// 延迟异常检测器: 基于 P² 分位数动态检测超标延迟
+// 用法: 持续 add() 建立基线, 然后 is_anomaly() 判断新样本是否异常
+struct latency_anomaly_detector
+{
+    p2_quantile p50{0.50};
+    p2_quantile p99{0.99};
+    double multiplier = 3.0;  // 超过 p99 * multiplier 视为异常
+    size_t warmup_count = 100;
+
+    void add(double latency_ns) noexcept
+    {
+        p50.add(latency_ns);
+        p99.add(latency_ns);
+    }
+
+    [[nodiscard]] bool is_anomaly(double latency_ns) const noexcept
+    {
+        if (p99.count() < warmup_count) [[unlikely]] return false;
+        double threshold = p99.estimate() * multiplier;
+        return latency_ns > threshold;
+    }
+
+    [[nodiscard]] double anomaly_threshold() const noexcept
+    {
+        return p99.estimate() * multiplier;
+    }
+};
+
+// 流式基准测试: 使用 P² 在线估计, 无需存储全部样本
+// 返回 p50/p90/p95/p99 估计值, 适合超大样本或内存受限场景
+struct p2_benchmark_result
+{
+    double p50 = 0;
+    double p90 = 0;
+    double p95 = 0;
+    double p99 = 0;
+    size_t count = 0;
+};
+
+template <typename F>
+p2_benchmark_result benchmark_p2(size_t iterations, size_t warmup, F&& fn) noexcept
+{
+    for (size_t i = 0; i < warmup; ++i)
+    {
+        fn();
+    }
+    p2_quantile est50(0.50), est90(0.90), est95(0.95), est99(0.99);
+    for (size_t i = 0; i < iterations; ++i)
+    {
+        auto t0 = std::chrono::high_resolution_clock::now();
+        fn();
+        auto t1 = std::chrono::high_resolution_clock::now();
+        double ns = std::chrono::duration<double, std::nano>(t1 - t0).count();
+        est50.add(ns);
+        est90.add(ns);
+        est95.add(ns);
+        est99.add(ns);
+    }
+    return {est50.estimate(), est90.estimate(), est95.estimate(), est99.estimate(), iterations};
 }

@@ -89,7 +89,7 @@ private:
         uint32_t entity_index;
         uint32_t dense_index;
         uint32_t version;
-        uint32_t pad_;
+        uint64_t pool_version;
     };
     hot_entry_ hot_set_[hot_set_capacity_]{};
 
@@ -558,7 +558,6 @@ private:
             deallocate_entry_pages_(old_entry_pages, old_dir_cap);
         }
 
-        hot_set_clear_();
         ++version_;
     }
 
@@ -567,7 +566,7 @@ private:
     void hot_set_update_(uint32_t entity_index, uint32_t dense_index, uint32_t version) noexcept
     {
         const size_t slot = entity_index & (hot_set_capacity_ - 1);
-        hot_set_[slot] = {entity_index, dense_index, version, 0};
+        hot_set_[slot] = {entity_index, dense_index, version, version_};
     }
 
     void hot_set_invalidate_(uint32_t entity_index) noexcept
@@ -1063,7 +1062,7 @@ public:
         // hot set fast path
         const size_t slot = e.parts_.index_ & (hot_set_capacity_ - 1);
         const auto& entry = hot_set_[slot];
-        if (entry.entity_index == e.parts_.index_ && entry.version == e.parts_.version_) [[likely]]
+        if (entry.entity_index == e.parts_.index_ && entry.version == e.parts_.version_ && entry.pool_version == version_) [[likely]]
         {
             return &(*get_typed_pool<T>())[entry.dense_index];
         }
@@ -1077,7 +1076,7 @@ public:
         if (ver != e.parts_.version_) [[unlikely]]
             return nullptr;
         // update hot set
-        hot_set_[slot] = {e.parts_.index_, dense, ver, 0};
+        hot_set_[slot] = {e.parts_.index_, dense, ver, version_};
         return &(*get_typed_pool<T>())[dense];
     }
 
@@ -1089,7 +1088,7 @@ public:
         // hot set fast path
         const size_t slot = e.parts_.index_ & (hot_set_capacity_ - 1);
         const auto& entry = hot_set_[slot];
-        if (entry.entity_index == e.parts_.index_ && entry.version == e.parts_.version_) [[likely]]
+        if (entry.entity_index == e.parts_.index_ && entry.version == e.parts_.version_ && entry.pool_version == version_) [[likely]]
         {
             return &(*get_typed_pool<T>())[entry.dense_index];
         }
@@ -1111,7 +1110,7 @@ public:
         // hot set fast path
         const size_t slot = e.parts_.index_ & (hot_set_capacity_ - 1);
         const auto& entry = hot_set_[slot];
-        if (entry.entity_index == e.parts_.index_ && entry.version == e.parts_.version_) [[likely]]
+        if (entry.entity_index == e.parts_.index_ && entry.version == e.parts_.version_ && entry.pool_version == version_) [[likely]]
         {
             return &(*get_typed_pool<T>())[entry.dense_index];
         }
@@ -1125,7 +1124,7 @@ public:
         if (ver != e.parts_.version_) [[unlikely]]
             return nullptr;
         // update hot set
-        hot_set_[slot] = {e.parts_.index_, dense, ver, 0};
+        hot_set_[slot] = {e.parts_.index_, dense, ver, version_};
         return &(*get_typed_pool<T>())[dense];
     }
 
@@ -1138,7 +1137,7 @@ public:
             return get_ptr_fast<T>(e);
         const size_t slot = e.parts_.index_ & (hot_set_capacity_ - 1);
         const auto& entry = hot_set_[slot];
-        if (entry.entity_index == e.parts_.index_ && entry.version == e.parts_.version_) [[likely]]
+        if (entry.entity_index == e.parts_.index_ && entry.version == e.parts_.version_ && entry.pool_version == version_) [[likely]]
         {
             return static_cast<T*>(typed_pool_data_) + entry.dense_index;
         }
@@ -1150,7 +1149,7 @@ public:
         const uint32_t ver = sparse_version_at(e.parts_.index_);
         if (ver != e.parts_.version_) [[unlikely]]
             return nullptr;
-        hot_set_[slot] = {e.parts_.index_, dense, ver, 0};
+        hot_set_[slot] = {e.parts_.index_, dense, ver, version_};
         return static_cast<T*>(typed_pool_data_) + dense;
     }
 
@@ -1161,7 +1160,7 @@ public:
             return get_ptr_fast<T>(e);
         const size_t slot = e.parts_.index_ & (hot_set_capacity_ - 1);
         const auto& entry = hot_set_[slot];
-        if (entry.entity_index == e.parts_.index_ && entry.version == e.parts_.version_) [[likely]]
+        if (entry.entity_index == e.parts_.index_ && entry.version == e.parts_.version_ && entry.pool_version == version_) [[likely]]
         {
             return static_cast<const T*>(typed_pool_data_) + entry.dense_index;
         }
@@ -1182,7 +1181,7 @@ public:
         // hot set fast path
         const size_t slot = e.parts_.index_ & (hot_set_capacity_ - 1);
         const auto& entry = hot_set_[slot];
-        if (entry.entity_index == e.parts_.index_ && entry.version == e.parts_.version_) [[likely]]
+        if (entry.entity_index == e.parts_.index_ && entry.version == e.parts_.version_ && entry.pool_version == version_) [[likely]]
         {
             return &(*get_typed_pool<T>())[entry.dense_index];
         }
@@ -1505,9 +1504,6 @@ public:
             versions_.pop_back();
         }
 
-        // invalidate hot set for removed entity
-        hot_set_invalidate_(e.parts_.index_);
-
         if (moved_entity_id != e.parts_.index_) [[likely]]
         {
             sparse_set_unchecked(moved_entity_id, sparse_version_at_unchecked(moved_entity_id), static_cast<uint32_t>(index));
@@ -1556,7 +1552,6 @@ public:
             return result;
         }
 
-        hot_set_invalidate_(e.parts_.index_);
         sparse_set_at_unchecked(e.parts_.index_, dense_invalid, 0);
         ++version_;
         return result;
@@ -1873,7 +1868,6 @@ public:
         if (new_versions.size() > 0)
             versions_ = std::move(new_versions);
         ++version_;
-        clear_hot_set();
     }
 
     // public sparse access (分离存储)
@@ -1973,6 +1967,11 @@ public:
     void clear_hot_set() noexcept
     {
         hot_set_clear_();
+    }
+
+    void bump_pool_version() noexcept
+    {
+        ++version_;
     }
 
     ~single_class_set() noexcept

@@ -207,10 +207,16 @@ void print_cache_report(const char* name, const cache_report& r) {
               << " | p50 " << std::setw(6) << r.p50_cycles
               << " | p95 " << std::setw(6) << r.p95_cycles
               << " | p99 " << std::setw(6) << r.p99_cycles
-              << "\n    命中分布: L1 " << std::setw(5) << (r.l1_hit_rate * 100) << "%"
-              << " | L2 " << std::setw(5) << (r.l2_hit_rate * 100) << "%"
-              << " | L3 " << std::setw(5) << (r.l3_hit_rate * 100) << "%"
-              << " | 未命中 " << std::setw(5) << (r.miss_rate * 100) << "%\n";
+              << "\n    命中分布(" << r.active_levels << "级): L1 " << std::setw(5) << (r.l1_hit_rate * 100) << "%";
+    if (r.active_levels >= 2)
+    {
+        std::cout << " | L2 " << std::setw(5) << (r.l2_hit_rate * 100) << "%";
+    }
+    if (r.active_levels >= 3)
+    {
+        std::cout << " | L3 " << std::setw(5) << (r.l3_hit_rate * 100) << "%";
+    }
+    std::cout << " | 未命中 " << std::setw(5) << (r.miss_rate * 100) << "%\n";
 }
 
 // 批量缓存测量输出 (精确平均延迟) - 中文格式

@@ -1,4 +1,4 @@
-﻿#include "test_common.hpp"
+#include "test_common.hpp"
 
 // ============================================================
 // 性能测试 - ECS 各接口性能基准 (原 test.cpp 第 15 节)
@@ -1631,11 +1631,11 @@ int main()
             for (int i = 0; i < 1000000; ++i) scs = mgr_m.get_single_class_set_by_id(pid);
             print_perf("get_single_class_set_by_id", 1000000, t.elapsed_ms());
 
-            // get_component_vector
+            // get_component_container
             t.reset();
             volatile class_pool<Position>* cv = nullptr;
-            for (int i = 0; i < 1000000; ++i) cv = mgr_m.get_component_vector<Position>();
-            print_perf("get_component_vector", 1000000, t.elapsed_ms());
+            for (int i = 0; i < 1000000; ++i) cv = mgr_m.get_component_container<Position>();
+            print_perf("get_component_container", 1000000, t.elapsed_ms());
 
             // get_entity_manager
             t.reset();
@@ -3286,7 +3286,7 @@ int main()
         // ---- 11.4 ECS 组件数据 顺序 vs 随机访问 ----
         print_perf_sub("11.4 ECS 组件数据 顺序 vs 随机 (Position × 1M = 12MB)");
         {
-            class_pool<Position>* pos_pool = ecss.get_component_vector<Position>();
+            class_pool<Position>* pos_pool = ecss.get_component_container<Position>();
             if (pos_pool && pos_pool->size() > 0)
             {
                 const Position* ecs_base = pos_pool->data();
@@ -3332,7 +3332,7 @@ int main()
             print_stats("get_ptr 随机延迟", getptr_stats, "周期");
 
             // 对比: 直接数组访问 (无稀疏表开销)
-            class_pool<Position>* pos_pool = ecss.get_component_vector<Position>();
+            class_pool<Position>* pos_pool = ecss.get_component_container<Position>();
             if (pos_pool && pos_pool->size() > 0)
             {
                 size_t di = 0;
@@ -3387,6 +3387,55 @@ int main()
                           << " | 顺序 " << std::setw(8) << seq_b.net_cycles_per_access << " 周期"
                           << " | 随机 " << std::setw(8) << rnd_b.net_cycles_per_access << " 周期"
                           << " | 比值 " << std::setw(6) << ratio << " 倍\n";
+            }
+        }
+
+        // ---- 11.7 缓存层级自适应检测 ----
+        print_perf_sub("11.7 缓存层级自适应检测");
+        {
+            std::cout << "  检测本地 CPU 缓存层级...\n";
+            latency_thresholds auto_th = detect_cache_latency_thresholds();
+            std::cout << "  >> 检测到 " << auto_th.cache_levels << " 级缓存\n";
+            std::cout << "  >> L1 阈值: " << std::fixed << std::setprecision(1)
+                      << auto_th.l1_max << " 周期\n";
+            if (auto_th.cache_levels >= 2)
+            {
+                std::cout << "  >> L2 阈值: " << auto_th.l2_max << " 周期\n";
+            }
+            if (auto_th.cache_levels >= 3)
+            {
+                std::cout << "  >> L3 阈值: " << auto_th.l3_max << " 周期\n";
+            }
+
+            // 使用默认阈值 (3级) 和自适应阈值分别测量
+            int buf[4096];
+            auto addrs = make_sequential_addresses(buf, 4096, sizeof(int));
+            std::cout << "  >> 默认三级阈值 → 测量结果:\n";
+            cache_report r_default = measure_cache_hits(addrs);
+            std::cout << "     L1: " << std::setprecision(1) << r_default.l1_hit_rate * 100 << "%"
+                      << "  L2: " << r_default.l2_hit_rate * 100 << "%"
+                      << "  L3: " << r_default.l3_hit_rate * 100 << "%"
+                      << "  Miss: " << r_default.miss_rate * 100 << "%"
+                      << "  levels=" << r_default.active_levels << "\n";
+
+            std::cout << "  >> 自适应阈值 → 测量结果:\n";
+            cache_report r_auto = measure_cache_hits(addrs, auto_th);
+            std::cout << "     L1: " << std::setprecision(1) << r_auto.l1_hit_rate * 100 << "%"
+                      << "  L2: " << r_auto.l2_hit_rate * 100 << "%"
+                      << "  L3: " << r_auto.l3_hit_rate * 100 << "%"
+                      << "  Miss: " << r_auto.miss_rate * 100 << "%"
+                      << "  levels=" << r_auto.active_levels << "\n";
+
+            // 验证: 1级缓存场景 (仅 L1)
+            if (auto_th.cache_levels >= 1)
+            {
+                latency_thresholds th_l1_only = auto_th;
+                th_l1_only.cache_levels = 1;
+                std::cout << "  >> 仅 L1 缓存 (cache_levels=1) → 测量结果:\n";
+                cache_report r_l1 = measure_cache_hits(addrs, th_l1_only);
+                std::cout << "     L1: " << std::setprecision(1) << r_l1.l1_hit_rate * 100 << "%"
+                          << "  Miss: " << r_l1.miss_rate * 100 << "%"
+                          << "  levels=" << r_l1.active_levels << "\n";
             }
         }
     }

@@ -4,9 +4,28 @@
 #include "part/id_.hpp"
 #include "part/class_pool.hpp"
 #include "part/ring_buffer.hpp"
+#include "part/entity_mask_manager.hpp"
 
 namespace ecs
 {
+
+// 实体状态标志（位掩码）
+enum class entity_flag : uint32_t
+{
+    active          = 1 << 0,
+    disabled        = 1 << 1,
+    pending_destroy = 1 << 2,
+    static_entity   = 1 << 3,
+};
+
+// 实体状态池条目（16 bytes）
+struct entity_state
+{
+    uint32_t flags;
+    uint32_t tag;
+    uint32_t layer;
+    uint32_t group_id;
+};
 
 class entity_manager
 {
@@ -19,7 +38,8 @@ public:
 private:
     id_allocation<uint32_t> id_manager_;
     class_pool<uint32_t> version_v_;
-    class_pool<uint64_t> entity_masks_;
+    entity_mask_manager masks_;
+    class_pool<entity_state> entity_states_;
 
     class_pool<entity> preallocated_entities_;
     size_t current_preallocated_index_ = 0;
@@ -85,9 +105,10 @@ private:
         {
             version_v_.resize(idx + 1, 1);
         }
-        if (idx >= entity_masks_.size()) [[unlikely]]
+        masks_.ensure_entity(idx);
+        if (idx >= entity_states_.size()) [[unlikely]]
         {
-            entity_masks_.resize(idx + 1, 0);
+            entity_states_.resize(idx + 1, entity_state{static_cast<uint32_t>(entity_flag::active), 0, 0, 0});
         }
     }
 
@@ -117,11 +138,12 @@ public:
             version_v_.increase_capacity(max_idx);
             version_v_.resize(max_idx, 1);
         }
-        if (max_idx > entity_masks_.size())
+        if (max_idx > entity_states_.size())
         {
-            entity_masks_.increase_capacity(max_idx);
-            entity_masks_.resize(max_idx, 0);
+            entity_states_.increase_capacity(max_idx);
+            entity_states_.resize(max_idx, entity_state{static_cast<uint32_t>(entity_flag::active), 0, 0, 0});
         }
+        masks_.resize_entities(max_idx);
 
         for (size_t i = 0; i < count; ++i)
         {
@@ -141,49 +163,54 @@ public:
         notify_destroyed(entitys);
         id_manager_.free_id(entitys.parts_.index_);
         version_v_[entitys.parts_.index_]++;
-        if (entitys.parts_.index_ < entity_masks_.size())
+        masks_.clear_entity(entitys.parts_.index_);
+        if (entitys.parts_.index_ < entity_states_.size())
         {
-            entity_masks_[entitys.parts_.index_] = 0;
+            entity_states_[entitys.parts_.index_] = entity_state{};
         }
     }
 
-    void set_mask_bit(uint32_t entity_index, uint64_t bit) noexcept
+    void set_mask_bit(uint32_t entity_index, uint32_t block_idx, uint32_t bit_offset) noexcept
     {
-        if (entity_index < entity_masks_.size()) [[likely]]
-        {
-            entity_masks_[entity_index] |= bit;
-        }
-        else [[unlikely]]
-        {
-            entity_masks_.resize(entity_index + 1, 0);
-            entity_masks_[entity_index] |= bit;
-        }
+        masks_.set_bit(entity_index, block_idx, bit_offset);
     }
 
-    void set_mask_bit_no_bounds_check(uint32_t entity_index, uint64_t bit) noexcept
+    void set_mask_bit_no_bounds_check(uint32_t entity_index, uint32_t block_idx, uint32_t bit_offset) noexcept
     {
-        entity_masks_[entity_index] |= bit;
+        masks_.set_bit_no_check(entity_index, block_idx, bit_offset);
     }
 
-    void clear_mask_bit(uint32_t entity_index, uint64_t bit) noexcept
+    void clear_mask_bit(uint32_t entity_index, uint32_t block_idx, uint32_t bit_offset) noexcept
     {
-        if (entity_index < entity_masks_.size())
-        {
-            entity_masks_[entity_index] &= ~bit;
-        }
+        masks_.clear_bit(entity_index, block_idx, bit_offset);
     }
 
-    // 前置条件: entity_index < entity_masks_.size()
-    // 调用方须先通过 is_version_valid 检查 (version_v_.size() <= entity_masks_.size() 不变量保证)
-    void clear_mask_bit_no_bounds_check(uint32_t entity_index, uint64_t bit) noexcept
+    void clear_mask_bit_no_bounds_check(uint32_t entity_index, uint32_t block_idx, uint32_t bit_offset) noexcept
     {
-        entity_masks_[entity_index] &= ~bit;
+        masks_.clear_bit_no_check(entity_index, block_idx, bit_offset);
+    }
+
+    // 预分配掩码块数 — 注册组件前调用避免 reshape
+    void reserve_mask_blocks(uint32_t num_blocks) noexcept
+    {
+        masks_.reserve_blocks(num_blocks);
+    }
+
+    [[nodiscard]] uint32_t num_mask_blocks() const noexcept
+    {
+        return masks_.num_blocks();
+    }
+
+    // 遍历实体所有置位 bit — O(实体实际组件数) 而非 O(类型总数)
+    template <typename Func>
+    void for_each_set_bit(uint32_t entity_index, Func&& func) const noexcept
+    {
+        masks_.for_each_set_bit(entity_index, std::forward<Func>(func));
     }
 
     [[nodiscard]] uint64_t get_mask(uint32_t entity_index) const noexcept
     {
-        if (entity_index >= entity_masks_.size()) [[unlikely]] return 0;
-        return entity_masks_[entity_index];
+        return masks_.get_block(entity_index, 0);
     }
 
     [[nodiscard]] entity get_entity() noexcept
@@ -236,6 +263,39 @@ public:
     void reserve_signal_capacity(size_t n) noexcept
     {
         signal_overflow_chain_.increase_capacity(n);
+    }
+
+    // 实体状态池访问
+    [[nodiscard]] entity_state& get_entity_state(uint32_t entity_index) noexcept
+    {
+        return entity_states_[entity_index];
+    }
+
+    [[nodiscard]] const entity_state& get_entity_state(uint32_t entity_index) const noexcept
+    {
+        return entity_states_[entity_index];
+    }
+
+    void set_entity_flag(uint32_t entity_index, entity_flag f) noexcept
+    {
+        if (entity_index < entity_states_.size()) [[likely]]
+        {
+            entity_states_[entity_index].flags |= static_cast<uint32_t>(f);
+        }
+    }
+
+    void clear_entity_flag(uint32_t entity_index, entity_flag f) noexcept
+    {
+        if (entity_index < entity_states_.size()) [[likely]]
+        {
+            entity_states_[entity_index].flags &= ~static_cast<uint32_t>(f);
+        }
+    }
+
+    [[nodiscard]] bool has_entity_flag(uint32_t entity_index, entity_flag f) const noexcept
+    {
+        if (entity_index >= entity_states_.size()) [[unlikely]] return false;
+        return (entity_states_[entity_index].flags & static_cast<uint32_t>(f)) != 0;
     }
 };
 

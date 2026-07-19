@@ -46,9 +46,9 @@ inline runtime_query::runtime_query(manager* mgr, class_pool<int> required_ids,
     for (int tid : required_ids_)
     {
         const auto* meta = mgr->get_component_meta(tid);
-        if (meta && meta->bit != 0)
+        if (meta && meta->mask_block == 0)
         {
-            req_mask_ |= meta->bit;
+            req_mask_ |= (1ULL << meta->mask_offset);
         }
         else
         {
@@ -66,9 +66,9 @@ inline runtime_query::runtime_query(manager* mgr, class_pool<int> required_ids,
     for (int tid : excluded_ids)
     {
         const auto* meta = mgr->get_component_meta(tid);
-        if (meta && meta->bit != 0)
+        if (meta && meta->mask_block == 0)
         {
-            exc_mask_ |= meta->bit;
+            exc_mask_ |= (1ULL << meta->mask_offset);
         }
         else
         {
@@ -102,9 +102,9 @@ inline runtime_query::runtime_query(manager* mgr, class_pool<runtime_term> terms
             c.self->required_ids_.emplace_back(t.type_id);
             c.self->req_sets_.emplace_back(set);
             c.self->req_access_.emplace_back(t.access);
-            if (meta && meta->bit != 0)
+            if (meta && meta->mask_block == 0)
             {
-                c.self->req_mask_ |= meta->bit;
+                c.self->req_mask_ |= (1ULL << meta->mask_offset);
             }
             else
             {
@@ -127,9 +127,9 @@ inline runtime_query::runtime_query(manager* mgr, class_pool<runtime_term> terms
         [](term_ctx& c, const runtime_term&, const component_meta* meta, single_class_set* set) noexcept
         {
             c.self->exc_sets_.emplace_back(set);
-            if (meta && meta->bit != 0)
+            if (meta && meta->mask_block == 0)
             {
-                c.self->exc_mask_ |= meta->bit;
+                c.self->exc_mask_ |= (1ULL << meta->mask_offset);
             }
             else
             {

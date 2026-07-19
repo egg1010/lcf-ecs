@@ -11,7 +11,7 @@
         std::array<single_class_set*, sizeof...(ExcludeTypes)> exclude_sets_{};
         bool use_mask_path_{true};
 
-        // 双轨:mask 快路径(≤64)+ sparse 交集慢路径(>64)
+        // 双轨:mask 快路径(mask_block==0)+ sparse 交集慢路径(mask_block>0)
         [[nodiscard]] bool is_excluded(uint32_t idx, uint32_t ver) const noexcept
         {
             if (use_mask_path_)
@@ -30,7 +30,7 @@
         {
             if (mgr_)
             {
-                use_mask_path_ = (... && (type_id::get_type_id<ExcludeTypes>() <= 64));
+                use_mask_path_ = (... && ((static_cast<uint32_t>(type_id::get_type_id<ExcludeTypes>() - 1) / 64) == 0));
                 exclude_mask_ = (... | mgr_->template get_component_bit<ExcludeTypes>());
                 if constexpr (sizeof...(ExcludeTypes) > 0)
                 {

@@ -16,7 +16,7 @@ inline group<First, Rest...>::group(manager* mgr, std::array<single_class_set*, 
     : mgr_(mgr), sets_(sets)
 {
     find_smallest();
-    use_mask_path_ = ((type_id::get_type_id<First>() <= 64) && ... && (type_id::get_type_id<Rest>() <= 64));
+    use_mask_path_ = (((static_cast<uint32_t>(type_id::get_type_id<First>() - 1) / 64) == 0) && ... && ((static_cast<uint32_t>(type_id::get_type_id<Rest>() - 1) / 64) == 0));
     required_mask_ = (mgr_->template get_component_bit<First>() | ... | mgr_->template get_component_bit<Rest>());
     rebuild();
 }
@@ -99,7 +99,7 @@ inline owning_group<First, Rest...>::owning_group(manager* mgr, std::array<singl
     : mgr_(mgr), sets_(sets)
 {
     find_smallest();
-    use_mask_path_ = ((type_id::get_type_id<First>() <= 64) && ... && (type_id::get_type_id<Rest>() <= 64));
+    use_mask_path_ = (((static_cast<uint32_t>(type_id::get_type_id<First>() - 1) / 64) == 0) && ... && ((static_cast<uint32_t>(type_id::get_type_id<Rest>() - 1) / 64) == 0));
     required_mask_ = (mgr_->template get_component_bit<First>() | ... | mgr_->template get_component_bit<Rest>());
     rebuild();
 }
@@ -160,7 +160,7 @@ inline void owning_group<First, Rest...>::rebuild() noexcept
         }
     }
     owned_size_ = write;
-    primary->clear_hot_set();
+    primary->bump_pool_version();
 
     for (size_t i = 0; i < N; ++i)
     {
@@ -173,7 +173,7 @@ inline reorder_group<First, Rest...>::reorder_group(manager* mgr, std::array<sin
     : mgr_(mgr), sets_(sets)
 {
     find_smallest();
-    use_mask_path_ = ((type_id::get_type_id<First>() <= 64) && ... && (type_id::get_type_id<Rest>() <= 64));
+    use_mask_path_ = (((static_cast<uint32_t>(type_id::get_type_id<First>() - 1) / 64) == 0) && ... && ((static_cast<uint32_t>(type_id::get_type_id<Rest>() - 1) / 64) == 0));
     required_mask_ = (mgr_->template get_component_bit<First>() | ... | mgr_->template get_component_bit<Rest>());
     rebuild();
 }
@@ -235,7 +235,7 @@ inline void reorder_group<First, Rest...>::rebuild() noexcept
         }
     }
     s->owned_size = write;
-    primary->clear_hot_set();
+    primary->bump_pool_version();
 
     for (size_t i = 0; i < N; ++i)
     {

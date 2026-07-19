@@ -35,6 +35,7 @@
     - [24. layered_allocator — 分层分配器](#24-layered_allocator--分层分配器)
     - [25. ring_buffer — 环形缓冲区](#25-ring_buffer--环形缓冲区)
     - [26. time — 计时与基准测量](#26-time--计时与基准测量)
+    - [27. entity_mask_manager — 无上限实体掩码存储](#27-entity_mask_manager--无上限实体掩码存储)
 
 ---
 
@@ -967,7 +968,8 @@ bool in_la = la.owns(small);
 | `get_sparse_size()` | 稀疏表已使用的最大索引+1 |
 | `get_page_directory_capacity()` | 页目录容量 |
 | `get_page_directory()` | 获取页目录指针 |
-| `clear_hot_set()` | 清空热集缓存 |
+| `clear_hot_set()` | 清空热集缓存（调试用，正常使用无需手动调用） |
+| `bump_pool_version()` | 递增池版本号，使所有热集缓存自动失效 |
 
 机制：
 
@@ -975,8 +977,11 @@ bool in_la = la.owns(small);
 - flat 模式：连续 `flat_entries_[]` 数组（sparse_entry 合并存储），实体数 ≤ 65536 时启用
 - paged 模式：按需分页，实体数 > 65536 时自动切换
 - 未映射条目：dense 返回 `dense_invalid`，version 返回 0
-- hot_set 是 256 项直接映射缓存（alignas(32)），查询未命中时自动填充
-- `clear_hot_set` 应在批量修改后调用，避免缓存过期
+- hot_set 是 256 项直接映射缓存（alignas(32)），每个条目存储 `(entity_index, dense_index, entity_version, pool_version)`
+- 查询命中条件：`entity_index` 匹配 ∧ `entity_version` 匹配 ∧ `pool_version` 与当前池版本号一致
+- 查询未命中时自动从稀疏表查找并填充缓存
+- **自动失效**：每次增删改、dense 重排、sparse 表重建后，`pool_version` 自动递增，旧缓存条目自动失效，无需手动调用 `clear_hot_set()`
+- `clear_hot_set()` 保留用于调试场景强制清空缓存
 
 ### 构造与赋值
 
@@ -1068,7 +1073,7 @@ set.add_batch(ents, comps);
 | `soft_remove` 后依赖 `size()` 和连续遍历 | 留下空洞，`size()` 不减少，dense 数组不连续 | 若需紧凑布局，使用 `hard_remove` |
 | 在需要频繁增删时只用 `hard_remove` | 每次交换删除 O(1) 但破坏顺序 | 可接受顺序变化时用 `hard_remove`，需保持顺序时用 `soft_remove` 后定期重建 |
 | 拷贝 `single_class_set` | 禁止拷贝 | 使用移动语义 |
-| 批量增删后不调用 `clear_hot_set` | hot_set 缓存可能指向已变更的条目 | 批量修改后调用 `clear_hot_set()` |
+| 批量增删后手动调用 `clear_hot_set` | 不必要，pool_version 自动递增已使缓存失效 | 正常使用无需手动调用；调试场景可用 `clear_hot_set()` 强制清空 |
 | 依赖 `sparse_dense_at_public` 返回值判断条目是否存在 | 需检查返回值是否等于 `dense_invalid` | 检查 `sparse_dense_at_public(idx) != dense_invalid`，或使用 `get_ptr` 系列接口 |
 
 ---
@@ -1165,12 +1170,13 @@ ECS 核心管理类，管理实体和所有组件集合。
 |------|------|
 | `get_single_class_set<T>()` | 获取单组件集合指针 |
 | `get_single_class_set<T>() const` | const 版本 |
-| `get_component_vector<T>()` | 获取类型化组件池指针 |
-| `get_component_vector<T>() const` | const 版本 |
+| `get_component_container<T>()` | 获取类型化组件池指针 |
 | `reserve_component_capacity<T>(capacity)` | 预留组件容量 |
 | `add/add_batch/hard_remove/soft_remove` | 返回 `operating_message`（值类型，RVO 零拷贝） |
-| `get_component_meta(int type_id)` | 获取组件元数据（含 bit 位等信息） |
+| `get_component_meta(int type_id)` | 获取组件元数据（含 `mask_block`/`mask_offset` 掩码位信息） |
 | `get_single_class_set_by_id(int type_id)` | 通过 type_id 获取组件集合（运行时视图用） |
+| `get_entity_manager()` | 获取 `entity_manager&` 引用（暴露掩码 / 状态 / 标志等底层接口） |
+| `get_entity_manager() const` | const 版本 |
 
 ### single_class_set 合并稀疏表+热集接口
 
@@ -1191,7 +1197,8 @@ ECS 核心管理类，管理实体和所有组件集合。
 | `get_version_page(uint32_t entity_index) const` | 获取 sparse_entry 页指针（与 get_dense_page 返回同一指针） |
 | `read_dense_from_page(page, entity_index, mask)` | 从 sparse_entry 页指针读取 dense index（static） |
 | `read_version_from_page(page, entity_index, mask)` | 从 sparse_entry 页指针读取 version（static） |
-| `clear_hot_set()` | 清空热集缓存 |
+| `clear_hot_set()` | 清空热集缓存（调试用，正常使用无需手动调用） |
+| `bump_pool_version()` | 递增池版本号，使所有热集缓存自动失效 |
 | `page_shift` / `page_size` / `page_mask` | 实例级分页参数（flat 模式下 page_shift=32, page_mask=SIZE_MAX） |
 | `get_page_size_shift() const` | 获取当前分页 shift 值 |
 | `set_page_size_shift(size_t shift)` | 设置分页 shift 值（6~20），已有数据时自动重建 |
@@ -1444,6 +1451,115 @@ mgr.hard_removec<Position, Velocity>(e1, e2);  // 从 e1 和 e2 都移除 Positi
 // 删除实体
 mgr.delete_entity(e2);
 ```
+
+### 实体状态池
+
+| 接口 | 说明 |
+|------|------|
+| `entity_flag` | 实体状态标志枚举：`active`, `disabled`, `pending_destroy`, `static_entity` |
+| `get_entity_state(entity_index)` | 获取实体状态引用（`entity_state&`） |
+| `set_entity_flag(entity_index, flag)` | 设置实体状态标志 |
+| `clear_entity_flag(entity_index, flag)` | 清除实体状态标志 |
+| `has_entity_flag(entity_index, flag)` | 检查实体是否具有某状态标志 |
+
+```cpp
+mgr.set_entity_flag(e.parts_.index_, entity_flag::disabled);
+if (mgr.has_entity_flag(e.parts_.index_, entity_flag::active))
+{
+    // 实体处于活跃状态
+}
+auto& state = mgr.get_entity_state(e.parts_.index_);
+state.tag = 1;   // 自定义标签
+state.layer = 3; // 渲染层
+```
+
+### 变更日志池
+
+每次 `add`/`remove` 操作自动记录变更，帧末可消费。
+
+| 接口 | 说明 |
+|------|------|
+| `enable_change_log()` | 启用变更日志记录 |
+| `disable_change_log()` | 禁用变更日志记录 |
+| `flush_change_log(handler)` | 消费所有待处理的变更记录 |
+| `end_frame()` | 帧结束，递增帧计数器 |
+| `has_pending_change_records()` | 是否有待处理的变更记录 |
+
+```cpp
+mgr.enable_change_log();
+// ... 增删组件操作 ...
+mgr.end_frame();
+mgr.flush_change_log([](const ecs::change_record& r) {
+    // r.entity_index, r.type_id, r.op (0=add,1=remove,2=modify)
+    // r.frame, r.dense_index
+});
+```
+
+### 系统上下文池
+
+注册系统执行上下文，管理执行顺序和并行分组。
+
+| 接口 | 说明 |
+|------|------|
+| `system_context` | 系统上下文结构体：`required_mask`, `excluded_mask`, `order`, `phase`, `parallel_group`, `dependencies` |
+| `register_system(ctx)` | 注册系统上下文 |
+| `get_system_contexts()` | 获取所有系统上下文（`const class_pool<system_context>&`） |
+
+```cpp
+mgr.register_system(ecs::system_context{
+    .required_mask = 0x3,  // 需要 Position + Velocity
+    .phase = 1,            // update 阶段
+    .order = 100,          // 执行顺序
+    .parallel_group = 0,   // 串行执行
+});
+```
+
+### 实体掩码（无上限）
+
+基于 `entity_mask_manager` 的动态位掩码存储，无组件类型上限。`num_blocks_==1` 时等价于直接数组访问（零乘法开销）。通过 `reserve_blocks(n)` 预分配掩码块数，避免 reshape 开销。
+
+#### `component_meta` 结构体
+
+每个已注册组件类型对应一份元数据，存储其掩码位置。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `size` | `size_t` | 组件类型大小（字节） |
+| `mask_block` | `uint32_t` | 掩码块索引 `(type_id-1)/64`（type_id=1..64 落入块 0） |
+| `mask_offset` | `uint32_t` | 块内位偏移 `(type_id-1)%64`（0..63） |
+
+#### manager 接口
+
+| 接口 | 说明 |
+|------|------|
+| `get_entity_mask(entity)` | 获取实体块 0 掩码（`uint64_t`，type_id 1-64） |
+| `get_component_bit<T>()` | 获取组件 T 的掩码位（`mask_block==0` 时返回 `1ULL<<offset`，否则返回 0） |
+| `get_component_meta(int type_id)` | 获取 `component_meta*`（含 `mask_block`/`mask_offset`，type_id 越界返回 nullptr） |
+| `reserve_mask_blocks(uint32_t num_blocks)` | 预分配每实体掩码块数（每块 64 种组件；注册组件前调用避免 reshape） |
+| `num_mask_blocks() const` | 当前每实体掩码块数 |
+| `get_entity_manager()` | 获取 `entity_manager&`，可继续调用 `set_mask_bit` / `clear_mask_bit` / `get_mask` / `set_entity_flag` 等 |
+
+```cpp
+uint64_t mask = mgr.get_entity_mask(e);
+uint64_t pos_bit = mgr.get_component_bit<Position>();
+if ((mask & pos_bit) != 0)
+{
+    // 实体拥有 Position 组件
+}
+
+// 通过 component_meta 查询任意 type_id 的掩码位置
+const auto* meta = mgr.get_component_meta(type_id::get_type_id<Velocity>());
+if (meta && meta->mask_block == 0)
+{
+    uint64_t vel_bit = 1ULL << meta->mask_offset;
+    bool has_vel = (mgr.get_entity_mask(e) & vel_bit) != 0;
+}
+
+// 启动时预分配 2 块掩码（支持 128 种组件），避免运行中 reshape
+mgr.reserve_mask_blocks(2);
+```
+
+> 默认块数为 1（支持 64 种组件）。详见 [§ 27. entity_mask_manager](#27-entity_mask_manager--无上限实体掩码存储)。
 
 ### 不要做什么
 
@@ -3409,7 +3525,7 @@ buf.drain_with_budget(1, [](const event& e) {
 
 `#include "part/time.hpp"`，全局命名空间。`noexcept`。
 
-计时与基准测量工具：墙钟计时、CPU 周期计数、统计分布、缓存延迟测量。x86/x64 提供 `rdtsc`/`rdtscp`，其他平台返回 0。
+计时与基准测量工具：墙钟计时、CPU 周期计数、缓存屏障、统计分布、在线分位数、缓存延迟测量。x86/x64 提供 `rdtsc`/`rdtscp` / `clflush` / `mfence` / `lfence`，其他平台返回 0 或空操作。
 
 ### 26.1 timer — 墙钟计时器
 
@@ -3462,18 +3578,27 @@ stats s = compute_stats(std::move(samples));
 // s.mean == 2.0, s.median == 2.0
 ```
 
+> 内部使用 `tiered_sort` 分级排序：n≤16 排序网络，n<1024 pdqsort，n≥1024 radix sort（O(n)）。
+
 ### 26.4 benchmark — 基准测量
 
 | 接口 | 说明 |
 |------|------|
 | `benchmark_ns(iterations, warmup, fn)` | 纳秒级基准，运行 fn iterations 次 |
 | `benchmark_cycles(iterations, warmup, fn)` | 周期级基准，精度更高（无 RDTSC 平台回退到 ns） |
+| `benchmark_p2(iterations, warmup, fn)` | 流式基准，P² 在线估计，O(1) 空间，返回 `p2_benchmark_result` |
 
 ```cpp
 auto s = benchmark_ns(1000, 10, []() {
     // 被测代码
 });
 // s.p99 为 99 百分位延迟
+
+// 流式基准：不存储样本，适合超大迭代次数
+p2_benchmark_result r = benchmark_p2(1000000, 100, []() {
+    // 被测代码
+});
+// r.p50, r.p90, r.p95, r.p99
 ```
 
 ### 26.5 缓存命中测量
@@ -3481,8 +3606,14 @@ auto s = benchmark_ns(1000, 10, []() {
 | 接口 | 说明 |
 |------|------|
 | `measure_cache_hits(addresses, thresholds)` | 测量一组地址访问的缓存命中情况 |
-| `latency_thresholds` | 阈值：l1_max=4, l2_max=15, l3_max=50 周期 |
-| `cache_report` | 报告：l1/l2/l3 命中数与率、miss 数与率、周期统计 |
+| `measure_cache_batch(addresses, repeats)` | 批量测量，取 3 次最优值，扣除基线（适合 L1/L2 精确测量） |
+| `measure_loop_cycles(fn)` | 单次 rdtscp 包裹循环，测量总周期 |
+| `detect_cache_latency_thresholds()` | 自适应检测缓存层级和阈值（1KB→16MB 步进扫描） |
+| `latency_thresholds` | 阈值：l1_max/l2_max/l3_max + `cache_levels`（1/2/3） |
+| `cache_report` | 报告：l1/l2/l3 命中数与率、miss 数与率、p50/p95/p99、`active_levels` |
+| `batch_cache_result` | 批量结果：总周期、平均/净周期、基线周期 |
+| `make_sequential_addresses(base, count, stride)` | 顺序访问地址序列（缓存友好） |
+| `make_random_addresses(base, count, stride, seed)` | 随机访问地址序列（缓存不友好，确定性可复现） |
 
 ```cpp
 class_pool<const void*> addrs;
@@ -3491,6 +3622,103 @@ addrs.emplace_back(&some_data);
 
 cache_report r = measure_cache_hits(addrs);
 // r.l1_hit_rate, r.miss_rate, r.avg_cycles 等
+
+// 批量模式（精确 L1/L2 延迟）
+batch_cache_result bcr = measure_cache_batch(addrs, 10);
+// bcr.net_cycles_per_access 为净每次访问周期
+
+// 自适应检测缓存层级 (不同 CPU 缓存层级不同)
+latency_thresholds auto_th = detect_cache_latency_thresholds();
+// auto_th.cache_levels == 1/2/3, auto_th.l1_max/l2_max/l3_max 自动标定
+
+// 模拟 1 级缓存场景
+latency_thresholds th_l1 = auto_th;
+th_l1.cache_levels = 1;
+cache_report r_l1 = measure_cache_hits(addrs, th_l1);
+// r_l1.active_levels == 1, 仅 L1 命中分类有效
+```
+
+> 不同 CPU 缓存层级不同（嵌入式可能仅 1-2 级），默认 `cache_levels=3`。可通过 `detect_cache_latency_thresholds()` 自动检测实际层级，或手动设置 `cache_levels`。
+
+### 26.6 x86 缓存屏障
+
+| 接口 | 说明 |
+|------|------|
+| `cache_flush(p)` | 刷新单条缓存行（`clflush`） |
+| `cache_flush_range(p, bytes)` | 逐缓存行刷新范围 + `mfence` 尾屏障 |
+| `mfence()` | 全屏障（Store/Load 序列化） |
+| `lfence()` | Load 屏障 |
+| `rdtsc_fenced()` | Intel 推荐 `lfence; rdtsc; lfence` 全屏障周期测量 |
+
+```cpp
+// 冷缓存测量：先刷出缓存，再测访问延迟
+cache_flush_range(&data, sizeof(data));
+// 现在 data 不在任何缓存层级中
+```
+
+> 非 x86 平台以上均为空操作。
+
+### 26.7 P² 在线分位数
+
+| 接口 | 说明 |
+|------|------|
+| `p2_quantile(quantile)` | 构造指定分位数估计器（0.0~1.0） |
+| `add(x)` | 添加观测值，O(1) |
+| `estimate()` | 当前分位数估计值 |
+| `count()` | 已观测样本数 |
+| `reset()` | 重置估计器 |
+
+```cpp
+p2_quantile est(0.99);  // p99 估计器
+for (int i = 0; i < 1000000; ++i)
+{
+    est.add(measure_something());
+}
+double p99 = est.estimate();
+// 无需存储 100 万个样本，内存 O(1)
+```
+
+### 26.8 CPU 频率
+
+| 接口 | 说明 |
+|------|------|
+| `estimate_cpu_ghz(calibration_ms=100)` | 忙等校准估算 TSC 频率（GHz），非核心频率 |
+| `cpu_ghz_cached()` | 首次调用校准，后续返回缓存值（零开销） |
+
+```cpp
+double ghz = cpu_ghz_cached();
+// 首次调用耗时 ~100ms，后续 O(1)
+// 注: 测量的是 invariant TSC 频率 (恒定), 非核心频率 (受 Turbo Boost 影响)
+//      rdtsc 计数速率 = TSC 频率, 不随核心频率变化
+//      cycle_timer::elapsed_ns_estimated() 基于 TSC 频率, 适合相对比较
+```
+
+> 若需精确墙钟时间，优先使用 `timer`（`high_resolution_clock`），而非 `cycle_timer` + 频率估算。
+
+### 26.9 延迟异常检测
+
+| 接口 | 说明 |
+|------|------|
+| `latency_anomaly_detector` | 结构体，内置 p50/p99 P² 估计器 |
+| `add(latency_ns)` | 添加延迟样本，建立基线 |
+| `is_anomaly(latency_ns)` | 判断当前延迟是否异常（超过 p99 × multiplier） |
+| `anomaly_threshold()` | 当前异常阈值（p99 × multiplier） |
+
+```cpp
+latency_anomaly_detector detector;
+detector.multiplier = 3.0;  // 超过 3x p99 视为异常
+
+for (auto& e : entities)
+{
+    timer t;
+    process(e);
+    double ns = t.elapsed_ns();
+    detector.add(ns);
+    if (detector.is_anomaly(ns))
+    {
+        // 延迟异常，记录或告警
+    }
+}
 ```
 
 ### 不要做什么
@@ -3501,3 +3729,59 @@ cache_report r = measure_cache_hits(addrs);
 | `compute_stats` 传入空 samples | count=0，所有统计量为 0 | 先检查 samples 非空 |
 | `measure_cache_hits` 地址列表含无效指针 | 访问野指针崩溃 | 确保所有地址有效 |
 | `cycle_timer` 跨 CPU 频率变化测量 | 频率动态调整导致估算不准 | 短时间测量或锁定频率 |
+| 大样本用 `benchmark_ns` 存储全部样本 | 内存占用 O(n) | 大样本（>10M）用 `benchmark_p2`，O(1) 空间 |
+
+---
+
+## 27. entity_mask_manager — 无上限实体掩码存储
+
+`include/part/entity_mask_manager.hpp`，无命名空间。基于 `class_pool<uint64_t>` 的扁平化位掩码存储，每实体 `num_blocks_` 个 `uint64_t`，支持无限组件类型。
+
+### 内存布局
+
+- 实体 `e` 第 `b` 块位置：`e * num_blocks_ + b`
+- 默认 `num_blocks_==1`：等价于直接数组访问，零乘法开销
+- `reserve_blocks(n)` 在注册组件前预分配 `n` 块，避免后续 reshape 搬移
+
+### 接口
+
+| 接口 | 说明 |
+|------|------|
+| `reserve_blocks(uint32_t num_blocks)` | 预分配掩码块数（仅扩容，不缩容；注册组件前调用以避免 reshape） |
+| `num_blocks() const` | 当前每实体掩码块数 |
+| `ensure_entity(uint32_t entity_index)` | 确保实体容量（与 `entity_manager` 同步增长） |
+| `set_bit(entity_index, block_idx, bit_offset)` | 设置掩码位（带边界检查，必要时自动扩容） |
+| `set_bit_no_check(entity_index, block_idx, bit_offset)` | 设置掩码位（无边界检查，调用方保证 `entity_index` 已分配且 `block_idx < num_blocks_`） |
+| `clear_bit(entity_index, block_idx, bit_offset)` | 清除掩码位（带边界检查） |
+| `clear_bit_no_check(entity_index, block_idx, bit_offset)` | 清除掩码位（无边界检查） |
+| `get_block(entity_index, block_idx) const` | 获取掩码块值（越界返回 0；`get_block(e, 0)` 等价于原 `get_mask`） |
+| `clear_entity(entity_index)` | 清零该实体所有掩码块（删除实体时调用） |
+| `resize_entities(uint32_t new_count)` | 批量扩容到 `new_count` 个实体（预分配实体时使用） |
+
+### 机制
+
+- **快速路径**：`num_blocks_==1` 时所有方法走无乘法分支，等价 `masks_[entity_index]` 直接访问
+- **reshape（从后往前搬移）**：扩容到 `n` 块时，新位置 `e*n+b` 始终 ≥ 旧位置 `e*old+b`，反向遍历保证无覆盖
+- **越界保护**：`set_bit` / `clear_bit` 检查 `block_idx < num_blocks_`，越界静默返回；`*_no_check` 版本跳过检查用于热路径
+
+### 使用
+
+```cpp
+entity_mask_manager masks;
+masks.reserve_blocks(2);            // 预分配 2 块 = 支持 128 种组件
+masks.ensure_entity(0);
+masks.set_bit(0, 0, 5);             // 实体 0 块 0 位 5
+masks.set_bit(0, 1, 10);            // 实体 0 块 1 位 10
+uint64_t b0 = masks.get_block(0, 0);
+uint64_t b1 = masks.get_block(0, 1);
+masks.clear_entity(0);              // 删除实体时清零
+```
+
+### 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 注册组件后再调 `reserve_blocks` | 触发 reshape 全量搬移 | 启动时预估类型数，注册前调 `reserve_blocks` |
+| 对未 `ensure_entity` 的实体调 `set_bit_no_check` | 越界写崩 | 先 `ensure_entity` 或使用带边界检查的 `set_bit` |
+| 对 `block_idx >= num_blocks()` 调 `set_bit` | 静默丢弃（不会扩容块数） | 先 `reserve_blocks` 扩容 |
+| 假设 `get_block(e, b)` 跨进程稳定 | reshape 改变布局 | 仅当前进程内有效 |

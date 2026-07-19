@@ -1545,8 +1545,8 @@ int main()
         mgr.reserve_component_capacity<Position>(1024);
         print_item("reserve_component_capacity()", true);
 
-        class_pool<Position>* cv = mgr.get_component_vector<Position>();
-        print_item("get_component_vector()", (cv && cv->size() == 1));
+        class_pool<Position>* cv = mgr.get_component_container<Position>();
+        print_item("get_component_container()", (cv && cv->size() == 1));
     }
 
     // --- 视图 ---

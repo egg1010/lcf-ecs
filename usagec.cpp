@@ -13,6 +13,7 @@
 #include "include/part/slab_allocator.hpp"
 #include "include/part/layered_allocator.hpp"
 #include "include/part/tiered_sort.hpp"
+#include "include/part/time.hpp"
 #include "include/part/id_.hpp"
 #include "include/part/type_id.hpp"
 
@@ -31,7 +32,9 @@
 #endif
 
 using ecs::entity;
+using ecs::entity_flag;
 using ecs::entity_manager;
+using ecs::manager;
 using ecs::sparse_entry;
 using ecs::single_class_set;
 
@@ -1119,8 +1122,11 @@ static void demo_single_class_set()
     uint32_t sp_dense = set.sparse_dense_at_public(1);
     print_kv("sparse_version_at_public(1)", (int)sp_ver);
     print_kv("sparse_dense_at_public(1)", (int)sp_dense);
+    print_kv("热集自动失效", "增删改/dense重排后 pool_version 自动递增，旧缓存条目自动失效");
+    set.bump_pool_version();
+    print_kv("bump_pool_version() 手动递增", true);
     set.clear_hot_set();
-    print_kv("clear_hot_set() ok", true);
+    print_kv("clear_hot_set() 调试清空", true);
 
     print_sub("hard_remove / soft_remove");
     set.soft_remove(e1);
@@ -1304,8 +1310,11 @@ static void demo_manager()
     uint32_t pub_ver = set->sparse_version_at_public(0);
     print_kv("sparse_dense_at_public(0)", (int)pub_dense);
     print_kv("sparse_version_at_public(0)", (int)pub_ver);
+    print_kv("热集自动失效", "增删改/dense重排后 pool_version 自动递增，无需手动 clear_hot_set");
+    set->bump_pool_version();
+    print_kv("bump_pool_version() 手动递增", true);
     set->clear_hot_set();
-    print_kv("clear_hot_set() 后", "已清空");
+    print_kv("clear_hot_set() 调试清空", true);
 
     // dense/version 合并查询 (sparse_entry 合并存储, get_dense_page 与 get_version_page 返回同一指针)
     const sparse_entry* dense_page = set->get_dense_page(0);
@@ -1370,9 +1379,9 @@ static void demo_manager()
     const single_class_set* cpos_set = cmgr.get_single_class_set<Position>();
     print_kv("get_single_class_set<Position>() const size", (cpos_set ? cpos_set->size() : 0));
 
-    print_sub("get_component_vector<T>");
-    class_pool<Position>* pos_vec = mgr.get_component_vector<Position>();
-    print_kv("get_component_vector<Position>() size", (pos_vec ? pos_vec->size() : 0));
+    print_sub("get_component_container<T>");
+    class_pool<Position>* pos_vec = mgr.get_component_container<Position>();
+    print_kv("get_component_container<Position>() size", (pos_vec ? pos_vec->size() : 0));
 
     print_sub("reserve_component_capacity<T>");
     mgr.reserve_component_capacity<Position>(10000);
@@ -1978,7 +1987,7 @@ static void demo_sort()
     print_sub("sort_component_container<Position> (排序组件池并同步 dense/sparse 映射)");
     mgr.sort_component_container<Position>([](Position& a, Position& b) { return a.x < b.x; });
     std::cout << "    排序后组件池: ";
-    auto* pool = mgr.get_component_vector<Position>();
+    auto* pool = mgr.get_component_container<Position>();
     if (pool)
     {
         for (size_t i = 0; i < pool->size(); ++i)
@@ -2431,6 +2440,170 @@ static void demo_tiered_sort()
 }
 
 // =============================================================================
+// 19. time 计时与基准测量
+// =============================================================================
+static void demo_time()
+{
+    print_header(19, "time 计时与基准测量");
+
+    print_sub("timer 墙钟计时器");
+    {
+        timer t;
+        volatile int x = 0;
+        for (int i = 0; i < 1000; ++i) { x += i; }
+        (void)x;
+        print_kv("timer::elapsed_ns()", t.elapsed_ns());
+        print_kv("timer::elapsed_us()", t.elapsed_us());
+    }
+
+    print_sub("cycle_timer CPU 周期计时器");
+    {
+        cycle_timer ct;
+        volatile int x = 0;
+        for (int i = 0; i < 1000; ++i) { x += i; }
+        (void)x;
+        print_kv("cycle_timer::elapsed_cycles()", ct.elapsed_cycles());
+        double ghz = cpu_ghz_cached();
+        print_kv("cycle_timer::elapsed_ns_estimated(ghz)", ct.elapsed_ns_estimated(ghz));
+    }
+
+    print_sub("compute_stats 统计分布");
+    {
+        class_pool<double> samples;
+        samples.increase_capacity(5);
+        samples.emplace_back(1.0);
+        samples.emplace_back(2.0);
+        samples.emplace_back(3.0);
+        samples.emplace_back(4.0);
+        samples.emplace_back(5.0);
+        stats s = compute_stats(std::move(samples));
+        print_kv("stats.mean", s.mean);
+        print_kv("stats.median", s.median);
+        print_kv("stats.p50", s.p50);
+        print_kv("stats.p95", s.p95);
+        print_kv("stats.p99", s.p99);
+        print_kv("stats.min", s.min);
+        print_kv("stats.max", s.max);
+        print_kv("stats.stddev", s.stddev);
+        print_kv("stats.count", s.count);
+    }
+
+    print_sub("benchmark_ns 纳秒级基准");
+    {
+        auto s = benchmark_ns(100, 5, []() {
+            volatile int x = 0;
+            for (int i = 0; i < 100; ++i) { x += i; }
+        });
+        print_kv("benchmark_ns: p50 (ns)", s.p50);
+        print_kv("benchmark_ns: p99 (ns)", s.p99);
+        print_kv("benchmark_ns: mean (ns)", s.mean);
+        print_kv("benchmark_ns: count", s.count);
+    }
+
+    print_sub("benchmark_p2 流式基准 (P2在线估计)");
+    {
+        p2_benchmark_result r = benchmark_p2(1000, 10, []() {
+            volatile int x = 0;
+            for (int i = 0; i < 100; ++i) { x += i; }
+        });
+        print_kv("benchmark_p2: p50 (ns)", r.p50);
+        print_kv("benchmark_p2: p90 (ns)", r.p90);
+        print_kv("benchmark_p2: p95 (ns)", r.p95);
+        print_kv("benchmark_p2: p99 (ns)", r.p99);
+        print_kv("benchmark_p2: count", r.count);
+    }
+
+    print_sub("p2_quantile P2在线分位数估计器");
+    {
+        p2_quantile est(0.50);  // 中位数估计器
+        for (int i = 0; i < 1000; ++i)
+        {
+            est.add(static_cast<double>(i % 100));
+        }
+        print_kv("p2_quantile(0.50).estimate()", est.estimate());
+        print_kv("p2_quantile.count()", est.count());
+    }
+
+    print_sub("cpu_ghz_cached CPU频率缓存");
+    {
+        double ghz = cpu_ghz_cached();
+        print_kv("cpu_ghz_cached() (GHz)", ghz);
+        // 第二次调用零开销
+        double ghz2 = cpu_ghz_cached();
+        print_kv("cpu_ghz_cached() 再次调用", ghz2);
+    }
+
+    print_sub("latency_anomaly_detector 延迟异常检测");
+    {
+        latency_anomaly_detector detector;
+        // 建立基线
+        for (int i = 0; i < 200; ++i)
+        {
+            detector.add(static_cast<double>(10 + i % 5));
+        }
+        print_kv("anomaly_threshold()", detector.anomaly_threshold());
+        print_kv("is_anomaly(15)", detector.is_anomaly(15));
+        print_kv("is_anomaly(1000)", detector.is_anomaly(1000));
+    }
+
+    print_sub("cache_flush / mfence / lfence (x86)");
+    {
+        int data[16] = {};
+        cache_flush(&data[0]);
+        cache_flush_range(data, sizeof(data));
+        mfence();
+        lfence();
+        print_kv("cache_flush / mfence / lfence", "done (no-op on non-x86)");
+    }
+
+    print_sub("detect_cache_latency_thresholds 自适应检测");
+    {
+        latency_thresholds auto_th = detect_cache_latency_thresholds();
+        print_kv("cache_levels", auto_th.cache_levels);
+        print_kv("l1_max", auto_th.l1_max);
+        if (auto_th.cache_levels >= 2)
+        {
+            print_kv("l2_max", auto_th.l2_max);
+        }
+        if (auto_th.cache_levels >= 3)
+        {
+            print_kv("l3_max", auto_th.l3_max);
+        }
+
+        // 验证不同层级下的测量结果
+        int buf[4096];
+        auto addrs = make_sequential_addresses(buf, 4096, sizeof(int));
+        cache_report r = measure_cache_hits(addrs, auto_th);
+        print_kv("active_levels", r.active_levels);
+        print_kv("l1_hit_rate (%)", r.l1_hit_rate * 100);
+        if (r.active_levels >= 2)
+        {
+            print_kv("l2_hit_rate (%)", r.l2_hit_rate * 100);
+        }
+        if (r.active_levels >= 3)
+        {
+            print_kv("l3_hit_rate (%)", r.l3_hit_rate * 100);
+        }
+        print_kv("miss_rate (%)", r.miss_rate * 100);
+    }
+
+    print_sub("rdtsc_fenced 全屏障周期测量 (x86)");
+    {
+        uint64_t c = rdtsc_fenced();
+        print_kv("rdtsc_fenced()", c);
+    }
+
+    print_sub("make_sequential_addresses / make_random_addresses");
+    {
+        int buf[256] = {};
+        auto seq = make_sequential_addresses(buf, 16, sizeof(int));
+        print_kv("make_sequential_addresses: size", seq.size());
+        auto rnd = make_random_addresses(buf, 16, sizeof(int), 42);
+        print_kv("make_random_addresses: size", rnd.size());
+    }
+}
+
+// =============================================================================
 // 17. command_buffer 延迟结构变更
 // =============================================================================
 static void demo_command_buffer()
@@ -2813,11 +2986,97 @@ int main()
     demo_unlimited_components(); // 16. 组件类型无上限
     demo_command_buffer();      // 17. command_buffer
     demo_tiered_sort();         // 18. tiered_sort 分级排序
+    demo_time();                // 19. time 计时与基准测量
 
     std::cout << "\n";
     std::cout << "\u250c";
     for (int i = 0; i < BOX_WIDTH; ++i) std::cout << "\u2550";
     std::cout << "\u2510\n";
+
+    // ============================================================
+    // 实体状态池
+    // ============================================================
+    print_sub("实体状态池");
+    manager mgr3;
+    auto e3 = mgr3.create_entity();
+    uint32_t e3_idx = e3.parts_.index_;
+    print_kv("默认 flags (active)", mgr3.has_entity_flag(e3_idx, entity_flag::active));
+    mgr3.set_entity_flag(e3_idx, entity_flag::disabled);
+    print_kv("set disabled", mgr3.has_entity_flag(e3_idx, entity_flag::disabled));
+    mgr3.clear_entity_flag(e3_idx, entity_flag::disabled);
+    print_kv("clear disabled", !mgr3.has_entity_flag(e3_idx, entity_flag::disabled));
+    auto& state = mgr3.get_entity_state(e3_idx);
+    state.tag = 42;
+    state.layer = 3;
+    print_kv("tag", (int)state.tag);
+    print_kv("layer", (int)state.layer);
+
+    // ============================================================
+    // 变更日志池
+    // ============================================================
+    print_sub("变更日志池");
+    manager mgr4;
+    mgr4.enable_change_log();
+    auto e4 = mgr4.create_entity();
+    mgr4.add(e4, Position{1, 2});
+    mgr4.add(e4, Velocity{3, 4});
+    mgr4.hard_remove<Position>(e4);
+    mgr4.end_frame();
+    int log_count = 0;
+    mgr4.flush_change_log([&](const ecs::change_record& r) {
+        ++log_count;
+    });
+    print_kv("变更记录数", log_count);
+    print_kv("无待处理记录", !mgr4.has_pending_change_records());
+
+    // ============================================================
+    // 系统上下文池
+    // ============================================================
+    print_sub("系统上下文池");
+    manager mgr5;
+    mgr5.register_system(ecs::system_context{
+        .required_mask = 0x3,
+        .excluded_mask = 0,
+        .order = 100,
+        .phase = 1,
+        .parallel_group = 0,
+        .dependency_count = 0,
+        .dependencies = {0, 0, 0, 0}
+    });
+    print_kv("注册系统数", (int)mgr5.get_system_contexts().size());
+
+    // ============================================================
+    // 实体掩码（无上限）
+    // ============================================================
+    print_sub("实体掩码（无上限）");
+    manager mgr6;
+    auto e6 = mgr6.create_entity();
+    uint32_t e6_idx = e6.parts_.index_;
+    mgr6.add(e6, Position{5, 6});
+    uint64_t mask = mgr6.get_entity_mask(e6);
+    print_kv("mask 块0 (有 Position)", mask != 0);
+    print_kv("Position bit 位置", (int)std::countr_zero(mask));
+
+    // get_entity_manager 暴露底层掩码/状态接口
+    auto& em = mgr6.get_entity_manager();
+    print_kv("get_entity_manager().get_mask(idx)", em.get_mask(e6_idx) == mask);
+
+    // component_meta 掩码位置查询
+    const auto* meta = mgr6.get_component_meta(type_id::get_type_id<Position>());
+    print_kv("meta->mask_block", (int)meta->mask_block);
+    print_kv("meta->mask_offset", (int)meta->mask_offset);
+
+    // reserve_mask_blocks 预分配多块（注册组件前调用避免 reshape）
+    manager mgr7;
+    mgr7.reserve_mask_blocks(2); // 2 块 = 支持 128 种组件
+    print_kv("num_mask_blocks() == 2", mgr7.num_mask_blocks() == 2);
+    auto e7 = mgr7.create_entity();
+    mgr7.add(e7, Position{1, 2});
+    mgr7.add(e7, Velocity{3, 4});
+    uint64_t m7 = mgr7.get_entity_mask(e7);
+    print_kv("mgr7 mask 含 Position+Velocity",
+             (m7 & mgr7.get_component_bit<Position>()) != 0 &&
+             (m7 & mgr7.get_component_bit<Velocity>()) != 0);
 
     std::cout << "\u2551  " << std::left << std::setw(BOX_WIDTH - 2)
               << "\u6240\u6709\u793a\u4f8b\u6267\u884c\u5b8c\u6bd5"
