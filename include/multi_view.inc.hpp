@@ -621,17 +621,17 @@
         class paged_view
         {
         private:
-            multi_view* base_;
+            multi_view base_;
             size_t offset_;
             size_t limit_;
 
         public:
-            paged_view(multi_view* base, size_t offset, size_t limit) noexcept
+            paged_view(multi_view base, size_t offset, size_t limit) noexcept
                 : base_(base), offset_(offset), limit_(limit) {}
 
             [[nodiscard]] size_t size() const noexcept
             {
-                size_t base_sz = base_->size();
+                size_t base_sz = base_.size();
                 if (offset_ >= base_sz) return 0;
                 size_t rem = base_sz - offset_;
                 return rem < limit_ ? rem : limit_;
@@ -644,7 +644,7 @@
             {
                 size_t skipped = 0;
                 size_t processed = 0;
-                base_->for_each([&](auto&... args) {
+                base_.for_each([&](auto&... args) {
                     if (skipped < offset_)
                     {
                         ++skipped;
@@ -659,7 +659,7 @@
 
         auto page(size_t offset, size_t limit) noexcept
         {
-            return paged_view(this, offset, limit);
+            return paged_view(*this, offset, limit);
         }
 
         // ======================== sorted_component_view ========================
@@ -672,7 +672,7 @@
             static constexpr size_t prefetch_distance_ =
                 total_component_size_ <= 32 ? 32 : (total_component_size_ <= 128 ? 16 : 8);
 
-            multi_view* base_;
+            multi_view base_;
             Compare cmp_;
             class_pool<size_t> sorted_indices_;
             class_pool<size_t> radix_temp_buf_;
@@ -685,11 +685,11 @@
             template <size_t... Is>
             void copy_valid_entities(std::index_sequence<Is...>) noexcept
             {
-                auto* primary = base_->sets_[base_->primary_idx_];
+                auto* primary = base_.sets_[base_.primary_idx_];
                 auto& indices = primary->get_entity_indices();
 
                 auto original_pools = std::make_tuple(
-                    base_->sets_[Is]->template get_typed_pool_ptr<std::tuple_element_t<Is, AllTypes>>()...
+                    base_.sets_[Is]->template get_typed_pool_ptr<std::tuple_element_t<Is, AllTypes>>()...
                 );
 
                 std::apply([](auto&... pools) { (pools.clear(), ...); }, sorted_pool_copies_);
@@ -699,7 +699,7 @@
                 sorted_entities_.increase_capacity(n);
                 std::apply([n](auto&... pools) { (pools.increase_capacity(n), ...); }, sorted_pool_copies_);
 
-                if (base_->pools_aligned_)
+                if (base_.pools_aligned_)
                 {
                     const sparse_entry* mv_cur_ver_page = nullptr;
                     size_t mv_cur_page_idx = SIZE_MAX;
@@ -723,7 +723,7 @@
                 }
                 else
                 {
-                    auto* raw = reinterpret_cast<uint32_t*>(base_->dense_mappings_soa_.data());
+                    auto* raw = reinterpret_cast<uint32_t*>(base_.dense_mappings_soa_.data());
                     constexpr size_t stride = N;
                     const sparse_entry* mv_cur_ver_page = nullptr;
                     size_t mv_cur_page_idx = SIZE_MAX;
@@ -754,21 +754,21 @@
             void rebuild() noexcept
             {
                 sorted_indices_.clear();
-                if (!base_->all_sets_valid()) [[unlikely]] return;
+                if (!base_.all_sets_valid()) [[unlikely]] return;
 
-                base_->ensure_mappings();
-                auto* primary = base_->sets_[base_->primary_idx_];
+                base_.ensure_mappings();
+                auto* primary = base_.sets_[base_.primary_idx_];
                 auto& indices = primary->get_entity_indices();
                 const size_t n = indices.size();
                 if (n == 0) [[unlikely]]
                 {
                     for (size_t i = 0; i < N; ++i)
-                        if (base_->sets_[i]) last_versions_[i] = base_->sets_[i]->get_pool_version();
+                        if (base_.sets_[i]) last_versions_[i] = base_.sets_[i]->get_pool_version();
                     needs_rebuild_ = false;
                     return;
                 }
 
-                auto* typed_pool = base_->sets_[SortIdx]->template get_typed_pool_ptr<SortType>();
+                auto* typed_pool = base_.sets_[SortIdx]->template get_typed_pool_ptr<SortType>();
                 if (!typed_pool) { std::terminate(); }
                 auto* sort_pool = typed_pool->data();
                 constexpr size_t stride = N;
@@ -779,7 +779,7 @@
 
                 size_t* idx_data = sorted_indices_.data();
 
-                if (base_->pools_aligned_)
+                if (base_.pools_aligned_)
                 {
                     if constexpr (std::is_same_v<std::decay_t<Compare>, std::less<SortType>>)
                     {
@@ -795,7 +795,7 @@
                 }
                 else
                 {
-                    auto* raw = reinterpret_cast<uint32_t*>(base_->dense_mappings_soa_.data());
+                    auto* raw = reinterpret_cast<uint32_t*>(base_.dense_mappings_soa_.data());
                     if constexpr (std::is_same_v<std::decay_t<Compare>, std::less<SortType>>)
                     {
                         radix_keys_buf_.increase_capacity(n);
@@ -825,8 +825,8 @@
 
                 for (size_t i = 0; i < N; ++i)
                 {
-                    if (base_->sets_[i])
-                        last_versions_[i] = base_->sets_[i]->get_pool_version();
+                    if (base_.sets_[i])
+                        last_versions_[i] = base_.sets_[i]->get_pool_version();
                 }
                 needs_rebuild_ = false;
             }
@@ -835,7 +835,7 @@
             {
                 for (size_t i = 0; i < N; ++i)
                 {
-                    if (base_->sets_[i] && base_->sets_[i]->get_pool_version() != last_versions_[i])
+                    if (base_.sets_[i] && base_.sets_[i]->get_pool_version() != last_versions_[i])
                     {
                         rebuild();
                         return;
@@ -868,7 +868,7 @@
             }
 
         public:
-            sorted_component_view(multi_view* base, Compare cmp) noexcept
+            sorted_component_view(multi_view base, Compare cmp) noexcept
                 : base_(base), cmp_(std::move(cmp))
             {
                 last_versions_.resize(N, 0);
@@ -889,7 +889,7 @@
         auto sorted_by_component(Compare&& cmp) noexcept
         {
             constexpr size_t idx = find_type_index<T, AllTypes>();
-            return sorted_component_view<Compare, idx>(this, std::forward<Compare>(cmp));
+            return sorted_component_view<Compare, idx>(*this, std::forward<Compare>(cmp));
         }
 
         // ======================== grouped_component_view ========================
@@ -897,7 +897,7 @@
         class grouped_component_view
         {
         private:
-            multi_view* base_;
+            multi_view base_;
             KeyFunc key_func_;
             class_pool<size_t> sorted_indices_;
             class_pool<KeyType> group_keys_;
@@ -910,10 +910,10 @@
                 sorted_indices_.clear();
                 group_keys_.clear();
                 group_starts_.clear();
-                if (!base_->all_sets_valid()) [[unlikely]] return;
+                if (!base_.all_sets_valid()) [[unlikely]] return;
 
-                base_->ensure_mappings();
-                auto* primary = base_->sets_[base_->primary_idx_];
+                base_.ensure_mappings();
+                auto* primary = base_.sets_[base_.primary_idx_];
                 auto& indices = primary->get_entity_indices();
                 const size_t n = indices.size();
 
@@ -921,10 +921,10 @@
                 class_pool<sort_entry> entries;
                 entries.resize(n, {});
 
-                auto* first_pool = base_->sets_[0]->template get_typed_pool_ptr<First>()->data();
+                auto* first_pool = base_.sets_[0]->template get_typed_pool_ptr<First>()->data();
                 First default_first{};
 
-                if (base_->pools_aligned_)
+                if (base_.pools_aligned_)
                 {
                     for (size_t i = 0; i < n; ++i)
                     {
@@ -934,7 +934,7 @@
                 }
                 else
                 {
-                    auto* raw = reinterpret_cast<uint32_t*>(base_->dense_mappings_soa_.data());
+                    auto* raw = reinterpret_cast<uint32_t*>(base_.dense_mappings_soa_.data());
                     for (size_t i = 0; i < n; ++i)
                     {
                         uint32_t d = raw[i * N + 0];
@@ -972,8 +972,8 @@
 
                 for (size_t i = 0; i < N; ++i)
                 {
-                    if (base_->sets_[i])
-                        last_versions_[i] = base_->sets_[i]->get_pool_version();
+                    if (base_.sets_[i])
+                        last_versions_[i] = base_.sets_[i]->get_pool_version();
                 }
                 needs_rebuild_ = false;
             }
@@ -982,7 +982,7 @@
             {
                 for (size_t i = 0; i < N; ++i)
                 {
-                    if (base_->sets_[i] && base_->sets_[i]->get_pool_version() != last_versions_[i])
+                    if (base_.sets_[i] && base_.sets_[i]->get_pool_version() != last_versions_[i])
                     {
                         rebuild();
                         return;
@@ -996,17 +996,17 @@
                 ensure_fresh();
                 if (sorted_indices_.empty()) return;
 
-                base_->ensure_mappings();
-                auto* primary = base_->sets_[base_->primary_idx_];
+                base_.ensure_mappings();
+                auto* primary = base_.sets_[base_.primary_idx_];
                 auto& indices = primary->get_entity_indices();
 
                 auto pools = std::make_tuple(
-                    base_->sets_[Is]->template get_typed_pool_ptr<std::tuple_element_t<Is, AllTypes>>()...
+                    base_.sets_[Is]->template get_typed_pool_ptr<std::tuple_element_t<Is, AllTypes>>()...
                 );
 
                 const size_t n = sorted_indices_.size();
 
-                if (base_->pools_aligned_)
+                if (base_.pools_aligned_)
                 {
                     const sparse_entry* mv_cur_ver_page = nullptr;
                     size_t mv_cur_page_idx = SIZE_MAX;
@@ -1041,7 +1041,7 @@
                 }
                 else
                 {
-                    auto* raw = reinterpret_cast<uint32_t*>(base_->dense_mappings_soa_.data());
+                    auto* raw = reinterpret_cast<uint32_t*>(base_.dense_mappings_soa_.data());
                     constexpr size_t stride = N;
                     const sparse_entry* mv_cur_ver_page = nullptr;
                     size_t mv_cur_page_idx = SIZE_MAX;
@@ -1080,7 +1080,7 @@
             }
 
         public:
-            grouped_component_view(multi_view* base, KeyFunc key_func) noexcept
+            grouped_component_view(multi_view base, KeyFunc key_func) noexcept
                 : base_(base), key_func_(std::move(key_func))
             {
                 last_versions_.resize(N, 0);
@@ -1117,14 +1117,14 @@
         auto sorted_by_component_value(KeyFunc&& key_func) noexcept
         {
             using KeyType = std::invoke_result_t<KeyFunc, First&>;
-            return grouped_component_view<KeyType, KeyFunc>(this, std::forward<KeyFunc>(key_func));
+            return grouped_component_view<KeyType, KeyFunc>(*this, std::forward<KeyFunc>(key_func));
         }
 
         // ======================== changed_view ========================
         class changed_view
         {
         private:
-            multi_view* base_;
+            multi_view base_;
             class_pool<uint64_t> last_versions_;
             class_pool<size_t> changed_indices_;
             bool needs_rebuild_{true};
@@ -1132,7 +1132,7 @@
             void rebuild() noexcept
             {
                 changed_indices_.clear();
-                if (!base_->all_sets_valid()) [[unlikely]]
+                if (!base_.all_sets_valid()) [[unlikely]]
                 {
                     needs_rebuild_ = false;
                     return;
@@ -1141,9 +1141,9 @@
                 bool any_changed = false;
                 for (size_t i = 0; i < N; ++i)
                 {
-                    if (base_->sets_[i])
+                    if (base_.sets_[i])
                     {
-                        uint64_t cur = base_->sets_[i]->get_pool_version();
+                        uint64_t cur = base_.sets_[i]->get_pool_version();
                         if (cur != last_versions_[i])
                         {
                             last_versions_[i] = cur;
@@ -1158,7 +1158,7 @@
                     return;
                 }
 
-                auto* primary = base_->sets_[base_->primary_idx_];
+                auto* primary = base_.sets_[base_.primary_idx_];
                 auto& indices = primary->get_entity_indices();
                 const size_t n = indices.size();
 
@@ -1177,7 +1177,7 @@
                     if (mv_cur_ver_page) [[likely]]
                         ver = single_class_set::read_version_from_page(mv_cur_ver_page, eid, primary->page_mask);
                     entity e(eid, ver);
-                    if (base_->contains_impl(e, std::index_sequence_for<First, Rest...>{}))
+                    if (base_.contains_impl(e, std::index_sequence_for<First, Rest...>{}))
                         changed_indices_.emplace_back(i);
                 }
                 needs_rebuild_ = false;
@@ -1196,7 +1196,7 @@
                 needs_rebuild_ = true;
                 if (changed_indices_.empty()) return;
 
-                auto* primary = base_->sets_[base_->primary_idx_];
+                auto* primary = base_.sets_[base_.primary_idx_];
                 auto& indices = primary->get_entity_indices();
 
                 const sparse_entry* mv_cur_ver_page = nullptr;
@@ -1217,7 +1217,7 @@
                     entity e(eid, ver);
 
                     auto comps = std::make_tuple(
-                        base_->template get_component<Is>(e, primary_i)...
+                        base_.template get_component<Is>(e, primary_i)...
                     );
 
                     if ((... && (std::get<Is>(comps) != nullptr))) [[likely]]
@@ -1233,7 +1233,7 @@
             }
 
         public:
-            changed_view(multi_view* base) noexcept : base_(base)
+            changed_view(multi_view base) noexcept : base_(base)
             {
                 last_versions_.resize(N, 0);
                 rebuild();
@@ -1259,7 +1259,7 @@
 
         auto track_changes() noexcept
         {
-            return changed_view(this);
+            return changed_view(*this);
         }
 
         // ======================== multi_view::filter_changed ========================

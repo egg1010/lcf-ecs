@@ -669,9 +669,9 @@ inline size_t runtime_view::count() noexcept
 
 inline void runtime_view::iterator::advance_to_valid() noexcept
 {
-    if (!view_) return;
+    if (!mgr_) return;
 
-    auto* primary = view_->query_.primary_set_;
+    auto* primary = query_.primary_set_;
     if (!primary) return;
 
     auto& indices = primary->get_entity_indices();
@@ -681,7 +681,41 @@ inline void runtime_view::iterator::advance_to_valid() noexcept
     {
         uint32_t idx = indices[index_];
         uint32_t ver = primary->get_version_unchecked(idx);
-        if (view_->is_entity_hit(idx, ver))
+        // 内联 is_entity_hit 检查
+        bool hit = true;
+        for (size_t k = 0; k < query_.req_sets_.size(); ++k)
+        {
+            if (!single_class_set::sparse_contains_version(query_.req_sets_[k], idx, ver))
+            {
+                hit = false;
+                break;
+            }
+        }
+        if (hit)
+        {
+            for (size_t k = 0; k < query_.exc_sets_.size(); ++k)
+            {
+                if (single_class_set::sparse_contains_version(query_.exc_sets_[k], idx, ver))
+                {
+                    hit = false;
+                    break;
+                }
+            }
+        }
+        if (hit && query_.has_or_)
+        {
+            bool or_hit = false;
+            for (size_t k = 0; k < query_.or_sets_.size(); ++k)
+            {
+                if (single_class_set::sparse_contains_version(query_.or_sets_[k], idx, ver))
+                {
+                    or_hit = true;
+                    break;
+                }
+            }
+            if (!or_hit) hit = false;
+        }
+        if (hit)
         {
             current_ = entity(idx, ver);
             return;
@@ -694,14 +728,14 @@ inline void runtime_view::iterator::advance_to_valid() noexcept
 inline runtime_view::iterator runtime_view::begin() noexcept
 {
     ensure_fresh();
-    return iterator(this, 0);
+    return iterator(query_, mgr_, 0);
 }
 
 inline runtime_view::iterator runtime_view::end() noexcept
 {
     ensure_fresh();
     size_t n = query_.primary_set_ ? query_.primary_set_->get_entity_indices().size() : 0;
-    return iterator(nullptr, n);
+    return iterator(runtime_query{}, nullptr, n);
 }
 
 // ===== size / empty =====

@@ -154,15 +154,16 @@ public:
 class runtime_view::iterator
 {
 private:
-    runtime_view* view_{nullptr};
+    runtime_query query_;
+    manager* mgr_{nullptr};
     size_t index_{0};
     entity current_{};
     void advance_to_valid() noexcept;
 
 public:
     iterator() noexcept = default;
-    iterator(runtime_view* v, size_t idx) noexcept
-        : view_(v), index_(idx)
+    iterator(runtime_query query, manager* mgr, size_t idx) noexcept
+        : query_(std::move(query)), mgr_(mgr), index_(idx)
     {
         advance_to_valid();
     }

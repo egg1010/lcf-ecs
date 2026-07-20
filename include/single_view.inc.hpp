@@ -19,15 +19,15 @@
         class iterator
         {
         private:
-            single_view* view_;
+            single_view view_;
             size_t index_;
         public:
-            iterator(single_view* view, size_t index) noexcept : view_(view), index_(index) {}
+            iterator(single_view view, size_t index) noexcept : view_(view), index_(index) {}
 
             [[nodiscard]] entity operator*() const noexcept
             {
-                auto& indices = view_->set_->get_entity_indices();
-                return entity(indices[index_], view_->set_->get_version_unchecked(indices[index_]));
+                auto& indices = view_.set_->get_entity_indices();
+                return entity(indices[index_], view_.set_->get_version_unchecked(indices[index_]));
             }
 
             iterator& operator++() noexcept { ++index_; return *this; }
@@ -47,8 +47,8 @@
             return pool ? pool->data() + pool->size() : nullptr;
         }
 
-        [[nodiscard]] iterator begin() noexcept { return iterator(this, 0); }
-        [[nodiscard]] iterator end() noexcept { return iterator(this, set_ ? set_->size() : 0); }
+        [[nodiscard]] iterator begin() noexcept { return iterator(*this, 0); }
+        [[nodiscard]] iterator end() noexcept { return iterator(*this, set_ ? set_->size() : 0); }
 
         [[nodiscard]] size_t size() const noexcept { return set_ ? set_->size() : 0; }
         [[nodiscard]] bool empty() const noexcept { return set_ ? set_->empty() : true; }
@@ -148,17 +148,17 @@
         class paged_view
         {
         private:
-            single_view* base_;
+            single_view base_;
             size_t offset_;
             size_t limit_;
 
         public:
-            paged_view(single_view* base, size_t offset, size_t limit) noexcept
+            paged_view(single_view base, size_t offset, size_t limit) noexcept
                 : base_(base), offset_(offset), limit_(limit) {}
 
             [[nodiscard]] size_t size() const noexcept
             {
-                size_t base_sz = base_->size();
+                size_t base_sz = base_.size();
                 if (offset_ >= base_sz) return 0;
                 size_t rem = base_sz - offset_;
                 return rem < limit_ ? rem : limit_;
@@ -171,7 +171,7 @@
             {
                 size_t skipped = 0;
                 size_t processed = 0;
-                base_->for_each([&](auto&... args) {
+                base_.for_each([&](auto&... args) {
                     if (skipped < offset_)
                     {
                         ++skipped;
@@ -186,7 +186,7 @@
 
         auto page(size_t offset, size_t limit) noexcept
         {
-            return paged_view(this, offset, limit);
+            return paged_view(*this, offset, limit);
         }
 
         // ======================== single_view::sorted_component_view ========================
@@ -196,7 +196,7 @@
         private:
             static constexpr size_t prefetch_distance_ = sizeof(T) <= 16 ? 32 : (sizeof(T) <= 64 ? 16 : 8);
 
-            single_view* base_;
+            single_view base_;
             Compare cmp_;
             class_pool<size_t> sorted_indices_;
             class_pool<size_t> radix_temp_buf_;
@@ -210,14 +210,14 @@
                 sorted_indices_.clear();
                 sorted_pool_copy_.clear();
                 sorted_entities_.clear();
-                if (!base_->set_) [[unlikely]] return;
-                auto* pool = base_->set_->template get_typed_pool_ptr<T>();
+                if (!base_.set_) [[unlikely]] return;
+                auto* pool = base_.set_->template get_typed_pool_ptr<T>();
                 if (!pool) [[unlikely]] return;
 
                 const size_t n = pool->size();
                 if (n == 0) [[unlikely]]
                 {
-                    last_version_ = base_->set_->get_pool_version();
+                    last_version_ = base_.set_->get_pool_version();
                     needs_rebuild_ = false;
                     return;
                 }
@@ -243,7 +243,7 @@
                         });
                 }
 
-                auto& indices = base_->set_->get_entity_indices();
+                auto& indices = base_.set_->get_entity_indices();
                 sorted_pool_copy_.increase_capacity(n);
                 sorted_entities_.increase_capacity(n);
                 const sparse_entry* cur_ver_page = nullptr;
@@ -253,30 +253,30 @@
                     size_t idx = sorted_indices_[i];
                     sorted_pool_copy_.emplace_back(pool_data[idx]);
                     uint32_t eid = indices[idx];
-                    size_t pid = eid >> base_->set_->page_shift;
+                    size_t pid = eid >> base_.set_->page_shift;
                     if (pid != cur_page_idx) [[unlikely]]
                     {
-                        cur_ver_page = base_->set_->get_version_page(eid);
+                        cur_ver_page = base_.set_->get_version_page(eid);
                         cur_page_idx = pid;
                     }
                     uint32_t ver = 0;
                     if (cur_ver_page) [[likely]]
-                        ver = single_class_set::read_version_from_page(cur_ver_page, eid, base_->set_->page_mask);
+                        ver = single_class_set::read_version_from_page(cur_ver_page, eid, base_.set_->page_mask);
                     sorted_entities_.emplace_back(entity(eid, ver));
                 }
 
-                last_version_ = base_->set_->get_pool_version();
+                last_version_ = base_.set_->get_pool_version();
                 needs_rebuild_ = false;
             }
 
             void ensure_fresh() noexcept
             {
-                if (base_->set_ && base_->set_->get_pool_version() != last_version_)
+                if (base_.set_ && base_.set_->get_pool_version() != last_version_)
                     rebuild();
             }
 
         public:
-            sorted_component_view(single_view* base, Compare cmp) noexcept
+            sorted_component_view(single_view base, Compare cmp) noexcept
                 : base_(base), cmp_(std::move(cmp))
             {
                 rebuild();
@@ -322,7 +322,7 @@
         template <typename Compare>
         auto sorted_by_component(Compare&& cmp) noexcept
         {
-            return sorted_component_view<Compare>(this, std::forward<Compare>(cmp));
+            return sorted_component_view<Compare>(*this, std::forward<Compare>(cmp));
         }
 
         // ======================== single_view::grouped_component_view ========================
@@ -330,7 +330,7 @@
         class grouped_component_view
         {
         private:
-            single_view* base_;
+            single_view base_;
             KeyFunc key_func_;
             class_pool<size_t> sorted_indices_;
             class_pool<KeyType> group_keys_;
@@ -343,8 +343,8 @@
                 sorted_indices_.clear();
                 group_keys_.clear();
                 group_starts_.clear();
-                if (!base_->set_) [[unlikely]] return;
-                auto* pool = base_->set_->template get_typed_pool_ptr<T>();
+                if (!base_.set_) [[unlikely]] return;
+                auto* pool = base_.set_->template get_typed_pool_ptr<T>();
                 if (!pool) [[unlikely]] return;
 
                 const size_t n = pool->size();
@@ -387,18 +387,18 @@
                         group_starts_.emplace_back(i);
                 }
 
-                last_version_ = base_->set_->get_pool_version();
+                last_version_ = base_.set_->get_pool_version();
                 needs_rebuild_ = false;
             }
 
             void ensure_fresh() noexcept
             {
-                if (base_->set_ && base_->set_->get_pool_version() != last_version_)
+                if (base_.set_ && base_.set_->get_pool_version() != last_version_)
                     rebuild();
             }
 
         public:
-            grouped_component_view(single_view* base, KeyFunc key_func) noexcept
+            grouped_component_view(single_view base, KeyFunc key_func) noexcept
                 : base_(base), key_func_(std::move(key_func))
             {
                 rebuild();
@@ -414,9 +414,9 @@
                 ensure_fresh();
                 if (sorted_indices_.empty()) return;
 
-                auto* pool = base_->set_->template get_typed_pool_ptr<T>();
+                auto* pool = base_.set_->template get_typed_pool_ptr<T>();
                 if (!pool) [[unlikely]] return;
-                auto& indices = base_->set_->get_entity_indices();
+                auto& indices = base_.set_->get_entity_indices();
 
                 if constexpr (std::is_invocable_v<Func, entity, T&>)
                 {
@@ -431,15 +431,15 @@
                         }
                         size_t idx = sorted_indices_[i];
                         uint32_t eid = indices[idx];
-                        size_t pid = eid >> base_->set_->page_shift;
+                        size_t pid = eid >> base_.set_->page_shift;
                         if (pid != g_cur_page_idx) [[unlikely]]
                         {
-                            g_cur_ver_page = base_->set_->get_version_page(eid);
+                            g_cur_ver_page = base_.set_->get_version_page(eid);
                             g_cur_page_idx = pid;
                         }
                         uint32_t ver = 0;
                         if (g_cur_ver_page) [[likely]]
-                            ver = single_class_set::read_version_from_page(g_cur_ver_page, eid, base_->set_->page_mask);
+                            ver = single_class_set::read_version_from_page(g_cur_ver_page, eid, base_.set_->page_mask);
                         entity e(eid, ver);
                         func(e, (*pool)[idx]);
                     }
@@ -475,14 +475,14 @@
         auto sorted_by_component_value(KeyFunc&& key_func) noexcept
         {
             using KeyType = std::invoke_result_t<KeyFunc, T&>;
-            return grouped_component_view<KeyType, KeyFunc>(this, std::forward<KeyFunc>(key_func));
+            return grouped_component_view<KeyType, KeyFunc>(*this, std::forward<KeyFunc>(key_func));
         }
 
         // ======================== single_view::changed_view ========================
         class changed_view
         {
         private:
-            single_view* base_;
+            single_view base_;
             uint64_t last_version_{0};
             class_pool<size_t> changed_indices_;
             bool needs_rebuild_{true};
@@ -490,14 +490,14 @@
             void rebuild() noexcept
             {
                 changed_indices_.clear();
-                base_->resolve_set();
-                if (!base_->set_) [[unlikely]]
+                base_.resolve_set();
+                if (!base_.set_) [[unlikely]]
                 {
                     needs_rebuild_ = false;
                     return;
                 }
 
-                uint64_t cur = base_->set_->get_pool_version();
+                uint64_t cur = base_.set_->get_pool_version();
                 if (cur == last_version_)
                 {
                     needs_rebuild_ = false;
@@ -505,7 +505,7 @@
                 }
                 last_version_ = cur;
 
-                auto* pool = base_->set_->template get_typed_pool_ptr<T>();
+                auto* pool = base_.set_->template get_typed_pool_ptr<T>();
                 if (!pool) [[unlikely]] return;
                 const size_t n = pool->size();
                 for (size_t i = 0; i < n; ++i)
@@ -523,7 +523,7 @@
             }
 
         public:
-            changed_view(single_view* base) noexcept : base_(base)
+            changed_view(single_view base) noexcept : base_(base)
             {
                 rebuild();
             }
@@ -545,9 +545,9 @@
                 needs_rebuild_ = true;
                 if (changed_indices_.empty()) return;
 
-                auto* pool = base_->set_->template get_typed_pool_ptr<T>();
+                auto* pool = base_.set_->template get_typed_pool_ptr<T>();
                 if (!pool) [[unlikely]] return;
-                auto& indices = base_->set_->get_entity_indices();
+                auto& indices = base_.set_->get_entity_indices();
 
                 if constexpr (std::is_invocable_v<Func, entity, T&>)
                 {
@@ -557,15 +557,15 @@
                     {
                         size_t idx = changed_indices_[i];
                         uint32_t eid = indices[idx];
-                        size_t pid = eid >> base_->set_->page_shift;
+                        size_t pid = eid >> base_.set_->page_shift;
                         if (pid != ch_cur_page_idx) [[unlikely]]
                         {
-                            ch_cur_ver_page = base_->set_->get_version_page(eid);
+                            ch_cur_ver_page = base_.set_->get_version_page(eid);
                             ch_cur_page_idx = pid;
                         }
                         uint32_t ver = 0;
                         if (ch_cur_ver_page) [[likely]]
-                            ver = single_class_set::read_version_from_page(ch_cur_ver_page, eid, base_->set_->page_mask);
+                            ver = single_class_set::read_version_from_page(ch_cur_ver_page, eid, base_.set_->page_mask);
                         entity e(eid, ver);
                         func(e, (*pool)[idx]);
                     }
@@ -582,7 +582,7 @@
 
         auto track_changes() noexcept
         {
-            return changed_view(this);
+            return changed_view(*this);
         }
 
         // ======================== single_view::filter_changed ========================
