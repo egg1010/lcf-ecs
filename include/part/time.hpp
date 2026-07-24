@@ -11,7 +11,7 @@
 #include "tiered_sort.hpp"
 #include <cmath>
 #include "force_inline.hpp"
-#include "class_pool.hpp"
+#include "dense.hpp"
 
 // 墙钟计时器
 class timer
@@ -194,7 +194,7 @@ struct stats
 };
 
 // 从样本计算统计量 (会排序样本)
-inline stats compute_stats(class_pool<double> samples) noexcept
+inline stats compute_stats(dense<double> samples) noexcept
 {
     stats s;
     s.count = samples.size();
@@ -202,7 +202,6 @@ inline stats compute_stats(class_pool<double> samples) noexcept
     {
         return s;
     }
-    // class_pool 迭代器为双向, 不支持 sort 的随机访问
     // 用 data() 取连续裸指针排序 (emplace_back 填充保证密集)
     double* p = samples.data();
     sort(p, s.count);
@@ -361,7 +360,7 @@ stats benchmark_ns(size_t iterations, size_t warmup, F&& fn) noexcept
     {
         fn();
     }
-    class_pool<double> samples;
+    dense<double> samples;
     samples.increase_capacity(iterations);
     for (size_t i = 0; i < iterations; ++i)
     {
@@ -382,7 +381,7 @@ stats benchmark_cycles(size_t iterations, size_t warmup, F&& fn) noexcept
     {
         fn();
     }
-    class_pool<double> samples;
+    dense<double> samples;
     samples.increase_capacity(iterations);
     for (size_t i = 0; i < iterations; ++i)
     {
@@ -435,7 +434,7 @@ struct cache_report
 
 // 测量一组地址访问的缓存命中情况
 // 注: 单次 rdtscp 约 30 周期开销, 主要反映 L3 vs DRAM 差异
-inline cache_report measure_cache_hits(const class_pool<const void*>& addresses,
+inline cache_report measure_cache_hits(const dense<const void*>& addresses,
                                        latency_thresholds th = {}) noexcept
 {
     cache_report r;
@@ -448,7 +447,7 @@ inline cache_report measure_cache_hits(const class_pool<const void*>& addresses,
     }
 
 #if TIME_HAS_RDTSC
-    class_pool<double> cycles;
+    dense<double> cycles;
     cycles.increase_capacity(r.total_accesses);
     size_t l1 = 0, l2 = 0, l3 = 0, miss = 0;
     double sum = 0;
@@ -507,9 +506,9 @@ inline cache_report measure_cache_hits(const class_pool<const void*>& addresses,
 }
 
 // 顺序访问地址序列 (缓存友好)
-inline class_pool<const void*> make_sequential_addresses(const void* base, size_t count, size_t stride) noexcept
+inline dense<const void*> make_sequential_addresses(const void* base, size_t count, size_t stride) noexcept
 {
-    class_pool<const void*> v;
+    dense<const void*> v;
     v.increase_capacity(count);
     const uint8_t* p = static_cast<const uint8_t*>(base);
     for (size_t i = 0; i < count; ++i)
@@ -520,9 +519,9 @@ inline class_pool<const void*> make_sequential_addresses(const void* base, size_
 }
 
 // 随机访问地址序列 (缓存不友好, 确定性可复现)
-inline class_pool<const void*> make_random_addresses(const void* base, size_t count, size_t stride, uint64_t seed = 12345) noexcept
+inline dense<const void*> make_random_addresses(const void* base, size_t count, size_t stride, uint64_t seed = 12345) noexcept
 {
-    class_pool<size_t> indices;
+    dense<size_t> indices;
     indices.increase_capacity(count);
     for (size_t i = 0; i < count; ++i)
     {
@@ -536,7 +535,7 @@ inline class_pool<const void*> make_random_addresses(const void* base, size_t co
         size_t j = static_cast<size_t>(x % i);
         std::swap(indices[i - 1], indices[j]);
     }
-    class_pool<const void*> v;
+    dense<const void*> v;
     v.increase_capacity(count);
     const uint8_t* p = static_cast<const uint8_t*>(base);
     for (size_t i = 0; i < indices.size(); ++i)
@@ -573,7 +572,7 @@ double measure_loop_cycles(F&& access_fn) noexcept
 }
 
 // 批量测量: 返回平均每次访问周期 (扣除基线)
-inline batch_cache_result measure_cache_batch(const class_pool<const void*>& addresses, size_t repeats = 10) noexcept
+inline batch_cache_result measure_cache_batch(const dense<const void*>& addresses, size_t repeats = 10) noexcept
 {
     batch_cache_result r;
     r.total_accesses = addresses.size() * repeats;

@@ -1,5 +1,5 @@
 #pragma once
-#include "class_pool.hpp"
+#include "dense.hpp"
 #include "force_inline.hpp"
 
 template <typename T = size_t>
@@ -7,7 +7,7 @@ class id_allocation
 {
 private:
     T next_id_{0};
-    class_pool<T> recycled_ids_;
+    dense<T> recycled_ids_;
 public:
     id_allocation() noexcept
     {

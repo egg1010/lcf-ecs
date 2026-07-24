@@ -2,7 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <new>
-#include "class_pool.hpp"
+#include "dense.hpp"
 #include "force_inline.hpp"
 
 class slab_allocator
@@ -15,7 +15,7 @@ private:
     };
 
     void* free_list_head_{nullptr};
-    class_pool<chunk_node> chunks_;
+    dense<chunk_node> chunks_;
     uint8_t* min_addr_{nullptr};
     uint8_t* max_addr_{nullptr};
     size_t chunk_count_{0};

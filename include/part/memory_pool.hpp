@@ -5,7 +5,7 @@
 #include <type_traits>
 #include <bit>
 #include <array>
-#include "class_pool.hpp"
+#include "dense.hpp"
 #include "force_inline.hpp"
 
 struct memory_block
@@ -52,6 +52,9 @@ struct memory_block
         return *this;
     }
 };
+
+static_assert(!std::is_trivially_copyable_v<memory_block>,
+              "memory_block must not be trivially copyable for correct dense<T> move semantics");
 
 // 内存池统计信息
 struct pool_stats
@@ -135,7 +138,7 @@ private:
         return reinterpret_cast<const free_node*>(h + 1);
     }
 
-    class_pool<memory_block> memory_chunks_;
+    dense<memory_block> memory_chunks_;
     std::array<block_header*, FL_MAX * SL_COUNT> free_lists_;
     uint32_t fl_bitmap_;
     std::array<uint32_t, FL_MAX> sl_bitmaps_;
@@ -443,7 +446,7 @@ public:
                 while (b)
                 {
                     size_t bs = block_size(b);
-                    s.free_block_count++;
+                    ++s.free_block_count;
                     if (bs > s.max_contiguous_free) s.max_contiguous_free = bs;
                     b = get_free_node(b)->next_;
                 }

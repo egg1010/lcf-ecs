@@ -4,6 +4,7 @@
 // 注意: 禁止 std::sort + lambda (MinGW+AVX2 崩溃), 改用 pdqsort
 // ============================================================
 #include "test_common.hpp"
+#include "include/part/dense.hpp"
 
 // 数量级格式化 / magnitude formatter
 inline std::string mag(size_t n) noexcept
@@ -23,6 +24,53 @@ inline std::string mag(size_t n) noexcept
     return std::to_string(n);
 }
 
+// ============================================================
+// multi_view 多组件查询基准助手 (1~10 组件)
+// ============================================================
+// 组件字段读取器: 返回 float 触发真实数据访问, 防止死码消除
+inline float comp_touch(const Position& p) noexcept { return p.x; }
+inline float comp_touch(const Velocity& v) noexcept { return v.vx; }
+inline float comp_touch(const Health& h) noexcept { return static_cast<float>(h.current); }
+inline float comp_touch(const Damage& d) noexcept { return static_cast<float>(d.amount); }
+inline float comp_touch(const Armor& a) noexcept { return static_cast<float>(a.defense); }
+inline float comp_touch(const Speed& s) noexcept { return s.value; }
+inline float comp_touch(const Name& n) noexcept { return static_cast<float>(n.value.size()); }
+inline float comp_touch(const Rotation& r) noexcept { return r.x; }
+inline float comp_touch(const Scale& s) noexcept { return s.x; }
+inline float comp_touch(const Mass& m) noexcept { return m.value; }
+
+// 通用 multi_view for_each 基准: 对任意 1~10 组件组合统一测量
+template <typename... Comps>
+size_t bench_multi_view(ecs::manager& mgr, const char* label) noexcept
+{
+    timer t;
+    size_t cnt = 0;
+    t.reset();
+    mgr.view<Comps...>().for_each([&](Comps&... comps) {
+        ++cnt;
+        volatile float d = (comp_touch(comps) + ... + 0.0f);
+        (void)d;
+    });
+    print_perf(label, cnt, t.elapsed_ms());
+    return cnt;
+}
+
+// 带 entity 的 multi_view 基准
+template <typename... Comps>
+size_t bench_multi_view_ent(ecs::manager& mgr, const char* label) noexcept
+{
+    timer t;
+    size_t cnt = 0;
+    t.reset();
+    mgr.view<Comps...>().for_each([&](entity e, Comps&... comps) {
+        ++cnt;
+        volatile float d = (comp_touch(comps) + ... + 0.0f) + static_cast<float>(e.parts_.index_);
+        (void)d;
+    });
+    print_perf(label, cnt, t.elapsed_ms());
+    return cnt;
+}
+
 int main()
 {
 #ifdef _WIN32
@@ -39,7 +87,7 @@ int main()
     timer t;
 
     // 实体句柄池 (全局共享)
-    class_pool<entity> entities;
+    dense<entity> entities;
     entities.increase_capacity(N);
 
     // ============================================================
@@ -66,8 +114,11 @@ int main()
         ecss.reserve_component_capacity<Velocity>(N / 2);
         ecss.reserve_component_capacity<Damage>(N / 2);
         ecss.reserve_component_capacity<Armor>(N / 2);
+        ecss.reserve_component_capacity<Rotation>(N / 2);
         ecss.reserve_component_capacity<Speed>(N / 4);
+        ecss.reserve_component_capacity<Scale>(N / 4);
         ecss.reserve_component_capacity<Name>(N / 10);
+        ecss.reserve_component_capacity<Mass>(N / 10);
 
         print_perf_sub("0.2 组件数据生成 (随机分布)");
         std::mt19937 gen(42);
@@ -81,13 +132,16 @@ int main()
         const size_t speed_count = N / 4;     // 250K
         const size_t name_count = N / 10;     // 100K
 
-        class_pool<Position> positions;
-        class_pool<Velocity> velocities;
-        class_pool<Health> healths;
-        class_pool<Name> names;
-        class_pool<Damage> damages;
-        class_pool<Armor> armors;
-        class_pool<Speed> speeds;
+        dense<Position> positions;
+        dense<Velocity> velocities;
+        dense<Health> healths;
+        dense<Name> names;
+        dense<Damage> damages;
+        dense<Armor> armors;
+        dense<Speed> speeds;
+        dense<Rotation> rotations;
+        dense<Scale> scales;
+        dense<Mass> masses;
 
         positions.increase_capacity(N);
         velocities.increase_capacity(vel_count);
@@ -96,6 +150,9 @@ int main()
         damages.increase_capacity(vel_count);
         armors.increase_capacity(vel_count);
         speeds.increase_capacity(speed_count);
+        rotations.increase_capacity(vel_count);
+        scales.increase_capacity(speed_count);
+        masses.increase_capacity(name_count);
 
         for (size_t i = 0; i < N; ++i)
         {
@@ -107,14 +164,17 @@ int main()
             velocities.emplace_back(vel_dist(gen), vel_dist(gen), vel_dist(gen));
             damages.emplace_back(dmg_dist(gen));
             armors.emplace_back(armor_dist(gen));
+            rotations.emplace_back(vel_dist(gen), vel_dist(gen), vel_dist(gen), 1.0f);
         }
         for (size_t i = 0; i < name_count; ++i)
         {
             names.emplace_back("Entity_" + std::to_string(i));
+            masses.emplace_back(vel_dist(gen) * 10.0f);
         }
         for (size_t i = 0; i < speed_count; ++i)
         {
             speeds.emplace_back(vel_dist(gen) * 0.5f);
+            scales.emplace_back(vel_dist(gen), vel_dist(gen), vel_dist(gen));
         }
 
         print_perf_sub("0.3 批量挂载组件 (add_batch)");
@@ -144,24 +204,42 @@ int main()
         print_perf("add_batch Armor", vel_count, t.elapsed_ms());
 
         t.reset();
+        ecss.add_batch(std::span<const entity>(entities.data(), vel_count),
+                       std::span<const Rotation>(rotations.data(), vel_count));
+        print_perf("add_batch Rotation", vel_count, t.elapsed_ms());
+
+        t.reset();
         ecss.add_batch(std::span<const entity>(entities.data(), speed_count),
                        std::span<const Speed>(speeds.data(), speed_count));
         print_perf("add_batch Speed", speed_count, t.elapsed_ms());
+
+        t.reset();
+        ecss.add_batch(std::span<const entity>(entities.data(), speed_count),
+                       std::span<const Scale>(scales.data(), speed_count));
+        print_perf("add_batch Scale", speed_count, t.elapsed_ms());
 
         t.reset();
         ecss.add_batch(std::span<const entity>(entities.data(), name_count),
                        std::span<const Name>(names.data(), name_count));
         print_perf("add_batch Name", name_count, t.elapsed_ms());
 
+        t.reset();
+        ecss.add_batch(std::span<const entity>(entities.data(), name_count),
+                       std::span<const Mass>(masses.data(), name_count));
+        print_perf("add_batch Mass", name_count, t.elapsed_ms());
+
         // 数据分布摘要
-        std::cout << "\n  ┌─ 数据分布 / Data Distribution\n";
+        std::cout << "\n  ┌─ 数据分布 / Data Distribution (10 组件)\n";
         std::cout << "  │ Position: " << N << " (100%)\n";
         std::cout << "  │ Health:   " << N << " (100%)\n";
         std::cout << "  │ Velocity: " << vel_count << " (50%)\n";
         std::cout << "  │ Damage:   " << vel_count << " (50%)\n";
         std::cout << "  │ Armor:    " << vel_count << " (50%)\n";
+        std::cout << "  │ Rotation: " << vel_count << " (50%)\n";
         std::cout << "  │ Speed:    " << speed_count << " (25%)\n";
+        std::cout << "  │ Scale:    " << speed_count << " (25%)\n";
         std::cout << "  │ Name:     " << name_count << " (10%)\n";
+        std::cout << "  │ Mass:     " << name_count << " (10%)\n";
     }
 
     // ============================================================
@@ -242,7 +320,7 @@ int main()
     {
         print_perf_sub("2.1 写入接口 (1M/百万)");
         t.reset();
-        class_pool<int> cp_em;
+        dense<int> cp_em;
         cp_em.increase_capacity(N);
         for (size_t i = 0; i < N; ++i)
         {
@@ -251,7 +329,7 @@ int main()
         print_perf("emplace_back", N, t.elapsed_ms());
 
         t.reset();
-        class_pool<int> cp_pb;
+        dense<int> cp_pb;
         cp_pb.increase_capacity(N);
         for (size_t i = 0; i < N; ++i)
         {
@@ -260,7 +338,7 @@ int main()
         print_perf("push_back_unchecked", N, t.elapsed_ms());
 
         t.reset();
-        class_pool<int> cp_ub;
+        dense<int> cp_ub;
         cp_ub.emplace_back(0);
         cp_ub.increase_capacity(N + 1);
         for (size_t i = 0; i < N; ++i)
@@ -270,7 +348,7 @@ int main()
         print_perf("emplace_back_unchecked", N, t.elapsed_ms());
 
         t.reset();
-        class_pool<int> cp_db;
+        dense<int> cp_db;
         cp_db.emplace_back(0);
         cp_db.increase_capacity(N + 1);
         for (size_t i = 0; i < N; ++i)
@@ -280,7 +358,7 @@ int main()
         print_perf("emplace_back_dense_unchecked", N, t.elapsed_ms());
 
         t.reset();
-        class_pool<int> cp_an;
+        dense<int> cp_an;
         cp_an.increase_capacity(N + 1);
         cp_an.append_n(N, 42);
         print_perf("append_n", N, t.elapsed_ms());
@@ -312,36 +390,36 @@ int main()
 
         print_perf_sub("2.2 容量与拷贝 (1M/百万)");
         t.reset();
-        class_pool<int> cp_rz;
+        dense<int> cp_rz;
         cp_rz.reserve_exact(N);
         print_perf("reserve_exact", N, t.elapsed_ms());
 
         t.reset();
-        class_pool<int> cp_rzv;
+        dense<int> cp_rzv;
         cp_rzv.resize(N, 77);
         print_perf("resize(cap,val)", N, t.elapsed_ms());
 
         t.reset();
-        class_pool<int> cp_ic;
+        dense<int> cp_ic;
         cp_ic.emplace_back(1);
         cp_ic.increase_capacity(N, 99);
         print_perf("increase_capacity(cap,val)", N, t.elapsed_ms());
 
         t.reset();
-        class_pool<int> cp_copy(cp_em);
+        dense<int> cp_copy(cp_em);
         print_perf("copy ctor", 1, t.elapsed_ms());
 
         t.reset();
-        class_pool<int> cp_assign;
+        dense<int> cp_assign;
         cp_assign = cp_em;
         print_perf("copy assign", 1, t.elapsed_ms());
 
         t.reset();
-        class_pool<int> cp_move(std::move(cp_assign));
+        dense<int> cp_move(std::move(cp_assign));
         print_perf("move ctor", 1, t.elapsed_ms());
 
         t.reset();
-        class_pool<int> cp_sf;
+        dense<int> cp_sf;
         cp_sf.increase_capacity(N);
         for (size_t i = 0; i < N / 2; ++i)
         {
@@ -351,7 +429,7 @@ int main()
         print_perf("shrink_to_fit", N / 2, t.elapsed_ms());
 
         t.reset();
-        class_pool<int> cp_cl;
+        dense<int> cp_cl;
         cp_cl.increase_capacity(N);
         for (size_t i = 0; i < N; ++i)
         {
@@ -369,20 +447,30 @@ int main()
         }
 
         t.reset();
-        volatile int v_at = 0;
-        for (size_t i = 0; i < N; ++i)
-        {
-            v_at = cp_acc.at(i);
-        }
-        print_perf("at()", N, t.elapsed_ms());
-
-        t.reset();
         volatile int v_idx = 0;
         for (size_t i = 0; i < N; ++i)
         {
             v_idx = cp_acc[i];
         }
         print_perf("operator[]", N, t.elapsed_ms());
+
+        t.reset();
+        volatile int v_get = 0;
+        for (size_t i = 0; i < N; ++i)
+        {
+            v_get = cp_acc.get(i);
+        }
+        print_perf("get(i) 等价 operator[]", N, t.elapsed_ms());
+
+        // get(index, error_index): 越界保护访问, 一半合法一半越界
+        t.reset();
+        volatile int v_getb = 0;
+        for (size_t i = 0; i < N; ++i)
+        {
+            // i < N 时合法, 用 (i + N) 模拟越界, error_index=0
+            v_getb = cp_acc.get(i + N, 0);
+        }
+        print_perf("get(i+N, 0) 全越界", N, t.elapsed_ms());
 
         t.reset();
         volatile int v_fb = 0;
@@ -392,14 +480,6 @@ int main()
             v_fb = cp_acc.back();
         }
         print_perf("front/back", N * 2, t.elapsed_ms());
-
-        t.reset();
-        volatile int* vp = nullptr;
-        for (size_t i = 0; i < N; ++i)
-        {
-            vp = cp_acc.get(i);
-        }
-        print_perf("get(i)", N, t.elapsed_ms());
 
         t.reset();
         volatile long long sum = 0;
@@ -412,10 +492,17 @@ int main()
         }
         print_perf("cbegin/cend iter (10x)", N * 10, t.elapsed_ms());
 
+        // range-for (begin/end 迭代器): 基准对照
         t.reset();
-        volatile long long sum2 = 0;
-        cp_acc.for_each([&sum2](int& v) { sum2 += v; });
-        print_perf("for_each", N, t.elapsed_ms());
+        volatile long long sum_rf = 0;
+        for (int iter = 0; iter < 10; ++iter)
+        {
+            for (auto& v : cp_acc)
+            {
+                sum_rf = v;
+            }
+        }
+        print_perf("range-for iter (10x)", N * 10, t.elapsed_ms());
 
         print_perf_sub("2.4 状态查询 (1M/百万)");
         t.reset();
@@ -448,7 +535,7 @@ int main()
     {
         print_perf_sub("3.1 构造与赋值 (1M/百万)");
         t.reset();
-        class_pool<void_any> va_pool;
+        dense<void_any> va_pool;
         va_pool.increase_capacity(N);
         for (size_t i = 0; i < N; ++i)
         {
@@ -543,7 +630,7 @@ int main()
         print_perf_sub("4.1 分配与释放 (1M/百万)");
         t.reset();
         memory_pool mp(1024 * 1024);
-        class_pool<void*> ptrs;
+        dense<void*> ptrs;
         ptrs.increase_capacity(N);
         for (size_t i = 0; i < N; ++i)
         {
@@ -559,7 +646,7 @@ int main()
         print_perf("deallocate", N, t.elapsed_ms());
 
         t.reset();
-        class_pool<int*> iptrs;
+        dense<int*> iptrs;
         iptrs.increase_capacity(N);
         for (size_t i = 0; i < N; ++i)
         {
@@ -677,7 +764,7 @@ int main()
         print_perf_sub("5.2 slab_allocator (1M/百万)");
         t.reset();
         slab_allocator sl(64);
-        class_pool<void*> sptrs;
+        dense<void*> sptrs;
         sptrs.increase_capacity(alloc_count);
         for (size_t i = 0; i < alloc_count; ++i)
         {
@@ -726,7 +813,7 @@ int main()
         print_perf_sub("5.3 layered_allocator (1M/百万)");
         t.reset();
         layered_allocator la;
-        class_pool<void*> small_ptrs;
+        dense<void*> small_ptrs;
         small_ptrs.increase_capacity(alloc_count);
         for (size_t i = 0; i < alloc_count; ++i)
         {
@@ -752,7 +839,7 @@ int main()
         print_perf("layered deallocate(slab)", alloc_count, t.elapsed_ms());
 
         t.reset();
-        class_pool<int*> liptrs;
+        dense<int*> liptrs;
         liptrs.increase_capacity(alloc_count);
         for (size_t i = 0; i < alloc_count; ++i)
         {
@@ -927,7 +1014,7 @@ int main()
         print_perf("get_id", id_count, t.elapsed_ms());
 
         t.reset();
-        class_pool<int> ids;
+        dense<int> ids;
         ids.increase_capacity(id_count);
         for (size_t i = 0; i < id_count; ++i)
         {
@@ -969,7 +1056,7 @@ int main()
         print_perf_sub("8.1 add / add_batch (1M/百万)");
         single_class_set scs;
         scs.increase_capacity(scs_count);
-        class_pool<entity> ents;
+        dense<entity> ents;
         ents.increase_capacity(scs_count);
         for (size_t i = 0; i < scs_count; ++i)
         {
@@ -981,8 +1068,8 @@ int main()
         t.reset();
         single_class_set scs_b;
         scs_b.increase_capacity(scs_count);
-        class_pool<entity> e_arr;
-        class_pool<Position> p_arr;
+        dense<entity> e_arr;
+        dense<Position> p_arr;
         e_arr.increase_capacity(scs_count / 10);
         p_arr.increase_capacity(scs_count / 10);
         for (size_t i = 0; i < scs_count / 10; ++i)
@@ -998,8 +1085,8 @@ int main()
         t.reset();
         single_class_set scs_b2;
         scs_b2.increase_capacity(scs_count);
-        class_pool<entity> e_pool;
-        class_pool<Position> p_pool;
+        dense<entity> e_pool;
+        dense<Position> p_pool;
         e_pool.increase_capacity(scs_count / 10);
         p_pool.increase_capacity(scs_count / 10);
         for (size_t i = 0; i < scs_count / 10; ++i)
@@ -1007,7 +1094,8 @@ int main()
             e_pool.emplace_back(entity(static_cast<uint32_t>(i), 1));
             p_pool.emplace_back(Position{static_cast<float>(i), 0, 0});
         }
-        scs_b2.add_batch(std::move(e_pool), std::move(p_pool));
+        scs_b2.add_batch(std::span<const entity>(e_pool.data(), e_pool.size()),
+                         std::span<const Position>(p_pool.data(), p_pool.size()));
         print_perf("add_batch(rvalue)", scs_count / 10, t.elapsed_ms());
 
         print_perf_sub("8.2 查询接口 (1M/百万)");
@@ -1096,7 +1184,7 @@ int main()
 
         // get_ptr_batch
         {
-            class_pool<Position*> results;
+            dense<Position*> results;
             results.increase_capacity(64);
             t.reset();
             for (int iter = 0; iter < 10000; ++iter)
@@ -1108,13 +1196,12 @@ int main()
 
         print_perf_sub("8.4 元数据与状态 (1M/百万)");
         t.reset();
-        volatile size_t ss = 0, pc = 0;
+        volatile size_t ss = 0;
         for (int i = 0; i < 1000000; ++i)
         {
             ss = scs.get_sparse_size();
-            pc = scs.get_page_directory_capacity();
         }
-        print_perf("sparse_size/page_dir_cap", 1000000 * 2, t.elapsed_ms());
+        print_perf("sparse_size", 1000000, t.elapsed_ms());
 
         t.reset();
         for (int i = 0; i < 1000000; ++i)
@@ -1124,8 +1211,8 @@ int main()
         print_perf("clear_hot_set", 1000000, t.elapsed_ms());
 
         t.reset();
-        volatile class_pool<Position>* tpp = nullptr;
-        volatile class_pool<uint32_t>* eip = nullptr;
+        volatile dense<Position>* tpp = nullptr;
+        volatile dense<uint32_t>* eip = nullptr;
         volatile uint64_t pv = 0;
         for (int i = 0; i < 1000000; ++i)
         {
@@ -1151,7 +1238,7 @@ int main()
         t.reset();
         single_class_set scs_sr;
         scs_sr.increase_capacity(scs_count);
-        class_pool<entity> ents_sr;
+        dense<entity> ents_sr;
         ents_sr.increase_capacity(scs_count);
         for (size_t i = 0; i < scs_count; ++i)
         {
@@ -1163,24 +1250,6 @@ int main()
             scs_sr.soft_remove(ents_sr[i]);
         }
         print_perf("soft_remove", scs_count, t.elapsed_ms());
-
-        // 分页配置 / flat 模式
-        print_perf_sub("8.5 分页与 flat 模式");
-        print_item("is_flat_mode(1M)", scs.is_flat_mode() ? "false" : "true");
-        size_t orig_shift = scs.get_page_size_shift();
-        print_item("default shift", std::to_string(orig_shift));
-        scs.set_page_size_shift(12);
-        print_item("after set shift=12", std::to_string(scs.get_page_size_shift()));
-        scs.set_page_size_shift(orig_shift);
-
-        // flat 模式 (小规模)
-        ecs::manager fmgr;
-        auto e0 = fmgr.create_entity();
-        auto e1 = fmgr.create_entity();
-        fmgr.add(e0, Position{1, 0, 0});
-        fmgr.add(e1, Position{2, 0, 0});
-        auto* fset = fmgr.get_single_class_set<Position>();
-        print_item("small is_flat_mode", fset->is_flat_mode() ? "true" : "false");
     }
 
     // ============================================================
@@ -1194,7 +1263,7 @@ int main()
         print_perf_sub("9.1 radix_sort_entries (1M/百万)");
         {
             struct entry { int key; size_t index; };
-            class_pool<entry> entries;
+            dense<entry> entries;
             entries.increase_capacity(rdx_count);
             for (size_t i = 0; i < rdx_count; ++i)
             {
@@ -1207,7 +1276,7 @@ int main()
 
         {
             struct entry { float key; size_t index; };
-            class_pool<entry> entries;
+            dense<entry> entries;
             entries.increase_capacity(rdx_count);
             for (size_t i = 0; i < rdx_count; ++i)
             {
@@ -1220,7 +1289,7 @@ int main()
 
         {
             struct entry { uint64_t key; size_t index; };
-            class_pool<entry> entries;
+            dense<entry> entries;
             entries.increase_capacity(rdx_count);
             std::mt19937_64 rng64(456);
             for (size_t i = 0; i < rdx_count; ++i)
@@ -1234,8 +1303,8 @@ int main()
 
         print_perf_sub("9.2 radix_sort_indices (1M/百万)");
         {
-            class_pool<size_t> indices, temp;
-            class_pool<int> keys;
+            dense<size_t> indices, temp;
+            dense<int> keys;
             indices.increase_capacity(rdx_count);
             temp.increase_capacity(rdx_count);
             keys.increase_capacity(rdx_count);
@@ -1252,7 +1321,7 @@ int main()
         print_perf_sub("9.3 pdqsort / tiered_sort / sort_n (1M/百万)");
         // pdqsort (避免 std::sort + lambda 在 MinGW+AVX2 下崩溃)
         {
-            class_pool<int> data;
+            dense<int> data;
             data.increase_capacity(rdx_count);
             for (size_t i = 0; i < rdx_count; ++i)
             {
@@ -1322,7 +1391,7 @@ int main()
             mgr3.disable_track_changes();
             mgr3.disable_comp_signals();
             mgr3.append_preallocated_entities(op_count * 2);
-            class_pool<entity> op_ents;
+            dense<entity> op_ents;
             op_ents.increase_capacity(op_count);
 
             t.reset();
@@ -1367,7 +1436,7 @@ int main()
             // 链式 addc / hard_removec / soft_removec
             ecs::manager mgr_ch;
             mgr_ch.append_preallocated_entities(op_count);
-            class_pool<entity> ents_ch;
+            dense<entity> ents_ch;
             ents_ch.increase_capacity(op_count);
             for (size_t i = 0; i < op_count; ++i)
             {
@@ -1402,7 +1471,7 @@ int main()
             std::uniform_int_distribution<size_t> idx_dist(0, N - 1);
             std::mt19937 qgen(7);
 
-            class_pool<entity> query_ents;
+            dense<entity> query_ents;
             query_ents.reserve_exact(op_count);
             for (size_t i = 0; i < op_count; ++i)
             {
@@ -1428,7 +1497,7 @@ int main()
             print_perf("get_ptr_fast<T>", op_count, t.elapsed_ms());
 
             // 双级预取查询
-            class_pool<entity> pf_ents;
+            dense<entity> pf_ents;
             pf_ents.reserve_exact(op_count);
             for (size_t i = 0; i < op_count; ++i)
             {
@@ -1468,7 +1537,7 @@ int main()
             print_perf("prefetch+get_ptr", pf_hit, t.elapsed_ms());
 
             // cached 双级预取
-            class_pool<entity> cache_ents;
+            dense<entity> cache_ents;
             cache_ents.reserve_exact(op_count);
             for (size_t i = 0; i < op_count; ++i)
             {
@@ -1498,7 +1567,7 @@ int main()
             print_perf("cached+prefetch", cached_hit, t.elapsed_ms());
 
             // query_context 双级预取
-            class_pool<entity> ctx_ents;
+            dense<entity> ctx_ents;
             ctx_ents.reserve_exact(op_count);
             for (size_t i = 0; i < op_count; ++i)
             {
@@ -1531,7 +1600,7 @@ int main()
 
             // get_ptr_batch
             {
-                class_pool<Position*> results;
+                dense<Position*> results;
                 results.reserve_exact(op_count);
                 t.reset();
                 ecss.get_ptr_batch<Position>(query_ents.data(), results.data(), op_count);
@@ -1590,20 +1659,12 @@ int main()
             print_perf("get_single_class_set_by_id", 1000000, t.elapsed_ms());
 
             t.reset();
-            volatile class_pool<Position>* cv = nullptr;
+            volatile dense<Position>* cv = nullptr;
             for (int i = 0; i < 1000000; ++i)
             {
                 cv = ecss.get_component_container<Position>();
             }
             print_perf("get_component_container", 1000000, t.elapsed_ms());
-
-            t.reset();
-            volatile size_t pss = 0;
-            for (int i = 0; i < 1000000; ++i)
-            {
-                pss = ecss.get_component_page_size_shift<Position>();
-            }
-            print_perf("get_page_size_shift", 1000000, t.elapsed_ms());
 
             t.reset();
             for (int i = 0; i < 1000000; ++i)
@@ -1621,7 +1682,7 @@ int main()
             sort_mgr.disable_track_changes();
             sort_mgr.disable_comp_signals();
             sort_mgr.append_preallocated_entities(sort_n_);
-            class_pool<entity> sort_ents;
+            dense<entity> sort_ents;
             sort_ents.increase_capacity(sort_n_);
             std::mt19937 srng(99);
             std::uniform_real_distribution<float> sdist(0, 10000);
@@ -1660,7 +1721,7 @@ int main()
                 mgr.set_on_entity_created([](entity, void* d) noexcept { (*static_cast<size_t*>(d))++; }, &created);
                 mgr.set_on_entity_destroyed([](entity, void* d) noexcept { (*static_cast<size_t*>(d))++; }, &destroyed);
 
-                class_pool<entity> ents;
+                dense<entity> ents;
                 ents.increase_capacity(sig_count);
                 t.reset();
                 for (size_t i = 0; i < sig_count; ++i)
@@ -1685,7 +1746,7 @@ int main()
                 mgr.set_on_add<Position>([](entity, void*, void* d) noexcept { (*static_cast<size_t*>(d))++; }, &added);
                 mgr.set_on_remove<Position>([](entity, void*, void* d) noexcept { (*static_cast<size_t*>(d))++; }, &removed);
 
-                class_pool<entity> ents;
+                dense<entity> ents;
                 ents.increase_capacity(sig_count);
                 for (size_t i = 0; i < sig_count; ++i)
                 {
@@ -1714,7 +1775,7 @@ int main()
                 size_t modify_cnt = 0;
                 mgr.set_on_modify<Position>([](entity, void*, void* d) noexcept { (*static_cast<size_t*>(d))++; }, &modify_cnt);
 
-                class_pool<entity> ents;
+                dense<entity> ents;
                 ents.increase_capacity(sig_count);
                 for (size_t i = 0; i < sig_count; ++i)
                 {
@@ -1735,7 +1796,7 @@ int main()
                 ecs::manager mgr;
                 mgr.disable_comp_signals();
                 mgr.append_preallocated_entities(sig_count);
-                class_pool<entity> ents;
+                dense<entity> ents;
                 ents.increase_capacity(sig_count);
                 for (size_t i = 0; i < sig_count; ++i)
                 {
@@ -1801,7 +1862,7 @@ int main()
         t.reset();
         size_t cnt_sv = 0;
         ecss.view<Position>().for_each([&](Position& p) {
-            cnt_sv++;
+            ++cnt_sv;
             volatile float d = p.x;
             (void)d;
         });
@@ -1866,75 +1927,23 @@ int main()
             print_perf("single_view component_begin/end", view_count, t.elapsed_ms());
         }
 
-        print_perf_sub("11.2 multi_view 多组件查询 (1M/百万)");
-        // 双组件
-        t.reset();
-        size_t cnt_2a = 0;
-        ecss.view<Position, Velocity>().for_each([&](Position& p, Velocity& v) {
-            cnt_2a++;
-            volatile float d = p.x * v.vx;
-            (void)d;
-        });
-        print_perf("multi_view Pos+Vel", cnt_2a, t.elapsed_ms());
+        print_perf_sub("11.2 multi_view 多组件查询 (1~10 组件, 1M/百万)");
+        // 组件按分布从大到小递增加入, 匹配数随组件数递减:
+        //   Pos(1M) Hp(1M) Vel(500K) Dmg(500K) Arm(500K) Rot(500K)
+        //   Spd(250K) Scl(250K) Name(100K) Mass(100K)
+        size_t cnt_1  = bench_multi_view<Position>(ecss, "multi_view 1 comp");
+        size_t cnt_2  = bench_multi_view<Position, Health>(ecss, "multi_view 2 comps");
+        size_t cnt_3  = bench_multi_view<Position, Health, Velocity>(ecss, "multi_view 3 comps");
+        size_t cnt_4  = bench_multi_view<Position, Health, Velocity, Damage>(ecss, "multi_view 4 comps");
+        size_t cnt_5  = bench_multi_view<Position, Health, Velocity, Damage, Armor>(ecss, "multi_view 5 comps");
+        size_t cnt_6  = bench_multi_view<Position, Health, Velocity, Damage, Armor, Rotation>(ecss, "multi_view 6 comps");
+        size_t cnt_7  = bench_multi_view<Position, Health, Velocity, Damage, Armor, Rotation, Speed>(ecss, "multi_view 7 comps");
+        size_t cnt_8  = bench_multi_view<Position, Health, Velocity, Damage, Armor, Rotation, Speed, Scale>(ecss, "multi_view 8 comps");
+        size_t cnt_9  = bench_multi_view<Position, Health, Velocity, Damage, Armor, Rotation, Speed, Scale, Name>(ecss, "multi_view 9 comps");
+        size_t cnt_10 = bench_multi_view<Position, Health, Velocity, Damage, Armor, Rotation, Speed, Scale, Name, Mass>(ecss, "multi_view 10 comps");
 
-        t.reset();
-        size_t cnt_2b = 0;
-        ecss.view<Position, Health>().for_each([&](Position& p, Health& h) {
-            cnt_2b++;
-            volatile float d = p.x + static_cast<float>(h.current);
-            (void)d;
-        });
-        print_perf("multi_view Pos+Hp", cnt_2b, t.elapsed_ms());
-
-        // 三组件
-        t.reset();
-        size_t cnt_3a = 0;
-        ecss.view<Position, Velocity, Health>().for_each([&](Position& p, Velocity& v, Health& h) {
-            cnt_3a++;
-            volatile float d = p.x + v.vy + static_cast<float>(h.current);
-            (void)d;
-        });
-        print_perf("multi_view Pos+Vel+Hp", cnt_3a, t.elapsed_ms());
-
-        // 四组件
-        t.reset();
-        size_t cnt_4 = 0;
-        ecss.view<Position, Velocity, Health, Name>().for_each([&](Position& p, Velocity& v, Health& h, Name& n) {
-            cnt_4++;
-            volatile float d = p.x + v.vy + static_cast<float>(h.current + n.value.size());
-            (void)d;
-        });
-        print_perf("multi_view Pos+Vel+Hp+Name", cnt_4, t.elapsed_ms());
-
-        // 五组件
-        t.reset();
-        size_t cnt_5 = 0;
-        ecss.view<Position, Velocity, Health, Damage, Armor>().for_each([&](Position& p, Velocity& v, Health& h, Damage& dmg, Armor& arm) {
-            cnt_5++;
-            volatile float d = p.x + v.vx + static_cast<float>(h.current + dmg.amount + arm.defense);
-            (void)d;
-        });
-        print_perf("multi_view 5 comps", cnt_5, t.elapsed_ms());
-
-        // 六组件
-        t.reset();
-        size_t cnt_6 = 0;
-        ecss.view<Position, Velocity, Health, Damage, Armor, Speed>().for_each([&](Position& p, Velocity& v, Health& h, Damage& dmg, Armor& arm, Speed& spd) {
-            cnt_6++;
-            volatile float d = p.x + v.vx + static_cast<float>(h.current + dmg.amount + arm.defense) + spd.value;
-            (void)d;
-        });
-        print_perf("multi_view 6 comps", cnt_6, t.elapsed_ms());
-
-        // 带 entity
-        t.reset();
-        size_t cnt_ent = 0;
-        ecss.view<Position, Velocity>().for_each([&](entity e, Position& p, Velocity& v) {
-            cnt_ent++;
-            volatile float d = p.x + v.vx + static_cast<float>(e.parts_.index_);
-            (void)d;
-        });
-        print_perf("multi_view +entity", cnt_ent, t.elapsed_ms());
+        // 带 entity (2 组件对照)
+        size_t cnt_ent = bench_multi_view_ent<Position, Velocity>(ecss, "multi_view 2 comps +entity");
 
         // include_optional_component
         {
@@ -1984,7 +1993,7 @@ int main()
         size_t cnt_page = 0;
         {
             auto mv = ecss.view<Position, Velocity>();
-            mv.page(0, cnt_2a).for_each([&](Position&, Velocity&) { cnt_page++; });
+            mv.page(0, mv.size()).for_each([&](Position&, Velocity&) { ++cnt_page; });
         }
         print_perf("multi_view page", cnt_page, t.elapsed_ms());
 
@@ -1993,7 +2002,7 @@ int main()
         {
             auto mv = ecss.view<Position, Velocity>();
             auto cv = mv.track_changes();
-            cv.for_each([&](Position&, Velocity&) { cnt_changed++; });
+            cv.for_each([&](Position&, Velocity&) { ++cnt_changed; });
         }
         print_perf("track_changes", cnt_changed, t.elapsed_ms());
 
@@ -2019,7 +2028,7 @@ int main()
                 auto mv = sort_mgr.view<Position, Velocity>();
                 auto sv = mv.sorted_by_component<Position>(
                     [](const Position& a, const Position& b) noexcept { return a.x < b.x; });
-                sv.for_each([&](Position&, Velocity&) { cnt_sorted++; });
+                sv.for_each([&](Position&, Velocity&) { ++cnt_sorted; });
             }
             print_perf("multi_view sorted_by_component", cnt_sorted, t.elapsed_ms());
 
@@ -2029,7 +2038,7 @@ int main()
                 auto sv = sort_mgr.view<Position>();
                 auto gv = sv.sorted_by_component_value(
                     [](Position& p) -> int { return static_cast<int>(p.x) / 10; });
-                gv.for_each([&](Position&) { cnt_grp++; });
+                gv.for_each([&](Position&) { ++cnt_grp; });
             }
             print_perf("sorted_by_component_value", cnt_grp, t.elapsed_ms());
         }
@@ -2066,7 +2075,7 @@ int main()
             mgr_fa.disable_track_changes();
             mgr_fa.disable_comp_signals();
             mgr_fa.append_preallocated_entities(view_count);
-            class_pool<entity> ents_fa;
+            dense<entity> ents_fa;
             ents_fa.increase_capacity(view_count);
             auto av = mgr_fa.view<Position>().filter_added();
             for (size_t i = 0; i < view_count; ++i)
@@ -2119,7 +2128,7 @@ int main()
             print_perf("multi_view find_one", view_count, t.elapsed_ms());
 
             // iter_over_entities
-            class_pool<entity> targets;
+            dense<entity> targets;
             targets.increase_capacity(view_count / 10);
             for (size_t i = 0; i < view_count; i += 10)
             {
@@ -2136,7 +2145,7 @@ int main()
         t.reset();
         size_t cnt_excl = 0;
         ecss.view<Position>(ecs::without<Velocity>).for_each([&](Position& p) {
-            cnt_excl++;
+            ++cnt_excl;
             (void)p;
         });
         print_perf("without<Velocity>", cnt_excl, t.elapsed_ms());
@@ -2144,7 +2153,7 @@ int main()
         t.reset();
         size_t cnt_with = 0;
         ecss.view<Position>(ecs::with<Health>).for_each([&](Position& p, Health* hp) {
-            cnt_with++;
+            ++cnt_with;
             (void)p;
             (void)hp;
         });
@@ -2153,7 +2162,7 @@ int main()
         t.reset();
         size_t cnt_or = 0;
         ecss.view_or<Position, Velocity>().for_each([&](entity, Position* p, Velocity* v) {
-            cnt_or++;
+            ++cnt_or;
             (void)p;
             (void)v;
         });
@@ -2162,7 +2171,7 @@ int main()
         t.reset();
         size_t cnt_any = 0;
         ecss.view_any_of<Position, Velocity, Health>().for_each([&](Position* p, Velocity* v, Health* h) {
-            cnt_any++;
+            ++cnt_any;
             (void)p;
             (void)v;
             (void)h;
@@ -2174,7 +2183,7 @@ int main()
         size_t cnt_filt = 0;
         {
             auto fv = ecss.view_filtered<Position>([](Position& p) noexcept { return p.x > 0.0f; });
-            fv.for_each([&](Position&) { cnt_filt++; });
+            fv.for_each([&](Position&) { ++cnt_filt; });
         }
         print_perf("filter_view", cnt_filt, t.elapsed_ms());
 
@@ -2186,7 +2195,7 @@ int main()
             for (int iter = 0; iter < warmup; ++iter)
             {
                 cnt_fand = 0;
-                fa.for_each([&](Position&, Velocity&) { cnt_fand++; });
+                fa.for_each([&](Position&, Velocity&) { ++cnt_fand; });
             }
             double elapsed = t.elapsed_ms() / warmup;
             print_perf("filter_and_view", cnt_fand, elapsed);
@@ -2201,7 +2210,7 @@ int main()
             {
                 cnt_for = 0;
                 fo.for_each([&](entity, Position* p, Velocity* v) {
-                    cnt_for++;
+                    ++cnt_for;
                     (void)p;
                     (void)v;
                 });
@@ -2213,12 +2222,17 @@ int main()
         // 匹配数汇总
         std::cout << "\n  ┌─ 匹配数汇总 / Match Counts\n";
         std::cout << "  │ single_view Position:        " << cnt_sv << "\n";
-        std::cout << "  │ multi_view Pos+Vel:          " << cnt_2a << "\n";
-        std::cout << "  │ multi_view Pos+Hp:           " << cnt_2b << "\n";
-        std::cout << "  │ multi_view Pos+Vel+Hp:       " << cnt_3a << "\n";
-        std::cout << "  │ multi_view Pos+Vel+Hp+Name:  " << cnt_4 << "\n";
+        std::cout << "  │ multi_view 1 comp:           " << cnt_1 << "\n";
+        std::cout << "  │ multi_view 2 comps:          " << cnt_2 << "\n";
+        std::cout << "  │ multi_view 3 comps:          " << cnt_3 << "\n";
+        std::cout << "  │ multi_view 4 comps:          " << cnt_4 << "\n";
         std::cout << "  │ multi_view 5 comps:          " << cnt_5 << "\n";
         std::cout << "  │ multi_view 6 comps:          " << cnt_6 << "\n";
+        std::cout << "  │ multi_view 7 comps:          " << cnt_7 << "\n";
+        std::cout << "  │ multi_view 8 comps:          " << cnt_8 << "\n";
+        std::cout << "  │ multi_view 9 comps:          " << cnt_9 << "\n";
+        std::cout << "  │ multi_view 10 comps:         " << cnt_10 << "\n";
+        std::cout << "  │ multi_view 2 comps +entity:  " << cnt_ent << "\n";
         std::cout << "  │ without<Velocity>:           " << cnt_excl << "\n";
         std::cout << "  │ with<Health>:                " << cnt_with << "\n";
         std::cout << "  │ view_or<Pos,Vel>:            " << cnt_or << "\n";
@@ -2238,7 +2252,7 @@ int main()
         mgr.disable_track_changes();
         mgr.disable_comp_signals();
         mgr.append_preallocated_entities(grp_count);
-        class_pool<entity> ents;
+        dense<entity> ents;
         ents.increase_capacity(grp_count);
         for (size_t i = 0; i < grp_count; ++i)
         {
@@ -2258,7 +2272,7 @@ int main()
             t.reset();
             size_t cnt = 0;
             g.for_each([&](Position& p, Velocity& v) {
-                cnt++;
+                ++cnt;
                 volatile float d = p.x * v.vx;
                 (void)d;
             });
@@ -2318,7 +2332,7 @@ int main()
             t.reset();
             size_t cnt = 0;
             og.for_each([&](Position& p, Velocity& v) {
-                cnt++;
+                ++cnt;
                 volatile float d = p.x * v.vx;
                 (void)d;
             });
@@ -2360,7 +2374,7 @@ int main()
             t.reset();
             size_t cnt = 0;
             rg.for_each([&](Position& p, Velocity& v) {
-                cnt++;
+                ++cnt;
                 volatile float d = p.x * v.vx;
                 (void)d;
             });
@@ -2416,7 +2430,7 @@ int main()
         mgr.disable_track_changes();
         mgr.disable_comp_signals();
         mgr.append_preallocated_entities(rv_count);
-        class_pool<entity> ents;
+        dense<entity> ents;
         ents.increase_capacity(rv_count);
         for (size_t i = 0; i < rv_count; ++i)
         {
@@ -2430,7 +2444,7 @@ int main()
 
         print_perf_sub("13.1 创建与基础查询 (500K/五十万)");
         t.reset();
-        auto rv = mgr.runtime_view_create({pos_id, vel_id});
+        auto rv = mgr.runtime_view_create(std::array<int, 2>{pos_id, vel_id});
         print_perf("runtime_view_create", 1, t.elapsed_ms());
 
         t.reset();
@@ -2537,14 +2551,15 @@ int main()
 
         print_perf_sub("13.4 runtime_term (OR/NOT/OPTIONAL)");
         int hp_id = type_id::get_type_id<Health>();
-        class_pool<ecs::runtime_term> terms;
+        dense<ecs::runtime_term> terms;
         terms.emplace_back(ecs::runtime_term{pos_id, 0, ecs::access_mode::read_write});  // AND
         terms.emplace_back(ecs::runtime_term{vel_id, 1, ecs::access_mode::read_only});   // OR
         terms.emplace_back(ecs::runtime_term{hp_id, 2, ecs::access_mode::read_only});    // NOT
         terms.emplace_back(ecs::runtime_term{hp_id, 3, ecs::access_mode::read_only});    // OPTIONAL
 
         t.reset();
-        auto rv_term = mgr.runtime_view_create_from_terms(std::move(terms));
+        auto rv_term = mgr.runtime_view_create_from_terms(
+            std::span<const ecs::runtime_term>(terms.data(), terms.size()));
         print_perf("create_from_terms", 1, t.elapsed_ms());
 
         t.reset();
@@ -2568,7 +2583,7 @@ int main()
         mgr.disable_track_changes();
         mgr.disable_comp_signals();
         mgr.append_preallocated_entities(cb_count);
-        class_pool<entity> ents;
+        dense<entity> ents;
         ents.increase_capacity(cb_count);
         for (size_t i = 0; i < cb_count; ++i)
         {
@@ -2632,7 +2647,7 @@ int main()
         print_perf_sub("15.1 class_pool 顺序 vs 随机 (Position 12B × 100K = 1.2MB)");
         {
             const size_t cache_n = 100000;
-            class_pool<Position> cp;
+            dense<Position> cp;
             cp.increase_capacity(cache_n);
             for (size_t i = 0; i < cache_n; ++i)
             {
@@ -2671,7 +2686,7 @@ int main()
             };
 
             const size_t big_n = 100000;
-            class_pool<Cache128B> cp_big;
+            dense<Cache128B> cp_big;
             cp_big.increase_capacity(big_n);
             for (size_t i = 0; i < big_n; ++i)
             {
@@ -2701,7 +2716,7 @@ int main()
 
         print_perf_sub("15.3 ECS 组件数据 顺序 vs 随机 (Position × 1M = 12MB)");
         {
-            class_pool<Position>* pos_pool = ecss.get_component_container<Position>();
+            dense<Position>* pos_pool = ecss.get_component_container<Position>();
             if (pos_pool && pos_pool->size() > 0)
             {
                 const Position* ecs_base = pos_pool->data();
@@ -2745,7 +2760,7 @@ int main()
             print_stats("get_ptr 随机延迟", getptr_stats, "周期");
 
             // 对比: 直接数组访问 (无稀疏表开销)
-            class_pool<Position>* pos_pool = ecss.get_component_container<Position>();
+            dense<Position>* pos_pool = ecss.get_component_container<Position>();
             if (pos_pool && pos_pool->size() > 0)
             {
                 size_t di = 0;
@@ -2776,7 +2791,7 @@ int main()
 
             for (const auto& tc : cases)
             {
-                class_pool<Position> cp_sz;
+                dense<Position> cp_sz;
                 cp_sz.increase_capacity(tc.count);
                 for (size_t i = 0; i < tc.count; ++i)
                 {
@@ -2835,6 +2850,164 @@ int main()
                       << "  L3: " << r_auto.l3_hit_rate * 100 << "%"
                       << "  Miss: " << r_auto.miss_rate * 100 << "%"
                       << "  levels=" << r_auto.active_levels << "\n";
+        }
+    }
+
+    // ========================================================
+    // 16. entity_mask_manager 扩容/缩容/状态查询 (1M/百万)
+    // ========================================================
+    print_section(16, "entity_mask_manager 掩码管理 (1M/百万)");
+    {
+        // 16.1 单块 (num_blocks_==1) 扩容与写入
+        print_perf_sub("16.1 单块扩容与写入 (1M/百万)");
+        {
+            entity_mask_manager m1;
+
+            t.reset();
+            m1.increase_capacity(N);
+            print_perf("increase_capacity(N)", N, t.elapsed_ms());
+
+            t.reset();
+            for (size_t i = 0; i < N; ++i)
+            {
+                m1.ensure_entity(static_cast<uint32_t>(i));
+            }
+            print_perf("ensure_entity ×N", N, t.elapsed_ms());
+
+            t.reset();
+            for (size_t i = 0; i < N; ++i)
+            {
+                m1.set_bit_no_check(static_cast<uint32_t>(i), 0,
+                                    static_cast<uint32_t>(i & 63));
+            }
+            print_perf("set_bit_no_check ×N", N, t.elapsed_ms());
+
+            t.reset();
+            volatile uint64_t sink = 0;
+            for (size_t i = 0; i < N; ++i)
+            {
+                sink += m1.get_block(static_cast<uint32_t>(i), 0);
+            }
+            (void)sink;
+            print_perf("get_block ×N", N, t.elapsed_ms());
+        }
+
+        // 16.2 状态查询开销 (百万次调用)
+        print_perf_sub("16.2 状态查询开销 (1M/百万次)");
+        {
+            entity_mask_manager m1;
+            m1.increase_capacity(N);
+            for (size_t i = 0; i < N; ++i)
+            {
+                m1.ensure_entity(static_cast<uint32_t>(i));
+            }
+
+            t.reset();
+            volatile size_t s = 0;
+            for (size_t i = 0; i < N; ++i)
+            {
+                s += m1.size();
+            }
+            (void)s;
+            print_perf("size() ×N", N, t.elapsed_ms());
+
+            t.reset();
+            volatile size_t c = 0;
+            for (size_t i = 0; i < N; ++i)
+            {
+                c += m1.capacity();
+            }
+            (void)c;
+            print_perf("capacity() ×N", N, t.elapsed_ms());
+
+            t.reset();
+            volatile bool e = false;
+            for (size_t i = 0; i < N; ++i)
+            {
+                e = m1.empty();
+            }
+            (void)e;
+            print_perf("empty() ×N", N, t.elapsed_ms());
+
+            t.reset();
+            volatile size_t b = 0;
+            for (size_t i = 0; i < N; ++i)
+            {
+                b += m1.size_bytes();
+            }
+            (void)b;
+            print_perf("size_bytes() ×N", N, t.elapsed_ms());
+        }
+
+        // 16.3 缩容/清空/预留 (单次, 规模 N)
+        print_perf_sub("16.3 缩容/清空/预留 (单次, N=1M)");
+        {
+            entity_mask_manager m1;
+            m1.increase_capacity(N);
+            for (size_t i = 0; i < N; ++i)
+            {
+                m1.ensure_entity(static_cast<uint32_t>(i));
+            }
+
+            t.reset();
+            m1.reserve_exact(N * 2);
+            print_perf("reserve_exact(2N)", N, t.elapsed_ms());
+
+            t.reset();
+            m1.shrink_to_fit();
+            print_perf("shrink_to_fit", N, t.elapsed_ms());
+
+            t.reset();
+            m1.reduce_capacity(N / 2);
+            print_perf("reduce_capacity(N/2)", N / 2, t.elapsed_ms());
+
+            t.reset();
+            m1.clear();
+            print_perf("clear", 1, t.elapsed_ms());
+        }
+
+        // 16.4 多块 (num_blocks_==2) 单位转换开销
+        print_perf_sub("16.4 多块写入与查询 (2块, 1M/百万)");
+        {
+            entity_mask_manager m2;
+            m2.reserve_blocks(2);
+            m2.increase_capacity(N);
+
+            t.reset();
+            for (size_t i = 0; i < N; ++i)
+            {
+                m2.ensure_entity(static_cast<uint32_t>(i));
+            }
+            print_perf("多块 ensure_entity ×N", N, t.elapsed_ms());
+
+            t.reset();
+            for (size_t i = 0; i < N; ++i)
+            {
+                m2.set_bit_no_check(static_cast<uint32_t>(i), 0,
+                                    static_cast<uint32_t>(i & 63));
+                m2.set_bit_no_check(static_cast<uint32_t>(i), 1,
+                                    static_cast<uint32_t>(i & 63));
+            }
+            print_perf("多块 set_bit_no_check ×2N", N, t.elapsed_ms());
+
+            t.reset();
+            volatile uint64_t sink = 0;
+            for (size_t i = 0; i < N; ++i)
+            {
+                sink += m2.get_block(static_cast<uint32_t>(i), 0);
+                sink += m2.get_block(static_cast<uint32_t>(i), 1);
+            }
+            (void)sink;
+            print_perf("多块 get_block ×2N", N, t.elapsed_ms());
+
+            t.reset();
+            volatile size_t cb = 0;
+            for (size_t i = 0; i < N; ++i)
+            {
+                cb += m2.capacity_bytes();
+            }
+            (void)cb;
+            print_perf("多块 capacity_bytes() ×N", N, t.elapsed_ms());
         }
     }
 

@@ -2,7 +2,7 @@
 
 #include "entity.hpp"
 #include "part/id_.hpp"
-#include "part/class_pool.hpp"
+#include "part/dense.hpp"
 #include "part/ring_buffer.hpp"
 #include "part/entity_mask_manager.hpp"
 
@@ -37,11 +37,11 @@ public:
 
 private:
     id_allocation<uint32_t> id_manager_;
-    class_pool<uint32_t> version_v_;
+    dense<uint32_t> version_v_;
     entity_mask_manager masks_;
-    class_pool<entity_state> entity_states_;
+    dense<entity_state> entity_states_;
 
-    class_pool<entity> preallocated_entities_;
+    dense<entity> preallocated_entities_;
     size_t current_preallocated_index_ = 0;
 
     struct signal_event
@@ -53,7 +53,7 @@ private:
     static_assert((signal_buffer_size & (signal_buffer_size - 1)) == 0,
                   "signal_buffer_size must be power of 2");
     ring_buffer<signal_event, signal_buffer_size> signal_buf_;
-    class_pool<signal_event> signal_overflow_chain_;
+    dense<signal_event> signal_overflow_chain_;
     size_t signal_overflow_read_{0};
     uint64_t signal_overflow_count_{0};
     bool entity_signal_enabled_{true};

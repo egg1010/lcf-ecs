@@ -35,10 +35,14 @@ inline T* get_component_ptr_from_set(single_class_set* set,
 
 // ======================== runtime_query out-of-line 定义 ========================
 
-inline runtime_query::runtime_query(manager* mgr, class_pool<int> required_ids,
-                                     class_pool<int> excluded_ids) noexcept
-    : required_ids_(std::move(required_ids))
+inline runtime_query::runtime_query(manager* mgr, std::span<const int> required_ids,
+                                     std::span<const int> excluded_ids) noexcept
 {
+    required_ids_.increase_capacity(required_ids.size());
+    for (int tid : required_ids)
+    {
+        required_ids_.emplace_back(tid);
+    }
     if (required_ids_.empty()) [[unlikely]] return;
 
     auto block_of = [](int tid) noexcept -> uint32_t {
@@ -84,7 +88,7 @@ inline runtime_query::runtime_query(manager* mgr, class_pool<int> required_ids,
     use_mask_path_ = (req_sets_.size() >= 3) || ((max_block_ + 1) <= 5);
 }
 
-inline runtime_query::runtime_query(manager* mgr, class_pool<runtime_term> terms) noexcept
+inline runtime_query::runtime_query(manager* mgr, std::span<const runtime_term> terms) noexcept
 {
     if (terms.empty()) [[unlikely]] return;
 
@@ -223,21 +227,11 @@ inline entity runtime_view::get_first_entity() noexcept
 
     if (query_.use_mask_path_ && !query_.has_or_)
     {
-        const sparse_entry* rv_cur_ver_page = nullptr;
-        size_t rv_cur_page_idx = SIZE_MAX;
         for (size_t i = 0; i < indices.size(); ++i)
         {
             uint32_t idx = indices[i];
             if (!query_.check_blocks(idx, mgr_)) continue;
-            size_t pid = idx >> primary->page_shift;
-            if (pid != rv_cur_page_idx) [[unlikely]]
-            {
-                rv_cur_ver_page = primary->get_version_page(idx);
-                rv_cur_page_idx = pid;
-            }
-            uint32_t entry = 0;
-            if (rv_cur_ver_page) [[likely]]
-                entry = single_class_set::read_version_from_page(rv_cur_ver_page, idx, primary->page_mask);
+            uint32_t entry = primary->sparse_version_at_public(idx);
             return entity(idx, entry);
         }
         return entity{};
@@ -305,34 +299,21 @@ inline void runtime_view::for_each_hit_impl(Func&& func) noexcept
         }
         if (max_sparse == 0) return;
 
-        class_pool<bool> visited;
+        dense<bool> visited;
         visited.resize(max_sparse, false);
 
-        const sparse_entry* rv_cur_ver_page = nullptr;
-        size_t rv_cur_page_idx = SIZE_MAX;
         for (size_t k = 0; k < query_.or_sets_.size(); ++k)
         {
             auto* set = query_.or_sets_[k];
             if (!set) continue;
             auto& indices = set->get_entity_indices();
             const size_t n = indices.size();
-            rv_cur_ver_page = nullptr;
-            rv_cur_page_idx = SIZE_MAX;
             for (size_t i = 0; i < n; ++i)
             {
                 uint32_t idx = indices[i];
                 if (idx >= max_sparse) [[unlikely]] continue;
                 if (visited[idx]) continue;
-                size_t pid = idx >> set->page_shift;
-                if (pid != rv_cur_page_idx) [[unlikely]]
-                {
-                    rv_cur_ver_page = set->get_version_page(idx);
-                    rv_cur_page_idx = pid;
-                }
-                uint32_t entry = 0;
-                if (rv_cur_ver_page) [[likely]]
-                    entry = single_class_set::read_version_from_page(rv_cur_ver_page, idx, set->page_mask);
-                uint32_t ver = entry;
+                uint32_t ver = set->sparse_version_at_public(idx);
                 // NOT 检查
                 bool excluded = false;
                 for (size_t j = 0; j < query_.exc_sets_.size(); ++j)
@@ -359,21 +340,11 @@ inline void runtime_view::for_each_hit_impl(Func&& func) noexcept
 
     if (query_.use_mask_path_ && !query_.has_or_)
     {
-        const sparse_entry* rv_cur_ver_page = nullptr;
-        size_t rv_cur_page_idx = SIZE_MAX;
         for (size_t i = 0; i < n; ++i)
         {
             uint32_t idx = indices[i];
             if (!query_.check_blocks(idx, mgr_)) continue;
-            size_t pid = idx >> primary->page_shift;
-            if (pid != rv_cur_page_idx) [[unlikely]]
-            {
-                rv_cur_ver_page = primary->get_version_page(idx);
-                rv_cur_page_idx = pid;
-            }
-            uint32_t entry = 0;
-            if (rv_cur_ver_page) [[likely]]
-                entry = single_class_set::read_version_from_page(rv_cur_ver_page, idx, primary->page_mask);
+            uint32_t entry = primary->sparse_version_at_public(idx);
             entity e(idx, entry);
             func(e, i);
         }
@@ -403,21 +374,11 @@ inline void runtime_view::for_each_hit_range(size_t start, size_t end, Func&& fu
 
     if (query_.use_mask_path_ && !query_.has_or_)
     {
-        const sparse_entry* rv_cur_ver_page = nullptr;
-        size_t rv_cur_page_idx = SIZE_MAX;
         for (size_t i = start; i < end; ++i)
         {
             uint32_t idx = indices[i];
             if (!query_.check_blocks(idx, mgr_)) continue;
-            size_t pid = idx >> primary->page_shift;
-            if (pid != rv_cur_page_idx) [[unlikely]]
-            {
-                rv_cur_ver_page = primary->get_version_page(idx);
-                rv_cur_page_idx = pid;
-            }
-            uint32_t entry = 0;
-            if (rv_cur_ver_page) [[likely]]
-                entry = single_class_set::read_version_from_page(rv_cur_ver_page, idx, primary->page_mask);
+            uint32_t entry = primary->sparse_version_at_public(idx);
             entity e(idx, entry);
             func(e);
         }
@@ -596,26 +557,12 @@ inline void runtime_view::sort_by_component(Compare&& cmp) noexcept
     const size_t sort_sparse_sz = sort_set->get_sparse_size();
     auto* sort_pool = sort_set->template get_typed_pool_ptr<T>();
 
-    class_pool<T> components;
-    const sparse_entry* rv_cur_dense_page = nullptr;
-    const sparse_entry* rv_cur_ver_page = nullptr;
-    size_t rv_cur_page_idx = SIZE_MAX;
+    dense<T> components;
     for_each_hit_impl([&](entity e, size_t) {
         uint32_t idx = e.parts_.index_;
         if (idx >= sort_sparse_sz) return;
-        size_t pid = idx >> sort_set->page_shift;
-        if (pid != rv_cur_page_idx) [[unlikely]]
-        {
-            rv_cur_dense_page = sort_set->get_dense_page(idx);
-            rv_cur_ver_page = sort_set->get_version_page(idx);
-            rv_cur_page_idx = pid;
-        }
-        uint32_t dense = 0xFFFFFFFFu;
-        uint32_t ver = 0u;
-        if (rv_cur_dense_page) [[likely]]
-            dense = single_class_set::read_dense_from_page(rv_cur_dense_page, idx, sort_set->page_mask);
-        if (rv_cur_ver_page) [[likely]]
-            ver = single_class_set::read_version_from_page(rv_cur_ver_page, idx, sort_set->page_mask);
+        uint32_t dense = sort_set->sparse_dense_at_public(idx);
+        uint32_t ver = sort_set->sparse_version_at_public(idx);
         if (dense == 0xFFFFFFFFu || ver != e.parts_.version_) return;
         if (!sort_pool || dense >= sort_pool->size()) return;
         sorted_entities_.emplace_back(e);
@@ -629,7 +576,7 @@ inline void runtime_view::sort_by_component(Compare&& cmp) noexcept
         return;
     }
 
-    class_pool<size_t> indices;
+    dense<size_t> indices;
     indices.increase_capacity(n);
     for (size_t i = 0; i < n; ++i)
     {
@@ -642,7 +589,7 @@ inline void runtime_view::sort_by_component(Compare&& cmp) noexcept
             return cmp(components[a], components[b]);
         });
 
-    class_pool<entity> temp;
+    dense<entity> temp;
     temp.increase_capacity(n);
     for (size_t i = 0; i < n; ++i)
     {

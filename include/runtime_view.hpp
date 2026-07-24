@@ -2,7 +2,7 @@
 #include <limits>
 #include <type_traits>
 #include <cstdint>
-#include "part/class_pool.hpp"
+#include "part/dense.hpp"
 #include "single_class_set.hpp"
 
 namespace ecs
@@ -31,30 +31,30 @@ struct runtime_term
 class runtime_query
 {
 public:
-    class_pool<int> required_ids_;
-    class_pool<uint64_t> req_masks_;
-    class_pool<uint64_t> exc_masks_;
+    dense<int> required_ids_;
+    dense<uint64_t> req_masks_;
+    dense<uint64_t> exc_masks_;
     uint32_t max_block_{0};
     single_class_set* primary_set_{nullptr};
     bool use_mask_path_{true};
-    class_pool<single_class_set*> req_sets_;
-    class_pool<single_class_set*> exc_sets_;
+    dense<single_class_set*> req_sets_;
+    dense<single_class_set*> exc_sets_;
 
     // term 支持(OR/OPTIONAL)
-    class_pool<runtime_term> terms_;
+    dense<runtime_term> terms_;
     bool has_or_{false};
     bool has_optional_{false};
-    class_pool<access_mode> req_access_;
-    class_pool<single_class_set*> or_sets_;
-    class_pool<single_class_set*> opt_sets_;
+    dense<access_mode> req_access_;
+    dense<single_class_set*> or_sets_;
+    dense<single_class_set*> opt_sets_;
 
     runtime_query() noexcept = default;
 
-    runtime_query(manager* mgr, class_pool<int> required_ids,
-                  class_pool<int> excluded_ids = {}) noexcept;
+    runtime_query(manager* mgr, std::span<const int> required_ids,
+                  std::span<const int> excluded_ids = {}) noexcept;
 
     // term 构造(支持 OR/OPTIONAL)
-    runtime_query(manager* mgr, class_pool<runtime_term> terms) noexcept;
+    runtime_query(manager* mgr, std::span<const runtime_term> terms) noexcept;
 
     // 多块掩码检查(entity_index 已保证有效)
     [[nodiscard]] bool check_blocks(uint32_t entity_index, const manager* mgr) const noexcept;
@@ -69,11 +69,11 @@ private:
     uint64_t cached_primary_version_{0};
 
     // 变更检测 baseline
-    class_pool<uint64_t> baseline_versions_;
+    dense<uint64_t> baseline_versions_;
     bool tracking_changes_{false};
 
     // 排序结果缓存
-    class_pool<entity> sorted_entities_;
+    dense<entity> sorted_entities_;
     bool sorted_valid_{false};
 
     [[nodiscard]] bool all_sets_valid() const noexcept;
@@ -133,7 +133,7 @@ public:
     // 5. 排序
     template <typename T, typename Compare>
     void sort_by_component(Compare&& cmp) noexcept;
-    [[nodiscard]] const class_pool<entity>& get_sorted_entities() const noexcept
+    [[nodiscard]] const dense<entity>& get_sorted_entities() const noexcept
     {
         return sorted_entities_;
     }

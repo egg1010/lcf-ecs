@@ -258,13 +258,13 @@ static void demo_class_pool()
 
     print_sub("\u6784\u9020\u51fd\u6570");
     class_pool<int> pool;                                     // \u9ed8\u8ba4\u6784\u9020
-    class_pool<int> pool2(100);                               // \u9884\u7559\u5bb9\u91cf
-    class_pool<int> pool3(static_cast<size_t>(5), 42);        // 5\u4e2a42
-    class_pool<int> pool4(pool3.begin(), pool3.end());        // \u8fed\u4ee3\u5668\u8303\u56f4
-    class_pool<int> pool5 = {10, 20, 30, 40, 50};            // \u521d\u59cb\u5316\u5217\u8868
+    dense<int> pool2(100);                               // \u9884\u7559\u5bb9\u91cf
+    dense<int> pool3(static_cast<size_t>(5), 42);        // 5\u4e2a42
+    dense<int> pool4(pool3.begin(), pool3.end());        // \u8fed\u4ee3\u5668\u8303\u56f4
+    dense<int> pool5 = {10, 20, 30, 40, 50};            // \u521d\u59cb\u5316\u5217\u8868
     print_kv("class_pool() \u9ed8\u8ba4\u6784\u9020", pool.size());
-    print_kv("class_pool(100) \u9884\u7559\u5bb9\u91cf", pool2.capacity());
-    print_kv("class_pool(5, 42) \u5927\u5c0f", pool3.size());
+    print_kv("dense(100) \u9884\u7559\u5bb9\u91cf", pool2.capacity());
+    print_kv("dense(5, 42) \u5927\u5c0f", pool3.size());
     print_kv("\u8fed\u4ee3\u5668\u8303\u56f4\u6784\u9020", pool4.size());
     print_kv("\u521d\u59cb\u5316\u5217\u8868\u6784\u9020", pool5.size());
 
@@ -277,7 +277,7 @@ static void demo_class_pool()
     std::cout << "\n";
 
     print_sub("unchecked 快速追加（仅 dense 连续模式）");
-    class_pool<int> upool;
+    dense<int> upool;
     upool.emplace_back(1);
     upool.emplace_back(2);
     upool.push_back_unchecked(3);
@@ -287,47 +287,30 @@ static void demo_class_pool()
     for (auto v : upool) std::cout << v << " ";
     std::cout << "\n";
 
-    // 批量追加 (append_n): AVX2 批量 bitmap 设置, 比逐个 emplace_back 快 3x
-    class_pool<int> apool;
+    // 批量追加 (append_n): 一次扩容 + 连续填充
+    dense<int> apool;
     apool.append_n(10, 42);
     std::cout << "    append_n(10, 42) size=" << apool.size() << " count=" << apool.count() << ": ";
     for (auto v : apool) std::cout << v << " ";
     std::cout << "\n";
 
-    print_sub("\u5143\u7d20\u8bbf\u95ee: operator[] / at / front / back / get / data / span");
+    print_sub("元素访问: operator[] / get / front / back / data / span");
     print_kv("pool[1]", pool[1]);
-    print_kv("pool.at(2)", pool.at(2));
+    print_kv("pool[2]", pool[2]);
+    print_kv("pool.get(1) 等价 operator[]", pool.get(1) == pool[1]);
+    // get(index, error_index): 越界保护访问, index >= size() 时改访问 error_index
+    // pool.size() 当前为 3, 索引 100 越界, 改访问 error_index=0
+    print_kv("get(100, 0) 越界回退到 0", pool.get(100, 0) == pool[0]);
+    // 合法 index 时正常访问, 不触发回退
+    print_kv("get(2, 0) 正常访问", pool.get(2, 0) == pool[2]);
     print_kv("pool.front()", pool.front());
     print_kv("pool.back()", pool.back());
-    int* gp = pool.get(1);
-    print_kv("pool.get(1)", (gp ? *gp : -1));
     print_kv("pool.data()[0]", pool.data()[0]);
     std::span<int> s = pool.span();
     print_kv("pool.span().size()", s.size());
     const class_pool<int>& cpool = pool;
     std::span<const int> cs = cpool.span();
-    print_kv("pool.span() const \u5927\u5c0f", cs.size());
-
-    print_sub("dense_view: \u5bc6\u96c6\u904d\u5386\u89c6\u56fe (\u4ec5 dense \u6a21\u5f0f\u53ef\u7528)");
-    if (pool.is_dense())
-    {
-        int dv_sum = 0;
-        for (auto& x : pool.dense_view())
-        {
-            dv_sum += x;
-        }
-        print_kv("dense_view \u904d\u5386\u6c42\u548c", dv_sum);
-    }
-    const class_pool<int>& cpool_dv = pool;
-    if (cpool_dv.is_dense())
-    {
-        int cdv_sum = 0;
-        for (auto& x : cpool_dv.dense_view())
-        {
-            cdv_sum += x;
-        }
-        print_kv("const dense_view \u904d\u5386\u6c42\u548c", cdv_sum);
-    }
+    print_kv("pool.span() const 大小", cs.size());
 
     print_sub("\u5bb9\u91cf\u67e5\u8be2: size / capacity / sparse_capacity / empty / count / valid");
     print_kv("pool.size()", pool.size());
@@ -336,13 +319,13 @@ static void demo_class_pool()
     print_kv("pool.empty()", pool.empty());
     print_kv("pool.count()", pool.count());
     print_kv("pool.valid()", pool.valid());
-    class_pool<int> empty_pool;
+    dense<int> empty_pool;
     print_kv("empty_pool.valid()", empty_pool.valid());
     print_kv("pool.size_bytes()", pool.size_bytes());
     print_kv("pool.capacity_bytes()", pool.capacity_bytes());
 
     print_sub("修改器: increase_capacity / shrink_to_fit / clear / pop_back");
-    class_pool<int> pool6;
+    dense<int> pool6;
     pool6.emplace_back(1);
     pool6.emplace_back(2);
     pool6.emplace_back(3);
@@ -358,7 +341,7 @@ static void demo_class_pool()
     print_kv("clear() 后 empty()", pool6.empty());
 
     print_sub("increase_capacity(cap, value) / reduce_capacity(cap) / reduce_capacity(cap, dst)");
-    class_pool<int> pool6b;
+    dense<int> pool6b;
     pool6b.emplace_back(10);
     pool6b.emplace_back(20);
     pool6b.increase_capacity(static_cast<size_t>(5), 99);
@@ -366,14 +349,14 @@ static void demo_class_pool()
     for (auto v : pool6b) std::cout << v << " ";
     std::cout << "\n";
 
-    class_pool<int> pool6c = {1, 2, 3, 4, 5, 6, 7, 8};
+    dense<int> pool6c = {1, 2, 3, 4, 5, 6, 7, 8};
     pool6c.reduce_capacity(3);
     std::cout << "    reduce_capacity(3) 后: ";
     for (auto v : pool6c) std::cout << v << " ";
     std::cout << "\n";
 
-    class_pool<int> pool6d = {100, 200, 300, 400, 500};
-    class_pool<int> pool6e;
+    dense<int> pool6d = {100, 200, 300, 400, 500};
+    dense<int> pool6e;
     pool6d.reduce_capacity(static_cast<size_t>(2), pool6e);
     std::cout << "    reduce_capacity(2, dst) 后 src: ";
     for (auto v : pool6d) std::cout << v << " ";
@@ -383,14 +366,14 @@ static void demo_class_pool()
     std::cout << "\n";
 
     print_sub("resize(size_t) / resize(size_t, value)");
-    class_pool<int> pool7;
+    dense<int> pool7;
     pool7.emplace_back(1);
     pool7.emplace_back(2);
     pool7.resize(5, 99);
     std::cout << "    resize(5, 99) \u540e: ";
     for (auto v : pool7) std::cout << v << " ";
     std::cout << "\n";
-    class_pool<int> pool7b;
+    dense<int> pool7b;
     pool7b.emplace_back(1);
     pool7b.emplace_back(2);
     pool7b.reserve_exact(100);
@@ -398,7 +381,7 @@ static void demo_class_pool()
     print_kv("reserve_exact(100) \u540e capacity", pool7b.capacity());
 
     print_sub("emplace(pos, args...) / erase(pos) / \u63d2\u5165\u5220\u9664");
-    class_pool<int> pool8;
+    dense<int> pool8;
     pool8.emplace_back(1);
     pool8.emplace_back(3);
     pool8.emplace(std::next(pool8.begin(), 1), 2);
@@ -411,8 +394,8 @@ static void demo_class_pool()
     std::cout << "\n";
 
     print_sub("swap / \u4ea4\u6362");
-    class_pool<int> poolA = {1, 2};
-    class_pool<int> poolB = {9, 8, 7};
+    dense<int> poolA = {1, 2};
+    dense<int> poolB = {9, 8, 7};
     poolA.swap(poolB);
     std::cout << "    swap \u540e poolA: ";
     for (auto v : poolA) std::cout << v << " ";
@@ -441,6 +424,19 @@ static void demo_class_pool()
     pool9.sparse_erase_at(10);
     print_kv("sparse_erase_at(10) \u540e size", pool9.size());
 
+    print_sub("soft_sparse_delete (仅平凡可析构类型)");
+    class_pool<int> pool_soft;
+    pool_soft.emplace_back(100);
+    pool_soft.emplace_back(200);
+    pool_soft.emplace_back(300);
+    pool_soft.soft_sparse_delete(1);
+    print_kv("soft_sparse_delete(1) 后 size", pool_soft.size());
+    print_kv("soft_sparse_delete(1) 后 count", pool_soft.count());
+    print_kv("is_constructed_at(1)", pool_soft.is_constructed_at(1));
+    pool_soft.fill_the_hole(999);
+    print_kv("fill_the_hole 填回 pool_soft[1]", pool_soft[1]);
+    print_kv("填回后 is_dense()", pool_soft.is_dense());
+
     print_sub("\u7a00\u758f/bitmap: is_constructed_at / is_dense / recompute_is_dense / invalidate_count_cache");
     class_pool<int> pool10;
     pool10.emplace_back(1);
@@ -468,7 +464,7 @@ static void demo_class_pool()
     for (const int& v : cpool11) std::cout << v << " ";
     std::cout << "\n";
 
-    print_sub("迭代器: begin/end / cbegin/cend / rbegin/rend / for_each");
+    print_sub("迭代器: begin/end / cbegin/cend / rbegin/rend / crbegin/crend");
     class_pool<int> pool12 = {100, 200, 300};
     std::cout << "    \u6b63\u5411 (begin/end): ";
     for (auto it = pool12.begin(); it != pool12.end(); ++it) std::cout << *it << " ";
@@ -482,10 +478,6 @@ static void demo_class_pool()
     std::cout << "    const \u53cd\u5411 (crbegin/crend): ";
     for (auto it = pool12.crbegin(); it != pool12.crend(); ++it) std::cout << *it << " ";
     std::cout << "\n";
-    std::cout << "    for_each (\u6279\u91cf\u904d\u5386, dense \u8def\u5f84\u53ef\u81ea\u52a8\u5411\u91cf\u5316): ";
-    long long fe_sum = 0;
-    pool12.for_each([&fe_sum](int& v) { fe_sum += v; });
-    std::cout << fe_sum << "\n";
 
     print_sub("\u62f7\u8d1d\u6784\u9020 / \u62f7\u8d1d\u8d4b\u503c / \u79fb\u52a8\u6784\u9020 / \u79fb\u52a8\u8d4b\u503c");
     class_pool<int> pool13(pool12);
@@ -1074,10 +1066,11 @@ static void demo_single_class_set()
     Position* p = set.get_ptr<Position>(e1);
     print_kv("\u8986\u76d6\u540e e1 Position", (p ? std::to_string(p->x) + "," + std::to_string(p->y) : "null"));
 
-    print_sub("add_batch(class_pool&, class_pool&)");
-    class_pool<entity> ents = {entity(4, 1), entity(5, 1)};
-    class_pool<Position> comps = {Position{7, 8}, Position{9, 10}};
-    set.add_batch(ents, comps);
+    print_sub("add_batch(dense \u2192 span)");
+    dense<entity> ents = {entity(4, 1), entity(5, 1)};
+    dense<Position> comps = {Position{7, 8}, Position{9, 10}};
+    set.add_batch(std::span<const entity>(ents.data(), ents.size()),
+                  std::span<const Position>(comps.data(), comps.size()));
     print_kv("add_batch(lvalue) \u540e size()", set.size());
 
     print_sub("add_batch(span, span)");
@@ -1086,10 +1079,11 @@ static void demo_single_class_set()
     set.add_batch(std::span<const entity>(span_ents, 2), std::span<const Position>(span_comps, 2));
     print_kv("add_batch(span) \u540e size()", set.size());
 
-    print_sub("add_batch(&&, &&)");
-    class_pool<entity> r_ents = {entity(8, 1)};
-    class_pool<Position> r_comps = {Position{15, 16}};
-    set.add_batch(std::move(r_ents), std::move(r_comps));
+    print_sub("add_batch(rvalue dense \u2192 span)");
+    dense<entity> r_ents = {entity(8, 1)};
+    dense<Position> r_comps = {Position{15, 16}};
+    set.add_batch(std::span<const entity>(r_ents.data(), r_ents.size()),
+                  std::span<const Position>(r_comps.data(), r_comps.size()));
     print_kv("add_batch(rvalue) \u540e size()", set.size());
 
     print_sub("get_ptr<T> / get_ptr<T> const");
@@ -1115,9 +1109,8 @@ static void demo_single_class_set()
     print_kv("get_version(1)", set.get_version(1));
     print_kv("get_version_unchecked(1)", set.get_version_unchecked(1));
 
-    print_sub("sparse 分页稀疏 + 热集");
+    print_sub("sparse 稀疏表 + 热集");
     print_kv("get_sparse_size()", (int)set.get_sparse_size());
-    print_kv("get_page_directory_capacity()", (int)set.get_page_directory_capacity());
     uint32_t sp_ver = set.sparse_version_at_public(1);
     uint32_t sp_dense = set.sparse_dense_at_public(1);
     print_kv("sparse_version_at_public(1)", (int)sp_ver);
@@ -1146,21 +1139,21 @@ static void demo_single_class_set()
     print_kv("get_type_id()", tid);
 
     print_sub("get_typed_pool_ptr<T> / get_typed_pool_ptr<T> const");
-    class_pool<Position>* tpool = set2.get_typed_pool_ptr<Position>();
+    dense<Position>* tpool = set2.get_typed_pool_ptr<Position>();
     print_kv("get_typed_pool_ptr() size()", (tpool ? tpool->size() : 0));
-    const class_pool<Position>* ctpool = cset.get_typed_pool_ptr<Position>();
+    const dense<Position>* ctpool = cset.get_typed_pool_ptr<Position>();
     print_kv("get_typed_pool_ptr() const size()", (ctpool ? ctpool->size() : 0));
 
     print_sub("get_entity_indices / get_entity_indices const");
-    class_pool<uint32_t>& indices = set2.get_entity_indices();
+    dense<uint32_t>& indices = set2.get_entity_indices();
     print_kv("get_entity_indices() size()", indices.size());
-    const class_pool<uint32_t>& cindices = set2.get_entity_indices();
+    const dense<uint32_t>& cindices = set2.get_entity_indices();
     print_kv("get_entity_indices() const size()", cindices.size());
 
     print_sub("get_entity_versions / get_entity_versions const");
-    class_pool<uint32_t>& versions = set2.get_entity_versions();
+    dense<uint32_t>& versions = set2.get_entity_versions();
     print_kv("get_entity_versions() size()", versions.size());
-    const class_pool<uint32_t>& cversions = set2.get_entity_versions();
+    const dense<uint32_t>& cversions = set2.get_entity_versions();
     print_kv("get_entity_versions() const size()", cversions.size());
 
     print_sub("add() \u8fd4\u56de operating_message");
@@ -1240,8 +1233,8 @@ static void demo_manager()
     print_kv("get_ptr_fast<Velocity>(e1) const", (cvel ? std::to_string(cvel->dx) + "," + std::to_string(cvel->dy) : "null"));
 
     print_sub("get_ptr_batch<T> / prefetch_ptr<T>");
-    class_pool<entity> q_ents = {e1, e2};
-    class_pool<Position*> q_results;
+    dense<entity> q_ents = {e1, e2};
+    dense<Position*> q_results;
     q_results.reserve_exact(q_ents.size());
     mgr.get_ptr_batch<Position>(q_ents.data(), q_results.data(), q_ents.size());
     std::cout << "    get_ptr_batch<Position>({e1,e2}):";
@@ -1302,9 +1295,8 @@ static void demo_manager()
     std::cout << "    get_ptr/get_ptr_fast 内部自动使用 get_ptr_fast_inline\n";
     std::cout << "    通过 typed_pool_data_ 直接访问，无需手动调用\n";
 
-    print_sub("分离稀疏表 (flat+paged 混合)");
+    print_sub("分离稀疏表 (class_pool<sparse_entry>)");
     auto* set = mgr.get_single_class_set<Position>();
-    print_kv("is_flat_mode()", set->is_flat_mode());
     print_kv("get_sparse_size()", set->get_sparse_size());
     uint32_t pub_dense = set->sparse_dense_at_public(0);
     uint32_t pub_ver = set->sparse_version_at_public(0);
@@ -1316,41 +1308,19 @@ static void demo_manager()
     set->clear_hot_set();
     print_kv("clear_hot_set() 调试清空", true);
 
-    // dense/version 合并查询 (sparse_entry 合并存储, get_dense_page 与 get_version_page 返回同一指针)
-    const sparse_entry* dense_page = set->get_dense_page(0);
-    if (dense_page)
-    {
-        uint32_t dense = single_class_set::read_dense_from_page(dense_page, 0, set->page_mask);
-        print_kv("read_dense_from_page(0)", (int)dense);
-    }
-    const sparse_entry* ver_page = set->get_version_page(0);
-    if (ver_page)
-    {
-        uint32_t ver = single_class_set::read_version_from_page(ver_page, 0, set->page_mask);
-        print_kv("read_version_from_page(0)", (int)ver);
-    }
-
-    // 分页大小运行时可配置
-    print_kv("默认 page_shift", set->get_page_size_shift());
-    set->set_page_size_shift(12);
-    print_kv("set_page_size_shift(12) 后", set->get_page_size_shift());
-    mgr.set_component_page_size_shift<Position>(8);
-    print_kv("manager 设置 Position shift=8", mgr.get_component_page_size_shift<Position>());
-    set->set_page_size_shift(10);
-
     print_sub("add_batch \u4e09\u79cd\u91cd\u8f7d");
-    class_pool<entity> batch_ents = {mgr.create_entity(), mgr.create_entity()};
-    class_pool<Health> batch_comps = {Health{50, 50}, Health{70, 70}};
+    dense<entity> batch_ents = {mgr.create_entity(), mgr.create_entity()};
+    dense<Health> batch_comps = {Health{50, 50}, Health{70, 70}};
     mgr.add_batch(batch_ents, batch_comps);
-    print_kv("add_batch(class_pool&, class_pool&)", "\u5b8c\u6210");
+    print_kv("add_batch(dense&, dense&)", "\u5b8c\u6210");
 
     std::span<const entity> ent_span(batch_ents.data(), batch_ents.size());
     std::span<const Health> comp_span(batch_comps.data(), batch_comps.size());
     mgr.add_batch(ent_span, comp_span);
     print_kv("add_batch(span, span)", "\u5b8c\u6210");
 
-    class_pool<entity> rv_ents = {mgr.create_entity()};
-    class_pool<Health> rv_comps = {Health{33, 33}};
+    dense<entity> rv_ents = {mgr.create_entity()};
+    dense<Health> rv_comps = {Health{33, 33}};
     mgr.add_batch(std::move(rv_ents), std::move(rv_comps));
     print_kv("add_batch(&&, &&)", "\u5b8c\u6210");
 
@@ -1380,7 +1350,7 @@ static void demo_manager()
     print_kv("get_single_class_set<Position>() const size", (cpos_set ? cpos_set->size() : 0));
 
     print_sub("get_component_container<T>");
-    class_pool<Position>* pos_vec = mgr.get_component_container<Position>();
+    dense<Position>* pos_vec = mgr.get_component_container<Position>();
     print_kv("get_component_container<Position>() size", (pos_vec ? pos_vec->size() : 0));
 
     print_sub("reserve_component_capacity<T>");
@@ -1941,15 +1911,15 @@ static void demo_bevy_views()
         });
         print_kv("iter_over_entities [e1,e2,e4] 匹配数（e4无Pos跳过）", cnt);
 
-        // 使用 class_pool<entity>
-        class_pool<entity> ents;
+        // 使用 dense<entity>
+        dense<entity> ents;
         ents.emplace_back(e1);
         ents.emplace_back(e2);
         ents.emplace_back(e3);
         auto ev2 = mgr.view<Position, Velocity>().iter_over_entities(ents);
         size_t cnt2 = 0;
         ev2.for_each([&](Position&, Velocity&) { ++cnt2; });
-        print_kv("iter_over_entities(class_pool) 匹配数", cnt2);
+        print_kv("iter_over_entities(dense) 匹配数", cnt2);
     }
 }
 
@@ -2172,10 +2142,11 @@ static void demo_runtime_view()
 
     print_sub("双组件运行时视图: runtime_view_create({Pos, Vel})");
     {
-        auto rv = mgr.runtime_view_create({
+        std::array<int, 2> req_ids = {
             type_id::get_type_id<Position>(),
             type_id::get_type_id<Velocity>()
-        });
+        };
+        auto rv = mgr.runtime_view_create(req_ids);
         print_kv("runtime_view.size()", rv.size());
         print_kv("runtime_view.empty()", rv.empty());
         entity rv_first = rv.get_first_entity();
@@ -2192,11 +2163,12 @@ static void demo_runtime_view()
 
     print_sub("三组件运行时视图: runtime_view_create({Pos, Vel, Health})");
     {
-        auto rv = mgr.runtime_view_create({
+        std::array<int, 3> req_ids = {
             type_id::get_type_id<Position>(),
             type_id::get_type_id<Velocity>(),
             type_id::get_type_id<Health>()
-        });
+        };
+        auto rv = mgr.runtime_view_create(req_ids);
         print_kv("runtime_view.size()", rv.size());
         rv.for_each([&](entity e) {
             auto* p = rv.get_ptr<Position>(e);
@@ -2207,10 +2179,9 @@ static void demo_runtime_view()
 
     print_sub("排除视图: runtime_view_create({Pos}, {Vel})");
     {
-        auto rv = mgr.runtime_view_create(
-            { type_id::get_type_id<Position>() },
-            { type_id::get_type_id<Velocity>() }
-        );
+        std::array<int, 1> req_ids = { type_id::get_type_id<Position>() };
+        std::array<int, 1> exc_ids = { type_id::get_type_id<Velocity>() };
+        auto rv = mgr.runtime_view_create(req_ids, exc_ids);
         print_kv("runtime_view.size()", rv.size());
         rv.for_each([&](entity e) {
             std::cout << "    [" << e.parts_.index_ << "] 有Position无Velocity\n";
@@ -2296,10 +2267,11 @@ static void demo_runtime_view()
     }
 
     // 以下为 runtime_view 扩展接口
-    auto rv = mgr.runtime_view_create({
+    std::array<int, 2> rv_req = {
         type_id::get_type_id<Position>(),
         type_id::get_type_id<Velocity>()
-    });
+    };
+    auto rv = mgr.runtime_view_create(rv_req);
 
     print_sub("for_each_typed: 组件引用回传");
     {
@@ -2379,7 +2351,7 @@ static void demo_runtime_view()
 
     print_sub("OR 查询: runtime_view_create_from_terms");
     {
-        class_pool<ecs::runtime_term> terms;
+        dense<ecs::runtime_term> terms;
         terms.emplace_back(ecs::runtime_term{type_id::get_type_id<Position>(), 1, ecs::access_mode::read_only});
         terms.emplace_back(ecs::runtime_term{type_id::get_type_id<Velocity>(), 1, ecs::access_mode::read_only});
         auto rv_or = mgr.runtime_view_create_from_terms(std::move(terms));
@@ -2388,7 +2360,7 @@ static void demo_runtime_view()
 
     print_sub("access_mode: read_only / read_write");
     {
-        class_pool<ecs::runtime_term> terms;
+        dense<ecs::runtime_term> terms;
         terms.emplace_back(ecs::runtime_term{type_id::get_type_id<Position>(), 0, ecs::access_mode::read_write});
         auto rv_rw = mgr.runtime_view_create_from_terms(std::move(terms));
         print_kv("read_write命中", rv_rw.count());
@@ -2409,7 +2381,7 @@ static void demo_tiered_sort()
     for (int v : data) std::cout << v << " ";
     std::cout << "\n";
 
-    print_sub("sort_n<5> 编译期零开销排序网络");
+    print_sub("sort_n<5> 编译期排序网络");
     int data2[] = {5, 3, 1, 4, 2};
     sort_n<5>(data2);
     std::cout << "    排序后: ";
@@ -2469,7 +2441,7 @@ static void demo_time()
 
     print_sub("compute_stats 统计分布");
     {
-        class_pool<double> samples;
+        dense<double> samples;
         samples.increase_capacity(5);
         samples.emplace_back(1.0);
         samples.emplace_back(2.0);
@@ -2528,7 +2500,7 @@ static void demo_time()
     {
         double ghz = cpu_ghz_cached();
         print_kv("cpu_ghz_cached() (GHz)", ghz);
-        // 第二次调用零开销
+        // 第二次调用返回缓存值
         double ghz2 = cpu_ghz_cached();
         print_kv("cpu_ghz_cached() 再次调用", ghz2);
     }
@@ -2814,7 +2786,7 @@ static void demo_lifecycle_signals()
 
         int added = 0;
         m2.flush_component_signals([&added](uint32_t type, uint32_t, uint32_t) noexcept {
-            if (type == 0) added++;
+            if (type == 0) ++added;
         });
 
         std::cout << "    flush_component_signals: 3 Position adds = " << added << std::endl;
@@ -2847,7 +2819,7 @@ static void demo_lifecycle_signals()
         ecs::manager m2;
         m2.reserve_comp_signal_capacity(2048);
         m2.append_preallocated_entities(2048);
-        class_pool<entity> ents;
+        dense<entity> ents;
         ents.increase_capacity(2048);
         for (int i = 0; i < 2048; ++i) ents.emplace_back(m2.create_entity());
         for (int i = 0; i < 2048; ++i) m2.add(ents[i], Position{static_cast<int>(i), 0});
@@ -2904,7 +2876,8 @@ static void demo_unlimited_components()
 
     print_sub("runtime_view 查询超出 64 的组件");
     {
-        auto rv = mgr.runtime_view_create({tid_a});
+        std::array<int, 1> req_a = {tid_a};
+        auto rv = mgr.runtime_view_create(req_a);
         int cnt = 0;
         rv.for_each([&cnt](entity) { ++cnt; });
         print_kv("req A 匹配数 (ea + eab)", cnt);
@@ -2915,7 +2888,8 @@ static void demo_unlimited_components()
 
     print_sub("runtime_view 同时查询 A+B (均超出 64)");
     {
-        auto rv = mgr.runtime_view_create({tid_a, tid_b});
+        std::array<int, 2> req_ab = {tid_a, tid_b};
+        auto rv = mgr.runtime_view_create(req_ab);
         int cnt = 0;
         rv.for_each([&cnt](entity) { ++cnt; });
         print_kv("req A+B 匹配数 (eab)", cnt);
@@ -3066,7 +3040,7 @@ int main()
     print_kv("meta->mask_block", (int)meta->mask_block);
     print_kv("meta->mask_offset", (int)meta->mask_offset);
 
-    // reserve_mask_blocks 预分配多块（注册组件前调用避免 reshape）
+    // reserve_mask_blocks 预分配多块（注册组件前调用）
     manager mgr7;
     mgr7.reserve_mask_blocks(2); // 2 块 = 支持 128 种组件
     print_kv("num_mask_blocks() == 2", mgr7.num_mask_blocks() == 2);
@@ -3090,6 +3064,48 @@ int main()
     auto& em7 = mgr7.get_entity_manager();
     print_kv("entity_manager::get_block(idx, 0) 一致",
              em7.get_block(e7_idx, 0) == b0);
+
+    // 实体掩码扩容 / 缩容 / 状态查询 (与 class_pool 命名一致)
+    entity_mask_manager masks;
+    masks.reserve_blocks(2);            // 2 块 = 支持 128 种组件
+    masks.ensure_entity(0);
+    masks.ensure_entity(1);
+    masks.set_bit(0, 0, 3);
+    print_kv("初始 size() == 2", masks.size() == 2);
+    print_kv("初始 empty()", masks.empty() == false);
+    masks.increase_capacity(10000);     // 扩容到 1 万实体容量 (只增不减)
+    print_kv("increase_capacity 后 capacity() >= 10000",
+             masks.capacity() >= 10000);
+    masks.reserve_exact(50000);         // 精确预留 5 万实体容量
+    print_kv("reserve_exact 后 capacity() >= 50000",
+             masks.capacity() >= 50000);
+    masks.shrink_to_fit();              // 缩容到实际实体数
+    print_kv("shrink_to_fit 后 capacity() 接近 size()",
+             masks.capacity() >= masks.size());
+    masks.reduce_capacity(1000);        // 缩容到 1000 实体容量
+    print_kv("reduce_capacity 后 capacity() <= 1000",
+             masks.capacity() <= 1000);
+    print_kv("size_bytes() 返回已用字节", masks.size_bytes() > 0);
+    print_kv("capacity_bytes() 返回容量字节", masks.capacity_bytes() > 0);
+    masks.clear();                      // 清空数据 (capacity/num_blocks 保留)
+    print_kv("clear 后 size() == 0", masks.size() == 0);
+    print_kv("clear 后 empty()", masks.empty() == true);
+    print_kv("clear 后 num_blocks() 仍为 2", masks.num_blocks() == 2);
+
+    // 批量注册三步法: increase_capacity + resize_entities + set_bit_no_check
+    entity_mask_manager masks_batch;
+    masks_batch.reserve_blocks(2);            // 步骤 0: 预分配 2 块
+    const uint32_t BATCH_N = 1000;
+    masks_batch.increase_capacity(BATCH_N);   // 步骤 1: 扩 capacity (避免 resize 时 realloc)
+    masks_batch.resize_entities(BATCH_N);     // 步骤 2: 撑 size (使 set_bit_no_check 合法)
+    for (uint32_t i = 0; i < BATCH_N; ++i)    // 步骤 3: 零检查写入
+    {
+        masks_batch.set_bit_no_check(i, 0, i & 63);
+    }
+    print_kv("三步法批量注册后 size()==1000", masks_batch.size() == BATCH_N);
+    print_kv("三步法写入位可读回",
+             masks_batch.get_block(500, 0) == (1ULL << (500 & 63)));
+    print_kv("三步法 capacity>=1000", masks_batch.capacity() >= BATCH_N);
 
     std::cout << "\u2551  " << std::left << std::setw(BOX_WIDTH - 2)
               << "\u6240\u6709\u793a\u4f8b\u6267\u884c\u5b8c\u6bd5"

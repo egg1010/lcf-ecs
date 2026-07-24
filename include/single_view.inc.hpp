@@ -119,20 +119,10 @@
                 else
                 {
                     // 回退路径: versions_ 未同步 (旧数据), 走 sparse_entry 查找
-                    const sparse_entry* cur_ver_page = nullptr;
-                    size_t cur_page_idx = SIZE_MAX;
                     for (size_t i = 0; i < n; ++i)
                     {
                         uint32_t eid = indices[i];
-                        size_t pid = eid >> set_->page_shift;
-                        if (pid != cur_page_idx) [[unlikely]]
-                        {
-                            cur_ver_page = set_->get_version_page(eid);
-                            cur_page_idx = pid;
-                        }
-                        uint32_t ver = 0;
-                        if (cur_ver_page) [[likely]]
-                            ver = single_class_set::read_version_from_page(cur_ver_page, eid, set_->page_mask);
+                        uint32_t ver = set_->sparse_version_at_public(eid);
                         entity e(eid, ver);
                         func(e, (*pool)[i]);
                     }
@@ -140,7 +130,10 @@
             }
             else
             {
-                pool->for_each(std::forward<Func>(func));
+                for (auto& v : *pool)
+                {
+                    func(v);
+                }
             }
         }
 
@@ -198,10 +191,10 @@
 
             single_view base_;
             Compare cmp_;
-            class_pool<size_t> sorted_indices_;
-            class_pool<size_t> radix_temp_buf_;
-            class_pool<T> sorted_pool_copy_;
-            class_pool<entity> sorted_entities_;
+            dense<size_t> sorted_indices_;
+            dense<size_t> radix_temp_buf_;
+            dense<T> sorted_pool_copy_;
+            dense<entity> sorted_entities_;
             uint64_t last_version_{0};
             bool needs_rebuild_{true};
 
@@ -246,22 +239,12 @@
                 auto& indices = base_.set_->get_entity_indices();
                 sorted_pool_copy_.increase_capacity(n);
                 sorted_entities_.increase_capacity(n);
-                const sparse_entry* cur_ver_page = nullptr;
-                size_t cur_page_idx = SIZE_MAX;
                 for (size_t i = 0; i < n; ++i)
                 {
                     size_t idx = sorted_indices_[i];
                     sorted_pool_copy_.emplace_back(pool_data[idx]);
                     uint32_t eid = indices[idx];
-                    size_t pid = eid >> base_.set_->page_shift;
-                    if (pid != cur_page_idx) [[unlikely]]
-                    {
-                        cur_ver_page = base_.set_->get_version_page(eid);
-                        cur_page_idx = pid;
-                    }
-                    uint32_t ver = 0;
-                    if (cur_ver_page) [[likely]]
-                        ver = single_class_set::read_version_from_page(cur_ver_page, eid, base_.set_->page_mask);
+                    uint32_t ver = base_.set_->sparse_version_at_public(eid);
                     sorted_entities_.emplace_back(entity(eid, ver));
                 }
 
@@ -332,9 +315,9 @@
         private:
             single_view base_;
             KeyFunc key_func_;
-            class_pool<size_t> sorted_indices_;
-            class_pool<KeyType> group_keys_;
-            class_pool<size_t> group_starts_;
+            dense<size_t> sorted_indices_;
+            dense<KeyType> group_keys_;
+            dense<size_t> group_starts_;
             uint64_t last_version_{0};
             bool needs_rebuild_{true};
 
@@ -351,7 +334,7 @@
                 T* pool_data = pool->data();
 
                 struct sort_entry { KeyType key; size_t index; };
-                class_pool<sort_entry> entries;
+                dense<sort_entry> entries;
                 entries.resize(n, {});
 
                 for (size_t i = 0; i < n; ++i)
@@ -420,8 +403,6 @@
 
                 if constexpr (std::is_invocable_v<Func, entity, T&>)
                 {
-                    const sparse_entry* g_cur_ver_page = nullptr;
-                    size_t g_cur_page_idx = SIZE_MAX;
                     for (size_t i = 0; i < sorted_indices_.size(); ++i)
                     {
                         if (i + 32 < sorted_indices_.size()) [[likely]]
@@ -431,15 +412,7 @@
                         }
                         size_t idx = sorted_indices_[i];
                         uint32_t eid = indices[idx];
-                        size_t pid = eid >> base_.set_->page_shift;
-                        if (pid != g_cur_page_idx) [[unlikely]]
-                        {
-                            g_cur_ver_page = base_.set_->get_version_page(eid);
-                            g_cur_page_idx = pid;
-                        }
-                        uint32_t ver = 0;
-                        if (g_cur_ver_page) [[likely]]
-                            ver = single_class_set::read_version_from_page(g_cur_ver_page, eid, base_.set_->page_mask);
+                        uint32_t ver = base_.set_->sparse_version_at_public(eid);
                         entity e(eid, ver);
                         func(e, (*pool)[idx]);
                     }
@@ -484,7 +457,7 @@
         private:
             single_view base_;
             uint64_t last_version_{0};
-            class_pool<size_t> changed_indices_;
+            dense<size_t> changed_indices_;
             bool needs_rebuild_{true};
 
             void rebuild() noexcept
@@ -551,21 +524,11 @@
 
                 if constexpr (std::is_invocable_v<Func, entity, T&>)
                 {
-                    const sparse_entry* ch_cur_ver_page = nullptr;
-                    size_t ch_cur_page_idx = SIZE_MAX;
                     for (size_t i = 0; i < changed_indices_.size(); ++i)
                     {
                         size_t idx = changed_indices_[i];
                         uint32_t eid = indices[idx];
-                        size_t pid = eid >> base_.set_->page_shift;
-                        if (pid != ch_cur_page_idx) [[unlikely]]
-                        {
-                            ch_cur_ver_page = base_.set_->get_version_page(eid);
-                            ch_cur_page_idx = pid;
-                        }
-                        uint32_t ver = 0;
-                        if (ch_cur_ver_page) [[likely]]
-                            ver = single_class_set::read_version_from_page(ch_cur_ver_page, eid, base_.set_->page_mask);
+                        uint32_t ver = base_.set_->sparse_version_at_public(eid);
                         entity e(eid, ver);
                         func(e, (*pool)[idx]);
                     }
@@ -590,8 +553,8 @@
         {
         private:
             single_view base_;
-            class_pool<uint64_t> last_observed_versions_;
-            class_pool<size_t> changed_indices_;
+            dense<uint64_t> last_observed_versions_;
+            dense<size_t> changed_indices_;
             bool needs_rebuild_{true};
             uint64_t last_pool_version_{0};
 
@@ -616,7 +579,7 @@
                         if (i < last_observed_versions_.size())
                             last_observed_versions_[i] = cur;
                         else
-                            last_observed_versions_.emplace_at(i, cur);
+                            last_observed_versions_[i] = cur;
                         changed_indices_.emplace_back(i);
                     }
                 }
@@ -653,21 +616,11 @@
 
                 if constexpr (std::is_invocable_v<Func, entity, T&>)
                 {
-                    const sparse_entry* fc_cur_ver_page = nullptr;
-                    size_t fc_cur_page_idx = SIZE_MAX;
                     for (size_t i = 0; i < changed_indices_.size(); ++i)
                     {
                         size_t idx = changed_indices_[i];
                         uint32_t eid = indices[idx];
-                        size_t pid = eid >> base_.set_->page_shift;
-                        if (pid != fc_cur_page_idx) [[unlikely]]
-                        {
-                            fc_cur_ver_page = base_.set_->get_version_page(eid);
-                            fc_cur_page_idx = pid;
-                        }
-                        uint32_t ver = 0;
-                        if (fc_cur_ver_page) [[likely]]
-                            ver = single_class_set::read_version_from_page(fc_cur_ver_page, eid, base_.set_->page_mask);
+                        uint32_t ver = base_.set_->sparse_version_at_public(eid);
                         entity e(eid, ver);
                         func(e, (*pool)[idx]);
                     }
@@ -692,8 +645,8 @@
         {
         private:
             single_view base_;
-            class_pool<uint64_t> last_observed_added_;
-            class_pool<size_t> added_indices_;
+            dense<uint64_t> last_observed_added_;
+            dense<size_t> added_indices_;
             bool needs_rebuild_{true};
             uint64_t last_pool_version_{0};
             uint64_t baseline_added_counter_{0};
@@ -718,7 +671,7 @@
                         if (i < last_observed_added_.size())
                             last_observed_added_[i] = cur;
                         else
-                            last_observed_added_.emplace_at(i, cur);
+                            last_observed_added_[i] = cur;
                         added_indices_.emplace_back(i);
                     }
                 }
@@ -762,21 +715,11 @@
 
                 if constexpr (std::is_invocable_v<Func, entity, T&>)
                 {
-                    const sparse_entry* fa_cur_ver_page = nullptr;
-                    size_t fa_cur_page_idx = SIZE_MAX;
                     for (size_t i = 0; i < added_indices_.size(); ++i)
                     {
                         size_t idx = added_indices_[i];
                         uint32_t eid = indices[idx];
-                        size_t pid = eid >> base_.set_->page_shift;
-                        if (pid != fa_cur_page_idx) [[unlikely]]
-                        {
-                            fa_cur_ver_page = base_.set_->get_version_page(eid);
-                            fa_cur_page_idx = pid;
-                        }
-                        uint32_t ver = 0;
-                        if (fa_cur_ver_page) [[likely]]
-                            ver = single_class_set::read_version_from_page(fa_cur_ver_page, eid, base_.set_->page_mask);
+                        uint32_t ver = base_.set_->sparse_version_at_public(eid);
                         entity e(eid, ver);
                         func(e, (*pool)[idx]);
                     }

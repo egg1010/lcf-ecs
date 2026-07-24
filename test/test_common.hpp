@@ -70,6 +70,18 @@ struct Speed {
     float value;
     Speed(float value = 0.0f) : value(value) {}
 };
+struct Rotation {
+    float x, y, z, w;
+    Rotation(float x = 0.0f, float y = 0.0f, float z = 0.0f, float w = 1.0f) : x(x), y(y), z(z), w(w) {}
+};
+struct Scale {
+    float x, y, z;
+    Scale(float x = 1.0f, float y = 1.0f, float z = 1.0f) : x(x), y(y), z(z) {}
+};
+struct Mass {
+    float value;
+    Mass(float value = 1.0f) : value(value) {}
+};
 
 // ============================================================
 // 辅助工具 (timer 来自 time.hpp, 全局命名空间)

@@ -10,9 +10,14 @@
 #endif
 #include "part/operating_message.hpp"
 #include "entity.hpp"
+#include "part/dense.hpp"
 #include "part/class_pool.hpp"
 #include "part/type_id.hpp"
 #include "part/tiered_sort.hpp"
+
+#ifndef PREFETCH_R
+#define PREFETCH_R(ptr) DENSE_PREFETCH_R(ptr)
+#endif
 
 
 static inline void nt_fill_uint32_(uint32_t* dst, size_t count, uint32_t value) noexcept
@@ -59,28 +64,11 @@ public:
     static constexpr uint32_t dense_invalid = 0xFFFFFFFFu;
 
 private:
-    // paged sparse table config (runtime configurable)
-    size_t sparse_page_shift_{10};
-    size_t sparse_page_size_{size_t{1} << 10};
-    size_t sparse_page_mask_{(size_t{1} << 10) - 1};
-
     // hot set cache constants
     static constexpr size_t hot_set_capacity_ = 256;
 
-    // flat threshold: sparse_size <= threshold 时用 flat, 否则用 paged
-    static constexpr size_t flat_threshold_ = 65536;
-    static constexpr size_t flat_page_shift_ = 32;
-    static constexpr size_t flat_page_mask_ = SIZE_MAX;
-
-    // flat 模式存储 (合并 dense+version 到同一缓存行)
-    sparse_entry* flat_entries_{nullptr};
-    size_t flat_capacity_{0};
-
-    // paged 模式存储 (按需分页, 每页 sparse_entry 数组)
-    sparse_entry** entry_pages_{nullptr};
-    size_t page_dir_capacity_{0};
-
-    bool is_flat_mode_{true};
+    // sparse table: class_pool<sparse_entry> 替代 flat+paged 混合存储
+    class_pool<sparse_entry> sparse_table_;
     size_t sparse_size_{0};
 
     // hot set cache storage
@@ -94,9 +82,9 @@ private:
     hot_entry_ hot_set_[hot_set_capacity_]{};
 
     // dense array
-    class_pool<uint32_t> dense_;
+    dense<uint32_t> dense_;
     // 与 dense_ 同步的 version 数组, 用于遍历时直接读连续内存, 避免 sparse_entry 间接查找
-    class_pool<uint32_t> versions_;
+    dense<uint32_t> versions_;
     int type_id_{-1};
 
     void* typed_pool_{nullptr};
@@ -126,7 +114,7 @@ private:
         uint64_t change_version;
         uint64_t added_version;
     };
-    class_pool<change_tracking_entry> entity_change_tracking_;
+    dense<change_tracking_entry> entity_change_tracking_;
     uint64_t global_change_counter_{0};
     uint64_t global_added_counter_{0};
     bool track_changes_enabled_{true};
@@ -141,425 +129,57 @@ private:
     friend class ecs::manager;
     template <typename> friend class ecs::query_context;
 
-    // ===== sparse table helpers (flat + paged 混合, 合并 dense+version) =====
+    // ===== sparse table helpers (class_pool<sparse_entry> 提供) =====
 
     [[nodiscard]] uint32_t sparse_dense_at(uint32_t idx) const noexcept
     {
-        if (is_flat_mode_) [[likely]]
-        {
-            if (idx >= sparse_size_) [[unlikely]]
-                return dense_invalid;
-            return flat_entries_[idx].dense;
-        }
-        const size_t page_idx = idx >> sparse_page_shift_;
-        if (page_idx >= page_dir_capacity_ || !entry_pages_[page_idx]) [[unlikely]]
+        if (idx >= sparse_size_) [[unlikely]]
             return dense_invalid;
-        return entry_pages_[page_idx][idx & sparse_page_mask_].dense;
+        if (!sparse_table_.is_constructed_at(idx)) [[unlikely]]
+            return dense_invalid;
+        return sparse_table_[idx].dense;
     }
 
     [[nodiscard]] uint32_t sparse_version_at(uint32_t idx) const noexcept
     {
-        if (is_flat_mode_) [[likely]]
-        {
-            if (idx >= sparse_size_) [[unlikely]]
-                return 0;
-            return flat_entries_[idx].version;
-        }
-        const size_t page_idx = idx >> sparse_page_shift_;
-        if (page_idx >= page_dir_capacity_ || !entry_pages_[page_idx]) [[unlikely]]
+        if (idx >= sparse_size_) [[unlikely]]
             return 0;
-        return entry_pages_[page_idx][idx & sparse_page_mask_].version;
+        if (!sparse_table_.is_constructed_at(idx)) [[unlikely]]
+            return 0;
+        return sparse_table_[idx].version;
     }
 
     [[nodiscard]] uint32_t sparse_dense_at_unchecked(uint32_t idx) const noexcept
     {
-        if (is_flat_mode_) [[likely]]
-            return flat_entries_[idx].dense;
-        return entry_pages_[idx >> sparse_page_shift_][idx & sparse_page_mask_].dense;
+        return sparse_table_[idx].dense;
     }
 
     [[nodiscard]] uint32_t sparse_version_at_unchecked(uint32_t idx) const noexcept
     {
-        if (is_flat_mode_) [[likely]]
-            return flat_entries_[idx].version;
-        return entry_pages_[idx >> sparse_page_shift_][idx & sparse_page_mask_].version;
+        return sparse_table_[idx].version;
     }
 
     void sparse_set_at(uint32_t idx, uint32_t dense, uint32_t version) noexcept
     {
-        ensure_flat_or_page_(idx);
-        if (is_flat_mode_) [[likely]]
-        {
-            flat_entries_[idx] = {dense, version};
-        }
-        else
-        {
-            entry_pages_[idx >> sparse_page_shift_][idx & sparse_page_mask_] = {dense, version};
-        }
+        sparse_table_.sparse_emplace_at(idx, sparse_entry{dense, version});
         if (idx >= sparse_size_)
             sparse_size_ = static_cast<size_t>(idx) + 1;
     }
 
     void sparse_set_at_unchecked(uint32_t idx, uint32_t dense, uint32_t version) noexcept
     {
-        if (is_flat_mode_) [[likely]]
-        {
-            flat_entries_[idx] = {dense, version};
-        }
-        else
-        {
-            entry_pages_[idx >> sparse_page_shift_][idx & sparse_page_mask_] = {dense, version};
-        }
+        sparse_table_.sparse_emplace_at(idx, sparse_entry{dense, version});
         if (idx >= sparse_size_)
             sparse_size_ = static_cast<size_t>(idx) + 1;
     }
 
-    void ensure_flat_or_page_(uint32_t idx) noexcept
-    {
-        if (is_flat_mode_) [[likely]]
-        {
-            if (idx >= flat_capacity_) [[unlikely]]
-                grow_flat_(idx + 1);
-        }
-        else
-        {
-            ensure_page_(idx >> sparse_page_shift_);
-        }
-    }
-
-    void grow_flat_(size_t min_cap) noexcept
-    {
-        size_t new_cap = flat_capacity_ ? flat_capacity_ : 256;
-        while (new_cap < min_cap)
-            new_cap *= 2;
-        auto* new_entries = static_cast<sparse_entry*>(
-            ::operator new(new_cap * sizeof(sparse_entry), std::align_val_t{32}, std::nothrow));
-        if (!new_entries) [[unlikely]]
-            std::terminate();
-        if (flat_entries_)
-        {
-            std::memcpy(new_entries, flat_entries_, flat_capacity_ * sizeof(sparse_entry));
-            ::operator delete(flat_entries_, flat_capacity_ * sizeof(sparse_entry), std::align_val_t{32});
-        }
-        const sparse_entry invalid_entry{dense_invalid, 0};
-        for (size_t i = flat_capacity_; i < new_cap; ++i)
-        {
-            new_entries[i] = invalid_entry;
-        }
-        flat_entries_ = new_entries;
-        flat_capacity_ = new_cap;
-    }
-
-    void switch_to_paged_mode_() noexcept
-    {
-        if (!is_flat_mode_) [[unlikely]]
-            return;
-
-        sparse_entry* old_entries = flat_entries_;
-        size_t old_cap = flat_capacity_;
-
-        is_flat_mode_ = false;
-        page_shift = sparse_page_shift_;
-        page_size = sparse_page_size_;
-        page_mask = sparse_page_mask_;
-        entry_pages_ = nullptr;
-        page_dir_capacity_ = 0;
-        flat_entries_ = nullptr;
-        flat_capacity_ = 0;
-
-        if (dense_.empty())
-        {
-            if (old_entries)
-                ::operator delete(old_entries, old_cap * sizeof(sparse_entry), std::align_val_t{32});
-            return;
-        }
-
-        size_t max_idx = 0;
-        for (size_t i = 0; i < dense_.size(); ++i)
-        {
-            if (dense_[i] > max_idx) max_idx = dense_[i];
-        }
-        const size_t needed_pages = (max_idx >> sparse_page_shift_) + 1;
-        grow_page_directory_(needed_pages);
-        for (size_t pi = 0; pi < needed_pages; ++pi)
-        {
-            allocate_entry_page_(pi);
-        }
-
-        for (size_t i = 0; i < dense_.size(); ++i)
-        {
-            uint32_t eid = dense_[i];
-            if (eid < old_cap)
-            {
-                entry_pages_[eid >> sparse_page_shift_][eid & sparse_page_mask_] = old_entries[eid];
-            }
-        }
-
-        if (old_entries)
-            ::operator delete(old_entries, old_cap * sizeof(sparse_entry), std::align_val_t{32});
-
-        ++version_;
-    }
-
-    void switch_to_flat_mode_() noexcept
-    {
-        if (is_flat_mode_) [[unlikely]]
-            return;
-
-        sparse_entry** old_entry_pages = entry_pages_;
-        size_t old_cap = page_dir_capacity_;
-
-        is_flat_mode_ = true;
-        page_shift = flat_page_shift_;
-        page_size = SIZE_MAX;
-        page_mask = flat_page_mask_;
-        entry_pages_ = nullptr;
-        page_dir_capacity_ = 0;
-        flat_entries_ = nullptr;
-        flat_capacity_ = 0;
-
-        if (dense_.empty())
-        {
-            deallocate_entry_pages_(old_entry_pages, old_cap);
-            return;
-        }
-
-        size_t max_idx = 0;
-        for (size_t i = 0; i < dense_.size(); ++i)
-        {
-            if (dense_[i] > max_idx) max_idx = dense_[i];
-        }
-        grow_flat_(max_idx + 1);
-
-        for (size_t i = 0; i < dense_.size(); ++i)
-        {
-            uint32_t eid = dense_[i];
-            const size_t page_idx = eid >> sparse_page_shift_;
-            if (page_idx < old_cap && old_entry_pages[page_idx])
-            {
-                flat_entries_[eid] = old_entry_pages[page_idx][eid & sparse_page_mask_];
-            }
-        }
-
-        deallocate_entry_pages_(old_entry_pages, old_cap);
-        ++version_;
-    }
-
-    void ensure_page_(size_t page_idx) noexcept
-    {
-        if (page_idx >= page_dir_capacity_) [[unlikely]]
-            grow_page_directory_(page_idx + 1);
-        if (!entry_pages_[page_idx]) [[likely]]
-        {
-            allocate_entry_page_(page_idx);
-        }
-    }
-
-    void grow_page_directory_(size_t min_pages) noexcept
-    {
-        size_t new_cap = page_dir_capacity_ ? page_dir_capacity_ : 4;
-        while (new_cap < min_pages)
-            new_cap *= 2;
-        constexpr size_t dir_alignment = 64;
-        const size_t dir_bytes = new_cap * sizeof(sparse_entry*);
-        auto* new_dir = static_cast<sparse_entry**>(
-            ::operator new(dir_bytes, std::align_val_t{dir_alignment}, std::nothrow));
-        if (!new_dir) [[unlikely]]
-            std::terminate();
-        std::memset(new_dir, 0, dir_bytes);
-        if (entry_pages_)
-        {
-            std::memcpy(new_dir, entry_pages_, page_dir_capacity_ * sizeof(sparse_entry*));
-            ::operator delete(entry_pages_, page_dir_capacity_ * sizeof(sparse_entry*), std::align_val_t{dir_alignment});
-        }
-        entry_pages_ = new_dir;
-        page_dir_capacity_ = new_cap;
-    }
-
-    void allocate_entry_page_(size_t page_idx) noexcept
-    {
-        const size_t page_bytes = sparse_page_size_ * sizeof(sparse_entry);
-        constexpr size_t alignment = 32;
-        auto* page = static_cast<sparse_entry*>(
-            ::operator new(page_bytes, std::align_val_t{alignment}, std::nothrow));
-        if (!page) [[unlikely]]
-            std::terminate();
-        const sparse_entry invalid_entry{dense_invalid, 0};
-        for (size_t i = 0; i < sparse_page_size_; ++i)
-        {
-            page[i] = invalid_entry;
-        }
-        entry_pages_[page_idx] = page;
-    }
-
-    void deallocate_entry_pages_(sparse_entry** dirs, size_t cap) noexcept
-    {
-        constexpr size_t dir_alignment = 64;
-        constexpr size_t page_alignment = 32;
-        const size_t page_bytes = sparse_page_size_ * sizeof(sparse_entry);
-        const size_t dir_bytes = cap * sizeof(sparse_entry*);
-        if (dirs)
-        {
-            for (size_t i = 0; i < cap; ++i)
-            {
-                if (dirs[i])
-                    ::operator delete(dirs[i], page_bytes, std::align_val_t{page_alignment});
-            }
-            ::operator delete(dirs, dir_bytes, std::align_val_t{dir_alignment});
-        }
-    }
-
     void deallocate_all_pages_() noexcept
     {
-        if (is_flat_mode_)
-        {
-            if (flat_entries_)
-            {
-                ::operator delete(flat_entries_, flat_capacity_ * sizeof(sparse_entry), std::align_val_t{32});
-                flat_entries_ = nullptr;
-            }
-            flat_capacity_ = 0;
-        }
-        else
-        {
-            deallocate_entry_pages_(entry_pages_, page_dir_capacity_);
-            entry_pages_ = nullptr;
-            page_dir_capacity_ = 0;
-        }
+        sparse_table_.clear();
         sparse_size_ = 0;
     }
 
-    void check_mode_switch_() noexcept
-    {
-        if (is_flat_mode_ && sparse_size_ > flat_threshold_)
-        {
-            switch_to_paged_mode_();
-        }
-    }
-
-    // 重建稀疏表: 按新分页大小重新分配所有页,保持 dense 索引有效
-    void rebuild_sparse_table_(size_t new_shift) noexcept
-    {
-        if (new_shift == sparse_page_shift_) [[unlikely]]
-            return;
-        const size_t new_size = size_t{1} << new_shift;
-        const size_t new_mask = new_size - 1;
-
-        // 保存旧状态
-        const bool old_flat = is_flat_mode_;
-        sparse_entry* old_flat_entries = flat_entries_;
-        size_t old_flat_cap = flat_capacity_;
-        sparse_entry** old_entry_pages = entry_pages_;
-        size_t old_dir_cap = page_dir_capacity_;
-        const size_t old_shift = sparse_page_shift_;
-        const size_t old_mask = sparse_page_mask_;
-
-        // 重置分页参数
-        sparse_page_shift_ = new_shift;
-        sparse_page_size_ = new_size;
-        sparse_page_mask_ = new_mask;
-        is_flat_mode_ = (sparse_size_ <= flat_threshold_);
-        if (is_flat_mode_)
-        {
-            page_shift = flat_page_shift_;
-            page_size = SIZE_MAX;
-            page_mask = flat_page_mask_;
-        }
-        else
-        {
-            page_shift = new_shift;
-            page_size = new_size;
-            page_mask = new_mask;
-        }
-        flat_entries_ = nullptr;
-        flat_capacity_ = 0;
-        entry_pages_ = nullptr;
-        page_dir_capacity_ = 0;
-
-        if (dense_.empty())
-        {
-            if (old_flat)
-            {
-                if (old_flat_entries)
-                    ::operator delete(old_flat_entries, old_flat_cap * sizeof(sparse_entry), std::align_val_t{32});
-            }
-            else
-            {
-                deallocate_entry_pages_(old_entry_pages, old_dir_cap);
-            }
-            sparse_size_ = 0;
-            hot_set_clear_();
-            return;
-        }
-
-        // 计算最大索引
-        size_t max_idx = 0;
-        for (size_t i = 0; i < dense_.size(); ++i)
-        {
-            if (dense_[i] > max_idx) max_idx = dense_[i];
-        }
-
-        if (is_flat_mode_)
-        {
-            grow_flat_(max_idx + 1);
-        }
-        else
-        {
-            const size_t needed_pages = (max_idx >> new_shift) + 1;
-            grow_page_directory_(needed_pages);
-            for (size_t pi = 0; pi < needed_pages; ++pi)
-            {
-                allocate_entry_page_(pi);
-            }
-        }
-
-        // 从旧存储读取数据写入新存储
-        sparse_size_ = 0;
-        for (size_t i = 0; i < dense_.size(); ++i)
-        {
-            uint32_t eid = dense_[i];
-            uint32_t v = 0;
-            if (old_flat)
-            {
-                if (eid < old_flat_cap)
-                {
-                    v = old_flat_entries[eid].version;
-                }
-            }
-            else
-            {
-                const size_t old_page_idx = eid >> old_shift;
-                if (old_page_idx < old_dir_cap && old_entry_pages[old_page_idx])
-                {
-                    v = old_entry_pages[old_page_idx][eid & old_mask].version;
-                }
-            }
-            // dense index = i
-            if (is_flat_mode_)
-            {
-                flat_entries_[eid] = {static_cast<uint32_t>(i), v};
-            }
-            else
-            {
-                entry_pages_[eid >> new_shift][eid & new_mask] = {static_cast<uint32_t>(i), v};
-            }
-            if (eid >= sparse_size_)
-                sparse_size_ = eid + 1;
-        }
-
-        // 释放旧存储
-        if (old_flat)
-        {
-            if (old_flat_entries)
-                ::operator delete(old_flat_entries, old_flat_cap * sizeof(sparse_entry), std::align_val_t{32});
-        }
-        else
-        {
-            deallocate_entry_pages_(old_entry_pages, old_dir_cap);
-        }
-
-        ++version_;
-    }
+    void check_mode_switch_() noexcept {}
 
     // ===== hot set cache helpers =====
 
@@ -602,22 +222,23 @@ private:
     void init_typed_storage()
     {
         if (typed_pool_) [[unlikely]] return;
-        auto* pool = new (std::nothrow) class_pool<T>();
-        if (!pool) [[unlikely]] std::terminate();
+        auto* pool = new (std::nothrow) dense<T>();
+        if (!pool) [[unlikely]] std::abort();
         component_size_ = sizeof(T);
         if (pending_increase_capacity_ > 0)
         {
             pool->increase_capacity(pending_increase_capacity_);
             dense_.increase_capacity(pending_increase_capacity_);
+            versions_.increase_capacity(pending_increase_capacity_);
             entity_change_tracking_.increase_capacity(pending_increase_capacity_);
             pending_increase_capacity_ = 0;
         }
         typed_pool_ = pool;
         typed_pool_data_ = pool->data();
         ops_ = {
-            /*.destroy_pool =*/[](void* p) noexcept { delete static_cast<class_pool<T>*>(p); },
+            /*.destroy_pool =*/[](void* p) noexcept { delete static_cast<dense<T>*>(p); },
             /*.swap_pop =*/[](void* p, size_t index) noexcept {
-                auto* pool = static_cast<class_pool<T>*>(p);
+                auto* pool = static_cast<dense<T>*>(p);
                 const size_t last = pool->size() - 1;
                 if (index != last) [[likely]]
                 {
@@ -633,16 +254,16 @@ private:
                 }
                 pool->pop_back();
             },
-            /*.clear_pool =*/[](void* p) noexcept { static_cast<class_pool<T>*>(p)->clear(); },
-            /*.increase_capacity_pool =*/[](void* p, size_t cap) noexcept { static_cast<class_pool<T>*>(p)->increase_capacity(cap); },
+            /*.clear_pool =*/[](void* p) noexcept { static_cast<dense<T>*>(p)->clear(); },
+            /*.increase_capacity_pool =*/[](void* p, size_t cap) noexcept { static_cast<dense<T>*>(p)->increase_capacity(cap); },
             /*.swap_pool =*/[](void* p, size_t i, size_t j) noexcept {
-                auto* pool = static_cast<class_pool<T>*>(p);
+                auto* pool = static_cast<dense<T>*>(p);
                 std::swap((*pool)[i], (*pool)[j]);
             },
-            /*.get_pool_data =*/[](void* p) noexcept -> void* { return static_cast<class_pool<T>*>(p)->data(); },
+            /*.get_pool_data =*/[](void* p) noexcept -> void* { return static_cast<dense<T>*>(p)->data(); },
             /*.is_trivially_copyable =*/std::is_trivially_copyable_v<T>,
             /*.swap_pop_trivial =*/[](void* p, size_t index, size_t comp_size) noexcept {
-                auto* pool = static_cast<class_pool<T>*>(p);
+                auto* pool = static_cast<dense<T>*>(p);
                 const size_t last = pool->size() - 1;
                 if (index != last) [[likely]]
                 {
@@ -652,7 +273,7 @@ private:
                 pool->pop_back();
             },
             /*.swap_pool_trivial =*/[](void* p, size_t i, size_t j, size_t comp_size) noexcept {
-                auto* pool = static_cast<class_pool<T>*>(p);
+                auto* pool = static_cast<dense<T>*>(p);
                 alignas(alignof(std::max_align_t)) char temp[256];
                 auto* data = reinterpret_cast<char*>(pool->data());
                 std::memcpy(temp, data + i * comp_size, comp_size);
@@ -660,31 +281,31 @@ private:
                 std::memcpy(data + j * comp_size, temp, comp_size);
             },
             /*.get_pool_element =*/[](void* p, size_t index) noexcept -> void* {
-                return &(*static_cast<class_pool<T>*>(p))[index];
+                return &(*static_cast<dense<T>*>(p))[index];
             },
             /*.get_pool_size =*/[](void* p) noexcept -> size_t {
-                return static_cast<class_pool<T>*>(p)->size();
+                return static_cast<dense<T>*>(p)->size();
             },
             /*.pool_pop_back =*/[](void* p) noexcept {
-                static_cast<class_pool<T>*>(p)->pop_back();
+                static_cast<dense<T>*>(p)->pop_back();
             },
         };
     }
 
     template <typename T>
-    [[nodiscard]] class_pool<T>* get_typed_pool() noexcept
+    [[nodiscard]] dense<T>* get_typed_pool() noexcept
     {
         assert(typed_pool_ != nullptr && type_id_ == type_id::get_type_id<T>()
             && "get_typed_pool<T>(): type mismatch or pool not initialized");
-        return static_cast<class_pool<T>*>(typed_pool_);
+        return static_cast<dense<T>*>(typed_pool_);
     }
 
     template <typename T>
-    [[nodiscard]] const class_pool<T>* get_typed_pool() const noexcept
+    [[nodiscard]] const dense<T>* get_typed_pool() const noexcept
     {
         assert(typed_pool_ != nullptr && type_id_ == type_id::get_type_id<T>()
             && "get_typed_pool<T>(): type mismatch or pool not initialized");
-        return static_cast<const class_pool<T>*>(typed_pool_);
+        return static_cast<const dense<T>*>(typed_pool_);
     }
 
     template <typename T>
@@ -740,25 +361,8 @@ private:
                 all_new = false;
         }
 
-        // ensure pages for all indices up to max_index
-        if (is_flat_mode_)
-        {
-            if (max_index >= flat_capacity_)
-                grow_flat_(max_index + 1);
-        }
-        else
-        {
-            const size_t max_page = max_index >> sparse_page_shift_;
-            if (max_page >= page_dir_capacity_) [[unlikely]]
-                grow_page_directory_(max_page + 1);
-            for (size_t pi = 0; pi <= max_page; ++pi)
-            {
-                if (!entry_pages_[pi])
-                {
-                    allocate_entry_page_(pi);
-                }
-            }
-        }
+        // ensure capacity for all indices up to max_index
+        sparse_table_.increase_capacity(max_index + 1);
         // update sparse_size_
         if (max_index >= sparse_size_)
             sparse_size_ = max_index + 1;
@@ -773,7 +377,10 @@ private:
             pool->increase_capacity(pool->size() + count);
             typed_pool_data_ = pool->data();
 
-            dense_.append_indices_from(entities.data(), count);
+            for (size_t i = 0; i < count; ++i)
+            {
+                dense_.emplace_back_unchecked(entities[i].parts_.index_);
+            }
             for (size_t i = 0; i < count; ++i)
                 versions_.emplace_back_unchecked(entities[i].parts_.version_);
 
@@ -790,7 +397,7 @@ private:
             }
             else
             {
-                class_pool<DT> temp_components;
+                dense<DT> temp_components;
                 temp_components.increase_capacity(count);
                 for (size_t i = 0; i < count; ++i)
                 {
@@ -802,14 +409,16 @@ private:
                 pool->append_bulk_move(temp_components.data(), count);
             }
 
-            entity_change_tracking_.append_generated(count, [this]() noexcept {
-                return change_tracking_entry{++global_change_counter_, ++global_added_counter_};
-            });
+            entity_change_tracking_.increase_capacity(entity_change_tracking_.size() + count);
+            for (size_t i = 0; i < count; ++i)
+            {
+                entity_change_tracking_.emplace_back_unchecked(change_tracking_entry{++global_change_counter_, ++global_added_counter_});
+            }
         }
         else
         {
-            class_pool<uint32_t> new_positions;
-            class_pool<uint32_t> exist_positions;
+            dense<uint32_t> new_positions;
+            dense<uint32_t> exist_positions;
             new_positions.increase_capacity(count);
             exist_positions.increase_capacity(count);
             for (size_t i = 0; i < count; ++i)
@@ -833,9 +442,9 @@ private:
                 pool->increase_capacity(pool->size() + new_count);
                 typed_pool_data_ = pool->data();
 
-                class_pool<uint32_t> new_entity_indices;
-                class_pool<uint32_t> new_entity_versions;
-                class_pool<DT> new_components;
+                dense<uint32_t> new_entity_indices;
+                dense<uint32_t> new_entity_versions;
+                dense<DT> new_components;
                 new_entity_indices.increase_capacity(new_count);
                 new_entity_versions.increase_capacity(new_count);
                 new_components.increase_capacity(new_count);
@@ -862,9 +471,11 @@ private:
                     sparse_set_unchecked(static_cast<uint32_t>(idx), entities[i].parts_.version_, static_cast<uint32_t>(dense_old + j));
                 }
 
-                entity_change_tracking_.append_generated(new_count, [this]() noexcept {
-                    return change_tracking_entry{++global_change_counter_, ++global_added_counter_};
-                });
+                entity_change_tracking_.increase_capacity(entity_change_tracking_.size() + new_count);
+                for (size_t i = 0; i < new_count; ++i)
+                {
+                    entity_change_tracking_.emplace_back_unchecked(change_tracking_entry{++global_change_counter_, ++global_added_counter_});
+                }
             }
 
             for (size_t j = 0; j < exist_count; ++j)
@@ -874,7 +485,7 @@ private:
                 uint32_t dense_idx = sparse_dense_at(e.parts_.index_);
                 (*pool)[dense_idx].~DT();
                 new (&(*pool)[dense_idx]) DT(get_component(i));
-                entity_change_tracking_.sparse_emplace_at(dense_idx, change_tracking_entry{++global_change_counter_, entity_change_tracking_[dense_idx].added_version});
+                entity_change_tracking_[dense_idx] = change_tracking_entry{++global_change_counter_, entity_change_tracking_[dense_idx].added_version};
             }
         }
 
@@ -938,6 +549,15 @@ public:
         if (e.parts_.index_ == sparse_size_) [[likely]]
         {
             uint32_t dense_idx = static_cast<uint32_t>(dense_.size());
+            if (dense_idx >= dense_.capacity()) [[unlikely]]
+            {
+                size_t new_cap = (dense_.capacity() == 0) ? 64 : dense_.capacity() * 2;
+                dense_.increase_capacity(new_cap);
+                versions_.increase_capacity(new_cap);
+                entity_change_tracking_.increase_capacity(new_cap);
+                pool->increase_capacity(new_cap);
+                typed_pool_data_ = pool->data();
+            }
             sparse_set_at(e.parts_.index_, dense_idx, e.parts_.version_);
             dense_.emplace_back_unchecked(e.parts_.index_);
             versions_.emplace_back_unchecked(e.parts_.version_);
@@ -955,18 +575,6 @@ public:
         // slow path: index may be beyond current size or within existing range
         if (e.parts_.index_ >= sparse_size_)
         {
-            if (is_flat_mode_)
-            {
-                ensure_flat_or_page_(e.parts_.index_);
-            }
-            else
-            {
-                const size_t target_page = e.parts_.index_ >> sparse_page_shift_;
-                for (size_t pi = 0; pi <= target_page; ++pi)
-                {
-                    ensure_page_(pi);
-                }
-            }
             sparse_size_ = static_cast<size_t>(e.parts_.index_) + 1;
         }
 
@@ -1005,8 +613,16 @@ public:
             uint64_t preserved_added = (dense_idx < entity_change_tracking_.size())
                 ? entity_change_tracking_[dense_idx].added_version : 0;
             uint64_t new_added = is_new_add ? ++global_added_counter_ : preserved_added;
-            entity_change_tracking_.sparse_emplace_at(dense_idx,
-                change_tracking_entry{++global_change_counter_, new_added});
+            if (dense_idx < entity_change_tracking_.size())
+            {
+                entity_change_tracking_[dense_idx] =
+                    change_tracking_entry{++global_change_counter_, new_added};
+            }
+            else
+            {
+                entity_change_tracking_.emplace_back(
+                    change_tracking_entry{++global_change_counter_, new_added});
+            }
         }
         typed_pool_data_ = pool->data();
         check_mode_switch_();
@@ -1024,32 +640,6 @@ public:
         }
         return add_batch_impl<T>(entities, entities.size(),
             [&components](size_t i) -> const T& { return components[i]; });
-    }
-
-    template <typename T>
-    operating_message add_batch(const class_pool<entity>& entities, const class_pool<T>& components) noexcept
-    {
-        if (entities.size() != components.size()) [[unlikely]]
-        {
-            operating_message result;
-            result.write_message(false, "single_class_set::add_batch(): entities and components size mismatch");
-            return result;
-        }
-        return add_batch_impl<T>(entities, entities.size(),
-            [&components](size_t i) -> const T& { return components[i]; });
-    }
-
-    template <typename T>
-    operating_message add_batch(class_pool<entity>&& entities, class_pool<T>&& components) noexcept
-    {
-        if (entities.size() != components.size()) [[unlikely]]
-        {
-            operating_message result;
-            result.write_message(false, "single_class_set::add_batch(): entities and components size mismatch");
-            return result;
-        }
-        return add_batch_impl<T>(entities, entities.size(),
-            [&components](size_t i) -> T&& { return std::move(components[i]); });
     }
 
     template <typename T>
@@ -1211,32 +801,14 @@ public:
 
     void prefetch_component(uint32_t entity_index) const noexcept
     {
-        if (is_flat_mode_)
-        {
-            if (entity_index < flat_capacity_)
-                PREFETCH_R(&flat_entries_[entity_index]);
-        }
-        else
-        {
-            const size_t page_idx = entity_index >> sparse_page_shift_;
-            if (page_idx < page_dir_capacity_ && entry_pages_[page_idx])
-                PREFETCH_R(&entry_pages_[page_idx][entity_index & sparse_page_mask_]);
-        }
+        if (entity_index < sparse_table_.capacity())
+            PREFETCH_R(&sparse_table_[entity_index]);
     }
 
     void prefetch_ptr(entity e) const noexcept
     {
-        if (is_flat_mode_)
-        {
-            if (e.parts_.index_ < flat_capacity_)
-                PREFETCH_R(&flat_entries_[e.parts_.index_]);
-        }
-        else
-        {
-            const size_t page_idx = e.parts_.index_ >> sparse_page_shift_;
-            if (page_idx < page_dir_capacity_ && entry_pages_[page_idx])
-                PREFETCH_R(&entry_pages_[page_idx][e.parts_.index_ & sparse_page_mask_]);
-        }
+        if (e.parts_.index_ < sparse_table_.capacity())
+            PREFETCH_R(&sparse_table_[e.parts_.index_]);
     }
 
     void prefetch_ptr_batch(const entity* entities, size_t count) const noexcept
@@ -1244,17 +816,8 @@ public:
         for (size_t i = 0; i < count; ++i)
         {
             const uint32_t idx = entities[i].parts_.index_;
-            if (is_flat_mode_)
-            {
-                if (idx < flat_capacity_)
-                    PREFETCH_R(&flat_entries_[idx]);
-            }
-            else
-            {
-                const size_t page_idx = idx >> sparse_page_shift_;
-                if (page_idx < page_dir_capacity_ && entry_pages_[page_idx])
-                    PREFETCH_R(&entry_pages_[page_idx][idx & sparse_page_mask_]);
-            }
+            if (idx < sparse_table_.capacity())
+                PREFETCH_R(&sparse_table_[idx]);
         }
     }
 
@@ -1316,19 +879,9 @@ public:
             if (i + pf_dist < count) [[likely]]
             {
                 uint32_t pf_idx = entries[i + pf_dist].key;
-                if (pf_idx != UINT32_MAX)
+                if (pf_idx != UINT32_MAX && pf_idx < sparse_table_.capacity())
                 {
-                    if (is_flat_mode_)
-                    {
-                        if (pf_idx < flat_capacity_)
-                            PREFETCH_R(&flat_entries_[pf_idx]);
-                    }
-                    else
-                    {
-                        const size_t pf_page_idx = pf_idx >> sparse_page_shift_;
-                        if (pf_page_idx < page_dir_capacity_ && entry_pages_[pf_page_idx])
-                            PREFETCH_R(&entry_pages_[pf_page_idx][pf_idx & sparse_page_mask_]);
-                    }
+                    PREFETCH_R(&sparse_table_[pf_idx]);
                 }
             }
 
@@ -1396,17 +949,8 @@ public:
                 if (i + 8 < count) [[likely]]
                 {
                     const uint32_t pf_idx = entities[i + 8].parts_.index_;
-                    if (is_flat_mode_)
-                    {
-                        if (pf_idx < flat_capacity_)
-                            PREFETCH_R(&flat_entries_[pf_idx]);
-                    }
-                    else
-                    {
-                        const size_t pf_page_idx = pf_idx >> sparse_page_shift_;
-                        if (pf_page_idx < page_dir_capacity_ && entry_pages_[pf_page_idx])
-                            PREFETCH_R(&entry_pages_[pf_page_idx][pf_idx & sparse_page_mask_]);
-                    }
+                    if (pf_idx < sparse_table_.capacity())
+                        PREFETCH_R(&sparse_table_[pf_idx]);
                 }
 
                 if (!e.is_valid() || e.parts_.index_ >= sparse_size_) [[unlikely]]
@@ -1571,28 +1115,21 @@ public:
     }
 
     template <typename T>
-    [[nodiscard]] class_pool<T>* get_typed_pool_ptr() noexcept
+    [[nodiscard]] dense<T>* get_typed_pool_ptr() noexcept
     {
         if (type_id_ != type_id::get_type_id<T>()) [[unlikely]] return nullptr;
-        return static_cast<class_pool<T>*>(typed_pool_);
+        return static_cast<dense<T>*>(typed_pool_);
     }
 
     template <typename T>
-    [[nodiscard]] const class_pool<T>* get_typed_pool_ptr() const noexcept
+    [[nodiscard]] const dense<T>* get_typed_pool_ptr() const noexcept
     {
         if (type_id_ != type_id::get_type_id<T>()) [[unlikely]] return nullptr;
-        return static_cast<const class_pool<T>*>(typed_pool_);
+        return static_cast<const dense<T>*>(typed_pool_);
     }
 
     single_class_set(single_class_set&& other) noexcept
-    : sparse_page_shift_(other.sparse_page_shift_)
-    , sparse_page_size_(other.sparse_page_size_)
-    , sparse_page_mask_(other.sparse_page_mask_)
-    , flat_entries_(other.flat_entries_)
-    , flat_capacity_(other.flat_capacity_)
-    , entry_pages_(other.entry_pages_)
-    , page_dir_capacity_(other.page_dir_capacity_)
-    , is_flat_mode_(other.is_flat_mode_)
+    : sparse_table_(std::move(other.sparse_table_))
     , sparse_size_(other.sparse_size_)
     , dense_(std::move(other.dense_))
     , type_id_(other.type_id_)
@@ -1611,15 +1148,8 @@ public:
     , on_remove_data_(other.on_remove_data_)
     , on_modify_(other.on_modify_)
     , on_modify_data_(other.on_modify_data_)
-    , page_shift(other.page_shift)
-    , page_size(other.page_size)
-    , page_mask(other.page_mask)
     {
         std::memcpy(hot_set_, other.hot_set_, sizeof(hot_set_));
-        other.flat_entries_ = nullptr;
-        other.flat_capacity_ = 0;
-        other.entry_pages_ = nullptr;
-        other.page_dir_capacity_ = 0;
         other.sparse_size_ = 0;
         other.typed_pool_ = nullptr;
         other.ops_ = {};
@@ -1642,16 +1172,8 @@ public:
         if (this != &other) [[likely]]
         {
             if (typed_pool_ && ops_.destroy_pool) ops_.destroy_pool(typed_pool_);
-            deallocate_all_pages_();
 
-            sparse_page_shift_ = other.sparse_page_shift_;
-            sparse_page_size_ = other.sparse_page_size_;
-            sparse_page_mask_ = other.sparse_page_mask_;
-            flat_entries_ = other.flat_entries_;
-            flat_capacity_ = other.flat_capacity_;
-            entry_pages_ = other.entry_pages_;
-            page_dir_capacity_ = other.page_dir_capacity_;
-            is_flat_mode_ = other.is_flat_mode_;
+            sparse_table_ = std::move(other.sparse_table_);
             sparse_size_ = other.sparse_size_;
             std::memcpy(hot_set_, other.hot_set_, sizeof(hot_set_));
             dense_ = std::move(other.dense_);
@@ -1671,14 +1193,7 @@ public:
             on_remove_data_ = other.on_remove_data_;
             on_modify_ = other.on_modify_;
             on_modify_data_ = other.on_modify_data_;
-            page_shift = other.page_shift;
-            page_size = other.page_size;
-            page_mask = other.page_mask;
 
-            other.flat_entries_ = nullptr;
-            other.flat_capacity_ = 0;
-            other.entry_pages_ = nullptr;
-            other.page_dir_capacity_ = 0;
             other.sparse_size_ = 0;
             other.typed_pool_ = nullptr;
             other.ops_ = {};
@@ -1714,7 +1229,9 @@ public:
     void increase_capacity(size_t capacity) noexcept
     {
         dense_.increase_capacity(capacity);
+        versions_.increase_capacity(capacity);
         entity_change_tracking_.increase_capacity(capacity);
+        sparse_table_.increase_capacity(capacity);
         if (typed_pool_ && ops_.increase_capacity_pool)
         {
             ops_.increase_capacity_pool(typed_pool_, capacity);
@@ -1724,43 +1241,25 @@ public:
         {
             if (capacity > pending_increase_capacity_) pending_increase_capacity_ = capacity;
         }
-        if (is_flat_mode_)
-        {
-            if (capacity > flat_capacity_)
-                grow_flat_(capacity);
-        }
-        else
-        {
-            const size_t needed_pages = (capacity >> sparse_page_shift_) + 1;
-            if (needed_pages > page_dir_capacity_)
-                grow_page_directory_(needed_pages);
-            for (size_t i = 0; i < needed_pages; ++i)
-            {
-                if (!entry_pages_[i])
-                {
-                    allocate_entry_page_(i);
-                }
-            }
-        }
     }
 
-    [[nodiscard]] class_pool<uint32_t>& get_entity_indices() noexcept
+    [[nodiscard]] dense<uint32_t>& get_entity_indices() noexcept
     {
         return dense_;
     }
 
-    [[nodiscard]] const class_pool<uint32_t>& get_entity_indices() const noexcept
+    [[nodiscard]] const dense<uint32_t>& get_entity_indices() const noexcept
     {
         return dense_;
     }
 
     // 与 dense_ 同步的 version 数组, 遍历时直接读连续内存
-    [[nodiscard]] class_pool<uint32_t>& get_entity_versions() noexcept
+    [[nodiscard]] dense<uint32_t>& get_entity_versions() noexcept
     {
         return versions_;
     }
 
-    [[nodiscard]] const class_pool<uint32_t>& get_entity_versions() const noexcept
+    [[nodiscard]] const dense<uint32_t>& get_entity_versions() const noexcept
     {
         return versions_;
     }
@@ -1821,17 +1320,17 @@ public:
     }
 
     template <typename T>
-    void reorder_dense_by_indices(const class_pool<size_t>& sorted_indices) noexcept
+    void reorder_dense_by_indices(const dense<size_t>& sorted_indices) noexcept
     {
         const size_t n = dense_.size();
         if (n <= 1 || sorted_indices.size() < n) [[unlikely]] return;
 
-        class_pool<uint32_t> new_dense;
+        dense<uint32_t> new_dense;
         new_dense.increase_capacity(n);
         for (size_t i = 0; i < n; ++i)
             new_dense.emplace_back(dense_[sorted_indices[i]]);
 
-        class_pool<uint32_t> new_versions;
+        dense<uint32_t> new_versions;
         if (versions_.size() >= n)
         {
             new_versions.increase_capacity(n);
@@ -1839,10 +1338,10 @@ public:
                 new_versions.emplace_back(versions_[sorted_indices[i]]);
         }
 
-        class_pool<T>* typed_pool = get_typed_pool_ptr<T>();
+        dense<T>* typed_pool = get_typed_pool_ptr<T>();
         if (typed_pool)
         {
-            class_pool<T> new_pool;
+            dense<T> new_pool;
             new_pool.increase_capacity(n);
             for (size_t i = 0; i < n; ++i)
                 new_pool.emplace_back(std::move((*typed_pool)[sorted_indices[i]]));
@@ -1850,7 +1349,7 @@ public:
             if (ops_.get_pool_data) typed_pool_data_ = ops_.get_pool_data(typed_pool_);
         }
 
-        class_pool<change_tracking_entry> new_tracking;
+        dense<change_tracking_entry> new_tracking;
         if (entity_change_tracking_.size() >= n)
         {
             new_tracking.increase_capacity(n);
@@ -1886,84 +1385,6 @@ public:
         return sparse_size_;
     }
 
-    [[nodiscard]] size_t get_page_directory_capacity() const noexcept
-    {
-        return page_dir_capacity_;
-    }
-
-    // 合并后 dense+version 同页, 返回 entry 页目录指针
-    [[nodiscard]] const sparse_entry* const* get_entry_pages() const noexcept
-    {
-        return entry_pages_;
-    }
-
-    [[nodiscard]] bool is_flat_mode() const noexcept
-    {
-        return is_flat_mode_;
-    }
-
-    // flat 模式返回 flat_entries_, paged 模式返回对应页指针
-    [[nodiscard]] const sparse_entry* get_flat_entries() const noexcept
-    {
-        return flat_entries_;
-    }
-
-    [[nodiscard]] size_t get_flat_capacity() const noexcept
-    {
-        return flat_capacity_;
-    }
-
-    // 分页大小配置 (运行时可修改)
-    [[nodiscard]] size_t get_page_size_shift() const noexcept
-    {
-        return sparse_page_shift_;
-    }
-
-    void set_page_size_shift(size_t shift) noexcept
-    {
-        if (shift < 6 || shift > 20) [[unlikely]]
-            return;
-        rebuild_sparse_table_(shift);
-    }
-
-    // 实例级分页参数 (flat 模式下 page_shift=32, page_mask=SIZE_MAX)
-    size_t page_shift{flat_page_shift_};
-    size_t page_size{SIZE_MAX};
-    size_t page_mask{flat_page_mask_};
-
-    // traversal helper: get entry page pointer for a given entity index
-    // dense+version 合并存储, get_dense_page 与 get_version_page 返回同一指针
-    [[nodiscard]] const sparse_entry* get_dense_page(uint32_t entity_index) const noexcept
-    {
-        if (is_flat_mode_) [[likely]]
-        {
-            if (entity_index >= flat_capacity_) [[unlikely]]
-                return nullptr;
-            return flat_entries_;
-        }
-        const size_t page_idx = entity_index >> sparse_page_shift_;
-        if (page_idx >= page_dir_capacity_) [[unlikely]]
-            return nullptr;
-        return entry_pages_[page_idx];
-    }
-
-    [[nodiscard]] const sparse_entry* get_version_page(uint32_t entity_index) const noexcept
-    {
-        return get_dense_page(entity_index);
-    }
-
-    // traversal helper: read dense index from a known entry page pointer
-    [[nodiscard]] static uint32_t read_dense_from_page(const sparse_entry* page, uint32_t entity_index, size_t mask) noexcept
-    {
-        return page[entity_index & mask].dense;
-    }
-
-    // traversal helper: read version from a known entry page pointer
-    [[nodiscard]] static uint32_t read_version_from_page(const sparse_entry* page, uint32_t entity_index, size_t mask) noexcept
-    {
-        return page[entity_index & mask].version;
-    }
-
     void clear_hot_set() noexcept
     {
         hot_set_clear_();
@@ -1977,7 +1398,6 @@ public:
     ~single_class_set() noexcept
     {
         if (typed_pool_ && ops_.destroy_pool) ops_.destroy_pool(typed_pool_);
-        deallocate_all_pages_();
     }
 };
 

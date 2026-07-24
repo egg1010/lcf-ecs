@@ -35,10 +35,10 @@ private:
     size_t                         primary_idx_{0};
     reorder_state<N>               state_;
     reorder_state<N>*              shared_{nullptr};
-    class_pool<uint64_t>              required_masks_;
+    dense<uint64_t>              required_masks_;
     uint32_t                       max_block_{0};
     bool                           use_mask_path_{false};
-    class_pool<single_class_set*>     req_sets_;
+    dense<single_class_set*>     req_sets_;
 
     reorder_state<N>* st() noexcept { return shared_ ? shared_ : &state_; }
 
@@ -97,35 +97,14 @@ private:
 
         if (primary_idx_ == 0)
         {
-            const sparse_entry* re_pri_ver_page = nullptr;
-            size_t re_pri_page_idx = SIZE_MAX;
-            const sparse_entry* re_other_dense_page = nullptr;
-            size_t re_other_page_idx = SIZE_MAX;
-
             for (size_t i = 0; i < s->owned_size; ++i)
             {
                 uint32_t eid = indices[i];
-
-                size_t pid = eid >> primary->page_shift;
-                if (pid != re_other_page_idx) [[unlikely]]
-                {
-                    re_other_dense_page = other_set->get_dense_page(eid);
-                    re_other_page_idx = pid;
-                }
-                uint32_t od = 0xFFFFFFFFu;
-                if (re_other_dense_page) [[likely]]
-                    od = single_class_set::read_dense_from_page(re_other_dense_page, eid, other_set->page_mask);
+                uint32_t od = other_set->sparse_dense_at_public(eid);
 
                 if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
                 {
-                    if (pid != re_pri_page_idx) [[unlikely]]
-                    {
-                        re_pri_ver_page = primary->get_version_page(eid);
-                        re_pri_page_idx = pid;
-                    }
-                    uint32_t ver = 0;
-                    if (re_pri_ver_page) [[likely]]
-                        ver = single_class_set::read_version_from_page(re_pri_ver_page, eid, primary->page_mask);
+                    uint32_t ver = primary->sparse_version_at_public(eid);
                     entity e(eid, ver);
                     func(e, pool0_data[i], pool1_data[od]);
                 }
@@ -137,35 +116,14 @@ private:
         }
         else
         {
-            const sparse_entry* re_pri_ver_page = nullptr;
-            size_t re_pri_page_idx = SIZE_MAX;
-            const sparse_entry* re_other_dense_page = nullptr;
-            size_t re_other_page_idx = SIZE_MAX;
-
             for (size_t i = 0; i < s->owned_size; ++i)
             {
                 uint32_t eid = indices[i];
-
-                size_t pid = eid >> primary->page_shift;
-                if (pid != re_other_page_idx) [[unlikely]]
-                {
-                    re_other_dense_page = other_set->get_dense_page(eid);
-                    re_other_page_idx = pid;
-                }
-                uint32_t od = 0xFFFFFFFFu;
-                if (re_other_dense_page) [[likely]]
-                    od = single_class_set::read_dense_from_page(re_other_dense_page, eid, other_set->page_mask);
+                uint32_t od = other_set->sparse_dense_at_public(eid);
 
                 if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
                 {
-                    if (pid != re_pri_page_idx) [[unlikely]]
-                    {
-                        re_pri_ver_page = primary->get_version_page(eid);
-                        re_pri_page_idx = pid;
-                    }
-                    uint32_t ver = 0;
-                    if (re_pri_ver_page) [[likely]]
-                        ver = single_class_set::read_version_from_page(re_pri_ver_page, eid, primary->page_mask);
+                    uint32_t ver = primary->sparse_version_at_public(eid);
                     entity e(eid, ver);
                     func(e, pool0_data[od], pool1_data[i]);
                 }
@@ -190,20 +148,6 @@ private:
         auto* primary = sets_[primary_idx_];
         auto& indices = primary->get_entity_indices();
 
-        // per-set page caches for sparse lookups
-        std::array<const sparse_entry*, N> set_dense_pages{};
-        std::array<size_t, N> set_page_idxs{};
-        set_page_idxs.fill(SIZE_MAX);
-
-        auto get_sparse_cached = [&](single_class_set* s, uint32_t idx, const sparse_entry*& cur_page, size_t& cur_page_idx) -> uint32_t {
-            size_t pid = idx >> s->page_shift;
-            if (pid != cur_page_idx) [[unlikely]] { cur_page = s->get_dense_page(idx); cur_page_idx = pid; }
-            return (cur_page) ? single_class_set::read_dense_from_page(cur_page, idx, s->page_mask) : 0xFFFFFFFFu;
-        };
-
-        const sparse_entry* re_pri_ver_page = nullptr;
-        size_t re_pri_page_idx = SIZE_MAX;
-
         for (size_t i = 0; i < s->owned_size; ++i)
         {
             uint32_t eid = indices[i];
@@ -211,21 +155,13 @@ private:
             auto comps = std::forward_as_tuple(
                 (Is == primary_idx_)
                     ? std::get<Is>(pools)[i]
-                    : std::get<Is>(pools)[get_sparse_cached(sets_[Is], eid, set_dense_pages[Is], set_page_idxs[Is])]...
+                    : std::get<Is>(pools)[sets_[Is]->sparse_dense_at_public(eid)]...
             );
 
             std::apply([&](auto&... refs) {
                 if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
                 {
-                    size_t pid = eid >> primary->page_shift;
-                    if (pid != re_pri_page_idx) [[unlikely]]
-                    {
-                        re_pri_ver_page = primary->get_version_page(eid);
-                        re_pri_page_idx = pid;
-                    }
-                    uint32_t ver = 0;
-                    if (re_pri_ver_page) [[likely]]
-                        ver = single_class_set::read_version_from_page(re_pri_ver_page, eid, primary->page_mask);
+                    uint32_t ver = primary->sparse_version_at_public(eid);
                     entity e(eid, ver);
                     func(e, refs...);
                 }

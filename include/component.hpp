@@ -55,32 +55,32 @@ struct change_record
     uint32_t dense_index;
 };
 
-// 辅助: 判断 C 是否为任意 class_pool 特化
+// 辅助: 判断 C 是否为任意 dense 特化
 template <typename C>
-struct is_class_pool : std::false_type {};
+struct is_dense : std::false_type {};
 template <typename T>
-struct is_class_pool<class_pool<T>> : std::true_type {};
+struct is_dense<dense<T>> : std::true_type {};
 
 template <typename C>
-concept not_class_pool = !is_class_pool<std::remove_cvref_t<C>>::value;
+concept not_dense = !is_dense<std::remove_cvref_t<C>>::value;
 
-// 连续容器 concept: 有 value_type/data()/size(), 且非 class_pool (避免与 class_pool 重载冲突)
-// 花括号初始化列表 {a,b} 无法推导模板参数 C, 故 class_pool 花括号惯用法不受影响
+// 连续容器 concept: 有 value_type/data()/size(), 且非 dense (避免与 dense 重载冲突)
+// 花括号初始化列表 {a,b} 无法推导模板参数 C, 故 dense 花括号惯用法不受影响
 template <typename C>
 concept range_container = requires(const C& c) {
     typename C::value_type;
     { c.data() } -> std::same_as<const typename C::value_type*>;
     { c.size() } -> std::convertible_to<size_t>;
-} && not_class_pool<C>;
+} && not_dense<C>;
 
 class manager
 {
 private:
-    class_pool<single_class_set> components_c_;
-    class_pool<component_meta> component_metas_;
+    dense<single_class_set> components_c_;
+    dense<component_meta> component_metas_;
     entity_manager entity_manager_;
     size_t default_component_capacity_{0};
-    class_pool<system_context> system_contexts_;
+    dense<system_context> system_contexts_;
 
     struct component_signal_event
     {
@@ -92,7 +92,7 @@ private:
     static_assert((comp_signal_buffer_size & (comp_signal_buffer_size - 1)) == 0,
                   "comp_signal_buffer_size must be power of 2");
     ring_buffer<component_signal_event, comp_signal_buffer_size> comp_signal_buf_;
-    class_pool<component_signal_event> comp_signal_overflow_chain_;
+    dense<component_signal_event> comp_signal_overflow_chain_;
     size_t comp_signal_overflow_read_{0};
     uint64_t comp_signal_overflow_count_{0};
     bool comp_signal_enabled_{true};
@@ -104,7 +104,7 @@ private:
     static_assert((change_log_capacity & (change_log_capacity - 1)) == 0,
                   "change_log_capacity must be power of 2");
     ring_buffer<change_record, change_log_capacity> change_log_;
-    class_pool<change_record> change_log_overflow_;
+    dense<change_record> change_log_overflow_;
     size_t change_log_overflow_read_{0};
     uint16_t current_frame_{0};
     bool change_log_enabled_{true};
@@ -269,31 +269,14 @@ public:
     }
 
     template <typename T>
-    operating_message add_batch(const class_pool<entity>& entities, const class_pool<T>& components) noexcept
+    operating_message add_batch(const dense<entity>& entities, const dense<T>& components) noexcept
     {
-        return add_batch(std::span<const entity>(entities.data(), entities.size()),
-                         std::span<const T>(components.data(), components.size()));
-    }
-
-    template <typename T>
-    operating_message add_batch(class_pool<entity>&& entities, class_pool<T>&& components) noexcept
-    {
-        using DecayedT = std::decay_t<T>;
-        int type_id = type_id::get_type_id<DecayedT>();
-        register_component_meta<DecayedT>();
-        ensure_type_exists(type_id);
-        uint32_t block = component_metas_[type_id].mask_block;
-        uint32_t offset = component_metas_[type_id].mask_offset;
-        for (size_t i = 0; i < entities.size(); ++i)
-        {
-            set_entity_mask_bit(entities[i], block, offset);
-        }
-        operating_message result = components_c_[type_id].add_batch(std::move(entities), std::move(components));
-        return result;
+        return add_batch<T>(std::span<const entity>(entities.data(), entities.size()),
+                            std::span<const T>(components.data(), components.size()));
     }
 
     // 通用容器入参 (vector/array 等): 内部转 span 委托
-    // 花括号初始化 {a,b} 不匹配此重载 (无法推导 C), 仍走 class_pool 路径
+    // 花括号初始化 {a,b} 不匹配此重载 (无法推导 C), 仍走 dense 路径
     template <typename T, range_container C1, range_container C2>
         requires std::same_as<typename C1::value_type, entity>
               && std::same_as<typename C2::value_type, T>
@@ -570,24 +553,7 @@ public:
     }
 
     template <typename T>
-    void set_component_page_size_shift(size_t shift) noexcept
-    {
-        single_class_set* set = get_single_class_set<T>();
-        if (set) [[likely]]
-        {
-            set->set_page_size_shift(shift);
-        }
-    }
-
-    template <typename T>
-    [[nodiscard]] size_t get_component_page_size_shift() const noexcept
-    {
-        const single_class_set* set = get_single_class_set<T>();
-        return set ? set->get_page_size_shift() : 10;
-    }
-
-    template <typename T>
-    [[nodiscard]] class_pool<T>* get_component_container() noexcept
+    [[nodiscard]] dense<T>* get_component_container() noexcept
     {
         single_class_set* set = get_single_class_set<T>();
         return set ? set->get_typed_pool_ptr<T>() : nullptr;
@@ -707,7 +673,7 @@ public:
         if (!pool) [[unlikely]] return;
 
         const size_t n = set->size();
-        class_pool<size_t> indices;
+        dense<size_t> indices;
         indices.increase_capacity(n);
         for (size_t i = 0; i < n; ++i) indices.emplace_back(i);
 
@@ -740,7 +706,7 @@ public:
         if (!pool_t || !pool_other) [[unlikely]] return;
 
         const size_t n = set_t->size();
-        class_pool<size_t> indices;
+        dense<size_t> indices;
         indices.increase_capacity(n);
         for (size_t i = 0; i < n; ++i)
             indices.emplace_back(i);
@@ -753,7 +719,7 @@ public:
 
         if constexpr (std::is_trivially_copyable_v<Other> && sizeof(Other) <= 64)
         {
-            class_pool<Other> other_values;
+            dense<Other> other_values;
             other_values.increase_capacity(n);
             for (size_t i = 0; i < n; ++i)
             {
@@ -875,26 +841,10 @@ public:
     }
 
     // ======================== runtime_view 工厂方法 ========================
-    [[nodiscard]] ecs::runtime_view runtime_view_create(class_pool<int> required_ids,
-                                                    class_pool<int> excluded_ids = {}) noexcept
-    {
-        return ecs::runtime_view(this, ecs::runtime_query(this, std::move(required_ids), std::move(excluded_ids)));
-    }
-
-    // span 入参: 内部构造 class_pool<int> 委托现有实现
     [[nodiscard]] ecs::runtime_view runtime_view_create(std::span<const int> required_ids,
                                                     std::span<const int> excluded_ids = {}) noexcept
     {
-        class_pool<int> req;
-        req.increase_capacity(required_ids.size());
-        for (int id : required_ids) req.emplace_back(id);
-        class_pool<int> exc;
-        if (!excluded_ids.empty())
-        {
-            exc.increase_capacity(excluded_ids.size());
-            for (int id : excluded_ids) exc.emplace_back(id);
-        }
-        return runtime_view_create(std::move(req), std::move(exc));
+        return ecs::runtime_view(this, ecs::runtime_query(this, required_ids, excluded_ids));
     }
 
     // 通用容器入参 (vector/array 等, 仅 required): 委托 span 版本
@@ -926,19 +876,10 @@ public:
     }
 
     // 运行时 term 查询(支持 OR/OPTIONAL/NOT 与读写标注)
-    [[nodiscard]] ecs::runtime_view runtime_view_create_from_terms(class_pool<ecs::runtime_term> terms) noexcept
-    {
-        return ecs::runtime_view(this, ecs::runtime_query(this, std::move(terms)));
-    }
-
-    // span 入参: 内部构造 class_pool<runtime_term> 委托
     [[nodiscard]] ecs::runtime_view runtime_view_create_from_terms(
         std::span<const ecs::runtime_term> terms) noexcept
     {
-        class_pool<ecs::runtime_term> pool;
-        pool.increase_capacity(terms.size());
-        for (const auto& t : terms) pool.emplace_back(t);
-        return runtime_view_create_from_terms(std::move(pool));
+        return ecs::runtime_view(this, ecs::runtime_query(this, terms));
     }
 
     // 通用容器入参 (vector/array 等): 委托 span 版本
@@ -1114,7 +1055,7 @@ public:
         system_contexts_.emplace_back(ctx);
     }
 
-    [[nodiscard]] const class_pool<system_context>& get_system_contexts() const noexcept
+    [[nodiscard]] const dense<system_context>& get_system_contexts() const noexcept
     {
         return system_contexts_;
     }
@@ -1181,11 +1122,8 @@ public:
     {
         if (!set_ || e.parts_.index_ >= sparse_size_) [[unlikely]]
             return;
-        const size_t page_idx = e.parts_.index_ >> set_->page_shift;
-        if (page_idx < set_->get_page_directory_capacity() && set_->get_entry_pages()[page_idx])
-        {
-            PREFETCH_R(&set_->get_entry_pages()[page_idx][e.parts_.index_ & set_->page_mask]);
-        }
+        if (e.parts_.index_ < set_->sparse_table_.capacity())
+            PREFETCH_R(&set_->sparse_table_[e.parts_.index_]);
     }
 
     void prefetch_data(entity e) const noexcept

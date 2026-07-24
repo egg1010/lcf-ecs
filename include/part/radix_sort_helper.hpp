@@ -15,6 +15,16 @@
 #endif
 #include "../config/ecs_config.hpp"
 
+#ifndef PREFETCH_R
+#if defined(__GNUC__) || defined(__clang__)
+#define PREFETCH_R(ptr) __builtin_prefetch(ptr, 0, 3)
+#elif defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
+#define PREFETCH_R(ptr) _mm_prefetch(reinterpret_cast<const char*>(ptr), _MM_HINT_T0)
+#else
+#define PREFETCH_R(ptr) ((void)0)
+#endif
+#endif
+
 namespace detail
 {
 template <typename Entry>

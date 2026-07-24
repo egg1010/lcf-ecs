@@ -5,7 +5,7 @@
 #include <type_traits>
 #include <bit>
 #include <array>
-#include "class_pool.hpp"
+#include "dense.hpp"
 #include "force_inline.hpp"
 
 struct memory_block
@@ -107,7 +107,7 @@ private:
         sl = (size >> (fl - SL_BITS)) - SL_COUNT;
     }
 
-    class_pool<memory_block> memory_chunks_;
+    dense<memory_block> memory_chunks_;
     std::array<block_header*, FL_MAX * SL_COUNT> free_lists_;
     uint32_t fl_bitmap_;
     std::array<uint32_t, FL_MAX> sl_bitmaps_;

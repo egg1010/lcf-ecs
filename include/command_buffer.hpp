@@ -1,5 +1,5 @@
 #pragma once
-#include "part/class_pool.hpp"
+#include "part/dense.hpp"
 #include "part/void_any.hpp"
 #include "entity.hpp"
 #include <cstdint>
@@ -31,7 +31,7 @@ private:
     };
 
     manager* mgr_;
-    class_pool<command> commands_;
+    dense<command> commands_;
 
     // apply 回调:由 component.hpp 在 manager 完整后包含,故可内联调用 manager 方法
     template <typename T>

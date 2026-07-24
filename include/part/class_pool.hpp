@@ -2,18 +2,19 @@
 #include <new>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <algorithm>
 #include <type_traits>
 #include <memory>
 #include <iterator>
-#include <limits>
 #include <bit>
 #include <span>
 #include <utility>
 #if defined(__AVX2__) || defined(__BMI__) || (defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64)))
 #include <immintrin.h>
 #endif
+
 
 // 跨平台预取宏
 #if defined(__GNUC__) || defined(__clang__)
@@ -51,15 +52,17 @@ private:
 
 	T* data_ptr_{nullptr};
 	uint64_t* sparse_bits_{nullptr};
+	uint64_t* live_bits_{nullptr};
 	size_t maximum_quantity_{0};
 	size_t index_{0};
-	bool is_dense_{true};
+	uint8_t is_dense_{1};
 	mutable size_t count_cache_{static_cast<size_t>(-1)};
 	size_t hole_count_{0};
 	size_t first_hole_hint_{0};
 	uint64_t inline_bits_{0};
+	uint64_t inline_live_bits_{0};
 
-	static constexpr size_t DEFAULT_CAPACITY = 8;
+	static constexpr size_t DEFAULT_CAPACITY = 64;
 	static constexpr size_t SMALL_CAPACITY_THRESHOLD = 1024;
 	static constexpr size_t MEDIUM_CAPACITY_THRESHOLD = 65536;
 
@@ -69,9 +72,7 @@ private:
 
 	[[nodiscard]] static constexpr size_t calculate_new_capacity(size_t current) noexcept {
 		if (current == 0) { return DEFAULT_CAPACITY; }
-		if (current < SMALL_CAPACITY_THRESHOLD) { return current * 2; }
-		if (current < MEDIUM_CAPACITY_THRESHOLD) { return current + (current >> 1); }
-		return current + (current >> 2);
+		return current * 4;
 	}
 
 	[[nodiscard]] static constexpr size_t calculate_growth_for_reserve(size_t required) noexcept {
@@ -100,7 +101,7 @@ private:
 		uint64_t* ptr = static_cast<uint64_t*>(
 			::operator new(bytes, std::align_val_t{bitmap_align}, std::nothrow));
 		if (ptr == nullptr) [[unlikely]] {
-			std::terminate();
+			std::abort();
 		}
 		std::memset(std::assume_aligned<bitmap_align>(ptr), 0, bytes);
 		return ptr;
@@ -117,14 +118,24 @@ private:
 		if (sparse_bits_ == nullptr) { return; }
 		if (!is_inline_bitmap()) {
 			deallocate_bitmap(sparse_bits_, maximum_quantity_);
+			deallocate_bitmap(live_bits_, maximum_quantity_);
 		}
 		sparse_bits_ = nullptr;
+		live_bits_ = nullptr;
 	}
 
 	uint64_t* obtain_bitmap(size_t capacity) noexcept {
 		if (capacity <= INLINE_CAPACITY) {
 			inline_bits_ = 0;
+			inline_live_bits_ = 0;
 			return &inline_bits_;
+		}
+		return allocate_bitmap(capacity);
+	}
+
+	uint64_t* obtain_live_bitmap(size_t capacity) noexcept {
+		if (capacity <= INLINE_CAPACITY) {
+			return &inline_live_bits_;
 		}
 		return allocate_bitmap(capacity);
 	}
@@ -175,7 +186,7 @@ private:
 		T* ptr = static_cast<T*>(
 			::operator new(count * sizeof(T), std::align_val_t{align}, std::nothrow));
 		if (ptr == nullptr) [[unlikely]] {
-			std::terminate();
+			std::abort();
 		}
 		return std::assume_aligned<align>(ptr);
 	}
@@ -228,10 +239,10 @@ public:
 		using Ptr = std::conditional_t<IsConst, const T*, T*>;
 		using Ref = std::conditional_t<IsConst, const T&, T&>;
 
-		Ptr ptr_;
-		Ptr end_;
-		const uint64_t* bits_;
-		Ptr origin_;
+		Ptr __restrict ptr_;
+		Ptr __restrict end_;
+		const uint64_t* __restrict bits_;
+		Ptr __restrict origin_;
 
 		friend class basic_iterator<true>;
 		friend class basic_iterator<false>;
@@ -246,8 +257,7 @@ public:
 
 		basic_iterator() noexcept : ptr_(nullptr), end_(nullptr), bits_(nullptr), origin_(nullptr) {}
 
-		// MinGW AVX2 codegen 变通: 标量拷贝构造防止 256-bit 结构体复制的 codegen bug
-		// 仅 MinGW 启用, MSVC/Clang 用默认拷贝以保留向量优化
+		// MinGW 标量拷贝构造规避 AVX2 codegen bug
 #if defined(__MINGW32__) || defined(__MINGW64__)
 		basic_iterator(const basic_iterator& other) noexcept
 			: ptr_(other.ptr_), end_(other.end_), bits_(other.bits_), origin_(other.origin_) {}
@@ -279,61 +289,72 @@ public:
 		Ref operator*() const noexcept { return *ptr_; }
 		Ptr operator->() const noexcept { return ptr_; }
 
-		void skip_to_next_valid() noexcept {
-			const size_t idx = static_cast<size_t>(ptr_ - origin_);
-			const size_t total = static_cast<size_t>(end_ - origin_);
-			if (idx >= total) { ptr_ = end_; return; }
+		// 返回 >= start 的下一个设置位位置, 没有则返回 total
+		[[gnu::pure, gnu::noinline]] static size_t find_next_set_bit(
+			const uint64_t* bits, size_t start, size_t total) noexcept
+		{
+			if (start >= total) { return total; }
 
-			size_t word_idx = idx / BITS_PER_WORD;
-			size_t bit_in_word = idx % BITS_PER_WORD;
+			size_t word_idx = start / BITS_PER_WORD;
+			size_t bit_in_word = start % BITS_PER_WORD;
 			const size_t total_words = (total + BITS_PER_WORD - 1) / BITS_PER_WORD;
 
-			uint64_t word = bits_[word_idx] >> bit_in_word;
-			if (word != 0) {
-				ptr_ = origin_ + word_idx * BITS_PER_WORD + bit_in_word + std::countr_zero(word);
-				return;
+			uint64_t word = bits[word_idx] >> bit_in_word;
+			if (word != 0)
+			{
+				return word_idx * BITS_PER_WORD + bit_in_word + std::countr_zero(word);
 			}
 
 			++word_idx;
 #ifdef __AVX2__
 			for (; word_idx + 4 <= total_words; word_idx += 4)
 			{
-				__m256i v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(bits_ + word_idx));
+				__m256i v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(bits + word_idx));
 				if (!_mm256_testz_si256(v, v))
 				{
 					for (size_t j = 0; j < 4; ++j)
 					{
-						uint64_t w = bits_[word_idx + j];
+						uint64_t w = bits[word_idx + j];
 						if (w != 0)
 						{
-							ptr_ = origin_ + (word_idx + j) * BITS_PER_WORD + std::countr_zero(w);
-							return;
+							return (word_idx + j) * BITS_PER_WORD + std::countr_zero(w);
 						}
 					}
 				}
 			}
 #endif
-			for (; word_idx < total_words; ++word_idx) {
-				word = bits_[word_idx];
-				if (word != 0) {
-					ptr_ = origin_ + word_idx * BITS_PER_WORD + std::countr_zero(word);
-					return;
+			for (; word_idx < total_words; ++word_idx)
+			{
+				word = bits[word_idx];
+				if (word != 0)
+				{
+					return word_idx * BITS_PER_WORD + std::countr_zero(word);
 				}
 			}
-			ptr_ = end_;
+			return total;
 		}
 
-		basic_iterator& operator++() noexcept {
-			constexpr size_t pf_dist = (sizeof(T) < 64) ? (64 / sizeof(T)) : 1;
-			if (bits_ != nullptr) {
+		void skip_to_next_valid() noexcept {
+			const size_t idx = static_cast<size_t>(ptr_ - origin_);
+			const size_t total = static_cast<size_t>(end_ - origin_);
+			ptr_ = origin_ + find_next_set_bit(bits_, idx, total);
+		}
+
+		[[gnu::always_inline]] basic_iterator& operator++() noexcept {
+			const uint64_t* const bits = bits_;
+			if (__builtin_expect(bits == nullptr, 1))
+			{
 				++ptr_;
-				if (ptr_ != end_) {
-					PREFETCH_R(ptr_ + pf_dist);
-					skip_to_next_valid();
-				}
+				return *this;
 			}
-			else {
-				++ptr_;
+			++ptr_;
+			if (ptr_ != end_)
+			{
+				constexpr size_t pf_dist = (sizeof(T) < 64) ? (64 / sizeof(T)) : 1;
+				PREFETCH_R(ptr_ + pf_dist);
+				const size_t idx = static_cast<size_t>(ptr_ - origin_);
+				const size_t total = static_cast<size_t>(end_ - origin_);
+				ptr_ = origin_ + find_next_set_bit(bits, idx, total);
 			}
 			return *this;
 		}
@@ -418,12 +439,26 @@ public:
 	void append_n(size_t n, const T& value) noexcept;
 	void clear() noexcept;
 
-	[[nodiscard]] constexpr T* get(size_t index) noexcept {
-		return &data_ptr_[index];
+	// 下标访问 (等价 operator[], 无边界检查)
+	[[nodiscard]] constexpr T& get(size_t index) noexcept
+	{
+		return data_ptr_[index];
 	}
 
-	[[nodiscard]] constexpr const T* get(size_t index) const noexcept {
-		return &data_ptr_[index];
+	[[nodiscard]] constexpr const T& get(size_t index) const noexcept
+	{
+		return data_ptr_[index];
+	}
+
+	// 越界保护访问: index 越界时访问 error_index
+	[[nodiscard]] constexpr T& get(size_t index, size_t error_index) noexcept
+	{
+		return data_ptr_[index < index_ ? index : error_index];
+	}
+
+	[[nodiscard]] constexpr const T& get(size_t index, size_t error_index) const noexcept
+	{
+		return data_ptr_[index < index_ ? index : error_index];
 	}
 
 	[[nodiscard]] constexpr size_type capacity() const noexcept { return maximum_quantity_; }
@@ -438,11 +473,11 @@ public:
 	}
 
 	[[nodiscard]] constexpr pointer data() noexcept {
-		return std::assume_aligned<alignof(T)>(data_ptr_);
+		return data_ptr_;
 	}
 
 	[[nodiscard]] constexpr const_pointer data() const noexcept {
-		return std::assume_aligned<alignof(T)>(data_ptr_);
+		return data_ptr_;
 	}
 
 	void increase_capacity(size_t new_capacity) noexcept;
@@ -450,9 +485,6 @@ public:
 	void shrink_to_fit() noexcept;
 	void reduce_capacity(size_t new_capacity) noexcept;
 	void reduce_capacity(size_t new_capacity, class_pool<T>& dst) noexcept;
-
-	[[nodiscard]] T& at(size_t index) noexcept;
-	[[nodiscard]] const T& at(size_t index) const noexcept;
 
 	[[nodiscard]] constexpr T& front() noexcept {
 		return data_ptr_[0];
@@ -469,7 +501,7 @@ public:
 	[[nodiscard]] constexpr const T& back() const noexcept {
 		return data_ptr_[index_ - 1];
 	}
-
+	
 	void reserve_exact(size_t new_capacity) noexcept;
 	void resize(size_t new_size, const T& value) noexcept;
 
@@ -488,46 +520,6 @@ public:
 
 	[[nodiscard]] constexpr std::span<T> span() noexcept { return std::span<T>(data_ptr_, index_); }
 	[[nodiscard]] constexpr std::span<const T> span() const noexcept { return std::span<const T>(data_ptr_, index_); }
-
-	// 密集遍历视图: 返回原始指针范围, 跳过迭代器开销
-	struct dense_view
-	{
-		T* begin_ptr;
-		T* end_ptr;
-		[[nodiscard]] T* begin() const noexcept
-		{
-			return begin_ptr;
-		}
-		[[nodiscard]] T* end() const noexcept
-		{
-			return end_ptr;
-		}
-	};
-
-	struct const_dense_view
-	{
-		const T* begin_ptr;
-		const T* end_ptr;
-		[[nodiscard]] const T* begin() const noexcept
-		{
-			return begin_ptr;
-		}
-		[[nodiscard]] const T* end() const noexcept
-		{
-			return end_ptr;
-		}
-	};
-
-	// 获取密集遍历视图, 仅在 is_dense() 为 true 时使用
-	[[nodiscard]] dense_view dense_view() noexcept
-	{
-		return {data_ptr_, data_ptr_ + index_};
-	}
-
-	[[nodiscard]] const_dense_view dense_view() const noexcept
-	{
-		return {data_ptr_, data_ptr_ + index_};
-	}
 
 	[[nodiscard]] constexpr T& operator[](size_t index) noexcept {
 		return data_ptr_[index];
@@ -577,20 +569,13 @@ public:
 	const_reverse_iterator crbegin() const noexcept { return const_reverse_iterator(cend()); }
 	const_reverse_iterator crend() const noexcept { return const_reverse_iterator(cbegin()); }
 
-	template <typename F>
-	void for_each(F&& f) noexcept;
-	template <typename F>
-	void for_each(F&& f) const noexcept;
-	template <typename F>
-	void for_each_sparse(F&& f) noexcept;
-	template <typename F>
-	void for_each_sparse(F&& f) const noexcept;
-
 	template <typename... Args>
 	T& emplace_at(size_t index, Args&&... args) noexcept;
 	template <typename... Args>
 	T& sparse_emplace_at(size_t index, Args&&... args) noexcept;
 	void sparse_erase_at(size_t index) noexcept;
+	void soft_sparse_delete(size_t index) noexcept;
+	void soft_dense_delete(size_t start, size_t end) noexcept;
 
 	[[nodiscard]] constexpr bool is_constructed_at(size_t index) const noexcept {
 		if (index >= maximum_quantity_) { return false; }

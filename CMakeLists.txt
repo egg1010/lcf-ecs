@@ -47,11 +47,15 @@ endif()
 option(BUILD_USAGEC "构建 usagec 示例程序" ON)
 option(BUILD_FUNCTIONAL_TESTS "构建功能测试 (test_functional)" ON)
 option(BUILD_PERF_TESTS "构建性能测试 (test_perf)" ON)
+option(BUILD_DENSE_TESTS "构建 dense<T> 容器功能测试 (test_dense)" ON)
+option(BUILD_DV_VS_VEC "构建 dense_view vs vector 对比测试 (test_dense_view_vs_vector)" ON)
 
 message(STATUS "Build targets:")
-message(STATUS "  usagec         : ${BUILD_USAGEC}")
-message(STATUS "  test_functional: ${BUILD_FUNCTIONAL_TESTS}")
-message(STATUS "  test_perf      : ${BUILD_PERF_TESTS}")
+message(STATUS "  usagec              : ${BUILD_USAGEC}")
+message(STATUS "  test_functional     : ${BUILD_FUNCTIONAL_TESTS}")
+message(STATUS "  test_perf           : ${BUILD_PERF_TESTS}")
+message(STATUS "  test_dense          : ${BUILD_DENSE_TESTS}")
+message(STATUS "  test_dense_view_vs_vector : ${BUILD_DV_VS_VEC}")
 
 # ==========================================================================
 # 可执行文件: usagec 示例程序
@@ -76,7 +80,8 @@ endif()
 # 可执行文件: 功能测试 (test_functional)
 # ==========================================================================
 if(BUILD_FUNCTIONAL_TESTS)
-    add_executable(test_functional test_functional.cpp)
+    add_executable(test_functional test/test_functional.cpp)
+    target_include_directories(test_functional PRIVATE ${CMAKE_SOURCE_DIR})
     if(MSVC)
         target_compile_options(test_functional PRIVATE /utf-8)
     endif()
@@ -95,7 +100,8 @@ endif()
 # 可执行文件: 性能测试 (test_perf)
 # ==========================================================================
 if(BUILD_PERF_TESTS)
-    add_executable(test_perf test_perf.cpp)
+    add_executable(test_perf test/test_perf.cpp)
+    target_include_directories(test_perf PRIVATE ${CMAKE_SOURCE_DIR})
     if(MSVC)
         target_compile_options(test_perf PRIVATE /utf-8)
     endif()
@@ -106,6 +112,46 @@ if(BUILD_PERF_TESTS)
             TARGET test_perf PRE_BUILD
             COMMAND "${CMAKE_BINARY_DIR}/kill_test_perf.bat"
             COMMENT "Terminating test_perf.exe if it is running..."
+        )
+    endif()
+endif()
+
+# ==========================================================================
+# 可执行文件: dense<T> 容器功能测试
+# ==========================================================================
+if(BUILD_DENSE_TESTS)
+    add_executable(test_dense test/test_dense.cpp)
+    target_include_directories(test_dense PRIVATE ${CMAKE_SOURCE_DIR})
+    if(MSVC)
+        target_compile_options(test_dense PRIVATE /utf-8)
+    endif()
+    if(WIN32)
+        file(WRITE "${CMAKE_BINARY_DIR}/kill_test_dense.bat"
+             "@taskkill /F /IM test_dense.exe /T >nul 2>&1\n@exit /b 0\n")
+        add_custom_command(
+            TARGET test_dense PRE_BUILD
+            COMMAND "${CMAKE_BINARY_DIR}/kill_test_dense.bat"
+            COMMENT "Terminating test_dense.exe if it is running..."
+        )
+    endif()
+endif()
+
+# ==========================================================================
+# 可执行文件: dense_view vs std::vector 对比测试
+# ==========================================================================
+if(BUILD_DV_VS_VEC)
+    add_executable(test_dense_view_vs_vector test/test_dense_view_vs_vector.cpp)
+    target_include_directories(test_dense_view_vs_vector PRIVATE ${CMAKE_SOURCE_DIR})
+    if(MSVC)
+        target_compile_options(test_dense_view_vs_vector PRIVATE /utf-8)
+    endif()
+    if(WIN32)
+        file(WRITE "${CMAKE_BINARY_DIR}/kill_test_dense_view_vs_vector.bat"
+             "@taskkill /F /IM test_dense_view_vs_vector.exe /T >nul 2>&1\n@exit /b 0\n")
+        add_custom_command(
+            TARGET test_dense_view_vs_vector PRE_BUILD
+            COMMAND "${CMAKE_BINARY_DIR}/kill_test_dense_view_vs_vector.bat"
+            COMMENT "Terminating test_dense_view_vs_vector.exe if it is running..."
         )
     endif()
 endif()
