@@ -7,36 +7,37 @@
 - [lcf-ecs 库接口文档](#lcf-ecs-库接口文档)
   - [目录](#目录)
   - [一、库使用接口](#一库使用接口)
-    - [1. ecs::entity — 实体](#1-ecsentity-实体)
-    - [2. view_tags — 视图标签类型](#2-view_tags-视图标签类型)
-    - [3. ecs::single_class_set — 单组件集合](#3-ecssingle_class_set-单组件集合)
-    - [4. ecs::manager — ECS管理器](#4-ecsmanager-ecs管理器)
+    - [1. ecs::entity — 实体](#1-ecsentity--实体)
+    - [2. view_tags — 视图标签类型](#2-view_tags--视图标签类型)
+    - [3. ecs::single_class_set — 单组件集合](#3-ecssingle_class_set--单组件集合)
+    - [4. ecs::manager — ECS管理器](#4-ecsmanager--ecs管理器)
     - [5. View系统](#5-view系统)
     - [6. Group系统](#6-group系统)
-    - [7. runtime_view — 运行时视图](#7-runtime_view-运行时视图)
+    - [7. runtime_view — 运行时视图](#7-runtime_view--运行时视图)
     - [8. 函数存储（回调作为组件）](#8-函数存储回调作为组件)
     - [9. 生命周期信号](#9-生命周期信号)
-    - [10. command_buffer — 延迟结构变更](#10-command_buffer-延迟结构变更)
+    - [10. command_buffer — 延迟结构变更](#10-command_buffer--延迟结构变更)
   - [二、宏配置](#二宏配置)
     - [11. 编译与运行](#11-编译与运行)
     - [12. 可选宏配置](#12-可选宏配置)
   - [三、各种模块](#三各种模块)
-    - [13. operating_message — 操作消息](#13-operating_message-操作消息)
-    - [14. class_pool<T> — 核心容器](#14-class_poolt-核心容器)
-    - [15. void_any — 类型擦除存储](#15-void_any-类型擦除存储)
-    - [16. type_id — 类型ID](#16-type_id-类型id)
-    - [17. id_allocation<T> — ID分配器](#17-id_allocationt-id分配器)
-    - [18. memory_pool — 内存池](#18-memory_pool-内存池)
-    - [19. dense<T> — 通用密集容器](#19-denset-通用密集容器)
-    - [20. tiered_sort / pdqsort / sort_n — 分级排序](#20-tiered_sort-pdqsort-sort_n-分级排序)
-    - [21. radix_sort — 基数排序](#21-radix_sort-基数排序)
-    - [22. FORCE_INLINE / NOINLINE — 跨平台内联宏](#22-force_inline--noinline-跨平台内联宏)
-    - [23. arena_allocator — 线性 bump 分配器](#23-arena_allocator-线性-bump-分配器)
-    - [24. slab_allocator — 固定块分配器](#24-slab_allocator-固定块分配器)
-    - [25. layered_allocator — 分层分配器](#25-layered_allocator-分层分配器)
-    - [26. ring_buffer — 环形缓冲区](#26-ring_buffer-环形缓冲区)
-    - [27. time — 计时与基准测量](#27-time-计时与基准测量)
-    - [28. entity_mask_manager — 无上限实体掩码存储](#28-entity_mask_manager-无上限实体掩码存储)
+    - [13. operating_message — 操作消息](#13-operating_message--操作消息)
+    - [14. class_pool<T> — 核心容器](#14-class_poolt--核心容器)
+    - [14.5. class_pool 视图（cpv 命名空间）](#145-class_pool-视图cpv-命名空间)
+    - [15. void_any — 类型擦除存储](#15-void_any--类型擦除存储)
+    - [16. type_id — 类型ID](#16-type_id--类型id)
+    - [17. id_allocation<T> — ID分配器](#17-id_allocationt--id分配器)
+    - [18. memory_pool — 内存池](#18-memory_pool--内存池)
+    - [19. dense<T> — 通用密集容器](#19-denset--通用密集容器)
+    - [20. tiered_sort / pdqsort / sort_n — 分级排序](#20-tiered_sort--pdqsort--sort_n--分级排序)
+    - [21. radix_sort — 基数排序](#21-radix_sort--基数排序)
+    - [22. FORCE_INLINE / NOINLINE — 跨平台内联宏](#22-force_inline--noinline--跨平台内联宏)
+    - [23. arena_allocator — 线性 bump 分配器](#23-arena_allocator--线性-bump-分配器)
+    - [24. slab_allocator — 固定块分配器](#24-slab_allocator--固定块分配器)
+    - [25. layered_allocator — 分层分配器](#25-layered_allocator--分层分配器)
+    - [26. ring_buffer — 环形缓冲区](#26-ring_buffer--环形缓冲区)
+    - [27. time — 计时与基准测量](#27-time--计时与基准测量)
+    - [28. entity_mask_manager — 无上限实体掩码存储](#28-entity_mask_manager--无上限实体掩码存储)
 
 ---
 
@@ -2642,6 +2643,108 @@ size_t idx = pool2.fill_the_hole_at(99);  // 填洞 at 0, 返回 0
 
 ---
 
+## 14.5 class_pool 视图（cpv 命名空间）
+
+`class_pool<T>` 视图接口位于独立头文件 `include/part/class_pool_views.hpp`，命名空间 `cpv::`。设计原则：
+- **不修改原容器**：仅依赖 `class_pool<T>` 公开 API
+- **双路径策略**：`is_dense()` 走连续内存快路径（SIMD/memcpy 友好），稀疏模式复用 `basic_iterator`（AVX2 位图扫描）
+- **零分配**：所有视图为 POD 结构或纯函数
+- **全 `noexcept`**：与原容器约束一致
+
+### 视图分类表
+
+| 分类 | 接口 | 说明 |
+|------|------|------|
+| **A 子范围** | `subspan(p, off, cnt)` / `subspan(p, off)` | 返回 `std::span<T>`，密集模式零开销切片（与 `dense::subspan` / `std::span::subspan` 命名一致） |
+|  | `first(p, n)` / `last(p, n)` | 前/后 n 个元素的 span |
+|  | `first_fixed<T, N>(p)` / `last_fixed<T, N>(p)` | 编译期固定长度 `std::span<T, N>` |
+| **B 反向** | `reverse_for_each(p, f)` | 反向遍历，复用 `rbegin()/rend()` |
+| **C 步进** | `strided_span_view(p, start, step, cnt)` | POD 视图结构 `strided_span<T>`（与 `dense::strided_span` 命名一致） |
+|  | `strided_for_each(p, start, step, f)` | 运行时步长遍历 |
+|  | `strided_for_each<T, Step>(p, f)` | 编译期步长；`Step=1` 退化为 `for_each` 快路径 |
+| **D 变换** | `transform_for_each(p, tr, con)` | 融合 transform + consume，避免中间临时容器 |
+|  | `transform_to<T, R>(p, dst, n, f)` | 变换写入目标裸指针 |
+| **E 过滤** | `find(p, v)` / `find_if(p, pred)` / `find_if_not(p, pred)` | 线性查找，返回指针 |
+|  | `contains(p, v)` | 存在性检查 |
+|  | `count_if(p, pred)` | 条件计数 |
+|  | `filter_for_each(p, pred, f)` | 过滤遍历，零分配 |
+|  | `filter_indices_to(p, dst, pred)` | 输出满足条件的索引到 `class_pool<size_t>` |
+| **F 规约** | `reduce(p, f, init)` | 顺序规约 |
+|  | `reduce_pairwise(p, f, init)` | 密集模式 ivdep 提示向量化 |
+|  | `min_element(p)` / `max_element(p)` / `minmax_element(p)` | 极值查找 |
+|  | `sum(p)` | 算术求和（仅算术类型，ivdep） |
+|  | `dot_product(p, other, n)` | 点积（密集模式 ivdep） |
+| **G 窗口/分块** | `for_each_window<T, N>(p, f)` | 滑动窗口遍历（密集模式连续切片） |
+|  | `for_each_chunk<T, N>(p, f)` | 不重叠分块遍历 |
+|  | `window_span<T, N>(p, off)` / `chunk_span<T, N>(p, idx)` | 返回 `std::span<T, N>` |
+| **H 枚举** | `for_each_enumerated(p, f)` | `(index, value)` 同步遍历 |
+| **I 双容器** | `for_each_zip(a, b, f)` | 双 `class_pool` 同步遍历（按活跃元素） |
+|  | `for_each_zip(a, ptr, n, f)` | `class_pool` + 裸指针同步 |
+|  | `zip_with_to<T, U, R>(a, b, dst, n, f)` | 双容器变换写入目标 |
+|  | `equal(a, b)` / `equal(a, ptr, n)` / `equal(a, span)` | 相等性比较（与 `dense::equal` 命名一致；密集 + trivially copyable 走 `memcmp` 快路径） |
+| **J SIMD/对齐** | `aligned_data(p)` / `aligned_span(p)` | 返回对齐裸指针 / span |
+|  | `simd_for_each(p, f)` | trivially copyable 且 `sizeof(T)≤32` 走 SIMD 路径，稀疏退化为 `for_each` |
+|  | `unaligned_tail_offset(p)` | AVX2 YMM 无法处理的尾部偏移 |
+| **K 拷贝/移动** | `copy_to(p, dst, n)` / `copy_to(p, span)` | trivially copyable 走 `memcpy` |
+|  | `move_to(p, dst, n)` | 移动写入 |
+|  | `reverse_copy_to(p, dst, n)` | 反向拷贝 |
+| **L class_pool 独有** | `compact_to(p, dst, n)` | 压缩稀疏池为密集数组（消除空洞），返回写入元素数 |
+|  | `live_count(p)` | 活跃元素数（语义等价 `p.count()`） |
+|  | `holes_count(p)` | 空洞数 = `p.size() - p.count()` |
+
+### 使用示例
+
+```cpp
+#include "include/part/class_pool_views.hpp"
+using namespace cpv;
+
+class_pool<POD32> pool;
+for (size_t i = 0; i < 1000; ++i) pool.push_back_unchecked({static_cast<float>(i)});
+
+// A. 子范围遍历
+auto sp = subspan(pool, 100, 50);
+for (auto& v : sp) { /* ... */ }
+
+// C. 步进遍历（步长 4）
+strided_for_each<POD32, 4>(pool, [](POD32& v) { /* ... */ });
+
+// E. 过滤查找
+POD32 target{42.0f};
+POD32* p = find(pool, target);
+size_t n = count_if(pool, [](const POD32& v) { return v.a[0] > 0; });
+
+// F. 规约
+POD32 sum = reduce(pool, [](POD32 acc, const POD32& v) -> POD32 { /* ... */ }, POD32{});
+
+// L. 压缩稀疏池为密集数组（ECS 视图重建）
+pool.sparse_erase_at(5);  // 制造空洞
+POD32* compact = /* ... 分配内存 ... */;
+size_t live = compact_to(pool, compact, pool.size());
+// compact[0..live) 为连续活跃元素
+```
+
+### 稀疏模式行为
+
+稀疏模式（`is_dense() == false`）下视图行为：
+- **子范围/窗口/分块**：直接切片，**不跳过空洞**，调用方需自行 `is_constructed_at(i)` 检查
+- **步进遍历**：步进槽位（非活跃元素），越过空洞时自动跳过
+- **过滤/查找/规约/zip**：复用 `basic_iterator`，**自动跳过空洞**（仅遍历活跃元素）
+- **SIMD 遍历**：退化为 `for_each`（仍走位图扫描）
+- **compact_to**：按活跃顺序压缩写入（消除空洞）
+
+### 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 稀疏模式用 `subspan` 后直接遍历 | 包含未活跃槽 | 用 `for_each` / `filter_for_each` 走位图扫描 |
+| 期望 `strided_for_each<1>` 与 `for_each` 性能不同 | 已退化为 `for_each` | 两者性能等价 |
+| `simd_for_each` 用于稀疏模式 | 退化为 `for_each`，无 SIMD 收益 | 仅密集模式有 SIMD 路径 |
+| `compact_to` 后期望源池被清空 | 仅拷贝，源池不变 | 调用方自行 `clear()` |
+| 视图持有期间修改容器 | move/swap 后内联位图指针失效 | 视图生命周期 = 容器稳定期 |
+| 期望 `last_fixed<N>` 越界返回空 span | `std::span<T, N>` 无法默认构造 | 返回 `count=0` 的 span，调用方需检查 `size()` |
+
+---
+
 ## 15. void_any — 类型擦除存储
 
 使用 `type_id` 进行类型识别。支持 SSO 和内存池（通过宏配置）。
@@ -3120,6 +3223,121 @@ bool in_la = la.owns(small);
 | `cbegin()` / `cend()` | const 正向迭代器 |
 | `for_each(F&& f)` / `for_each(F&& f) const` | 遍历所有元素，调用 `f(v)` |
 
+### 反向迭代
+
+| 接口 | 说明 |
+|------|------|
+| `rbegin()` / `rend()` | 反向迭代器 |
+| `rbegin() const` / `rend() const` | const 反向迭代器 |
+| `crbegin()` / `crend()` | const 反向迭代器（仅 const 重载） |
+| `reverse_for_each(F&& f)` / `reverse_for_each(F&& f) const` | 反向遍历，调用 `f(v)` |
+
+### 子范围视图
+
+零分配返回 `std::span`，仅切片不改数据。
+
+| 接口 | 说明 |
+|------|------|
+| `subspan(offset, count)` | 返回 `[offset, offset+count)` 的 span，自动截断到 `size()` |
+| `subspan(offset)` | 返回 `[offset, size())` 的 span |
+| `first(n)` | 前 `n` 个元素 |
+| `last(n)` | 后 `n` 个元素 |
+| `first_fixed<N>()` | 前 `N` 个元素，编译期固定长度 span（`std::span<T, N>`） |
+| `last_fixed<N>()` | 后 `N` 个元素，编译期固定长度 span |
+
+所有接口均提供 const 重载。模板方法调用需 `template` 关键字：`d.template first_fixed<8>()`。
+
+### 步进视图
+
+按固定步长跳跃遍历，零分配 POD 视图。
+
+| 接口 | 说明 |
+|------|------|
+| `strided_span_view(start, step, count)` | 返回 `strided_span<T>`，持有 `{指针, 步长, 数量}` |
+| `strided_for_each(start, step, F&& f)` | 运行时步长遍历，调用 `f(v)` |
+| `strided_for_each<Step>(F&& f)` | 编译期步长遍历，`Step=1` 回退到 `for_each` 快路径 |
+
+`strided_span<T>` 自身提供 `begin()/end()` 迭代器、`for_each(F&&)`、`operator[]`、`size()`、`data()` 等。
+
+### 变换视图
+
+融合变换与消费，避免中间临时数组。
+
+| 接口 | 说明 |
+|------|------|
+| `transform_for_each(FTransform&& tr, FConsume&& con)` | 对每个元素 `v` 调用 `con(tr(v))`，融合写入 |
+| `transform_to(R* dst, count, F&& tr)` | 将 `tr(v)` 写入 `dst`，要求 `count <= size()` |
+
+### 过滤与查找
+
+| 接口 | 说明 |
+|------|------|
+| `find(const T& value)` | 线性查找，返回首命指针，未命中返回 `nullptr` |
+| `find_if(Pred pred)` | 谓词查找 |
+| `find_if_not(Pred pred)` | 谓词反查找 |
+| `contains(const T& value)` | 是否包含 |
+| `count_if(Pred pred)` | 谓词计数 |
+| `filter_for_each(Pred pred, F&& f)` | 仅对满足 `pred(v)` 的元素调用 `f(v)` |
+| `filter_indices_to(dense<size_t>& dst, Pred pred)` | 将满足谓词的索引追加到 `dst` |
+
+### 规约与极值
+
+| 接口 | 说明 |
+|------|------|
+| `reduce(F&& f, U init)` | 顺序规约：`acc = f(acc, v)` |
+| `reduce_pairwise(F&& f, U init)` | 成对规约：相邻两两合并后递归，减少关键路径深度 |
+| `min_element()` / `max_element()` | 返回最小/最大元素指针 |
+| `minmax_element()` | 返回 `{min_ptr, max_ptr}` |
+| `sum()` | 算术求和（要求 `is_arithmetic_v<T>`），使用 `ivdep` 自动向量化 |
+| `dot_product(const U* other, count)` | 点积（要求 `is_arithmetic_v<T>`） |
+
+### 窗口与分块
+
+| 接口 | 说明 |
+|------|------|
+| `for_each_window<N>(F&& f)` | 滑动窗口遍历，对每个 `[i, i+N)` 调用 `f(std::span<T, N>)`，共 `size()-N+1` 次 |
+| `for_each_chunk<N>(F&& f)` | 不重叠分块遍历，对每个 `[i*N, (i+1)*N)` 调用 `f(std::span<T, N>)`，共 `size()/N` 次 |
+| `window_span<N>(offset)` | 取偏移 `offset` 处的滑动窗口 span |
+| `chunk_span<N>(chunk_idx)` | 取第 `chunk_idx` 个不重叠分块 span |
+
+### 枚举视图
+
+| 接口 | 说明 |
+|------|------|
+| `for_each_enumerated(F&& f)` | 带索引遍历，调用 `f(index, value)` |
+
+### 双容器同步
+
+| 接口 | 说明 |
+|------|------|
+| `for_each_zip(U* other, count, F&& f)` | 同步遍历 `*this` 与 `other`，调用 `f(x, y)` |
+| `for_each_zip(dense<U>& other, F&& f)` | dense 版本 |
+| `for_each_zip(std::span<U> other, F&& f)` | span 版本 |
+| `zip_with_to<R>(R* dst, const U* other, count, F&& f)` | 将 `f(x, y)` 写入 `dst`（SoA→AoS 转换） |
+| `equal(const T* other, count)` | 逐元素相等比较 |
+| `equal(const dense<U>& other)` | dense 版本 |
+| `equal(std::span<const U> other)` | span 版本 |
+
+### SIMD 与对齐
+
+| 接口 | 说明 |
+|------|------|
+| `aligned_data()` | 返回对齐到缓存行（64B）的数据指针 |
+| `aligned_span()` | 返回对齐 span |
+| `simd_for_each(F&& f)` | SIMD 向量化遍历（要求 `is_trivially_copyable_v<T>`，sizeof ≤ 32 启用 AVX2） |
+| `unaligned_tail_offset()` | 返回 SIMD 无法处理的尾部起始偏移 |
+
+### 拷贝与移动
+
+| 接口 | 说明 |
+|------|------|
+| `copy_to(T* dst, count)` | 批量拷贝（trivially copyable 走 AVX2 路径） |
+| `copy_to(std::span<T> dst)` | span 版本 |
+| `move_to(T* dst, count)` | 批量移动 |
+| `move_to(std::span<T> dst)` | span 版本 |
+| `reverse_copy_to(T* dst, count)` | 反向拷贝 |
+| `reverse_copy_to(std::span<T> dst)` | span 版本 |
+
 ### 使用
 
 ```cpp
@@ -3159,14 +3377,81 @@ dense<int> dst;
 src.reduce_capacity(2, dst);              // src: {1, 2}, dst: {3, 4, 5}
 ```
 
+### 视图使用示例
+
+```cpp
+#include "part/dense.hpp"
+
+dense<float> d(1000);
+for (size_t i = 0; i < 1000; ++i) d[i] = static_cast<float>(i);
+
+// 子范围视图
+std::span<float> head = d.first(10);
+std::span<float> tail = d.last(10);
+std::span<float> mid = d.subspan(100, 50);
+std::span<float, 4> fixed_head = d.first_fixed<4>();   // 编译期固定长度
+
+// 反向迭代
+d.reverse_for_each([](float& v) { v = -v; });
+for (auto it = d.rbegin(); it != d.rend(); ++it) { /* ... */ }
+
+// 步进遍历
+d.strided_for_each(0, 4, [](float& v) { v *= 2.0f; });  // 每 4 个取一个
+auto sv = d.strided_span_view(0, 4, 250);              // strided_span<float>
+
+// 变换 + 消费融合
+d.transform_for_each(
+    [](float& v) -> float { return v * 2.0f; },
+    [](float x) { /* consume x */ });
+
+// 过滤
+float* p = d.find(42.0f);
+bool has = d.contains(42.0f);
+size_t cnt = d.count_if([](float v) { return v > 0; });
+d.filter_for_each([](float v) { return v > 0; }, [](float& v) { v = 0; });
+
+dense<size_t> indices;
+d.filter_indices_to(indices, [](float v) { return v > 100; });
+
+// 规约
+float sum = d.sum();
+float s = d.reduce([](float acc, const float& v) { return acc + v; }, 0.0f);
+float* mn = d.min_element();
+auto [mn_ptr, mx_ptr] = d.minmax_element();
+
+// 窗口/分块
+d.for_each_window<4>([](std::span<float, 4> w) { /* 滑动窗口 */ });
+d.for_each_chunk<4>([](std::span<float, 4> c) { /* 不重叠分块 */ });
+
+// 枚举
+d.for_each_enumerated([](size_t i, float& v) { v += static_cast<float>(i); });
+
+// 双容器同步
+dense<float> other(1000);
+d.for_each_zip(other, [](float& a, float& b) { a += b; });
+bool same = d.equal(other);
+
+// SIMD 遍历（要求 trivially copyable）
+d.simd_for_each([](float& v) { v *= 2.0f; });
+size_t tail_off = d.unaligned_tail_offset();
+
+// 拷贝/移动
+dense<float> dst2(1000);
+d.copy_to(dst2.data(), 1000);
+d.reverse_copy_to(dst2.span());
+```
+
 ### 不要做什么
 
 | 错误做法 | 问题 | 正确做法 |
 |---------|------|---------|
-| 使用 `std::vector` 代替 `dense<T>` | 违反项目规范 | 始终使用 `dense<T>` |
+| 使用 `std::vector` 代替 `dense<T>` | 性能与对齐不达标 | 始终使用 `dense<T>` |
 | 未确认容量就调用 `push_back_unchecked` / `emplace_back_unchecked` | 越界写崩 | 先 `increase_capacity` 或用 `emplace_back` |
 | `reduce_capacity(n, dst)` 后访问 `src` 被截断的元素 | 元素已迁移到 `dst` | 访问 `dst` 中对应元素 |
 | `fill_bulk` 范围超出 `capacity()` | 越界写崩 | 先 `increase_capacity` 或 `reserve_exact` |
+| 模板方法调用缺少 `template` 关键字 | 编译错误 | `d.template first_fixed<N>()` |
+| 对非 trivially copyable 类型调用 `simd_for_each` | 编译错误（concept 约束） | 使用 `for_each` 代替 |
+| `subspan` 的 `offset` 超过 `size()` | 返回空 span（已截断） | 调用前检查 `offset < size()` |
 
 ---
 
@@ -3509,7 +3794,7 @@ alloc.deallocate(small, 64);  // 直接路由到 slab
 | 错误做法 | 问题 | 正确做法 |
 |---------|------|---------|
 | 用 `deallocate(p)` 释放大对象 | 遍历 8 个 slab 后才路由到 TLSF，慢 | 用 `deallocate(p, n)` 直接路由 |
-| 修改 `memory_pool` 与 `slab_allocator` 的关系 | 项目规范禁止 | 保持分层路由不变 |
+| 修改 `memory_pool` 与 `slab_allocator` 的关系 | 破坏分层路由完整性 | 保持分层路由不变 |
 
 ---
 

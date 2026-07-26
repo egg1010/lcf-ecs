@@ -1,6 +1,5 @@
 // single_view.inc.hpp —— manager 类内片段,由 component.hpp 在 manager 类内部 include
 // 不要单独 include 此文件
-    // ======================== single_view ========================
     template <typename T>
     class single_view
     {
@@ -55,12 +54,19 @@
 
         [[nodiscard]] bool contains(entity e) const noexcept
         {
-            return set_ && set_->template get_ptr<T>(e) != nullptr;
+            // sparse 直接路径: 1 次 sparse_entry load (dense+version 合并存储)
+            //   比 hot_set 路径更快: hot_set 需 4 字段比较, 此处仅 dense+version 比较
+            //   且 sparse_entry 8B 比 hot_entry 24B 更 cache-friendly
+            if (!set_ || !e.is_valid()) [[unlikely]] return false;
+            if (e.parts_.index_ >= set_->get_sparse_size()) [[unlikely]] return false;
+            uint32_t dense = set_->sparse_dense_at_public(e.parts_.index_);
+            if (dense == single_class_set::dense_invalid) [[unlikely]] return false;
+            return set_->sparse_version_at_public(e.parts_.index_) == e.parts_.version_;
         }
 
         [[nodiscard]] T* get_component_for_entity(entity e) noexcept
         {
-            return set_ ? set_->template get_ptr_fast<T>(e) : nullptr;
+            return set_ ? set_->template get_ptr_fast_inline<T>(e) : nullptr;
         }
 
         [[nodiscard]] entity get_first_entity() const noexcept
@@ -110,10 +116,46 @@
                 {
                     const uint32_t* idx_data = indices.data();
                     const uint32_t* ver_data = versions.data();
-                    for (size_t i = 0; i < n; ++i)
+                    T* data = pool->data();
+                    // 8x 循环展开: 最大化 ILP, 4 个 entity+component load 并行发射
+                    //   瓶颈为 load throughput (2 loads/cyc), 8x 展开摊薄 loop overhead
+                    const size_t n8 = n & ~size_t{7};
+                    size_t i = 0;
+                    for (; i < n8; i += 8)
+                    {
+                        entity e0(idx_data[i],     ver_data[i]);
+                        entity e1(idx_data[i + 1], ver_data[i + 1]);
+                        entity e2(idx_data[i + 2], ver_data[i + 2]);
+                        entity e3(idx_data[i + 3], ver_data[i + 3]);
+                        entity e4(idx_data[i + 4], ver_data[i + 4]);
+                        entity e5(idx_data[i + 5], ver_data[i + 5]);
+                        entity e6(idx_data[i + 6], ver_data[i + 6]);
+                        entity e7(idx_data[i + 7], ver_data[i + 7]);
+                        func(e0, data[i]);
+                        func(e1, data[i + 1]);
+                        func(e2, data[i + 2]);
+                        func(e3, data[i + 3]);
+                        func(e4, data[i + 4]);
+                        func(e5, data[i + 5]);
+                        func(e6, data[i + 6]);
+                        func(e7, data[i + 7]);
+                    }
+                    const size_t n4 = n & ~size_t{3};
+                    for (; i < n4; i += 4)
+                    {
+                        entity e0(idx_data[i],     ver_data[i]);
+                        entity e1(idx_data[i + 1], ver_data[i + 1]);
+                        entity e2(idx_data[i + 2], ver_data[i + 2]);
+                        entity e3(idx_data[i + 3], ver_data[i + 3]);
+                        func(e0, data[i]);
+                        func(e1, data[i + 1]);
+                        func(e2, data[i + 2]);
+                        func(e3, data[i + 3]);
+                    }
+                    for (; i < n; ++i)
                     {
                         entity e(idx_data[i], ver_data[i]);
-                        func(e, (*pool)[i]);
+                        func(e, data[i]);
                     }
                 }
                 else
@@ -130,9 +172,25 @@
             }
             else
             {
-                for (auto& v : *pool)
+                T* data = pool->data();
+                const size_t n = pool->size();
+                // 8x 循环展开 (无 entity 版本)
+                const size_t n8 = n & ~size_t{7};
+                size_t i = 0;
+                for (; i < n8; i += 8)
                 {
-                    func(v);
+                    func(data[i]);
+                    func(data[i + 1]);
+                    func(data[i + 2]);
+                    func(data[i + 3]);
+                    func(data[i + 4]);
+                    func(data[i + 5]);
+                    func(data[i + 6]);
+                    func(data[i + 7]);
+                }
+                for (; i < n; ++i)
+                {
+                    func(data[i]);
                 }
             }
         }

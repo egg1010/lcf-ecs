@@ -5,17 +5,13 @@
 #include "single_class_set.hpp"
 #include "part/dense.hpp"
 #include "entity.hpp"
-
-#ifndef PREFETCH_R
-#define PREFETCH_R(ptr) DENSE_PREFETCH_R(ptr)
-#endif
+// PREFETCH_R 宏: 集中定义于 part/force_inline.hpp
 
 namespace ecs
 {
 
 class manager;
 
-// ======================== group ========================
 template <typename First, typename... Rest>
 class group
 {
@@ -86,27 +82,63 @@ private:
         auto* primary = sets_[primary_idx_];
         auto& indices = primary->get_entity_indices();
 
-        for (size_t i = 0; i < n; ++i)
+        // 提取原始 data 指针,避免循环内解引用
+        auto* d0 = pool0->data();
+        auto* d1 = pool1->data();
+
+        // 4x 循环展开,最大化 ILP
+        const size_t n4 = n & ~size_t{3};
+        size_t i = 0;
+        for (; i < n4; i += 4)
         {
-            if (i + 8 < n) [[likely]]
+            if (i + 12 < n) [[likely]]
             {
-                auto& next = mappings[i + 8];
-                PREFETCH_R(&(*pool0)[next[0]]);
-                PREFETCH_R(&(*pool1)[next[1]]);
+                auto& next = mappings[i + 12];
+                PREFETCH_R(&d0[next[0]]);
+                PREFETCH_R(&d1[next[1]]);
             }
 
-            auto& m = mappings[i];
+            auto& m0 = mappings[i];
+            auto& m1 = mappings[i + 1];
+            auto& m2 = mappings[i + 2];
+            auto& m3 = mappings[i + 3];
 
+            if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
+            {
+                uint32_t eid0 = indices[m0[primary_idx_]];
+                uint32_t eid1 = indices[m1[primary_idx_]];
+                uint32_t eid2 = indices[m2[primary_idx_]];
+                uint32_t eid3 = indices[m3[primary_idx_]];
+                entity e0(eid0, primary->sparse_version_at_public(eid0));
+                entity e1(eid1, primary->sparse_version_at_public(eid1));
+                entity e2(eid2, primary->sparse_version_at_public(eid2));
+                entity e3(eid3, primary->sparse_version_at_public(eid3));
+                func(e0, d0[m0[0]], d1[m0[1]]);
+                func(e1, d0[m1[0]], d1[m1[1]]);
+                func(e2, d0[m2[0]], d1[m2[1]]);
+                func(e3, d0[m3[0]], d1[m3[1]]);
+            }
+            else
+            {
+                func(d0[m0[0]], d1[m0[1]]);
+                func(d0[m1[0]], d1[m1[1]]);
+                func(d0[m2[0]], d1[m2[1]]);
+                func(d0[m3[0]], d1[m3[1]]);
+            }
+        }
+        for (; i < n; ++i)
+        {
+            auto& m = mappings[i];
             if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
             {
                 uint32_t eid = indices[m[primary_idx_]];
                 uint32_t ver = primary->sparse_version_at_public(eid);
                 entity e(eid, ver);
-                func(e, (*pool0)[m[0]], (*pool1)[m[1]]);
+                func(e, d0[m[0]], d1[m[1]]);
             }
             else
             {
-                func((*pool0)[m[0]], (*pool1)[m[1]]);
+                func(d0[m[0]], d1[m[1]]);
             }
         }
     }
@@ -116,8 +148,9 @@ private:
     {
         if (cached_.empty()) return;
 
-        auto pools = std::make_tuple(
-            sets_[Is]->template get_typed_pool_ptr<std::tuple_element_t<Is, AllTypes>>()...
+        // 提取原始 data 指针,避免循环内解引用
+        auto data_ptrs = std::make_tuple(
+            sets_[Is]->template get_typed_pool_ptr<std::tuple_element_t<Is, AllTypes>>()->data()...
         );
 
         const size_t n = cached_.size();
@@ -125,32 +158,59 @@ private:
         auto* primary = sets_[primary_idx_];
         auto& indices = primary->get_entity_indices();
 
-        for (size_t i = 0; i < n; ++i)
+        // 4x 循环展开,最大化 ILP
+        const size_t n4 = n & ~size_t{3};
+        size_t i = 0;
+        for (; i < n4; i += 4)
         {
-            if (i + 8 < n) [[likely]]
+            if (i + 12 < n) [[likely]]
             {
-                auto& next = mappings[i + 8];
-                ((void)PREFETCH_R(&(*std::get<Is>(pools))[next[Is]]), ...);
+                auto& next = mappings[i + 12];
+                ((void)PREFETCH_R(&std::get<Is>(data_ptrs)[next[Is]]), ...);
             }
 
-            auto& m = mappings[i];
-            auto comps = std::forward_as_tuple(
-                (*std::get<Is>(pools))[m[Is]]...
-            );
+            auto& m0 = mappings[i];
+            auto& m1 = mappings[i + 1];
+            auto& m2 = mappings[i + 2];
+            auto& m3 = mappings[i + 3];
 
-            std::apply([&](auto&... refs) {
-                if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
-                {
-                    uint32_t eid = indices[m[primary_idx_]];
-                    uint32_t ver = primary->sparse_version_at_public(eid);
-                    entity e(eid, ver);
-                    func(e, refs...);
-                }
-                else
-                {
-                    func(refs...);
-                }
-            }, comps);
+            if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
+            {
+                uint32_t eid0 = indices[m0[primary_idx_]];
+                uint32_t eid1 = indices[m1[primary_idx_]];
+                uint32_t eid2 = indices[m2[primary_idx_]];
+                uint32_t eid3 = indices[m3[primary_idx_]];
+                entity e0(eid0, primary->sparse_version_at_public(eid0));
+                entity e1(eid1, primary->sparse_version_at_public(eid1));
+                entity e2(eid2, primary->sparse_version_at_public(eid2));
+                entity e3(eid3, primary->sparse_version_at_public(eid3));
+                func(e0, std::get<Is>(data_ptrs)[m0[Is]]...);
+                func(e1, std::get<Is>(data_ptrs)[m1[Is]]...);
+                func(e2, std::get<Is>(data_ptrs)[m2[Is]]...);
+                func(e3, std::get<Is>(data_ptrs)[m3[Is]]...);
+            }
+            else
+            {
+                func(std::get<Is>(data_ptrs)[m0[Is]]...);
+                func(std::get<Is>(data_ptrs)[m1[Is]]...);
+                func(std::get<Is>(data_ptrs)[m2[Is]]...);
+                func(std::get<Is>(data_ptrs)[m3[Is]]...);
+            }
+        }
+        for (; i < n; ++i)
+        {
+            auto& m = mappings[i];
+            if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
+            {
+                uint32_t eid = indices[m[primary_idx_]];
+                uint32_t ver = primary->sparse_version_at_public(eid);
+                entity e(eid, ver);
+                func(e, std::get<Is>(data_ptrs)[m[Is]]...);
+            }
+            else
+            {
+                func(std::get<Is>(data_ptrs)[m[Is]]...);
+            }
         }
     }
 
@@ -222,7 +282,6 @@ public:
     }
 };
 
-// ======================== owning_group ========================
 template <typename First, typename... Rest>
 class owning_group
 {
@@ -293,7 +352,45 @@ private:
 
         if (primary_idx_ == 0)
         {
-            for (size_t i = 0; i < owned_size_; ++i)
+            // 4x 循环展开,最大化 ILP
+            const size_t n4 = owned_size_ & ~size_t{3};
+            size_t i = 0;
+            for (; i < n4; i += 4)
+            {
+                if (i + 12 < owned_size_) [[likely]]
+                {
+                    uint32_t next_eid = indices[i + 12];
+                    primary->prefetch_sparse_entry(next_eid);
+                    other_set->prefetch_sparse_entry(next_eid);
+                }
+                uint32_t eid0 = indices[i];
+                uint32_t eid1 = indices[i + 1];
+                uint32_t eid2 = indices[i + 2];
+                uint32_t eid3 = indices[i + 3];
+                uint32_t od0 = other_set->sparse_dense_at_public(eid0);
+                uint32_t od1 = other_set->sparse_dense_at_public(eid1);
+                uint32_t od2 = other_set->sparse_dense_at_public(eid2);
+                uint32_t od3 = other_set->sparse_dense_at_public(eid3);
+                if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
+                {
+                    entity e0(eid0, primary->sparse_version_at_public(eid0));
+                    entity e1(eid1, primary->sparse_version_at_public(eid1));
+                    entity e2(eid2, primary->sparse_version_at_public(eid2));
+                    entity e3(eid3, primary->sparse_version_at_public(eid3));
+                    func(e0, pool0_data[i],     pool1_data[od0]);
+                    func(e1, pool0_data[i + 1], pool1_data[od1]);
+                    func(e2, pool0_data[i + 2], pool1_data[od2]);
+                    func(e3, pool0_data[i + 3], pool1_data[od3]);
+                }
+                else
+                {
+                    func(pool0_data[i],     pool1_data[od0]);
+                    func(pool0_data[i + 1], pool1_data[od1]);
+                    func(pool0_data[i + 2], pool1_data[od2]);
+                    func(pool0_data[i + 3], pool1_data[od3]);
+                }
+            }
+            for (; i < owned_size_; ++i)
             {
                 uint32_t eid = indices[i];
                 uint32_t od = other_set->sparse_dense_at_public(eid);
@@ -311,7 +408,45 @@ private:
         }
         else
         {
-            for (size_t i = 0; i < owned_size_; ++i)
+            // 4x 循环展开,最大化 ILP
+            const size_t n4 = owned_size_ & ~size_t{3};
+            size_t i = 0;
+            for (; i < n4; i += 4)
+            {
+                if (i + 12 < owned_size_) [[likely]]
+                {
+                    uint32_t next_eid = indices[i + 12];
+                    primary->prefetch_sparse_entry(next_eid);
+                    other_set->prefetch_sparse_entry(next_eid);
+                }
+                uint32_t eid0 = indices[i];
+                uint32_t eid1 = indices[i + 1];
+                uint32_t eid2 = indices[i + 2];
+                uint32_t eid3 = indices[i + 3];
+                uint32_t od0 = other_set->sparse_dense_at_public(eid0);
+                uint32_t od1 = other_set->sparse_dense_at_public(eid1);
+                uint32_t od2 = other_set->sparse_dense_at_public(eid2);
+                uint32_t od3 = other_set->sparse_dense_at_public(eid3);
+                if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
+                {
+                    entity e0(eid0, primary->sparse_version_at_public(eid0));
+                    entity e1(eid1, primary->sparse_version_at_public(eid1));
+                    entity e2(eid2, primary->sparse_version_at_public(eid2));
+                    entity e3(eid3, primary->sparse_version_at_public(eid3));
+                    func(e0, pool0_data[od0], pool1_data[i]);
+                    func(e1, pool0_data[od1], pool1_data[i + 1]);
+                    func(e2, pool0_data[od2], pool1_data[i + 2]);
+                    func(e3, pool0_data[od3], pool1_data[i + 3]);
+                }
+                else
+                {
+                    func(pool0_data[od0], pool1_data[i]);
+                    func(pool0_data[od1], pool1_data[i + 1]);
+                    func(pool0_data[od2], pool1_data[i + 2]);
+                    func(pool0_data[od3], pool1_data[i + 3]);
+                }
+            }
+            for (; i < owned_size_; ++i)
             {
                 uint32_t eid = indices[i];
                 uint32_t od = other_set->sparse_dense_at_public(eid);
@@ -343,6 +478,9 @@ private:
 
         for (size_t i = 0; i < owned_size_; ++i)
         {
+            if (i + 8 < owned_size_) [[likely]]
+                primary->prefetch_sparse_entry(indices[i + 8]);
+
             uint32_t eid = indices[i];
 
             std::array<uint32_t, N> dense_idx;
@@ -351,7 +489,11 @@ private:
                 if (k == primary_idx_)
                     dense_idx[k] = static_cast<uint32_t>(i);
                 else
+                {
+                    if (i + 8 < owned_size_) [[likely]]
+                        sets_[k]->prefetch_sparse_entry(indices[i + 8]);
                     dense_idx[k] = sets_[k]->sparse_dense_at_public(eid);
+                }
             }
 
             auto comps = std::forward_as_tuple(

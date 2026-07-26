@@ -14,10 +14,7 @@
 #include "part/class_pool.hpp"
 #include "part/type_id.hpp"
 #include "part/tiered_sort.hpp"
-
-#ifndef PREFETCH_R
-#define PREFETCH_R(ptr) DENSE_PREFETCH_R(ptr)
-#endif
+// PREFETCH_R 宏: 集中定义于 part/force_inline.hpp
 
 
 static inline void nt_fill_uint32_(uint32_t* dst, size_t count, uint32_t value) noexcept
@@ -64,24 +61,24 @@ public:
     static constexpr uint32_t dense_invalid = 0xFFFFFFFFu;
 
 private:
-    // hot set cache constants
     static constexpr size_t hot_set_capacity_ = 256;
 
     // sparse table: class_pool<sparse_entry> 替代 flat+paged 混合存储
     class_pool<sparse_entry> sparse_table_;
     size_t sparse_size_{0};
 
-    // hot set cache storage
-    struct alignas(32) hot_entry_
+    // hot set cache storage — 16B 紧凑布局 (原 32B alignas(32) 浪费 12B/entry)
+    //   entity_key = entity_index(低32) | version(高32), 与 entity.parts_ 内存布局一致
+    //   pool_version_lo: version_ 低 32 位 (bump_pool_version 达 2^32 才 wrap, 实际不可达)
+    //   256 * 16B = 4KB (原 8KB), 每 cache line(64B) 放 4 entry (原 2), conflict miss 减半
+    struct hot_entry_
     {
-        uint32_t entity_index;
+        uint64_t entity_key;       // entity_index | (version << 32)
         uint32_t dense_index;
-        uint32_t version;
-        uint64_t pool_version;
+        uint32_t pool_version_lo;  // (uint32_t)version_
     };
     hot_entry_ hot_set_[hot_set_capacity_]{};
 
-    // dense array
     dense<uint32_t> dense_;
     // 与 dense_ 同步的 version 数组, 用于遍历时直接读连续内存, 避免 sparse_entry 间接查找
     dense<uint32_t> versions_;
@@ -100,7 +97,7 @@ private:
         void (*swap_pool)(void* pool, size_t i, size_t j) noexcept;
         void* (*get_pool_data)(void* pool) noexcept;
         bool is_trivially_copyable{false};
-        // trivial fast path: memcpy-based swap_pop and swap
+        // trivial 类型快速路径: 基于 memcpy 的 swap_pop 和 swap
         void (*swap_pop_trivial)(void* pool, size_t index, size_t component_size) noexcept;
         void (*swap_pool_trivial)(void* pool, size_t i, size_t j, size_t component_size) noexcept;
         void* (*get_pool_element)(void* pool, size_t index) noexcept;
@@ -129,7 +126,9 @@ private:
     friend class ecs::manager;
     template <typename> friend class ecs::query_context;
 
-    // ===== sparse table helpers (class_pool<sparse_entry> 提供) =====
+    // slow path 优化: 单次加载 sparse_entry (8B = dense + version),
+    //   替代原 sparse_dense_at + sparse_version_at 两次独立调用
+    //   (原方案每次调用都重复 idx>=sparse_size_ 和 is_constructed_at 检查)
 
     [[nodiscard]] uint32_t sparse_dense_at(uint32_t idx) const noexcept
     {
@@ -159,6 +158,22 @@ private:
         return sparse_table_[idx].version;
     }
 
+    // 单次加载 sparse_entry (8B), 返回 dense+version, 供 slow path 合并比较
+    //   先检查 is_constructed_at (bitmap), 未构造返回 nullptr, 避免读到垃圾数据
+    //   比 sparse_dense_at + sparse_version_at 少 1 次 is_constructed_at + 1 次 sparse_entry 加载
+    [[nodiscard]] const sparse_entry* sparse_entry_checked_(uint32_t idx) const noexcept
+    {
+        if (!sparse_table_.is_constructed_at(idx)) [[unlikely]]
+            return nullptr;
+        return &sparse_table_[idx];
+    }
+
+    // unchecked: 调用方保证 idx 已构造 (如 hot_set hit 后的 fast path)
+    [[nodiscard]] const sparse_entry& sparse_entry_at_unchecked(uint32_t idx) const noexcept
+    {
+        return sparse_table_[idx];
+    }
+
     void sparse_set_at(uint32_t idx, uint32_t dense, uint32_t version) noexcept
     {
         sparse_table_.sparse_emplace_at(idx, sparse_entry{dense, version});
@@ -181,20 +196,31 @@ private:
 
     void check_mode_switch_() noexcept {}
 
-    // ===== hot set cache helpers =====
+    // 16B 紧凑布局: entity_key (64b) + dense_index (32b) + pool_version_lo (32b)
+    //   hit 判断: entity_key 匹配 + pool_version_lo 匹配 (2 次独立比较, 可并行发射)
+
+    // 从 entity 构造 key (与 entity.parts_ 内存布局一致: index 低 32 | version 高 32)
+    static uint64_t make_entity_key_(entity e) noexcept
+    {
+        // 注: entity.parts_ 是 {index_, version_}, 直接 memcpy 避免 UB (违反严格别名)
+        uint64_t key;
+        std::memcpy(&key, &e.parts_, sizeof(key));
+        return key;
+    }
 
     void hot_set_update_(uint32_t entity_index, uint32_t dense_index, uint32_t version) noexcept
     {
         const size_t slot = entity_index & (hot_set_capacity_ - 1);
-        hot_set_[slot] = {entity_index, dense_index, version, version_};
+        hot_set_[slot] = {make_entity_key_(entity{entity_index, version}), dense_index, static_cast<uint32_t>(version_)};
     }
 
     void hot_set_invalidate_(uint32_t entity_index) noexcept
     {
         const size_t slot = entity_index & (hot_set_capacity_ - 1);
-        if (hot_set_[slot].entity_index == entity_index)
+        // 仅当 entity_index 匹配时清空 (检查 entity_key 低 32 位)
+        if (static_cast<uint32_t>(hot_set_[slot].entity_key) == entity_index)
         {
-            hot_set_[slot] = {0, 0, 0, 0};
+            hot_set_[slot] = {0, 0, 0};
         }
     }
 
@@ -203,20 +229,16 @@ private:
         std::memset(hot_set_, 0, sizeof(hot_set_));
     }
 
-    // ===== sparse access helpers (由 flat+paged 混合存储提供) =====
-
     void sparse_set(uint32_t idx, uint32_t version, uint32_t dense) noexcept
     {
         sparse_set_at(idx, dense, version);
     }
 
-    // unchecked: caller guarantees page exists, no hot set update
+    // unchecked: 调用方保证 page 已存在, 不更新 hot set
     void sparse_set_unchecked(uint32_t idx, uint32_t version, uint32_t dense) noexcept
     {
         sparse_set_at_unchecked(idx, dense, version);
     }
-
-    // ===== typed pool helpers =====
 
     template <typename T>
     void init_typed_storage()
@@ -361,9 +383,7 @@ private:
                 all_new = false;
         }
 
-        // ensure capacity for all indices up to max_index
         sparse_table_.increase_capacity(max_index + 1);
-        // update sparse_size_
         if (max_index >= sparse_size_)
             sparse_size_ = max_index + 1;
 
@@ -384,14 +404,40 @@ private:
             for (size_t i = 0; i < count; ++i)
                 versions_.emplace_back_unchecked(entities[i].parts_.version_);
 
+            // 顺序追加检测: 若 entities 恰好为 [append_pos, append_pos+1, ..., append_pos+count-1]
+            //   则用 emplace_back_dense_unchecked 替代 sparse_set_unchecked
+            //   优势: 跳过 invalidate_count_cache + bitmap_test + update_dense_status
+            //   (append 场景下 is_dense_/hole_count_ 不变, 这些操作均为 no-op 但仍有指令开销)
+            const size_t append_pos = sparse_table_.size();
+            bool sequential = (count > 0 && entities[0].parts_.index_ == append_pos);
+            if (sequential) [[likely]]
+            {
+                for (size_t i = 1; i < count; ++i)
+                {
+                    if (entities[i].parts_.index_ != append_pos + i) { sequential = false; break; }
+                }
+            }
+
             using component_return_t = decltype(get_component(0));
             if constexpr (std::is_lvalue_reference_v<component_return_t>)
             {
-                for (size_t i = 0; i < count; ++i)
+                if (sequential) [[likely]]
                 {
-                    if (i + 16 < count) [[likely]] PREFETCH_R(&entities[i + 16]);
-                    uint32_t idx = entities[i].parts_.index_;
-                    sparse_set_unchecked(idx, entities[i].parts_.version_, static_cast<uint32_t>(dense_start + i));
+                    for (size_t i = 0; i < count; ++i)
+                    {
+                        if (i + 16 < count) [[likely]] PREFETCH_R(&entities[i + 16]);
+                        sparse_table_.emplace_back_dense_unchecked(
+                            sparse_entry{static_cast<uint32_t>(dense_start + i), entities[i].parts_.version_});
+                    }
+                }
+                else
+                {
+                    for (size_t i = 0; i < count; ++i)
+                    {
+                        if (i + 16 < count) [[likely]] PREFETCH_R(&entities[i + 16]);
+                        uint32_t idx = entities[i].parts_.index_;
+                        sparse_set_unchecked(idx, entities[i].parts_.version_, static_cast<uint32_t>(dense_start + i));
+                    }
                 }
                 pool->append_bulk(&get_component(0), count);
             }
@@ -399,12 +445,25 @@ private:
             {
                 dense<DT> temp_components;
                 temp_components.increase_capacity(count);
-                for (size_t i = 0; i < count; ++i)
+                if (sequential) [[likely]]
                 {
-                    if (i + 16 < count) [[likely]] PREFETCH_R(&entities[i + 16]);
-                    uint32_t idx = entities[i].parts_.index_;
-                    sparse_set_unchecked(idx, entities[i].parts_.version_, static_cast<uint32_t>(dense_start + i));
-                    temp_components.push_back_unchecked(get_component(i));
+                    for (size_t i = 0; i < count; ++i)
+                    {
+                        if (i + 16 < count) [[likely]] PREFETCH_R(&entities[i + 16]);
+                        sparse_table_.emplace_back_dense_unchecked(
+                            sparse_entry{static_cast<uint32_t>(dense_start + i), entities[i].parts_.version_});
+                        temp_components.push_back_unchecked(get_component(i));
+                    }
+                }
+                else
+                {
+                    for (size_t i = 0; i < count; ++i)
+                    {
+                        if (i + 16 < count) [[likely]] PREFETCH_R(&entities[i + 16]);
+                        uint32_t idx = entities[i].parts_.index_;
+                        sparse_set_unchecked(idx, entities[i].parts_.version_, static_cast<uint32_t>(dense_start + i));
+                        temp_components.push_back_unchecked(get_component(i));
+                    }
                 }
                 pool->append_bulk_move(temp_components.data(), count);
             }
@@ -545,7 +604,9 @@ public:
 
         auto* pool = get_typed_pool<DT>();
 
-        // fast path: appending at the end
+        // fast path: 末尾追加
+        //   不变量: sparse_size_ == sparse_table_.index_ (由 sparse_set_at/clear 同步维护)
+        //   因此 e.parts_.index_ == sparse_table_.index_, 可直接 append
         if (e.parts_.index_ == sparse_size_) [[likely]]
         {
             uint32_t dense_idx = static_cast<uint32_t>(dense_.size());
@@ -558,7 +619,12 @@ public:
                 pool->increase_capacity(new_cap);
                 typed_pool_data_ = pool->data();
             }
-            sparse_set_at(e.parts_.index_, dense_idx, e.parts_.version_);
+            // 优化: emplace_back_dense_unchecked 替代 sparse_set_at -> sparse_emplace_at
+            //   原方案: invalidate_count_cache + 多分支 bitmap_test + update_dense_status
+            //   新方案: count_cache_ 增量更新 + 直接 placement new + bitmap_set, 无分支
+            //   (append 场景下 is_dense_/hole_count_ 不变, update_dense_status 为 no-op)
+            sparse_table_.emplace_back_dense_unchecked(sparse_entry{dense_idx, e.parts_.version_});
+            sparse_size_ = static_cast<size_t>(e.parts_.index_) + 1;
             dense_.emplace_back_unchecked(e.parts_.index_);
             versions_.emplace_back_unchecked(e.parts_.version_);
             pool->emplace_back_unchecked(std::forward<T>(object));
@@ -572,14 +638,16 @@ public:
             return result;
         }
 
-        // slow path: index may be beyond current size or within existing range
+        // slow path: index 可能超出当前范围或落在已存在区间内
         if (e.parts_.index_ >= sparse_size_)
         {
             sparse_size_ = static_cast<size_t>(e.parts_.index_) + 1;
         }
 
-        uint32_t ver = sparse_version_at(e.parts_.index_);
-        uint32_t dense_idx = sparse_dense_at(e.parts_.index_);
+        // 单次加载 sparse_entry (8B = dense + version), 替代原 sparse_version_at + sparse_dense_at 两次加载
+        const sparse_entry* se = sparse_entry_checked_(e.parts_.index_);
+        uint32_t ver = se ? se->version : 0;
+        uint32_t dense_idx = se ? se->dense : dense_invalid;
 
         bool is_new_add = (ver != e.parts_.version_);
 
@@ -604,7 +672,20 @@ public:
             dense_idx = static_cast<uint32_t>(dense_.size() - 1);
             ver = e.parts_.version_;
             versions_.emplace_back(ver);
-            sparse_set_at(e.parts_.index_, dense_idx, ver);
+            // 优化: se != nullptr 表示 bitmap 已构造 (如 hard_remove 后复用 slot)
+            //   直接赋值 sparse_entry (8B store), 替代 sparse_set_at -> sparse_emplace_at
+            //   (sparse_emplace_at 会重复 bitmap_test/析构/重建, 此处 bitmap 已 set 无需操作)
+            //   se == nullptr 表示从未构造, 需 sparse_set_at 设置 bitmap
+            //   注: se != nullptr 时 e.parts_.index_ < sparse_table_.index_ (bitmap 已 set 说明
+            //   之前 emplace 过, index_ 必 > idx), 不会破坏 sparse_size_ == index_ 不变量
+            if (se) [[likely]]
+            {
+                sparse_table_[e.parts_.index_] = {dense_idx, ver};
+            }
+            else
+            {
+                sparse_set_at(e.parts_.index_, dense_idx, ver);
+            }
             pool->emplace_back(std::forward<T>(object));
             if (on_add_) [[unlikely]] on_add_(e, &(*pool)[dense_idx], on_add_data_);
         }
@@ -649,25 +730,24 @@ public:
         {
             return nullptr;
         }
-        // hot set fast path
+        // hot set 快速路径: 16B 紧凑布局, 2 次独立比较 (entity_key + pool_version_lo)
+        //   entity_key = index|version 64-bit 单指令比较, 与 pool_version_lo 无依赖可并行
         const size_t slot = e.parts_.index_ & (hot_set_capacity_ - 1);
         const auto& entry = hot_set_[slot];
-        if (entry.entity_index == e.parts_.index_ && entry.version == e.parts_.version_ && entry.pool_version == version_) [[likely]]
+        const uint64_t key = make_entity_key_(e);
+        const uint32_t pool_ver_lo = static_cast<uint32_t>(version_);
+        if (entry.entity_key == key && entry.pool_version_lo == pool_ver_lo) [[likely]]
         {
             return &(*get_typed_pool<T>())[entry.dense_index];
         }
-        // paged sparse lookup
+        // slow path: 单次 is_constructed_at + 单次 sparse_entry 加载 (原方案 2 次各自检查)
         if (e.parts_.index_ >= sparse_size_) [[unlikely]]
             return nullptr;
-        const uint32_t dense = sparse_dense_at(e.parts_.index_);
-        if (dense == dense_invalid) [[unlikely]]
+        const sparse_entry* se = sparse_entry_checked_(e.parts_.index_);
+        if (!se || se->dense == dense_invalid || se->version != e.parts_.version_) [[unlikely]]
             return nullptr;
-        const uint32_t ver = sparse_version_at(e.parts_.index_);
-        if (ver != e.parts_.version_) [[unlikely]]
-            return nullptr;
-        // update hot set
-        hot_set_[slot] = {e.parts_.index_, dense, ver, version_};
-        return &(*get_typed_pool<T>())[dense];
+        hot_set_[slot] = {key, se->dense, pool_ver_lo};
+        return &(*get_typed_pool<T>())[se->dense];
     }
 
     template <typename T>
@@ -675,51 +755,44 @@ public:
     {
         if (!e.is_valid() || type_id_ != type_id::get_type_id<T>()) [[unlikely]]
             return nullptr;
-        // hot set fast path
         const size_t slot = e.parts_.index_ & (hot_set_capacity_ - 1);
         const auto& entry = hot_set_[slot];
-        if (entry.entity_index == e.parts_.index_ && entry.version == e.parts_.version_ && entry.pool_version == version_) [[likely]]
+        const uint64_t key = make_entity_key_(e);
+        const uint32_t pool_ver_lo = static_cast<uint32_t>(version_);
+        if (entry.entity_key == key && entry.pool_version_lo == pool_ver_lo) [[likely]]
         {
             return &(*get_typed_pool<T>())[entry.dense_index];
         }
-        // paged sparse lookup
         if (e.parts_.index_ >= sparse_size_) [[unlikely]]
             return nullptr;
-        const uint32_t dense = sparse_dense_at(e.parts_.index_);
-        if (dense == dense_invalid) [[unlikely]]
+        const sparse_entry* se = sparse_entry_checked_(e.parts_.index_);
+        if (!se || se->dense == dense_invalid || se->version != e.parts_.version_) [[unlikely]]
             return nullptr;
-        const uint32_t ver = sparse_version_at(e.parts_.index_);
-        if (ver != e.parts_.version_) [[unlikely]]
-            return nullptr;
-        return &(*get_typed_pool<T>())[dense];
+        return &(*get_typed_pool<T>())[se->dense];
     }
 
     template <typename T>
     [[nodiscard]] T* get_ptr_fast(entity e) noexcept
     {
-        // hot set fast path
         const size_t slot = e.parts_.index_ & (hot_set_capacity_ - 1);
         const auto& entry = hot_set_[slot];
-        if (entry.entity_index == e.parts_.index_ && entry.version == e.parts_.version_ && entry.pool_version == version_) [[likely]]
+        const uint64_t key = make_entity_key_(e);
+        const uint32_t pool_ver_lo = static_cast<uint32_t>(version_);
+        if (entry.entity_key == key && entry.pool_version_lo == pool_ver_lo) [[likely]]
         {
             return &(*get_typed_pool<T>())[entry.dense_index];
         }
-        // paged sparse lookup
         if (e.parts_.index_ >= sparse_size_) [[unlikely]]
             return nullptr;
-        const uint32_t dense = sparse_dense_at(e.parts_.index_);
-        if (dense == dense_invalid) [[unlikely]]
+        const sparse_entry* se = sparse_entry_checked_(e.parts_.index_);
+        if (!se || se->dense == dense_invalid || se->version != e.parts_.version_) [[unlikely]]
             return nullptr;
-        const uint32_t ver = sparse_version_at(e.parts_.index_);
-        if (ver != e.parts_.version_) [[unlikely]]
-            return nullptr;
-        // update hot set
-        hot_set_[slot] = {e.parts_.index_, dense, ver, version_};
-        return &(*get_typed_pool<T>())[dense];
+        hot_set_[slot] = {key, se->dense, pool_ver_lo};
+        return &(*get_typed_pool<T>())[se->dense];
     }
 
-    // inline fast path: uses cached typed_pool_data_ to avoid get_typed_pool indirection
-    // 热集 miss 时: 分离存储只需1次加载 dense (flat 模式) 或1次加载 (paged 模式)
+    // 内联快速路径: 使用缓存的 typed_pool_data_ 避免 get_typed_pool 间接寻址
+    // 热集 miss 时: 单次 is_constructed_at + 单次 sparse_entry 加载
     template <typename T>
     [[nodiscard]] T* get_ptr_fast_inline(entity e) noexcept
     {
@@ -727,20 +800,19 @@ public:
             return get_ptr_fast<T>(e);
         const size_t slot = e.parts_.index_ & (hot_set_capacity_ - 1);
         const auto& entry = hot_set_[slot];
-        if (entry.entity_index == e.parts_.index_ && entry.version == e.parts_.version_ && entry.pool_version == version_) [[likely]]
+        const uint64_t key = make_entity_key_(e);
+        const uint32_t pool_ver_lo = static_cast<uint32_t>(version_);
+        if (entry.entity_key == key && entry.pool_version_lo == pool_ver_lo) [[likely]]
         {
             return static_cast<T*>(typed_pool_data_) + entry.dense_index;
         }
         if (e.parts_.index_ >= sparse_size_) [[unlikely]]
             return nullptr;
-        const uint32_t dense = sparse_dense_at(e.parts_.index_);
-        if (dense == dense_invalid) [[unlikely]]
+        const sparse_entry* se = sparse_entry_checked_(e.parts_.index_);
+        if (!se || se->dense == dense_invalid || se->version != e.parts_.version_) [[unlikely]]
             return nullptr;
-        const uint32_t ver = sparse_version_at(e.parts_.index_);
-        if (ver != e.parts_.version_) [[unlikely]]
-            return nullptr;
-        hot_set_[slot] = {e.parts_.index_, dense, ver, version_};
-        return static_cast<T*>(typed_pool_data_) + dense;
+        hot_set_[slot] = {key, se->dense, pool_ver_lo};
+        return static_cast<T*>(typed_pool_data_) + se->dense;
     }
 
     template <typename T>
@@ -750,53 +822,51 @@ public:
             return get_ptr_fast<T>(e);
         const size_t slot = e.parts_.index_ & (hot_set_capacity_ - 1);
         const auto& entry = hot_set_[slot];
-        if (entry.entity_index == e.parts_.index_ && entry.version == e.parts_.version_ && entry.pool_version == version_) [[likely]]
+        const uint64_t key = make_entity_key_(e);
+        const uint32_t pool_ver_lo = static_cast<uint32_t>(version_);
+        if (entry.entity_key == key && entry.pool_version_lo == pool_ver_lo) [[likely]]
         {
             return static_cast<const T*>(typed_pool_data_) + entry.dense_index;
         }
         if (e.parts_.index_ >= sparse_size_) [[unlikely]]
             return nullptr;
-        const uint32_t dense = sparse_dense_at(e.parts_.index_);
-        if (dense == dense_invalid) [[unlikely]]
+        const sparse_entry* se = sparse_entry_checked_(e.parts_.index_);
+        if (!se || se->dense == dense_invalid || se->version != e.parts_.version_) [[unlikely]]
             return nullptr;
-        const uint32_t ver = sparse_version_at(e.parts_.index_);
-        if (ver != e.parts_.version_) [[unlikely]]
-            return nullptr;
-        return static_cast<const T*>(typed_pool_data_) + dense;
+        return static_cast<const T*>(typed_pool_data_) + se->dense;
     }
 
     template <typename T>
     [[nodiscard]] const T* get_ptr_fast(entity e) const noexcept
     {
-        // hot set fast path
         const size_t slot = e.parts_.index_ & (hot_set_capacity_ - 1);
         const auto& entry = hot_set_[slot];
-        if (entry.entity_index == e.parts_.index_ && entry.version == e.parts_.version_ && entry.pool_version == version_) [[likely]]
+        const uint64_t key = make_entity_key_(e);
+        const uint32_t pool_ver_lo = static_cast<uint32_t>(version_);
+        if (entry.entity_key == key && entry.pool_version_lo == pool_ver_lo) [[likely]]
         {
             return &(*get_typed_pool<T>())[entry.dense_index];
         }
-        // paged sparse lookup
         if (e.parts_.index_ >= sparse_size_) [[unlikely]]
             return nullptr;
-        const uint32_t dense = sparse_dense_at(e.parts_.index_);
-        if (dense == dense_invalid) [[unlikely]]
+        const sparse_entry* se = sparse_entry_checked_(e.parts_.index_);
+        if (!se || se->dense == dense_invalid || se->version != e.parts_.version_) [[unlikely]]
             return nullptr;
-        const uint32_t ver = sparse_version_at(e.parts_.index_);
-        if (ver != e.parts_.version_) [[unlikely]]
-            return nullptr;
-        return &(*get_typed_pool<T>())[dense];
+        return &(*get_typed_pool<T>())[se->dense];
     }
 
+    // raw: 无任何边界检查, 调用方保证 idx 有效. 直接读 sparse_table_[idx].dense
+    //   优化: 跳过 sparse_dense_at 的 is_constructed_at + sparse_size_ 检查 (原 2 次 bitmap 加载)
     template <typename T>
     [[nodiscard]] T* get_ptr_raw(entity e) noexcept
     {
-        return &(*get_typed_pool<T>())[sparse_dense_at(e.parts_.index_)];
+        return static_cast<T*>(typed_pool_data_) + sparse_dense_at_unchecked(e.parts_.index_);
     }
 
     template <typename T>
     [[nodiscard]] const T* get_ptr_raw(entity e) const noexcept
     {
-        return &(*get_typed_pool<T>())[sparse_dense_at(e.parts_.index_)];
+        return static_cast<const T*>(typed_pool_data_) + sparse_dense_at_unchecked(e.parts_.index_);
     }
 
     void prefetch_component(uint32_t entity_index) const noexcept
@@ -895,19 +965,13 @@ public:
             size_t orig_i = entries[i].index & 0xFFFFFFFF;
             uint32_t ver = static_cast<uint32_t>(entries[i].index >> 32);
 
-            uint32_t dense = sparse_dense_at(eidx);
-            if (dense == dense_invalid) [[unlikely]]
+            const sparse_entry* se = sparse_entry_checked_(eidx);
+            if (!se || se->dense == dense_invalid || se->version != ver) [[unlikely]]
             {
                 results[orig_i] = nullptr;
                 continue;
             }
-            uint32_t stored_ver = sparse_version_at(eidx);
-            if (stored_ver != ver) [[unlikely]]
-            {
-                results[orig_i] = nullptr;
-                continue;
-            }
-            results[orig_i] = &(*pool)[dense];
+            results[orig_i] = &(*pool)[se->dense];
         }
 
         ::operator delete(entries, count * sizeof(batch_sort_entry), std::align_val_t{align});
@@ -945,7 +1009,6 @@ public:
             {
                 size_t i = base + j;
                 const entity& e = entities[i];
-                // prefetch next batch
                 if (i + 8 < count) [[likely]]
                 {
                     const uint32_t pf_idx = entities[i + 8].parts_.index_;
@@ -958,20 +1021,14 @@ public:
                     dense_buf[j] = UINT32_MAX;
                     continue;
                 }
-                uint32_t dense = sparse_dense_at(e.parts_.index_);
-                if (dense == dense_invalid) [[unlikely]]
+                const sparse_entry* se = sparse_entry_checked_(e.parts_.index_);
+                if (!se || se->dense == dense_invalid || se->version != e.parts_.version_) [[unlikely]]
                 {
                     dense_buf[j] = UINT32_MAX;
                     continue;
                 }
-                uint32_t ver = sparse_version_at(e.parts_.index_);
-                if (ver != e.parts_.version_) [[unlikely]]
-                {
-                    dense_buf[j] = UINT32_MAX;
-                    continue;
-                }
-                dense_buf[j] = dense;
-                PREFETCH_R(&(*pool)[dense]);
+                dense_buf[j] = se->dense;
+                PREFETCH_R(&(*pool)[se->dense]);
             }
 
             for (size_t j = 0; j < n; ++j)
@@ -1028,13 +1085,19 @@ public:
     operating_message hard_remove(entity e) noexcept
     {
         operating_message result;
-        if (!e.is_valid() || e.parts_.index_ >= sparse_size_ || sparse_version_at(e.parts_.index_) != e.parts_.version_) [[unlikely]]
+        if (!e.is_valid() || e.parts_.index_ >= sparse_size_) [[unlikely]]
+        {
+            result.write_message(false, "single_class_set::hard_remove(): invalid entity or version mismatch, index=", std::to_string(e.parts_.index_));
+            return result;
+        }
+        const sparse_entry* se = sparse_entry_checked_(e.parts_.index_);
+        if (!se || se->dense == dense_invalid || se->version != e.parts_.version_) [[unlikely]]
         {
             result.write_message(false, "single_class_set::hard_remove(): invalid entity or version mismatch, index=", std::to_string(e.parts_.index_));
             return result;
         }
 
-        auto index = sparse_dense_at(e.parts_.index_);
+        auto index = se->dense;
 
         void* comp_ptr = typed_pool_ ? static_cast<char*>(typed_pool_) + index * component_size_ : nullptr;
         if (on_remove_ && comp_ptr) [[unlikely]] on_remove_(e, comp_ptr, on_remove_data_);
@@ -1050,7 +1113,10 @@ public:
 
         if (moved_entity_id != e.parts_.index_) [[likely]]
         {
-            sparse_set_unchecked(moved_entity_id, sparse_version_at_unchecked(moved_entity_id), static_cast<uint32_t>(index));
+            // moved_entity_id 一定已构造 (它是 dense_.back() 对应的 entity)
+            // 单次更新 dense 字段, 替代原 sparse_version_at_unchecked + sparse_set_unchecked
+            // (原方案: 1 次 load version + 1 次 store {dense, version}; 现方案: 1 次 store dense)
+            sparse_table_[moved_entity_id].dense = static_cast<uint32_t>(index);
         }
         dense_.pop_back();
 
@@ -1065,10 +1131,11 @@ public:
 
         if (typed_pool_)
         {
-            if (ops_.is_trivially_copyable && typed_pool_data_ && ops_.get_pool_size && ops_.pool_pop_back)
+            if (ops_.is_trivially_copyable && typed_pool_data_ && ops_.pool_pop_back)
             {
-                // inline trivial swap_pop: memcpy last→index + pop_back
-                const size_t last = ops_.get_pool_size(typed_pool_) - 1;
+                // 内联 trivial swap_pop: memcpy last→index + pop_back
+                // dense_ 已 pop_back, dense_.size() 即为 last index (pool size 与 dense_ 同步)
+                const size_t last = dense_.size();
                 if (index != last) [[likely]]
                 {
                     auto* data = static_cast<char*>(typed_pool_data_);
@@ -1082,7 +1149,10 @@ public:
             }
         }
 
-        sparse_set_at_unchecked(e.parts_.index_, dense_invalid, 0);
+        // 直接赋值 sparse_entry, 替代 sparse_set_at_unchecked
+        // (sparse_emplace_at 内部有 bitmap 检查/析构/重建等冗余操作, 此处只需标记删除)
+        // 必须同时重置 version=0, 否则后续 add slow path 误判为 "已存在" 导致 dense_invalid 越界
+        sparse_table_[e.parts_.index_] = {dense_invalid, 0};
         ++version_;
         return result;
     }
@@ -1090,23 +1160,33 @@ public:
     operating_message soft_remove(entity e) noexcept
     {
         operating_message result;
-        if (!e.is_valid() || e.parts_.index_ >= sparse_size_ || sparse_version_at(e.parts_.index_) != e.parts_.version_) [[unlikely]]
+        if (!e.is_valid() || e.parts_.index_ >= sparse_size_) [[unlikely]]
+        {
+            result.write_message(false, "single_class_set::soft_remove(): invalid entity or version mismatch, index=", std::to_string(e.parts_.index_));
+            return result;
+        }
+        const sparse_entry* se = sparse_entry_checked_(e.parts_.index_);
+        if (!se || se->dense == dense_invalid || se->version != e.parts_.version_) [[unlikely]]
         {
             result.write_message(false, "single_class_set::soft_remove(): invalid entity or version mismatch, index=", std::to_string(e.parts_.index_));
             return result;
         }
 
-        sparse_set_at_unchecked(e.parts_.index_, dense_invalid, 0);
+        sparse_table_[e.parts_.index_] = {dense_invalid, 0};
         ++version_;
         return result;
     }
 
     [[nodiscard]] bool contains_entity(entity e) const noexcept
     {
+        // 优化: 2 次检查 + 单次 sparse_entry 加载 (原 5 次冗余检查)
+        //   原方案: 外层 idx>=sparse_size_ + sparse_dense_at 内部 idx>=sparse_size_
+        //           + is_constructed_at + sparse_version_at 内部重复 2 次检查 = 5 次
+        //   现方案: 1 次边界检查 + 1 次 is_constructed_at + 单次加载 8B sparse_entry
         if (!e.is_valid() || e.parts_.index_ >= sparse_size_) [[unlikely]] return false;
-        const uint32_t dense = sparse_dense_at(e.parts_.index_);
-        if (dense == dense_invalid) [[unlikely]] return false;
-        return sparse_version_at(e.parts_.index_) == e.parts_.version_;
+        const sparse_entry* se = sparse_entry_checked_(e.parts_.index_);
+        if (!se) [[unlikely]] return false;
+        return se->dense != dense_invalid && se->version == e.parts_.version_;
     }
 
     [[nodiscard]] int& get_type_id() noexcept
@@ -1264,7 +1344,7 @@ public:
         return versions_;
     }
 
-    // sparse intersection check for >64 types slow path
+    // >64 类型 slow path 的 sparse 交集检查
     [[nodiscard]] static bool sparse_contains_version(const single_class_set* set,
                                                      uint32_t idx,
                                                      uint32_t version) noexcept
@@ -1293,19 +1373,20 @@ public:
             versions_[i] = versions_[j];
             versions_[j] = tmp_v;
         }
-        sparse_set_unchecked(dense_[i], sparse_version_at_unchecked(dense_[i]), static_cast<uint32_t>(i));
-        sparse_set_unchecked(dense_[j], sparse_version_at_unchecked(dense_[j]), static_cast<uint32_t>(j));
+        // 单次更新 dense 字段, 替代原 sparse_version_at_unchecked + sparse_set_unchecked
+        // (dense_[i]/dense_[j] 已交换, 它们的 sparse_entry 一定已构造)
+        sparse_table_[dense_[i]].dense = static_cast<uint32_t>(i);
+        sparse_table_[dense_[j]].dense = static_cast<uint32_t>(j);
         if (i < entity_change_tracking_.size() && j < entity_change_tracking_.size())
         {
-            change_tracking_entry tmp = entity_change_tracking_[i];
+            change_tracking_entry ct_tmp = entity_change_tracking_[i];
             entity_change_tracking_[i] = entity_change_tracking_[j];
-            entity_change_tracking_[j] = tmp;
+            entity_change_tracking_[j] = ct_tmp;
         }
         if (typed_pool_) [[likely]]
         {
             if (ops_.is_trivially_copyable && typed_pool_data_ && component_size_ <= 256)
             {
-                // inline trivial swap: memcpy-based
                 auto* data = static_cast<char*>(typed_pool_data_);
                 alignas(alignof(std::max_align_t)) char temp[256];
                 std::memcpy(temp, data + i * component_size_, component_size_);
@@ -1361,7 +1442,7 @@ public:
         }
 
         for (size_t i = 0; i < n; ++i)
-            sparse_set_unchecked(new_dense[i], sparse_version_at_unchecked(new_dense[i]), static_cast<uint32_t>(i));
+            sparse_table_[new_dense[i]].dense = static_cast<uint32_t>(i);
 
         dense_ = std::move(new_dense);
         if (new_versions.size() > 0)
@@ -1369,7 +1450,6 @@ public:
         ++version_;
     }
 
-    // public sparse access (分离存储)
     [[nodiscard]] uint32_t sparse_dense_at_public(uint32_t idx) const noexcept
     {
         return sparse_dense_at(idx);
@@ -1378,6 +1458,12 @@ public:
     [[nodiscard]] uint32_t sparse_version_at_public(uint32_t idx) const noexcept
     {
         return sparse_version_at(idx);
+    }
+
+    void prefetch_sparse_entry(uint32_t idx) const noexcept
+    {
+        if (idx < sparse_size_) [[likely]]
+            PREFETCH_R(&sparse_table_[idx]);
     }
 
     [[nodiscard]] size_t get_sparse_size() const noexcept

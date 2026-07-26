@@ -1,8 +1,6 @@
 #pragma once
 
-// 通用固定容量环形缓冲区
-// 堆分配存储, 栈上仅占指针大小, 适合大容量缓冲区避免栈溢出
-// 容量 N 必须为 2 的幂, 内部用位掩码取模
+// 通用固定容量环形缓冲区, 堆分配, 容量 N 须为 2 的幂
 // 不做元素零初始化, 调用方仅在 [read_, write_) 区间读取
 
 #include <cstddef>
@@ -30,7 +28,6 @@ public:
     ring_buffer(const ring_buffer&) = delete;
     ring_buffer& operator=(const ring_buffer&) = delete;
 
-    // 写入一个事件, 满返回 false
     [[nodiscard]] bool push(const T& event) noexcept
     {
         uint32_t next = (write_ + 1) & static_cast<uint32_t>(N - 1);
@@ -40,7 +37,6 @@ public:
         return true;
     }
 
-    // 写入一个事件 (移动语义), 满返回 false
     [[nodiscard]] bool push(T&& event) noexcept
     {
         uint32_t next = (write_ + 1) & static_cast<uint32_t>(N - 1);
@@ -50,7 +46,6 @@ public:
         return true;
     }
 
-    // 原位构造写入, 满返回 false
     template <typename... Args>
     [[nodiscard]] bool emplace(Args&&... args) noexcept
     {
@@ -61,9 +56,6 @@ public:
         return true;
     }
 
-    // 读取并处理所有待处理事件
-    // handler 签名: void(const T&) 或 void(const T&, size_t index)
-    // 返回处理的事件数
     template <typename Func>
     size_t drain(Func&& handler) noexcept
     {
@@ -78,7 +70,6 @@ public:
     }
 
     // 带预算的 drain, 防止 handler 内追加导致无限循环
-    // budget 为最大处理事件数, 返回实际处理数
     template <typename Func>
     size_t drain_with_budget(size_t budget, Func&& handler) noexcept
     {
@@ -99,7 +90,6 @@ public:
         return &buf_[read_];
     }
 
-    // 弹出一个事件, 空返回 false
     [[nodiscard]] bool pop() noexcept
     {
         if (read_ == write_) { return false; }

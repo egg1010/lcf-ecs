@@ -1,12 +1,5 @@
-// ============================================================
 // test_common.hpp - 测试公共头文件
-// 功能测试 (test_functional.cpp) 与 性能测试 (test_perf.cpp) 共享:
-//   - 头文件包含
-//   - 测试组件定义
-//   - Timer 计时器
-//   - 格式化输出辅助函数 (print_section / print_sub / print_item / print_perf)
-//   - 测试结果统计与汇总 (print_summary)
-// ============================================================
+// 功能测试与性能测试共享: 头文件/组件定义/Timer/格式化输出/统计汇总
 #pragma once
 
 #include "include/component.hpp"
@@ -39,9 +32,7 @@ using ecs::entity_manager;
 using ecs::sparse_entry;
 using ecs::single_class_set;
 
-// ============================================================
-// 测试组件定义
-// ============================================================
+// === 测试组件定义 ===
 struct Position {
     float x, y, z;
     Position(float x = 0.0f, float y = 0.0f, float z = 0.0f) : x(x), y(y), z(z) {}
@@ -83,9 +74,7 @@ struct Mass {
     Mass(float value = 1.0f) : value(value) {}
 };
 
-// ============================================================
-// 辅助工具 (timer 来自 time.hpp, 全局命名空间)
-// ============================================================
+// === 辅助工具 (timer 来自 time.hpp, 全局命名空间) ===
 
 // 模块性能统计 (用于模块汇总与异常检查)
 namespace test_stats {
@@ -209,9 +198,28 @@ void print_perf_sep() {
     std::cout << "  ├──────────────────────────────────────────\n";
 }
 
-// ============================================================
-// 缓存命中率详细输出 (基于 time.hpp) - 中文格式
-// ============================================================
+// lcf_sink - 基准测试防优化 sink (替代 volatile 变量)
+// 作用: 强制编译器认为 expr 的结果被使用, 不能优化掉被测代码.
+// 实现: 通过易失引用读取到非 volatile 局部变量, 再丢弃:
+//   - 无未使用变量警告 (函数调用, 参数被使用)
+//   - 无副作用被优化 (volatile 读取是真实内存访问, 不可省略)
+//   - 无 GCC 14+ "conversion to void will not access volatile object" 告警
+//     (因为 (void) 作用于非 volatile 的 tmp, 而非 volatile 引用本身)
+// 用法: lcf_sink(value); 替代 volatile T x = value;
+template <typename T>
+inline void lcf_sink(T&& v) noexcept {
+    volatile auto& ref = v;
+    auto tmp = ref;
+    (void)tmp;
+}
+
+// 复合 sink: 同时 sink 多个值, 用于一次调用多个返回值
+template <typename... Ts>
+inline void lcf_sink_all(Ts&&... vs) noexcept {
+    (lcf_sink(std::forward<Ts>(vs)), ...);
+}
+
+// === 缓存命中率详细输出 (基于 time.hpp) - 中文格式 ===
 void print_cache_report(const char* name, const cache_report& r) {
     std::cout << std::fixed << std::setprecision(2);
     std::cout << "  " << std::left << std::setw(28) << name
@@ -260,10 +268,7 @@ struct ExtraComp {
     ExtraComp(int v = 0) : v(v) {}
 };
 
-// ============================================================
-// 测试结果汇总输出
-//   type: "功能测试" 或 "性能测试"
-// ============================================================
+// === 测试结果汇总输出 (type: "功能测试" 或 "性能测试") ===
 inline void print_summary(const char* type) {
     // 输出最后一个模块的汇总
     if (test_stats::g_module_count > 0 && test_stats::g_current_module.op_count > 0)

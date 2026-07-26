@@ -17,7 +17,6 @@ public:
         return id;
     }
 
-    // 当前已分配的最大 type_id
     [[nodiscard]] static FORCE_INLINE
     int current_max_id() noexcept
     {

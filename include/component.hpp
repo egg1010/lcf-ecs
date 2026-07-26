@@ -16,6 +16,20 @@
 #include "part/ring_buffer.hpp"
 #include "view_tags.hpp"
 
+// MinGW GCC: 返回大对象 (group/owning_group/reorder_group) 的工厂方法中,
+// GCC 会用 vmovdqa (32 字节对齐的 256 位存储) 在栈上构造 std::array<...> 参数,
+// 但 MinGW x64 ABI 遵循 Windows x64 ABI 规范, 仅保证 16 字节栈对齐 (设计规范, 非 bug)
+// → 触发 #GP, 进程崩溃 (0xC0000005).
+// 解决: 在这些工厂方法上加 [[gnu::target("no-avx")]] 禁用 AVX, 改用 SSE2/scalar
+//       (仅需 16 字节对齐, MinGW ABI 可保证). 工厂方法非热路径, 性能无影响.
+// Linux/macOS SysV ABI 为 AVX 函数维护 32 字节栈对齐 (设计规范), 无需此属性.
+// MSVC /arch:AVX2 会自动插入动态栈对齐, 亦无需此属性.
+#if defined(_WIN32) && defined(__GNUC__) && !defined(__clang__)
+#define LCF_NO_AVX [[gnu::target("no-avx")]]
+#else
+#define LCF_NO_AVX
+#endif
+
 template <typename T>
 concept IsEntity = std::same_as<T, ecs::entity>;
 
@@ -99,7 +113,6 @@ private:
     bool comp_signal_flushing_{false};
     bool track_changes_enabled_default_{true};
 
-    // 变更日志池
     static constexpr size_t change_log_capacity = 4096;
     static_assert((change_log_capacity & (change_log_capacity - 1)) == 0,
                   "change_log_capacity must be power of 2");
@@ -196,7 +209,7 @@ private:
         register_component_meta<DecayedT>();
         components_c_[type_id].add(entitys, std::forward<T>(component));
         set_entity_mask_bit(entitys, component_metas_[type_id].mask_block, component_metas_[type_id].mask_offset);
-        push_change_record(0, entitys.parts_.index_, static_cast<uint32_t>(type_id), components_c_[type_id].size() - 1);
+        push_change_record(0, entitys.parts_.index_, static_cast<uint32_t>(type_id), static_cast<uint32_t>(components_c_[type_id].size() - 1));
         if (!components_c_[type_id].on_add_) push_comp_signal(0, entitys.parts_.index_, static_cast<uint32_t>(type_id));
     }
 
@@ -614,7 +627,6 @@ public:
         return entity_manager_.num_mask_blocks();
     }
 
-    // 实体状态池委托
     [[nodiscard]] entity_state& get_entity_state(uint32_t entity_index) noexcept
     {
         return entity_manager_.get_entity_state(entity_index);
@@ -761,7 +773,6 @@ public:
 #include "multi_view.inc.hpp"
 #include "composite_views.inc.hpp"
 
-    // ======================== view() 工厂方法 ========================
     template <typename T>
     [[nodiscard]] single_view<T> view() noexcept
     {
@@ -791,7 +802,6 @@ public:
         return single_view_with<T, GetTypes...>(get_single_class_set<T>(), this);
     }
 
-    // ======================== view_or / view_any_of / view_filtered 工厂方法 ========================
     template <typename A, typename B>
     [[nodiscard]] or_view<A, B> view_or() noexcept
     {
@@ -812,9 +822,8 @@ public:
         return filter_view<T, Pred>(this, std::forward<Pred>(pred));
     }
 
-    // ======================== group() 工厂方法 ========================
     template <typename First, typename... Rest>
-    [[nodiscard]] ecs::group<First, Rest...> group() noexcept
+    [[nodiscard]] LCF_NO_AVX ecs::group<First, Rest...> group() noexcept
     {
         return ecs::group<First, Rest...>(this, std::array<single_class_set*, 1 + sizeof...(Rest)>{
             get_single_class_set<First>(),
@@ -823,7 +832,7 @@ public:
     }
 
     template <typename First, typename... Rest>
-    [[nodiscard]] ecs::owning_group<First, Rest...> group(owned_t<First>) noexcept
+    [[nodiscard]] LCF_NO_AVX ecs::owning_group<First, Rest...> group(owned_t<First>) noexcept
     {
         return ecs::owning_group<First, Rest...>(this, std::array<single_class_set*, 1 + sizeof...(Rest)>{
             get_single_class_set<First>(),
@@ -832,7 +841,7 @@ public:
     }
 
     template <typename First, typename... Rest>
-    [[nodiscard]] ecs::reorder_group<First, Rest...> group(reorder_t<First>) noexcept
+    [[nodiscard]] LCF_NO_AVX ecs::reorder_group<First, Rest...> group(reorder_t<First>) noexcept
     {
         return ecs::reorder_group<First, Rest...>(this, std::array<single_class_set*, 1 + sizeof...(Rest)>{
             get_single_class_set<First>(),
@@ -840,7 +849,6 @@ public:
         });
     }
 
-    // ======================== runtime_view 工厂方法 ========================
     [[nodiscard]] ecs::runtime_view runtime_view_create(std::span<const int> required_ids,
                                                     std::span<const int> excluded_ids = {}) noexcept
     {
@@ -899,7 +907,6 @@ public:
             std::span<const ecs::runtime_term>(terms, count));
     }
 
-    // ======================== command_buffer 工厂方法 ========================
     [[nodiscard]] ecs::command_buffer create_command_buffer() noexcept;
 
     [[nodiscard]] single_class_set* get_single_class_set_by_id(int type_id) noexcept
@@ -908,8 +915,6 @@ public:
             return nullptr;
         return &components_c_[type_id];
     }
-
-    // ======================== 生命周期信号 API ========================
 
     void set_on_entity_created(void (*fn)(entity, void*) noexcept, void* user_data = nullptr) noexcept
     {
@@ -1085,18 +1090,17 @@ public:
             return nullptr;
         const size_t slot = e.parts_.index_ & (single_class_set::hot_set_capacity_ - 1);
         const auto& entry = set_->hot_set_[slot];
-        if (entry.entity_index == e.parts_.index_ && entry.version == e.parts_.version_ && entry.pool_version == pool_version_) [[likely]]
+        const uint64_t key = single_class_set::make_entity_key_(e);
+        const uint32_t pool_ver_lo = static_cast<uint32_t>(pool_version_);
+        if (entry.entity_key == key && entry.pool_version_lo == pool_ver_lo) [[likely]]
         {
             return &pool_data_[entry.dense_index];
         }
-        const uint32_t dense = set_->sparse_dense_at(e.parts_.index_);
-        if (dense == single_class_set::dense_invalid) [[unlikely]]
+        const sparse_entry* se = set_->sparse_entry_checked_(e.parts_.index_);
+        if (!se || se->dense == single_class_set::dense_invalid || se->version != e.parts_.version_) [[unlikely]]
             return nullptr;
-        const uint32_t ver = set_->sparse_version_at(e.parts_.index_);
-        if (ver != e.parts_.version_) [[unlikely]]
-            return nullptr;
-        set_->hot_set_[slot] = {e.parts_.index_, dense, ver, pool_version_};
-        return &pool_data_[dense];
+        set_->hot_set_[slot] = {key, se->dense, pool_ver_lo};
+        return &pool_data_[se->dense];
     }
 
     [[nodiscard]] const T* get_ptr(entity e) const noexcept
@@ -1105,17 +1109,16 @@ public:
             return nullptr;
         const size_t slot = e.parts_.index_ & (single_class_set::hot_set_capacity_ - 1);
         const auto& entry = set_->hot_set_[slot];
-        if (entry.entity_index == e.parts_.index_ && entry.version == e.parts_.version_ && entry.pool_version == pool_version_) [[likely]]
+        const uint64_t key = single_class_set::make_entity_key_(e);
+        const uint32_t pool_ver_lo = static_cast<uint32_t>(pool_version_);
+        if (entry.entity_key == key && entry.pool_version_lo == pool_ver_lo) [[likely]]
         {
             return &pool_data_[entry.dense_index];
         }
-        const uint32_t dense = set_->sparse_dense_at(e.parts_.index_);
-        if (dense == single_class_set::dense_invalid) [[unlikely]]
+        const sparse_entry* se = set_->sparse_entry_checked_(e.parts_.index_);
+        if (!se || se->dense == single_class_set::dense_invalid || se->version != e.parts_.version_) [[unlikely]]
             return nullptr;
-        const uint32_t ver = set_->sparse_version_at(e.parts_.index_);
-        if (ver != e.parts_.version_) [[unlikely]]
-            return nullptr;
-        return &pool_data_[dense];
+        return &pool_data_[se->dense];
     }
 
     void prefetch_sparse(entity e) const noexcept
@@ -1130,11 +1133,11 @@ public:
     {
         if (!set_ || e.parts_.index_ >= sparse_size_) [[unlikely]]
             return;
-        const uint32_t ver = set_->sparse_version_at(e.parts_.index_);
-        if (ver == e.parts_.version_)
+        // 单次 is_constructed_at + 单次 sparse_entry 加载
+        const sparse_entry* se = set_->sparse_entry_checked_(e.parts_.index_);
+        if (se && se->version == e.parts_.version_ && se->dense != single_class_set::dense_invalid)
         {
-            const uint32_t dense = set_->sparse_dense_at(e.parts_.index_);
-            PREFETCH_R(&pool_data_[dense]);
+            PREFETCH_R(&pool_data_[se->dense]);
         }
     }
 

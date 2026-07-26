@@ -56,14 +56,13 @@ struct memory_block
 static_assert(!std::is_trivially_copyable_v<memory_block>,
               "memory_block must not be trivially copyable for correct dense<T> move semantics");
 
-// 内存池统计信息
 struct pool_stats
 {
-    size_t total_allocated;       // 已分配 chunk 总量
-    size_t total_used;            // 用户使用量(含 header)
-    size_t total_free;            // 空闲量(含 header)
-    size_t free_block_count;      // 空闲块数量
-    size_t max_contiguous_free;   // 最大连续空闲块
+    size_t total_allocated;
+    size_t total_used;            // 含 header
+    size_t total_free;            // 含 header
+    size_t free_block_count;
+    size_t max_contiguous_free;
     double fragmentation;         // 碎片率 [0,1]
 };
 
@@ -88,11 +87,11 @@ private:
     static constexpr size_t SL_COUNT = 1 << SL_BITS;
     static constexpr size_t FL_MAX = 32;
 
-    static constexpr size_t HEADER_SIZE = sizeof(block_header);         // 16
-    static constexpr size_t FREE_NODE_SIZE = sizeof(free_node);         // 16
+    static constexpr size_t HEADER_SIZE = sizeof(block_header);
+    static constexpr size_t FREE_NODE_SIZE = sizeof(free_node);
     static constexpr size_t DEFAULT_CHUNK_SIZE = 4096;
     static constexpr size_t ALIGNMENT = 16;
-    static constexpr size_t MIN_SPLIT = HEADER_SIZE + FREE_NODE_SIZE;   // 32
+    static constexpr size_t MIN_SPLIT = HEADER_SIZE + FREE_NODE_SIZE;
     static constexpr size_t IN_USE_FLAG = 1;
 
     [[nodiscard]] FORCE_INLINE static bool is_in_use(const block_header* h) noexcept
@@ -400,7 +399,6 @@ public:
     [[nodiscard]] constexpr size_t chunk_size() const noexcept { return chunk_size_; }
     [[nodiscard]] constexpr bool empty() const noexcept { return total_used_ == 0; }
 
-    // 判断指针是否属于本池
     [[nodiscard]] bool owns(const void* ptr) const noexcept
     {
         const uint8_t* p = static_cast<const uint8_t*>(ptr);
@@ -426,7 +424,6 @@ public:
         return p >= c.data_ && p < c.data_ + c.size_;
     }
 
-    // 统计信息
     [[nodiscard]] pool_stats stats() const noexcept
     {
         pool_stats s{};

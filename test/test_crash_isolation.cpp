@@ -4,7 +4,7 @@
 
 int main()
 {
-    // Replicate the memory_pool test sequence
+    // 复现 memory_pool 测试序列
     {
         memory_pool mp(4096);
         void* p1 = mp.allocate(128);
@@ -80,7 +80,6 @@ int main()
         void* ap5 = ar3.allocate(32);
         printf("ar3 borrow allocate: ap5=%p\n", ap5);
         printf("ar3 base_=%p buf=%p ap5=%p\n", (void*)ar3.allocate(0), (void*)buf, ap5);
-        // Directly test owns
         bool owns_result = ar3.owns(ap5);
         printf("ar3 borrow owns(ap5)=%d\n", owns_result);
         ar3.reset();

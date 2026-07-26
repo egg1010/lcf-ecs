@@ -13,7 +13,6 @@
 #include "force_inline.hpp"
 #include "dense.hpp"
 
-// 墙钟计时器
 class timer
 {
     using clock = std::chrono::high_resolution_clock;
@@ -48,9 +47,7 @@ public:
     }
 };
 
-// ============================================================
 // CPU 周期计数 (x86/x64 rdtsc)
-// ============================================================
 #if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
     #define TIME_HAS_RDTSC 1
     #if defined(_MSC_VER)
@@ -90,9 +87,7 @@ public:
     }
 #endif
 
-// ============================================================
 // x86 缓存行刷新 / 内存屏障 / 精确计时栅栏
-// ============================================================
 #if TIME_HAS_RDTSC
     #if defined(_MSC_VER)
         FORCE_INLINE void cache_flush(const void* p) noexcept { _mm_clflush(p); }
@@ -129,7 +124,6 @@ public:
         }
     #endif
 
-    // 逐缓存行刷新范围 [p, p+bytes)
     FORCE_INLINE void cache_flush_range(const void* p, size_t bytes) noexcept
     {
         const char* cp = static_cast<const char*>(p);
@@ -149,7 +143,6 @@ public:
     FORCE_INLINE uint64_t rdtsc_fenced() noexcept { return 0; }
 #endif
 
-// 周期计时器
 class cycle_timer
 {
     uint64_t start_;
@@ -167,7 +160,6 @@ public:
         return rdtscp() - start_;
     }
 
-    // 周期转纳秒, 需提供 CPU 频率 GHz
     [[nodiscard]] double elapsed_ns_estimated(double cpu_ghz) const noexcept
     {
         if (cpu_ghz <= 0)
@@ -178,7 +170,6 @@ public:
     }
 };
 
-// 统计分布
 struct stats
 {
     double min = 0;
@@ -236,11 +227,9 @@ inline stats compute_stats(dense<double> samples) noexcept
     return s;
 }
 
-// ============================================================
 // P² 在线分位数估计器 (Jain & Chlamtac, 1985)
 // O(1) 空间, O(1) 每次观测, 无需存储全部样本
 // 适用: 流式基准 / 大样本 / 实时监控
-// ============================================================
 class p2_quantile
 {
     double q_[5] = {};
@@ -352,7 +341,6 @@ public:
     }
 };
 
-// 纳秒级基准: 运行 fn iterations 次
 template <typename F>
 stats benchmark_ns(size_t iterations, size_t warmup, F&& fn) noexcept
 {
@@ -396,18 +384,16 @@ stats benchmark_cycles(size_t iterations, size_t warmup, F&& fn) noexcept
 #endif
 }
 
-// ============================================================
 // 缓存延迟分级 (基于访问周期估算命中层级)
 //   默认假设三级缓存: L1 ~4, L2 ~12, L3 ~40, DRAM ~200+
 //   不同 CPU 缓存层级不同 (嵌入式可能仅 1-2 级), 可通过 cache_levels 配置
 //   亦可调用 detect_cache_latency_thresholds() 自动检测
-// ============================================================
 struct latency_thresholds
 {
-    double l1_max = 4.0;    // < 此值视为 L1 命中
-    double l2_max = 15.0;   // < 此值视为 L2 命中 (cache_levels<2 时忽略)
-    double l3_max = 50.0;   // < 此值视为 L3 命中 (cache_levels<3 时忽略)
-    uint32_t cache_levels = 3;  // 实际缓存层级: 1=仅L1, 2=L1+L2, 3=L1+L2+L3
+    double l1_max = 4.0;
+    double l2_max = 15.0;   // cache_levels<2 时忽略
+    double l3_max = 50.0;   // cache_levels<3 时忽略
+    uint32_t cache_levels = 3;  // 1=仅L1, 2=L1+L2, 3=L1+L2+L3
     // >= 最后一级阈值视为 DRAM 未命中
 };
 
@@ -429,10 +415,9 @@ struct cache_report
     double p95_cycles = 0;
     double p99_cycles = 0;
     latency_thresholds thresholds;
-    uint32_t active_levels = 3;  // 实际使用的层级数 (由 thresholds.cache_levels 决定)
+    uint32_t active_levels = 3;  // 由 thresholds.cache_levels 决定
 };
 
-// 测量一组地址访问的缓存命中情况
 // 注: 单次 rdtscp 约 30 周期开销, 主要反映 L3 vs DRAM 差异
 inline cache_report measure_cache_hits(const dense<const void*>& addresses,
                                        latency_thresholds th = {}) noexcept
@@ -460,7 +445,6 @@ inline cache_report measure_cache_hits(const dense<const void*>& addresses,
         double cyc = static_cast<double>(c1 - c0);
         cycles.emplace_back(cyc);
         sum += cyc;
-        // 根据 cache_levels 决定分级逻辑
         if (cyc < th.l1_max)
         {
             ++l1;
@@ -505,7 +489,6 @@ inline cache_report measure_cache_hits(const dense<const void*>& addresses,
     return r;
 }
 
-// 顺序访问地址序列 (缓存友好)
 inline dense<const void*> make_sequential_addresses(const void* base, size_t count, size_t stride) noexcept
 {
     dense<const void*> v;
@@ -545,7 +528,6 @@ inline dense<const void*> make_random_addresses(const void* base, size_t count, 
     return v;
 }
 
-// 批量缓存测量结果
 struct batch_cache_result
 {
     size_t total_accesses = 0;
@@ -629,7 +611,6 @@ inline batch_cache_result measure_cache_batch(const dense<const void*>& addresse
     return r;
 }
 
-// 自适应检测缓存层级和阈值
 // 通过步进扫描不同工作集大小 (1KB → 16MB), 检测延迟跳变推断缓存层级
 // 返回值: cache_levels 为实际检测到的层级数 (1/2/3)
 inline latency_thresholds detect_cache_latency_thresholds() noexcept
@@ -680,7 +661,6 @@ inline latency_thresholds detect_cache_latency_thresholds() noexcept
     return th;
 }
 
-// CPU 频率估算 (GHz)
 // 注: 测量的是 invariant TSC 频率 (恒定), 而非核心频率 (受 Turbo Boost/DVFS 影响)
 //     rdtsc 计数速率 = TSC 频率, 不随核心频率变化
 //     cycle_timer::elapsed_ns_estimated() 基于 TSC 频率, 适合相对比较

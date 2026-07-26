@@ -6,7 +6,7 @@ build_clang/
 build_msvc/
 build_avx2/
 build2/
-
+build_gcc/
 
 .vscode
 

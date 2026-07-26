@@ -143,7 +143,7 @@ public:
             entity_states_.increase_capacity(max_idx);
             entity_states_.resize(max_idx, entity_state{static_cast<uint32_t>(entity_flag::active), 0, 0, 0});
         }
-        masks_.resize_entities(max_idx);
+        masks_.resize_entities(static_cast<uint32_t>(max_idx));
 
         for (size_t i = 0; i < count; ++i)
         {
@@ -270,7 +270,6 @@ public:
         signal_overflow_chain_.increase_capacity(n);
     }
 
-    // 实体状态池访问
     [[nodiscard]] entity_state& get_entity_state(uint32_t entity_index) noexcept
     {
         return entity_states_[entity_index];

@@ -35,7 +35,7 @@ public:
     [[nodiscard]] FORCE_INLINE
     T total_number_of_ids() const noexcept
     {
-        return recycled_ids_.size();
+        return static_cast<T>(recycled_ids_.size());
     }
 
     [[nodiscard]] FORCE_INLINE

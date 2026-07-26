@@ -1,6 +1,5 @@
 // composite_views.inc.hpp —— manager 类内片段,由 component.hpp 在 manager 类内部 include
 // 不要单独 include 此文件
-    // ======================== single_view_without ========================
     template <typename T, typename... ExcludeTypes>
     class single_view_without
     {
@@ -126,7 +125,6 @@
                     if (i + 32 < n) [[likely]]
                         PREFETCH_R(&(*pool)[i + 32]);
                     uint32_t idx = indices[i];
-                    uint32_t ver = set_->get_version_unchecked(idx);
                     if (is_excluded(idx)) [[unlikely]] continue;
                     func((*pool)[i]);
                 }
@@ -134,7 +132,6 @@
         }
     };
 
-    // ======================== single_view_with ========================
     template <typename T, typename... GetTypes>
     class single_view_with
     {
@@ -210,7 +207,6 @@
         }
     };
 
-    // ======================== or_view ========================
     template <typename A, typename B>
     class or_view
     {
@@ -317,7 +313,6 @@
         }
     };
 
-    // ======================== any_of_view ========================
     template <typename... Types>
     class any_of_view
     {
@@ -407,7 +402,6 @@
         }
     };
 
-    // ======================== filter_view ========================
     template <typename T, typename Pred>
     class filter_view
     {
@@ -531,7 +525,6 @@
         template <typename B> auto or_() noexcept;
     };
 
-    // ======================== filter_and_view ========================
     template <typename T, typename B, typename Pred>
     class filter_and_view
     {
@@ -658,7 +651,6 @@
         }
     };
 
-    // ======================== filter_or_view ========================
     template <typename T, typename B, typename Pred>
     class filter_or_view
     {

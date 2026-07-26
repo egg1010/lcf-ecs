@@ -1,8 +1,5 @@
-// class_pool.inc.hpp - method implementations for class_pool<T>
-// This file is included by class_pool.hpp and relies on its includes.
-// Do NOT add #pragma once or any #include directives.
-
-// --- private static helpers ---
+// class_pool.inc.hpp - class_pool<T> 方法实现
+// 由 class_pool.hpp 包含, 复用其头文件; 禁止添加 #pragma once 或 #include
 
 template <typename T>
 void class_pool<T>::bitmap_shift_right_one(uint64_t* bits, size_t start, size_t end) noexcept {
@@ -293,14 +290,18 @@ void class_pool<T>::destroy_sparse_range(size_t first, size_t last) noexcept {
 
 template <typename T>
 void class_pool<T>::destroy_all() noexcept {
-	if constexpr (std::is_trivially_destructible_v<T>) { return; }
-	if (index_ == 0 || live_bits_ == nullptr) { return; }
-
-	if (is_dense()) [[likely]] {
-		destroy_dense_range(0, index_);
+	if constexpr (std::is_trivially_destructible_v<T>) {
 	}
-	else {
-		destroy_sparse_range(0, index_);
+	else
+	{
+		if (index_ == 0 || live_bits_ == nullptr) { return; }
+
+		if (is_dense()) [[likely]] {
+			destroy_dense_range(0, index_);
+		}
+		else {
+			destroy_sparse_range(0, index_);
+		}
 	}
 }
 
@@ -324,7 +325,6 @@ template <typename T>
 template <bool MoveAndDestroy>
 void class_pool<T>::relocate_sparse(T* dst, const T* src, const uint64_t* src_bits, size_t count) noexcept {
 	const size_t num_full_words = count / BITS_PER_WORD;
-	constexpr size_t pf_data_offset = 4 * BITS_PER_WORD;
 	for (size_t w = 0; w < num_full_words; ++w) {
 		if (w + 4 < num_full_words) {
 			PREFETCH_R(&src_bits[w + 4]);
@@ -462,8 +462,6 @@ void class_pool<T>::grow_data_and_bitmap(size_t new_capacity) noexcept {
 	live_bits_ = new_live;
 	maximum_quantity_ = new_capacity;
 }
-
-// --- constructors / destructor / assignment ---
 
 template <typename T>
 class_pool<T>::class_pool(size_t capacity) noexcept
@@ -694,8 +692,6 @@ class_pool<T>::~class_pool() noexcept {
 	deallocate_data(data_ptr_, maximum_quantity_);
 }
 
-// --- element access / modification ---
-
 template <typename T>
 template <typename... Args>
 void class_pool<T>::emplace_back(Args&&... args) noexcept {
@@ -761,7 +757,6 @@ void class_pool<T>::append_n(size_t n, const T& value) noexcept {
 		grow_data_and_bitmap(calculate_growth_for_reserve(index_ + n));
 	}
 
-	// 批量构造
 	if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) <= 8)
 	{
 		for (size_t i = 0; i < n; ++i)
@@ -777,7 +772,6 @@ void class_pool<T>::append_n(size_t n, const T& value) noexcept {
 		}
 	}
 
-	// 批量设置 bitmap
 	const size_t start = index_;
 	const size_t last = start + n - 1;
 	const size_t start_word = start / BITS_PER_WORD;
@@ -1568,8 +1562,6 @@ void class_pool<T>::pop_back() noexcept {
 	update_dense_status();
 }
 
-// --- sparse emplace/erase ---
-
 template <typename T>
 template <typename... Args>
 T& class_pool<T>::emplace_at(size_t index, Args&&... args) noexcept {
@@ -1721,8 +1713,6 @@ void class_pool<T>::soft_dense_delete(size_t start, size_t end) noexcept {
 	is_dense_ = 0;
 }
 
-// --- fill_the_hole ---
-
 template <typename T>
 template <typename... Args>
 T& class_pool<T>::fill_the_hole(Args&&... args) noexcept {
@@ -1749,8 +1739,6 @@ size_t class_pool<T>::fill_the_hole_at(Args&&... args) noexcept {
 	emplace_at(idx, std::forward<Args>(args)...);
 	return idx;
 }
-
-// --- private helpers ---
 
 template <typename T>
 size_t class_pool<T>::find_first_hole_() noexcept
@@ -1820,7 +1808,7 @@ void class_pool<T>::recompute_is_dense() noexcept {
 		__m256i v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(sparse_bits_ + i));
 		__m256i cmp = _mm256_cmpeq_epi64(v, all_ones);
 		int mask = _mm256_movemask_epi8(cmp);
-		if (mask != 0xFFFFFFFF) {
+		if (mask != static_cast<int>(0xFFFFFFFFu)) {
 			dense = false;
 			for (int j = 0; j < 4; ++j) {
 				int word_mask = (mask >> (j * 8)) & 0xFF;
@@ -2087,8 +2075,6 @@ void class_pool<T>::update_dense_status() noexcept {
 		is_dense_ = 1;
 	}
 }
-
-// --- global swap ---
 
 template <typename T>
 void swap(class_pool<T>& a, class_pool<T>& b) noexcept {

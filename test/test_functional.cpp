@@ -1,8 +1,7 @@
 #include "test_common.hpp"
+#include "include/part/class_pool_views.hpp"
 
-// ============================================================
-// 功能测试 - 验证 ECS 各接口的正确性 (原 test.cpp 第 1-14 节)
-// ============================================================
+// 功能测试 - 验证 ECS 各接口的正确性
 int main()
 {
 #ifdef _WIN32
@@ -12,9 +11,7 @@ int main()
     std::cout << "========================================================\n"
               << "  lcf-ecs 功能测试\n"
               << "========================================================\n";
-    // ========================================================
     // 1. entity 实体
-    // ========================================================
     print_section(1, "entity 实体");
     {
         entity e_def;
@@ -40,9 +37,7 @@ int main()
         print_item("std::hash 相同实体哈希一致", h1 == h2);
     }
 
-    // ========================================================
     // 2. operating_message 操作消息
-    // ========================================================
     print_section(2, "operating_message 操作消息");
     {
         bool& dbg = ecs_debug_messages();
@@ -167,9 +162,7 @@ int main()
         dbg = old_dbg;
     }
 
-    // ========================================================
     // 3. id_allocation<T> ID分配器
-    // ========================================================
     print_section(3, "id_allocation<T> ID分配器");
     {
         id_allocation<int> ida;
@@ -189,9 +182,7 @@ int main()
         print_item("total_number_of_ids()/maximum_id()", oss.str());
     }
 
-    // ========================================================
     // 4. type_id 类型ID
-    // ========================================================
     print_section(4, "type_id 类型ID");
     {
         int id_pos = type_id::get_type_id<Position>();
@@ -202,9 +193,7 @@ int main()
         print_item("相同类型ID一致", type_id::get_type_id<Position>() == id_pos);
     }
 
-    // ========================================================
     // 5. class_pool<T> 组件池
-    // ========================================================
     print_section(5, "class_pool<T> 组件池");
 
     // --- 构造函数 ---
@@ -555,6 +544,298 @@ int main()
         print_item("swap(class_pool&, class_pool&)", (a.size() == 3 && a[0] == 3 && b.size() == 2 && b[0] == 1));
     }
 
+    // --- class_pool 视图 (cpv 命名空间) ---
+    std::cout << "\n  [class_pool 视图 / cpv namespace]\n";
+    {
+        class_pool<int> p;
+        for (int i = 0; i < 100; ++i)
+        {
+            p.emplace_back(i);
+        }
+
+        // A. 子范围视图 (与 dense::subspan 命名一致)
+        {
+            auto sp = cpv::subspan(p, 10, 20);
+            print_item("subspan(off, cnt) size", sp.size() == 20);
+            print_item("subspan(off, cnt) data", (sp[0] == 10 && sp[19] == 29));
+
+            auto sp2 = cpv::subspan(p, 50);
+            print_item("subspan(off) 末段", (sp2.size() == 50 && sp2[0] == 50));
+
+            auto f = cpv::first(p, 5);
+            print_item("first(n)", (f.size() == 5 && f[0] == 0 && f[4] == 4));
+
+            auto l = cpv::last(p, 5);
+            print_item("last(n)", (l.size() == 5 && l[0] == 95 && l[4] == 99));
+
+            auto ff = cpv::first_fixed<int, 4>(p);
+            print_item("first_fixed<4>", (ff.size() == 4 && ff[0] == 0 && ff[3] == 3));
+
+            auto lf = cpv::last_fixed<int, 4>(p);
+            print_item("last_fixed<4>", (lf.size() == 4 && lf[0] == 96 && lf[3] == 99));
+
+            // 越界处理
+            auto sp3 = cpv::subspan(p, 200, 10);
+            print_item("subspan 越界返回空", sp3.size() == 0);
+        }
+
+        // B. 反向视图
+        {
+            int sum = 0;
+            cpv::reverse_for_each(p, [&](int& v) { sum += v; });
+            print_item("reverse_for_each 求和", sum == 4950);
+
+            const class_pool<int>& cp = p;
+            int sum2 = 0;
+            cpv::reverse_for_each(cp, [&](const int& v) { sum2 += v; });
+            print_item("reverse_for_each const", sum2 == 4950);
+        }
+
+        // C. 步进视图
+        {
+            int sum = 0;
+            cpv::strided_for_each(p, 0, 4, [&](int& v) { sum += v; });
+            // 0, 4, 8, ..., 96 (25 个)
+            print_item("strided_for_each (rt step)", sum == (0 + 96) * 25 / 2);
+
+            int sum2 = 0;
+            cpv::strided_for_each<int, 4>(p, [&](int& v) { sum2 += v; });
+            print_item("strided_for_each<4> (ct step)", sum2 == sum);
+
+            int sum3 = 0;
+            cpv::strided_for_each<int, 1>(p, [&](int& v) { sum3 += v; });
+            print_item("strided_for_each<1> fast path", sum3 == 4950);
+
+            auto sv = cpv::strided_span_view(p, 0, 5, 10);
+            print_item("strided_span_view size", sv.size() == 10);
+            print_item("strided_span_view [0]", sv[0] == 0);
+            print_item("strided_span_view [9]", sv[9] == 45);
+        }
+
+        // D. 变换视图
+        {
+            int sum = 0;
+            cpv::transform_for_each(
+                p,
+                [](int& v) -> int { return v * 2; },
+                [&](int v) { sum += v; });
+            print_item("transform_for_each (x2)", sum == 9900);
+
+            int dst[100];
+            cpv::transform_to<int, int>(p, dst, 100, [](const int& v) -> int { return v + 1; });
+            print_item("transform_to (+1)", (dst[0] == 1 && dst[99] == 100));
+        }
+
+        // E. 过滤与查找
+        {
+            int* r = cpv::find(p, 50);
+            print_item("find (mid hit)", (r && *r == 50));
+
+            int* miss = cpv::find(p, 999);
+            print_item("find (miss)", (miss == nullptr));
+
+            print_item("contains (true)", cpv::contains(p, 50));
+            print_item("contains (false)", !cpv::contains(p, 999));
+
+            int* ri = cpv::find_if(p, [](const int& v) { return v == 30; });
+            print_item("find_if (mid hit)", (ri && *ri == 30));
+
+            int* rin = cpv::find_if_not(p, [](const int& v) { return v != 60; });
+            print_item("find_if_not", (rin && *rin == 60));
+
+            size_t c = cpv::count_if(p, [](const int& v) { return v % 2 == 0; });
+            print_item("count_if (偶数)", c == 50);
+
+            int sum_all = 0;
+            cpv::filter_for_each(p, [](const int&) { return true; }, [&](int& v) { sum_all += v; });
+            print_item("filter_for_each (all)", sum_all == 4950);
+
+            int sum_even = 0;
+            cpv::filter_for_each(p, [](const int& v) { return v % 2 == 0; }, [&](int& v) { sum_even += v; });
+            // 0 + 2 + ... + 98 = 2450
+            print_item("filter_for_each (偶数)", sum_even == 2450);
+
+            class_pool<size_t> idx;
+            cpv::filter_indices_to(p, idx, [](const int& v) { return v >= 90; });
+            print_item("filter_indices_to (>=90)", (idx.size() == 10 && idx[0] == 90 && idx[9] == 99));
+        }
+
+        // F. 规约与极值
+        {
+            int s = cpv::reduce(p, [](int acc, const int& v) -> int { return acc + v; }, 0);
+            print_item("reduce (sum)", s == 4950);
+
+            int s2 = cpv::reduce_pairwise(p, [](int acc, const int& v) -> int { return acc + v; }, 0);
+            print_item("reduce_pairwise (sum)", s2 == 4950);
+
+            int* mn = cpv::min_element(p);
+            print_item("min_element", (mn && *mn == 0));
+
+            int* mx = cpv::max_element(p);
+            print_item("max_element", (mx && *mx == 99));
+
+            auto mm = cpv::minmax_element(p);
+            print_item("minmax_element", (mm.first && mm.second && *mm.first == 0 && *mm.second == 99));
+
+            int sum = cpv::sum(p);
+            print_item("sum", sum == 4950);
+
+            int other[100];
+            for (int i = 0; i < 100; ++i) { other[i] = 2; }
+            int dp = cpv::dot_product(p, other, 100);
+            print_item("dot_product", dp == 9900);
+        }
+
+        // G. 窗口与分块
+        {
+            int sum_w = 0;
+            cpv::for_each_window<int, 4>(p, [&](std::span<int, 4> w) { sum_w += w[0]; });
+            // 窗口起点: 0..96, 97 个窗口
+            print_item("for_each_window<4>", sum_w == (0 + 96) * 97 / 2);
+
+            int sum_c = 0;
+            cpv::for_each_chunk<int, 4>(p, [&](std::span<int, 4> c) { sum_c += c[0]; });
+            // 25 块, 起点 0,4,8,...,96
+            print_item("for_each_chunk<4>", sum_c == (0 + 96) * 25 / 2);
+
+            auto ws = cpv::window_span<int, 4>(p, 50);
+            print_item("window_span<4>(50)", (ws.size() == 4 && ws[0] == 50));
+
+            auto cs = cpv::chunk_span<int, 4>(p, 10);
+            print_item("chunk_span<4>(10)", (cs.size() == 4 && cs[0] == 40));
+        }
+
+        // H. 枚举视图
+        {
+            size_t last_idx = 0;
+            int last_val = 0;
+            cpv::for_each_enumerated(p, [&](size_t i, int& v) {
+                last_idx = i;
+                last_val = v;
+            });
+            print_item("for_each_enumerated", (last_idx == 99 && last_val == 99));
+
+            const class_pool<int>& cp = p;
+            size_t cnt = 0;
+            cpv::for_each_enumerated(cp, [&](size_t i, const int&) { cnt = i + 1; });
+            print_item("for_each_enumerated const", cnt == 100);
+        }
+
+        // I. 双容器同步
+        {
+            class_pool<int> q;
+            for (int i = 0; i < 100; ++i) { q.emplace_back(i * 2); }
+
+            int sum_zip = 0;
+            cpv::for_each_zip(p, q, [&](int& a, int& b) { sum_zip += a + b; });
+            // sum_p + sum_q = 4950 + 9900 = 14850
+            print_item("for_each_zip (pool&)", sum_zip == 14850);
+
+            int sum_zip2 = 0;
+            int* qp = q.data();
+            cpv::for_each_zip(p, qp, 100, [&](int& a, int& b) { sum_zip2 += a + b; });
+            print_item("for_each_zip (ptr)", sum_zip2 == 14850);
+
+            int dst[100];
+            cpv::zip_with_to<int, int, int>(p, q.data(), dst, 100,
+                [](const int& a, const int& b) -> int { return a + b; });
+            print_item("zip_with_to", (dst[0] == 0 && dst[99] == 99 + 198));
+
+            class_pool<int> p_copy = p;
+            print_item("equal (true)", cpv::equal(p, p_copy));
+            print_item("equal (false)", !cpv::equal(p, q));
+
+            // equal(ptr, count): 与 dense::equal 命名一致
+            int eq_buf[100];
+            for (int i = 0; i < 100; ++i) { eq_buf[i] = i; }
+            print_item("equal(ptr, count) true", cpv::equal(p, eq_buf, 100));
+            eq_buf[50] = 999;
+            print_item("equal(ptr, count) false", !cpv::equal(p, eq_buf, 100));
+
+            // equal(span) 委托到 equal(ptr, count)
+            print_item("equal(span) true", cpv::equal(p, std::span<const int>(p.data(), 100)));
+        }
+
+        // J. SIMD/对齐视图
+        {
+            int* aligned = cpv::aligned_data(p);
+            print_item("aligned_data", aligned == p.data());
+
+            auto sp = cpv::aligned_span(p);
+            print_item("aligned_span", sp.size() == 100);
+
+            int sum = 0;
+            cpv::simd_for_each(p, [&](int& v) { sum += v; });
+            print_item("simd_for_each", sum == 4950);
+
+            size_t tail = cpv::unaligned_tail_offset(p);
+            print_item("unaligned_tail_offset (>=0)", tail <= p.size());
+        }
+
+        // K. 拷贝/移动视图
+        {
+            int dst[100];
+            cpv::copy_to(p, dst, 100);
+            print_item("copy_to (ptr)", (dst[0] == 0 && dst[99] == 99));
+
+            std::span<int> sp(dst, 100);
+            cpv::copy_to(p, sp);
+            print_item("copy_to (span)", (dst[0] == 0 && dst[99] == 99));
+
+            class_pool<int> src;
+            for (int i = 0; i < 100; ++i) { src.emplace_back(i); }
+            int mdst[100];
+            cpv::move_to(src, mdst, 100);
+            print_item("move_to", (mdst[0] == 0 && mdst[99] == 99));
+
+            int rdst[100];
+            cpv::reverse_copy_to(p, rdst, 100);
+            print_item("reverse_copy_to", (rdst[0] == 99 && rdst[99] == 0));
+        }
+
+        // L. class_pool 独有 - 稀疏模式
+        {
+            class_pool<int> sp;
+            for (int i = 0; i < 100; ++i) { sp.emplace_back(i); }
+            sp.sparse_erase_at(10);
+            sp.sparse_erase_at(20);
+            sp.sparse_erase_at(30);
+
+            print_item("holes_count", cpv::holes_count(sp) == 3);
+            print_item("live_count", cpv::live_count(sp) == 97);
+
+            // compact_to 压缩为密集数组
+            int dst[100];
+            size_t n = cpv::compact_to(sp, dst, 100);
+            print_item("compact_to 元素数", n == 97);
+            // 索引 10 删除后: dst[10] 跳过槽 10 = 值 11
+            // 索引 20 删除后: dst[19] 跳过槽 20 = 值 21 (槽 20 原为 20, 已删, 跳到槽 21=值 21)
+            // 索引 30 删除后: dst[28] 跳过槽 30 = 值 31
+            print_item("compact_to 跳过空洞", (dst[0] == 0 && dst[10] == 11 && dst[19] == 21 && dst[28] == 31));
+
+            // 稀疏模式 find
+            int* r = cpv::find(sp, 50);
+            print_item("稀疏 find (mid hit)", (r && *r == 50));
+
+            int* miss = cpv::find(sp, 10);
+            print_item("稀疏 find (已删除)", (miss == nullptr));
+
+            // 稀疏模式 filter_for_each
+            int sum = 0;
+            cpv::filter_for_each(sp, [](const int&) { return true; }, [&](int& v) { sum += v; });
+            // 总和 4950 - 10 - 20 - 30 = 4890
+            print_item("稀疏 filter_for_each", sum == 4890);
+
+            // 稀疏 count_if
+            size_t c = cpv::count_if(sp, [](const int&) { return true; });
+            print_item("稀疏 count_if", c == 97);
+
+            // 稀疏 reduce
+            int rs = cpv::reduce(sp, [](int acc, const int& v) -> int { return acc + v; }, 0);
+            print_item("稀疏 reduce", rs == 4890);
+        }
+    }
+
     // --- class_pool::fill_the_hole 填洞或追加 ---
     // std::cout << "\n  [class_pool::fill_the_hole 填洞或追加]\n";
     // SKIPPED for debugging
@@ -849,9 +1130,7 @@ int main()
         }
     }
 
-    // ========================================================
     // 7. memory_pool 内存池
-    // ========================================================
     print_section(7, "memory_pool 内存池");
 
     // --- memory_block ---
@@ -1100,9 +1379,7 @@ int main()
         print_item("void_any 拷贝数据一致", psh_c && psh_c->data[0] == 0 && psh_c->data[79] == 79);
     }
 
-    // ========================================================
     // 8. single_class_set 单类集合
-    // ========================================================
     print_section(8, "single_class_set 单类集合");
 
     // --- sparse ---
@@ -1239,9 +1516,7 @@ int main()
         print_item("get_entity_indices() const", cei.size() == 1);
     }
 
-    // ========================================================
     // 9. ecs::manager ECS管理器
-    // ========================================================
     print_section(9, "ecs::manager ECS管理器");
 
     // --- 构造 ---
@@ -1745,9 +2020,7 @@ int main()
         }
     }
 
-    // ========================================================
     // 9.6 新视图: page / sorted_by_component / sorted_by_component_value / track_changes
-    // ========================================================
     print_sub("view: page / sorted_by_component / sorted_by_component_value / track_changes");
     {
         ecs::manager mgr;
@@ -1972,9 +2245,7 @@ int main()
         }
     }
 
-    // ========================================================
     // 9.5 新增 Bevy 对标接口 (filter_changed / filter_added / exactly_one / find_one / view_any_of / iter_over_entities)
-    // ========================================================
     std::cout << "\n========================================================\n";
     std::cout << "  9.5 新增 Bevy 对标接口\n";
     std::cout << "========================================================\n";
@@ -2189,9 +2460,7 @@ int main()
         }
     }
 
-    // ========================================================
     // 10. Group 系统（Non-Owning + Owning）
-    // ========================================================
     print_section(10, "Group 系统（Non-Owning + Owning）");
     {
         ecs::manager mgr;
@@ -2383,9 +2652,7 @@ int main()
         }
     }
 
-    // ========================================================
     // 11. runtime_view 运行时视图
-    // ========================================================
     print_section(11, "runtime_view 运行时视图");
     {
         ecs::manager mgr;
@@ -2779,9 +3046,7 @@ int main()
         }
     }
 
-    // ========================================================
     // 12. 持久化视图测试（自动同步，无需手动 rebuild）
-    // ========================================================
     std::cout << "\n";
     print_section(12, "持久化视图（自动同步）");
 
@@ -2927,9 +3192,7 @@ int main()
         print_item("for_each 自动同步 cnt=7", cnt == 7);
     }
 
-    // ========================================================
     // 13. 生命周期信号测试
-    // ========================================================
     std::cout << "\n";
     print_section(13, "生命周期信号");
 
@@ -3190,9 +3453,7 @@ int main()
         }
     }
 
-    // ========================================================
     // 14. >64 组件类型多块掩码查询测试
-    // ========================================================
     {
         using namespace ecs;
         print_section(14, ">64 组件类型多块掩码查询测试");
@@ -3483,9 +3744,7 @@ int main()
         }
     }
 
-    // ========================================================
     // 15. entity_mask_manager 扩容/缩容/状态查询
-    // ========================================================
     {
         print_section(15, "entity_mask_manager 扩容/缩容/状态查询");
 

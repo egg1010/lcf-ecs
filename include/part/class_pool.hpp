@@ -16,18 +16,9 @@
 #endif
 
 
-// 跨平台预取宏
-#if defined(__GNUC__) || defined(__clang__)
-#define PREFETCH_R(ptr) __builtin_prefetch(ptr, 0, 3)
-#elif defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
-#include <intrin.h>
-#define PREFETCH_R(ptr) _mm_prefetch(reinterpret_cast<const char*>(ptr), _MM_HINT_T0)
-#elif defined(_MSC_VER)
-#include <intrin.h>
-#define PREFETCH_R(ptr) __prefetch(ptr)
-#else
-#define PREFETCH_R(ptr) ((void)0)
-#endif
+#include "force_inline.hpp"
+
+// 跨平台预取/属性宏: 集中定义于 force_inline.hpp (PREFETCH_R/PREFETCH_NTA/NOINLINE/FORCE_INLINE 等)
 
 namespace ecs { class single_class_set; }
 
@@ -239,10 +230,18 @@ public:
 		using Ptr = std::conditional_t<IsConst, const T*, T*>;
 		using Ref = std::conditional_t<IsConst, const T&, T&>;
 
+		// __restrict: MSVC 不支持类型别名后使用, 仅 GCC/Clang 启用
+#if defined(_MSC_VER)
+		Ptr ptr_;
+		Ptr end_;
+		const uint64_t* bits_;
+		Ptr origin_;
+#else
 		Ptr __restrict ptr_;
 		Ptr __restrict end_;
 		const uint64_t* __restrict bits_;
 		Ptr __restrict origin_;
+#endif
 
 		friend class basic_iterator<true>;
 		friend class basic_iterator<false>;
@@ -290,7 +289,8 @@ public:
 		Ptr operator->() const noexcept { return ptr_; }
 
 		// 返回 >= start 的下一个设置位位置, 没有则返回 total
-		[[gnu::pure, gnu::noinline]] static size_t find_next_set_bit(
+		// pure/noinline 属性: 由 LCF_PURE/NOINLINE 宏跨平台处理 (见 force_inline.hpp)
+		LCF_PURE static NOINLINE size_t find_next_set_bit(
 			const uint64_t* bits, size_t start, size_t total) noexcept
 		{
 			if (start >= total) { return total; }
@@ -340,9 +340,10 @@ public:
 			ptr_ = origin_ + find_next_set_bit(bits_, idx, total);
 		}
 
-		[[gnu::always_inline]] basic_iterator& operator++() noexcept {
+		// 强制内联: 由 FORCE_INLINE 宏跨平台处理 (见 force_inline.hpp)
+		FORCE_INLINE basic_iterator& operator++() noexcept {
 			const uint64_t* const bits = bits_;
-			if (__builtin_expect(bits == nullptr, 1))
+			if (bits == nullptr) [[likely]]
 			{
 				++ptr_;
 				return *this;
@@ -591,7 +592,6 @@ public:
 	T& fill_the_hole(Args&&... args) noexcept;
 
 	// 与 fill_the_hole 语义等价, 但返回被填补位置的索引 (填洞或追加)
-	// 调用方可通过 operator[](idx) 或 data_ptr_[idx] 访问元素
 	template <typename... Args>
 	size_t fill_the_hole_at(Args&&... args) noexcept;
 

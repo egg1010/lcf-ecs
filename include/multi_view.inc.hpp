@@ -1,6 +1,5 @@
 // multi_view.inc.hpp —— manager 类内片段,由 component.hpp 在 manager 类内部 include
 // 不要单独 include 此文件
-    // ======================== multi_view ========================
     template <typename First, typename... Rest>
     class multi_view
     {
@@ -42,12 +41,10 @@
             auto& indices = primary->get_entity_indices();
             const size_t n = indices.size();
 
-            dense_mappings_soa_.clear();
-            cached_entity_versions_.clear();
-            cached_entity_versions_.resize(n, uint32_t{0});
-
             if (n == 0)
             {
+                dense_mappings_soa_.clear();
+                cached_entity_versions_.clear();
                 all_valid_ = true;
                 pools_aligned_ = true;
                 for (size_t k = 0; k < N; ++k)
@@ -56,36 +53,30 @@
                 return;
             }
 
-            const size_t primary_sparse_size = primary->get_sparse_size();
-
             bool fast_aligned = true;
+            const uint32_t* pi = indices.data();
+            const size_t byte_count = n * sizeof(uint32_t);
             for (size_t k = 0; k < N; ++k)
             {
                 if (k == primary_idx_) continue;
-                if (sets_[k]->get_sparse_size() != primary_sparse_size)
+                if (sets_[k]->size() < n)
                 {
                     fast_aligned = false;
                     break;
                 }
-                for (size_t j = 0; j < primary_sparse_size; ++j)
+                auto& other_indices = sets_[k]->get_entity_indices();
+                const uint32_t* oi = other_indices.data();
+                if (__builtin_memcmp(pi, oi, byte_count) != 0)
                 {
-                    uint32_t pk_dense = primary->sparse_dense_at_public(static_cast<uint32_t>(j));
-                    uint32_t pk_ver = primary->sparse_version_at_public(static_cast<uint32_t>(j));
-                    uint64_t pv = (static_cast<uint64_t>(pk_dense) << 32) | pk_ver;
-                    uint32_t sk_dense = sets_[k]->sparse_dense_at_public(static_cast<uint32_t>(j));
-                    uint32_t sk_ver = sets_[k]->sparse_version_at_public(static_cast<uint32_t>(j));
-                    uint64_t sv = (static_cast<uint64_t>(sk_dense) << 32) | sk_ver;
-                    if (pv != sv)
-                    {
-                        fast_aligned = false;
-                        break;
-                    }
+                    fast_aligned = false;
+                    break;
                 }
-                if (!fast_aligned) break;
             }
 
             if (fast_aligned)
             {
+                dense_mappings_soa_.clear();
+                cached_entity_versions_.clear();
                 all_valid_ = true;
                 pools_aligned_ = true;
                 for (size_t k = 0; k < N; ++k)
@@ -93,6 +84,10 @@
                 mappings_valid_ = true;
                 return;
             }
+
+            dense_mappings_soa_.clear();
+            cached_entity_versions_.clear();
+            cached_entity_versions_.resize(n, uint32_t{0});
 
             std::array<size_t, N> set_sparse_size;
             for (size_t k = 0; k < N; ++k)
@@ -110,6 +105,8 @@
 
             for (size_t i = 0; i < n; ++i)
             {
+                if (i + 8 < n) [[likely]]
+                    primary->prefetch_sparse_entry(indices[i + 8]);
                 uint32_t idx = indices[i];
                 uint64_t pc = get_sparse_cached(primary, idx);
                 ver_data[i] = static_cast<uint32_t>(pc);
@@ -117,6 +114,8 @@
                 for (size_t k = 0; k < N; ++k)
                 {
                     if (k == primary_idx_) continue;
+                    if (i + 8 < n) [[likely]]
+                        sets_[k]->prefetch_sparse_entry(indices[i + 8]);
                     bool has = (idx < set_sparse_size[k]);
                     uint64_t kc = has ? get_sparse_cached(sets_[k], idx) : 0;
                     uint32_t dense = static_cast<uint32_t>(kc >> 32);
@@ -140,6 +139,8 @@
 
                 for (size_t i = 0; i < n; ++i)
                 {
+                    if (i + 8 < n) [[likely]]
+                        primary->prefetch_sparse_entry(indices[i + 8]);
                     uint32_t idx = indices[i];
                     auto& m = soa_data[i];
                     m[primary_idx_] = static_cast<uint32_t>(i);
@@ -148,6 +149,8 @@
                     for (size_t k = 0; k < N; ++k)
                     {
                         if (k == primary_idx_) continue;
+                        if (i + 8 < n) [[likely]]
+                            sets_[k]->prefetch_sparse_entry(indices[i + 8]);
                         bool has = (idx < set_sparse_size[k]);
                         uint64_t kc = has ? get_sparse_cached(sets_[k], idx) : 0;
                         uint32_t dense = static_cast<uint32_t>(kc >> 32);
@@ -238,67 +241,254 @@
             const size_t n = indices.size();
             if (n == 0) return;
 
-            auto pools = std::make_tuple(
-                sets_[Is]->template get_typed_pool_ptr<std::tuple_element_t<Is, AllTypes>>()...
+            // 提取原始 data 指针, 避免循环内 class_pool 对象二次解引用 (pool->data_ptr_)
+            // 编译器别名分析可能不 hoist data_ptr_, 显式提取保证循环内仅 1 次访存
+            auto data_ptrs = std::make_tuple(
+                sets_[Is]->template get_typed_pool_ptr<std::tuple_element_t<Is, AllTypes>>()->data()...
             );
 
             if (pools_aligned_)
-            {
-                constexpr size_t pd = 32;
-                const size_t main_count = (n > pd) ? (n - pd) : 0;
+                {
+                    constexpr size_t pd = 32;
+                    constexpr bool small_data = (total_component_size_ <= 128);
+                    // tiny_data: 8x 展开分支 (无软件预取, 依赖 HW 预取器)
+                    //   ≤ 96B (1-8 comps): 8x 展开最大化 ILP, 寄存器压力可控
+                    //   > 96B (9-10 comps): 8x 展开 80+ loads 触发寄存器 spill, 走 else 分支
+                    constexpr bool tiny_data = (total_component_size_ <= 96);
+                    constexpr bool tiny_need_pf = (total_component_size_ > 96);
+                    constexpr size_t pd_pf = 24;
                 if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
                 {
-                    // H1: 优先使用 primary 的连续 versions_ 数组, 避免 sparse_entry 间接查找
                     auto& primary_versions = primary->get_entity_versions();
                     const uint32_t* ver_data = primary_versions.data();
                     const size_t ver_size = primary_versions.size();
                     if (ver_size >= n) [[likely]]
                     {
-                        size_t i = 0;
-                        for (; i < main_count; ++i)
+                        if constexpr (small_data)
                         {
-                            (PREFETCH_R(&(*std::get<Is>(pools))[i + pd]), ...);
-                            entity e(indices[i], ver_data[i]);
-                            func(e, (*std::get<Is>(pools))[i]...);
+                            if constexpr (tiny_data)
+                            {
+                                // 极小数据 8x 展开, 最大化 ILP 并摊薄 loop overhead
+                            const size_t n8 = n & ~size_t{7};
+                            size_t i = 0;
+                            for (; i < n8; i += 8)
+                            {
+                                if constexpr (tiny_need_pf)
+                                {
+                                    if (i + pd_pf + 7 < n) [[likely]]
+                                        (PREFETCH_R(&std::get<Is>(data_ptrs)[i + pd_pf]), ...);
+                                }
+                                entity e0(indices[i], ver_data[i]);
+                                entity e1(indices[i + 1], ver_data[i + 1]);
+                                entity e2(indices[i + 2], ver_data[i + 2]);
+                                entity e3(indices[i + 3], ver_data[i + 3]);
+                                entity e4(indices[i + 4], ver_data[i + 4]);
+                                entity e5(indices[i + 5], ver_data[i + 5]);
+                                entity e6(indices[i + 6], ver_data[i + 6]);
+                                entity e7(indices[i + 7], ver_data[i + 7]);
+                                func(e0, std::get<Is>(data_ptrs)[i]...);
+                                func(e1, std::get<Is>(data_ptrs)[i + 1]...);
+                                func(e2, std::get<Is>(data_ptrs)[i + 2]...);
+                                func(e3, std::get<Is>(data_ptrs)[i + 3]...);
+                                func(e4, std::get<Is>(data_ptrs)[i + 4]...);
+                                func(e5, std::get<Is>(data_ptrs)[i + 5]...);
+                                func(e6, std::get<Is>(data_ptrs)[i + 6]...);
+                                func(e7, std::get<Is>(data_ptrs)[i + 7]...);
+                            }
+                                const size_t n4 = n & ~size_t{3};
+                                for (; i < n4; i += 4)
+                                {
+                                    entity e0(indices[i], ver_data[i]);
+                                    entity e1(indices[i + 1], ver_data[i + 1]);
+                                    entity e2(indices[i + 2], ver_data[i + 2]);
+                                    entity e3(indices[i + 3], ver_data[i + 3]);
+                                    func(e0, std::get<Is>(data_ptrs)[i]...);
+                                    func(e1, std::get<Is>(data_ptrs)[i + 1]...);
+                                    func(e2, std::get<Is>(data_ptrs)[i + 2]...);
+                                    func(e3, std::get<Is>(data_ptrs)[i + 3]...);
+                                }
+                                const size_t n2 = n & ~size_t{1};
+                                for (; i < n2; i += 2)
+                                {
+                                    entity e0(indices[i], ver_data[i]);
+                                    entity e1(indices[i + 1], ver_data[i + 1]);
+                                    func(e0, std::get<Is>(data_ptrs)[i]...);
+                                    func(e1, std::get<Is>(data_ptrs)[i + 1]...);
+                                }
+                                for (; i < n; ++i)
+                                {
+                                    entity e(indices[i], ver_data[i]);
+                                    func(e, std::get<Is>(data_ptrs)[i]...);
+                                }
+                            }
+                            else
+                            {
+                                const size_t n2 = n & ~size_t{1};
+                                size_t i = 0;
+                                for (; i < n2; i += 2)
+                                {
+                                    entity e0(indices[i], ver_data[i]);
+                                    entity e1(indices[i + 1], ver_data[i + 1]);
+                                    func(e0, std::get<Is>(data_ptrs)[i]...);
+                                    func(e1, std::get<Is>(data_ptrs)[i + 1]...);
+                                }
+                                for (; i < n; ++i)
+                                {
+                                    entity e(indices[i], ver_data[i]);
+                                    func(e, std::get<Is>(data_ptrs)[i]...);
+                                }
+                            }
                         }
-                        for (; i < n; ++i)
+                        else
                         {
-                            entity e(indices[i], ver_data[i]);
-                            func(e, (*std::get<Is>(pools))[i]...);
+                            const size_t main_count = (n > pd) ? (n - pd) : 0;
+                            size_t i = 0;
+                            for (; i < main_count; ++i)
+                            {
+                                (PREFETCH_R(&std::get<Is>(data_ptrs)[i + pd]), ...);
+                                entity e(indices[i], ver_data[i]);
+                                func(e, std::get<Is>(data_ptrs)[i]...);
+                            }
+                            for (; i < n; ++i)
+                            {
+                                entity e(indices[i], ver_data[i]);
+                                func(e, std::get<Is>(data_ptrs)[i]...);
+                            }
                         }
                     }
                     else
                     {
-                        // 回退路径: versions_ 未同步, 走 sparse 查找
+                        const size_t main_count = (n > pd) ? (n - pd) : 0;
                         size_t i = 0;
                         for (; i < main_count; ++i)
                         {
-                            (PREFETCH_R(&(*std::get<Is>(pools))[i + pd]), ...);
+                            (PREFETCH_R(&std::get<Is>(data_ptrs)[i + pd]), ...);
+                            primary->prefetch_sparse_entry(indices[i + pd]);
                             uint32_t eid = indices[i];
                             uint32_t ver = primary->sparse_version_at_public(eid);
                             entity e(eid, ver);
-                            func(e, (*std::get<Is>(pools))[i]...);
+                            func(e, std::get<Is>(data_ptrs)[i]...);
                         }
                         for (; i < n; ++i)
                         {
                             uint32_t eid = indices[i];
                             uint32_t ver = primary->sparse_version_at_public(eid);
                             entity e(eid, ver);
-                            func(e, (*std::get<Is>(pools))[i]...);
+                            func(e, std::get<Is>(data_ptrs)[i]...);
                         }
                     }
                 }
                 else
                 {
-                    size_t i = 0;
-                    for (; i < main_count; ++i)
+                    if constexpr (small_data)
                     {
-                        (PREFETCH_R(&(*std::get<Is>(pools))[i + pd]), ...);
-                        func((*std::get<Is>(pools))[i]...);
+                        if constexpr (tiny_data)
+                        {
+                            // 1-10 comps: 统一 8x 展开, 最大化 ILP 并摊薄 loop overhead
+                            // 9+ comps (total > 96B): 数据量 52MB+ 远超 L3(32MB), DRAM 带宽成瓶颈.
+                            // 使用 PREFETCH_NTA (non-temporal) 预取大数组, 避免污染 L3,
+                            // 让 L3 保留热数据 (indices/ver_data/小组件数组).
+                            // pd_pf=96 = 12 iters @ 8x unroll × 8 = 96 entity 提前量
+                            //   @1.6ns/iter ≈ 154ns, 略大于 DRAM 延迟, 提供预取缓冲
+                            constexpr size_t pd_pf_large = 96;
+                            const size_t n8 = n & ~size_t{7};
+                            size_t i = 0;
+                            for (; i < n8; i += 8)
+                            {
+                                if constexpr (tiny_need_pf)
+                                {
+                                    if (i + pd_pf_large < n) [[likely]]
+                                    {
+                                        // 小组件 (<16B, 数组≤6MB): PREFETCH_R 进 L3 缓存
+                                        // 大组件 (≥16B, 如 Rotation 16B/8MB, Name 32B/16MB): PREFETCH_NTA 不污染 L3
+                                        // 9 comps: 非 NTA 数据 28MB (Position+Health+Velocity+Damage+Armor+Speed+Scale)
+                                        //          NTA 数据 24MB (Rotation 8MB + Name 16MB)
+                                        //          L3 32MB 容纳 28MB 非 NTA 数据, 命中率 100%
+                                        ((sizeof(std::tuple_element_t<Is, AllTypes>) < 16
+                                              ? PREFETCH_R(&std::get<Is>(data_ptrs)[i + pd_pf_large])
+                                              : PREFETCH_NTA(&std::get<Is>(data_ptrs)[i + pd_pf_large])), ...);
+                                    }
+                                }
+                                func(std::get<Is>(data_ptrs)[i]...);
+                                func(std::get<Is>(data_ptrs)[i + 1]...);
+                                func(std::get<Is>(data_ptrs)[i + 2]...);
+                                func(std::get<Is>(data_ptrs)[i + 3]...);
+                                func(std::get<Is>(data_ptrs)[i + 4]...);
+                                func(std::get<Is>(data_ptrs)[i + 5]...);
+                                func(std::get<Is>(data_ptrs)[i + 6]...);
+                                func(std::get<Is>(data_ptrs)[i + 7]...);
+                            }
+                            const size_t n4 = n & ~size_t{3};
+                            for (; i < n4; i += 4)
+                            {
+                                func(std::get<Is>(data_ptrs)[i]...);
+                                func(std::get<Is>(data_ptrs)[i + 1]...);
+                                func(std::get<Is>(data_ptrs)[i + 2]...);
+                                func(std::get<Is>(data_ptrs)[i + 3]...);
+                            }
+                            const size_t n2 = n & ~size_t{1};
+                            for (; i < n2; i += 2)
+                            {
+                                func(std::get<Is>(data_ptrs)[i]...);
+                                func(std::get<Is>(data_ptrs)[i + 1]...);
+                            }
+                            for (; i < n; ++i)
+                            {
+                                func(std::get<Is>(data_ptrs)[i]...);
+                            }
+                        }
+                        else
+                        {
+                            // 9+ comps (total > 96B): 8x 展开, 无软件预取
+                            //   L3-resident (n×size ≤ 32MB): HW 预取器足够, NTA 有害
+                            //   DRAM-bound (n×size > 32MB): DRAM 带宽是硬瓶颈, NTA 无法突破
+                            //   8x 展开 80 loads/iter, 寄存器压力由 OoO 引擎管理
+                            const size_t n8 = n & ~size_t{7};
+                            size_t i = 0;
+                            for (; i < n8; i += 8)
+                            {
+                                func(std::get<Is>(data_ptrs)[i]...);
+                                func(std::get<Is>(data_ptrs)[i + 1]...);
+                                func(std::get<Is>(data_ptrs)[i + 2]...);
+                                func(std::get<Is>(data_ptrs)[i + 3]...);
+                                func(std::get<Is>(data_ptrs)[i + 4]...);
+                                func(std::get<Is>(data_ptrs)[i + 5]...);
+                                func(std::get<Is>(data_ptrs)[i + 6]...);
+                                func(std::get<Is>(data_ptrs)[i + 7]...);
+                            }
+                            const size_t n4 = n & ~size_t{3};
+                            for (; i < n4; i += 4)
+                            {
+                                func(std::get<Is>(data_ptrs)[i]...);
+                                func(std::get<Is>(data_ptrs)[i + 1]...);
+                                func(std::get<Is>(data_ptrs)[i + 2]...);
+                                func(std::get<Is>(data_ptrs)[i + 3]...);
+                            }
+                            const size_t n2 = n & ~size_t{1};
+                            for (; i < n2; i += 2)
+                            {
+                                func(std::get<Is>(data_ptrs)[i]...);
+                                func(std::get<Is>(data_ptrs)[i + 1]...);
+                            }
+                            for (; i < n; ++i)
+                            {
+                                func(std::get<Is>(data_ptrs)[i]...);
+                            }
+                        }
                     }
-                    for (; i < n; ++i)
+                    else
                     {
-                        func((*std::get<Is>(pools))[i]...);
+                        const size_t main_count = (n > pd) ? (n - pd) : 0;
+                        size_t i = 0;
+                        for (; i < main_count; ++i)
+                        {
+                            (PREFETCH_R(&std::get<Is>(data_ptrs)[i + pd]), ...);
+                            func(std::get<Is>(data_ptrs)[i]...);
+                        }
+                        for (; i < n; ++i)
+                        {
+                            func(std::get<Is>(data_ptrs)[i]...);
+                        }
                     }
                 }
                 return;
@@ -321,15 +511,15 @@
                     size_t i = 0;
                     for (; p < p_main_end; p += stride, ++i)
                     {
-                        (PREFETCH_R(&(*std::get<Is>(pools))[p[pd_off + Is]]), ...);
+                        (PREFETCH_R(&std::get<Is>(data_ptrs)[p[pd_off + Is]]), ...);
                         PREFETCH_R(&versions[i + pd]);
                         entity e(indices[i], versions[i]);
-                        func(e, (*std::get<Is>(pools))[p[Is]]...);
+                        func(e, std::get<Is>(data_ptrs)[p[Is]]...);
                     }
                     for (; p < raw_end; p += stride, ++i)
                     {
                         entity e(indices[i], versions[i]);
-                        func(e, (*std::get<Is>(pools))[p[Is]]...);
+                        func(e, std::get<Is>(data_ptrs)[p[Is]]...);
                     }
                 }
                 else
@@ -338,17 +528,17 @@
                     size_t i = 0;
                     for (; p < p_main_end; p += stride, ++i)
                     {
-                        (PREFETCH_R(&(*std::get<Is>(pools))[p[pd_off + Is]]), ...);
+                        (PREFETCH_R(&std::get<Is>(data_ptrs)[p[pd_off + Is]]), ...);
                         PREFETCH_R(&versions[i + pd]);
                         if (((p[Is] == UINT32_MAX) || ...)) [[unlikely]] continue;
                         entity e(indices[i], versions[i]);
-                        func(e, (*std::get<Is>(pools))[p[Is]]...);
+                        func(e, std::get<Is>(data_ptrs)[p[Is]]...);
                     }
                     for (; p < raw_end; p += stride, ++i)
                     {
                         if (((p[Is] == UINT32_MAX) || ...)) [[unlikely]] continue;
                         entity e(indices[i], versions[i]);
-                        func(e, (*std::get<Is>(pools))[p[Is]]...);
+                        func(e, std::get<Is>(data_ptrs)[p[Is]]...);
                     }
                 }
             }
@@ -359,12 +549,12 @@
                     const uint32_t* p = raw;
                     for (; p < p_main_end; p += stride)
                     {
-                        (PREFETCH_R(&(*std::get<Is>(pools))[p[pd_off + Is]]), ...);
-                        func((*std::get<Is>(pools))[p[Is]]...);
+                        (PREFETCH_R(&std::get<Is>(data_ptrs)[p[pd_off + Is]]), ...);
+                        func(std::get<Is>(data_ptrs)[p[Is]]...);
                     }
                     for (; p < raw_end; p += stride)
                     {
-                        func((*std::get<Is>(pools))[p[Is]]...);
+                        func(std::get<Is>(data_ptrs)[p[Is]]...);
                     }
                 }
                 else
@@ -372,14 +562,14 @@
                     const uint32_t* p = raw;
                     for (; p < p_main_end; p += stride)
                     {
-                        (PREFETCH_R(&(*std::get<Is>(pools))[p[pd_off + Is]]), ...);
+                        (PREFETCH_R(&std::get<Is>(data_ptrs)[p[pd_off + Is]]), ...);
                         if (((p[Is] == UINT32_MAX) || ...)) [[unlikely]] continue;
-                        func((*std::get<Is>(pools))[p[Is]]...);
+                        func(std::get<Is>(data_ptrs)[p[Is]]...);
                     }
                     for (; p < raw_end; p += stride)
                     {
                         if (((p[Is] == UINT32_MAX) || ...)) [[unlikely]] continue;
-                        func((*std::get<Is>(pools))[p[Is]]...);
+                        func(std::get<Is>(data_ptrs)[p[Is]]...);
                     }
                 }
             }
@@ -704,7 +894,7 @@
                     {
                         SortType default_key{};
                         pdqsort<size_t>(idx_data, n,
-                            [raw, sort_pool, stride, &default_key, this](size_t a, size_t b) noexcept {
+                            [raw, sort_pool, &default_key, this](size_t a, size_t b) noexcept {
                                 uint32_t da = raw[a * stride + SortIdx];
                                 uint32_t db = raw[b * stride + SortIdx];
                                 const SortType& ka = (da != UINT32_MAX) ? sort_pool[da] : default_key;
@@ -907,6 +1097,7 @@
                         {
                             size_t next_pi = sorted_indices_[i + 32];
                             (PREFETCH_R(&(*std::get<Is>(pools))[next_pi]), ...);
+                            primary->prefetch_sparse_entry(indices[next_pi]);
                         }
                         size_t primary_i = sorted_indices_[i];
                         if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
@@ -933,6 +1124,7 @@
                             size_t next_pi = sorted_indices_[i + 32];
                             const uint32_t* next_m = raw + next_pi * stride;
                             (PREFETCH_R(&(*std::get<Is>(pools))[next_m[Is]]), ...);
+                            primary->prefetch_sparse_entry(indices[next_pi]);
                         }
                         size_t primary_i = sorted_indices_[i];
                         const uint32_t* m = raw + primary_i * stride;
@@ -1037,6 +1229,8 @@
 
                 for (size_t i = 0; i < n; ++i)
                 {
+                    if (i + 8 < n) [[likely]]
+                        primary->prefetch_sparse_entry(indices[i + 8]);
                     uint32_t eid = indices[i];
                     uint32_t ver = primary->sparse_version_at_public(eid);
                     entity e(eid, ver);
@@ -1064,6 +1258,8 @@
 
                 for (size_t i = 0; i < changed_indices_.size(); ++i)
                 {
+                    if (i + 8 < changed_indices_.size()) [[likely]]
+                        primary->prefetch_sparse_entry(indices[changed_indices_[i + 8]]);
                     size_t primary_i = changed_indices_[i];
                     uint32_t eid = indices[primary_i];
                     uint32_t ver = primary->sparse_version_at_public(eid);
@@ -1144,6 +1340,8 @@
 
                 for (size_t i = 0; i < n; ++i)
                 {
+                    if (i + 8 < n) [[likely]]
+                        primary->prefetch_sparse_entry(indices[i + 8]);
                     uint32_t eid = indices[i];
                     uint32_t ver = primary->sparse_version_at_public(eid);
                     entity e(eid, ver);
@@ -1175,6 +1373,8 @@
 
                 for (size_t i = 0; i < changed_indices_.size(); ++i)
                 {
+                    if (i + 8 < changed_indices_.size()) [[likely]]
+                        primary->prefetch_sparse_entry(indices[changed_indices_[i + 8]]);
                     size_t primary_i = changed_indices_[i];
                     uint32_t eid = indices[primary_i];
                     uint32_t ver = primary->sparse_version_at_public(eid);
@@ -1253,6 +1453,8 @@
 
                 for (size_t i = 0; i < n; ++i)
                 {
+                    if (i + 8 < n) [[likely]]
+                        primary->prefetch_sparse_entry(indices[i + 8]);
                     uint32_t eid = indices[i];
                     uint32_t ver = primary->sparse_version_at_public(eid);
                     entity e(eid, ver);
@@ -1284,6 +1486,8 @@
 
                 for (size_t i = 0; i < added_indices_.size(); ++i)
                 {
+                    if (i + 8 < added_indices_.size()) [[likely]]
+                        primary->prefetch_sparse_entry(indices[added_indices_[i + 8]]);
                     size_t primary_i = added_indices_[i];
                     uint32_t eid = indices[primary_i];
                     uint32_t ver = primary->sparse_version_at_public(eid);

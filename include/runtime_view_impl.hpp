@@ -1,5 +1,4 @@
-// runtime_view_impl.hpp —— runtime_query / runtime_view 的 out-of-line 定义
-//      以及 filter_view 的 and_ / or_ 方法
+// runtime_view_impl.hpp —— runtime_query / runtime_view / filter_view 的 out-of-line 定义
 // 依赖 manager 完整定义,由 component.hpp 在 manager 类定义之后 include
 #pragma once
 #include "runtime_view.hpp"
@@ -16,7 +15,6 @@ namespace ecs
 
 namespace detail
 {
-// 从 set 按实体索引获取组件指针
 template <typename T>
 inline T* get_component_ptr_from_set(single_class_set* set,
                                      uint32_t idx, uint32_t ver) noexcept
@@ -32,8 +30,6 @@ inline T* get_component_ptr_from_set(single_class_set* set,
     return &(*pool)[dense];
 }
 } // namespace detail
-
-// ======================== runtime_query out-of-line 定义 ========================
 
 inline runtime_query::runtime_query(manager* mgr, std::span<const int> required_ids,
                                      std::span<const int> excluded_ids) noexcept
@@ -167,8 +163,6 @@ inline runtime_query::runtime_query(manager* mgr, std::span<const runtime_term> 
     use_mask_path_ = !has_or_ && ((req_sets_.size() >= 3) || ((max_block_ + 1) <= 5));
 }
 
-// ======================== runtime_view out-of-line 定义 ========================
-
 inline bool runtime_view::all_sets_valid() const noexcept
 {
     for (int tid : query_.required_ids_)
@@ -267,6 +261,55 @@ inline void runtime_view::rebuild() noexcept
         cached_primary_version_ = query_.primary_set_->get_pool_version();
     }
     sorted_valid_ = false;
+    cached_hits_valid_ = false;
+}
+
+// 构建命中实体缓存 (rebuild 时构建, for_each/count 复用)
+inline void runtime_view::build_cached_hits() noexcept
+{
+    cached_hits_.clear();
+    if (!all_sets_valid() || query_.primary_set_ == nullptr) [[unlikely]]
+    {
+        cached_hits_valid_ = true;
+        return;
+    }
+
+    auto* primary = query_.primary_set_;
+    auto& indices = primary->get_entity_indices();
+    const size_t n = indices.size();
+    cached_hits_.reserve_exact(n);
+
+    if (query_.use_mask_path_ && !query_.has_or_)
+    {
+        for (size_t i = 0; i < n; ++i)
+        {
+            uint32_t idx = indices[i];
+            if (query_.check_blocks(idx, mgr_))
+            {
+                uint32_t ver = primary->sparse_version_at_public(idx);
+                cached_hits_.emplace_back(idx, ver);
+            }
+        }
+    }
+    else
+    {
+        for (size_t i = 0; i < n; ++i)
+        {
+            uint32_t idx = indices[i];
+            uint32_t ver = primary->get_version_unchecked(idx);
+            if (is_entity_hit(idx, ver))
+            {
+                cached_hits_.emplace_back(idx, ver);
+            }
+        }
+    }
+    cached_hits_valid_ = true;
+}
+
+inline void runtime_view::ensure_hits_fresh() noexcept
+{
+    ensure_fresh();
+    if (!cached_hits_valid_) build_cached_hits();
 }
 
 template <typename T>
@@ -275,8 +318,6 @@ inline T* runtime_view::get_ptr(entity e) noexcept
     ensure_fresh();
     return mgr_->template get_ptr_fast<T>(e);
 }
-
-// ===== 内部:遍历命中实体 =====
 
 template <typename Func>
 inline void runtime_view::for_each_hit_impl(Func&& func) noexcept
@@ -314,7 +355,6 @@ inline void runtime_view::for_each_hit_impl(Func&& func) noexcept
                 if (idx >= max_sparse) [[unlikely]] continue;
                 if (visited[idx]) continue;
                 uint32_t ver = set->sparse_version_at_public(idx);
-                // NOT 检查
                 bool excluded = false;
                 for (size_t j = 0; j < query_.exc_sets_.size(); ++j)
                 {
@@ -340,7 +380,43 @@ inline void runtime_view::for_each_hit_impl(Func&& func) noexcept
 
     if (query_.use_mask_path_ && !query_.has_or_)
     {
-        for (size_t i = 0; i < n; ++i)
+        // 4x 循环展开, 最大化 ILP
+        // check_blocks 是纯位运算, 4 次独立调用可并行发射
+        // sparse_version_at_public 是随机访问, 4 次并行发射隐藏 load latency
+        const size_t n4 = n & ~size_t{3};
+        size_t i = 0;
+        for (; i < n4; i += 4)
+        {
+            uint32_t idx0 = indices[i];
+            uint32_t idx1 = indices[i + 1];
+            uint32_t idx2 = indices[i + 2];
+            uint32_t idx3 = indices[i + 3];
+            bool hit0 = query_.check_blocks(idx0, mgr_);
+            bool hit1 = query_.check_blocks(idx1, mgr_);
+            bool hit2 = query_.check_blocks(idx2, mgr_);
+            bool hit3 = query_.check_blocks(idx3, mgr_);
+            if (hit0)
+            {
+                entity e(idx0, primary->sparse_version_at_public(idx0));
+                func(e, i);
+            }
+            if (hit1)
+            {
+                entity e(idx1, primary->sparse_version_at_public(idx1));
+                func(e, i + 1);
+            }
+            if (hit2)
+            {
+                entity e(idx2, primary->sparse_version_at_public(idx2));
+                func(e, i + 2);
+            }
+            if (hit3)
+            {
+                entity e(idx3, primary->sparse_version_at_public(idx3));
+                func(e, i + 3);
+            }
+        }
+        for (; i < n; ++i)
         {
             uint32_t idx = indices[i];
             if (!query_.check_blocks(idx, mgr_)) continue;
@@ -395,8 +471,6 @@ inline void runtime_view::for_each_hit_range(size_t start, size_t end, Func&& fu
     }
 }
 
-// ===== 现有接口 =====
-
 template <typename Func>
 inline void runtime_view::for_each(Func&& func) noexcept
 {
@@ -413,23 +487,46 @@ inline void runtime_view::for_each(Func&& func) noexcept
     });
 }
 
-// ===== 1. 组件引用回传 =====
-
 template <typename... Ts, typename Func>
 inline void runtime_view::for_each_typed(Func&& func) noexcept
 {
-    ensure_fresh();
-    if (query_.primary_set_ == nullptr) [[unlikely]] return;
+    ensure_hits_fresh();
+    if (query_.primary_set_ == nullptr || cached_hits_.empty()) [[unlikely]] return;
 
+    for_each_typed_impl<Ts...>(std::forward<Func>(func), std::index_sequence_for<Ts...>{});
+}
+
+template <typename... Ts, typename Func, size_t... Is>
+inline void runtime_view::for_each_typed_impl(Func&& func, std::index_sequence<Is...>) noexcept
+{
     auto sets_tuple = std::make_tuple(mgr_->get_single_class_set<Ts>()...);
 
-    for_each_hit_impl([&](entity e, size_t) {
-        auto get_and_call = [&]<size_t... Is>(std::index_sequence<Is...>) {
-            auto ptrs = std::make_tuple(
+    // 用 cached_hits_ 遍历命中实体, 避免重复 check_blocks/is_entity_hit
+    const size_t n = cached_hits_.size();
+    auto* hits = cached_hits_.data();
+
+    const size_t n4 = n & ~size_t{3};
+    size_t i = 0;
+    for (; i < n4; i += 4)
+    {
+        entity e0 = hits[i];
+        entity e1 = hits[i + 1];
+        entity e2 = hits[i + 2];
+        entity e3 = hits[i + 3];
+
+        auto get_ptrs = [&](entity e) {
+            return std::make_tuple(
                 detail::get_component_ptr_from_set<Ts>(
                     std::get<Is>(sets_tuple),
                     e.parts_.index_, e.parts_.version_)...
             );
+        };
+        auto ptrs0 = get_ptrs(e0);
+        auto ptrs1 = get_ptrs(e1);
+        auto ptrs2 = get_ptrs(e2);
+        auto ptrs3 = get_ptrs(e3);
+
+        auto call_one = [&](entity e, auto& ptrs) {
             bool all_present = (std::get<Is>(ptrs) && ...);
             if (!all_present) return;
             if constexpr (std::is_invocable_v<Func, entity, Ts&...>)
@@ -441,11 +538,31 @@ inline void runtime_view::for_each_typed(Func&& func) noexcept
                 func(*std::get<Is>(ptrs)...);
             }
         };
-        get_and_call(std::index_sequence_for<Ts...>{});
-    });
+        call_one(e0, ptrs0);
+        call_one(e1, ptrs1);
+        call_one(e2, ptrs2);
+        call_one(e3, ptrs3);
+    }
+    for (; i < n; ++i)
+    {
+        entity e = hits[i];
+        auto ptrs = std::make_tuple(
+            detail::get_component_ptr_from_set<Ts>(
+                std::get<Is>(sets_tuple),
+                e.parts_.index_, e.parts_.version_)...
+        );
+        bool all_present = (std::get<Is>(ptrs) && ...);
+        if (!all_present) continue;
+        if constexpr (std::is_invocable_v<Func, entity, Ts&...>)
+        {
+            func(e, *std::get<Is>(ptrs)...);
+        }
+        else
+        {
+            func(*std::get<Is>(ptrs)...);
+        }
+    }
 }
-
-// ===== 2. 并行迭代 =====
 
 template <typename Func>
 inline void runtime_view::for_each_parallel(size_t worker_id, size_t worker_count,
@@ -475,8 +592,6 @@ inline void runtime_view::for_each_parallel(size_t worker_id, size_t worker_coun
     });
 }
 
-// ===== 3. 分页遍历 =====
-
 template <typename Func>
 inline void runtime_view::for_each_paged(size_t offset, size_t limit, Func&& func) noexcept
 {
@@ -498,8 +613,6 @@ inline void runtime_view::for_each_paged(size_t offset, size_t limit, Func&& fun
         }
     });
 }
-
-// ===== 4. 变更检测 =====
 
 inline bool runtime_view::changed() noexcept
 {
@@ -539,8 +652,6 @@ inline void runtime_view::for_each_changed(Func&& func) noexcept
     for_each(std::forward<Func>(func));
     reset_change_tracking();
 }
-
-// ===== 5. 排序 =====
 
 template <typename T, typename Compare>
 inline void runtime_view::sort_by_component(Compare&& cmp) noexcept
@@ -599,26 +710,17 @@ inline void runtime_view::sort_by_component(Compare&& cmp) noexcept
     sorted_valid_ = true;
 }
 
-// ===== 6. 精确命中数 =====
-
 inline size_t runtime_view::count() noexcept
 {
-    ensure_fresh();
-
-    size_t cnt = 0;
-    for_each_hit_impl([&](entity, size_t) {
-        ++cnt;
-    });
-    return cnt;
+    ensure_hits_fresh();
+    return cached_hits_.size();
 }
-
-// ===== 7. 迭代器 =====
 
 inline void runtime_view::iterator::advance_to_valid() noexcept
 {
-    if (!mgr_) return;
+    if (!mgr_ || !query_) return;
 
-    auto* primary = query_.primary_set_;
+    auto* primary = query_->primary_set_;
     if (!primary) return;
 
     auto& indices = primary->get_entity_indices();
@@ -628,11 +730,10 @@ inline void runtime_view::iterator::advance_to_valid() noexcept
     {
         uint32_t idx = indices[index_];
         uint32_t ver = primary->get_version_unchecked(idx);
-        // 内联 is_entity_hit 检查
         bool hit = true;
-        for (size_t k = 0; k < query_.req_sets_.size(); ++k)
+        for (size_t k = 0; k < query_->req_sets_.size(); ++k)
         {
-            if (!single_class_set::sparse_contains_version(query_.req_sets_[k], idx, ver))
+            if (!single_class_set::sparse_contains_version(query_->req_sets_[k], idx, ver))
             {
                 hit = false;
                 break;
@@ -640,21 +741,21 @@ inline void runtime_view::iterator::advance_to_valid() noexcept
         }
         if (hit)
         {
-            for (size_t k = 0; k < query_.exc_sets_.size(); ++k)
+            for (size_t k = 0; k < query_->exc_sets_.size(); ++k)
             {
-                if (single_class_set::sparse_contains_version(query_.exc_sets_[k], idx, ver))
+                if (single_class_set::sparse_contains_version(query_->exc_sets_[k], idx, ver))
                 {
                     hit = false;
                     break;
                 }
             }
         }
-        if (hit && query_.has_or_)
+        if (hit && query_->has_or_)
         {
             bool or_hit = false;
-            for (size_t k = 0; k < query_.or_sets_.size(); ++k)
+            for (size_t k = 0; k < query_->or_sets_.size(); ++k)
             {
-                if (single_class_set::sparse_contains_version(query_.or_sets_[k], idx, ver))
+                if (single_class_set::sparse_contains_version(query_->or_sets_[k], idx, ver))
                 {
                     or_hit = true;
                     break;
@@ -682,10 +783,9 @@ inline runtime_view::iterator runtime_view::end() noexcept
 {
     ensure_fresh();
     size_t n = query_.primary_set_ ? query_.primary_set_->get_entity_indices().size() : 0;
-    return iterator(runtime_query{}, nullptr, n);
+    // end 迭代器: query_ 为 nullptr, advance_to_valid 直接返回
+    return iterator(query_, nullptr, n);
 }
-
-// ===== size / empty =====
 
 inline size_t runtime_view::size() noexcept
 {
@@ -699,7 +799,6 @@ inline bool runtime_view::empty() noexcept
     return query_.primary_set_ == nullptr || query_.primary_set_->empty();
 }
 
-// ======================== filter_view 的 and_ / or_ 方法 ========================
 template <typename T, typename Pred>
 template <typename B>
 auto manager::filter_view<T, Pred>::and_() noexcept

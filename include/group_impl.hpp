@@ -9,8 +9,6 @@
 namespace ecs
 {
 
-// ======================== group / owning_group / reorder_group out-of-line 定义 ========================
-
 template <typename First, typename... Rest>
 inline group<First, Rest...>::group(manager* mgr, std::array<single_class_set*, N> sets) noexcept
     : mgr_(mgr), sets_(sets)
@@ -43,14 +41,19 @@ template <typename First, typename... Rest>
 inline void group<First, Rest...>::rebuild() noexcept
 {
     cached_.clear();
+    dense_mappings_.clear();
     if (!all_sets_valid()) [[unlikely]] return;
 
     auto* primary = sets_[primary_idx_];
     auto& indices = primary->get_entity_indices();
     const size_t n = indices.size();
 
+    // 预分配容量,避免 emplace_back 反复重分配
+    cached_.reserve_exact(n);
+
     if (use_mask_path_)
     {
+        // 位掩码路径: 仅 check_blocks 快速过滤, 不构建 mapping
         for (size_t i = 0; i < n; ++i)
         {
             if (check_blocks(indices[i]))
@@ -59,21 +62,39 @@ inline void group<First, Rest...>::rebuild() noexcept
     }
     else
     {
+        // sparse 路径: has_all 判断与 mapping 构建合并 (单次遍历)
+        dense_mappings_.reserve_exact(n);
         for (size_t i = 0; i < n; ++i)
         {
+            if (i + 8 < n) [[likely]]
+            {
+                uint32_t next_eid = indices[i + 8];
+                for (size_t k = 0; k < N; ++k)
+                {
+                    if (k == primary_idx_) continue;
+                    req_sets_[k]->prefetch_sparse_entry(next_eid);
+                }
+            }
             uint32_t eid = indices[i];
+            std::array<uint32_t, N> entry{};
+            entry[primary_idx_] = static_cast<uint32_t>(i);
             bool has_all = true;
             for (size_t k = 0; k < N; ++k)
             {
                 if (k == primary_idx_) continue;
-                if (req_sets_[k]->sparse_dense_at_public(eid) == single_class_set::dense_invalid)
+                uint32_t d = req_sets_[k]->sparse_dense_at_public(eid);
+                if (d == single_class_set::dense_invalid)
                 {
                     has_all = false;
                     break;
                 }
+                entry[k] = d;
             }
             if (has_all)
+            {
                 cached_.emplace_back(static_cast<uint32_t>(i));
+                dense_mappings_.emplace_back(entry);
+            }
         }
     }
     for (size_t i = 0; i < N; ++i)
@@ -81,18 +102,23 @@ inline void group<First, Rest...>::rebuild() noexcept
         if (sets_[i]) cached_versions_[i] = sets_[i]->get_pool_version();
     }
 
-    dense_mappings_.clear();
-    dense_mappings_.resize(cached_.size(), std::array<uint32_t, N>{});
-    for (size_t i = 0; i < cached_.size(); ++i)
+    // mask_path 补充构建 mapping (sparse 路径已在主循环中构建)
+    if (use_mask_path_ && !cached_.empty())
     {
-        auto& entry = dense_mappings_[i];
-        uint32_t eid = indices[cached_[i]];
-        for (size_t k = 0; k < N; ++k)
+        dense_mappings_.reserve_exact(cached_.size());
+        dense_mappings_.resize(cached_.size(), std::array<uint32_t, N>{});
+        for (size_t i = 0; i < cached_.size(); ++i)
         {
-            if (k == primary_idx_)
-                entry[k] = cached_[i];
-            else
+            auto& entry = dense_mappings_[i];
+            uint32_t eid = indices[cached_[i]];
+            entry[primary_idx_] = cached_[i];
+            for (size_t k = 0; k < N; ++k)
+            {
+                if (k == primary_idx_) continue;
+                if (i + 8 < cached_.size()) [[likely]]
+                    sets_[k]->prefetch_sparse_entry(indices[cached_[i + 8]]);
                 entry[k] = sets_[k]->sparse_dense_at_public(eid);
+            }
         }
     }
 }
@@ -157,6 +183,15 @@ inline void owning_group<First, Rest...>::rebuild() noexcept
     {
         for (size_t read = 0; read < n; ++read)
         {
+            if (read + 8 < n) [[likely]]
+            {
+                uint32_t next_eid = indices[read + 8];
+                for (size_t k = 0; k < N; ++k)
+                {
+                    if (k == primary_idx_) continue;
+                    req_sets_[k]->prefetch_sparse_entry(next_eid);
+                }
+            }
             uint32_t eid = indices[read];
             bool has_all = true;
             for (size_t k = 0; k < N; ++k)
@@ -248,6 +283,15 @@ inline void reorder_group<First, Rest...>::rebuild() noexcept
     {
         for (size_t read = 0; read < n; ++read)
         {
+            if (read + 8 < n) [[likely]]
+            {
+                uint32_t next_eid = indices[read + 8];
+                for (size_t k = 0; k < N; ++k)
+                {
+                    if (k == primary_idx_) continue;
+                    req_sets_[k]->prefetch_sparse_entry(next_eid);
+                }
+            }
             uint32_t eid = indices[read];
             bool has_all = true;
             for (size_t k = 0; k < N; ++k)

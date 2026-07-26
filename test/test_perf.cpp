@@ -1,12 +1,92 @@
-// ============================================================
 // test_perf.cpp - lcf-ecs 性能测试 (Performance Benchmark)
-// 编译: MinGW GCC 15.2.0 -O3 -std=c++20 -mavx2 -mbmi -mbmi2
-// 注意: 禁止 std::sort + lambda (MinGW+AVX2 崩溃), 改用 pdqsort
-// ============================================================
+// 支持: MinGW GCC / Linux GCC / Clang / MSVC, 启用 LTO
+//   - MinGW GCC: 不启用 AVX2 (vmovdqa 32 字节栈对齐 vs MinGW ABI 16 字节对齐
+//     → 随机崩溃 0xC0000005). MinGW ABI 遵循 Windows x64 ABI 规范, 仅保证 16 字节
+//     栈对齐 (设计规范). 用 SSE2/BMI2 路径, 16 字节对齐安全.
+//   - MSVC / Linux / macOS GCC / Clang: 启用 AVX2 (ABI 保证 32 字节栈对齐).
+//   - LTO: GCC -flto=N / Clang -flto=thin / MSVC /GL+/LTCG
+// 注意: 禁止 std::sort + lambda (历史 MinGW+AVX2 崩溃), 改用 pdqsort
 #include "test_common.hpp"
 #include "include/part/dense.hpp"
+#include "include/part/class_pool_views.hpp"
+#include <bit>
 
-// 数量级格式化 / magnitude formatter
+// 编译器横幅宏 (动态拼接编译器版本 + 选项 + LTO 标记)
+#define LCF_STR_(x) #x
+#define LCF_STR(x)  LCF_STR_(x)
+
+// 检测顺序: __clang__ 优先 (clang-cl 同时定义 __clang__ 和 _MSC_VER)
+#if defined(__clang__)
+    #ifdef _MSC_VER
+        #define LCF_COMPILER_NAME \
+            "Clang-cl " LCF_STR(__clang_major__) "." LCF_STR(__clang_minor__) "." LCF_STR(__clang_patchlevel__) \
+            " (MSVC " LCF_STR(_MSC_VER) ")"
+    #else
+        #define LCF_COMPILER_NAME \
+            "Clang " LCF_STR(__clang_major__) "." LCF_STR(__clang_minor__) "." LCF_STR(__clang_patchlevel__)
+    #endif
+#elif defined(__GNUC__)
+    #ifdef __MINGW32__
+        #define LCF_COMPILER_NAME \
+            "MinGW GCC " LCF_STR(__GNUC__) "." LCF_STR(__GNUC_MINOR__) "." LCF_STR(__GNUC_PATCHLEVEL__)
+    #else
+        #define LCF_COMPILER_NAME \
+            "GCC " LCF_STR(__GNUC__) "." LCF_STR(__GNUC_MINOR__) "." LCF_STR(__GNUC_PATCHLEVEL__)
+    #endif
+#elif defined(_MSC_VER)
+    // 纯 MSVC: _MSC_VER VS2022=193x, VS2026=1950
+    #define LCF_COMPILER_NAME "MSVC " LCF_STR(_MSC_VER)
+#else
+    #define LCF_COMPILER_NAME "Unknown"
+#endif
+
+// 编译选项 (各编译器格式不同, clang-cl 走 MSVC 选项路径)
+#if defined(__clang__) && !defined(_MSC_VER)
+    #if defined(__AVX2__) && defined(__FMA__)
+        #ifdef LCF_HAS_LTO
+            #define LCF_BANNER_OPTS " -O3 -std=c++20 -mavx2 -mfma -mbmi -mbmi2 + LTO(thin)"
+        #else
+            #define LCF_BANNER_OPTS " -O3 -std=c++20 -mavx2 -mfma -mbmi -mbmi2"
+        #endif
+    #else
+        #ifdef LCF_HAS_LTO
+            #define LCF_BANNER_OPTS " -O3 -std=c++20 -msse2 -mbmi -mbmi2 + LTO(thin) (无 AVX2)"
+        #else
+            #define LCF_BANNER_OPTS " -O3 -std=c++20 -msse2 -mbmi -mbmi2 (无 AVX2)"
+        #endif
+    #endif
+#elif defined(_MSC_VER)
+    // MSVC / clang-cl: /O2 (Release 默认, MSVC 无 /O3) + /arch:AVX2 + 可选 /GL+/LTCG
+    #ifdef __AVX2__
+        #ifdef LCF_HAS_LTO
+            #define LCF_BANNER_OPTS " /O2 /std:c++20 /arch:AVX2 + /GL /LTCG"
+        #else
+            #define LCF_BANNER_OPTS " /O2 /std:c++20 /arch:AVX2"
+        #endif
+    #else
+        #ifdef LCF_HAS_LTO
+            #define LCF_BANNER_OPTS " /O2 /std:c++20 + /GL /LTCG (无 AVX2)"
+        #else
+            #define LCF_BANNER_OPTS " /O2 /std:c++20 (无 AVX2)"
+        #endif
+    #endif
+#else
+    #if defined(__AVX2__) && defined(__FMA__)
+        #ifdef LCF_HAS_LTO
+            #define LCF_BANNER_OPTS " -O3 -std=c++20 -mavx2 -mfma -mbmi -mbmi2 + LTO"
+        #else
+            #define LCF_BANNER_OPTS " -O3 -std=c++20 -mavx2 -mfma -mbmi -mbmi2"
+        #endif
+    #else
+        #ifdef LCF_HAS_LTO
+            #define LCF_BANNER_OPTS " -O3 -std=c++20 -msse2 -mbmi -mbmi2 + LTO (无 AVX2)"
+        #else
+            #define LCF_BANNER_OPTS " -O3 -std=c++20 -msse2 -mbmi -mbmi2 (无 AVX2)"
+        #endif
+    #endif
+#endif
+
+// 数量级格式化
 inline std::string mag(size_t n) noexcept
 {
     if (n >= 1000000)
@@ -24,48 +104,132 @@ inline std::string mag(size_t n) noexcept
     return std::to_string(n);
 }
 
-// ============================================================
-// multi_view 多组件查询基准助手 (1~10 组件)
-// ============================================================
-// 组件字段读取器: 返回 float 触发真实数据访问, 防止死码消除
+// === multi_view 多组件查询基准助手 (1~10 组件) ===
+// 组件字段读取器: 返回 float 或 uint32_t 触发真实数据访问, 防止死码消除.
+// float 字段: 直接返回 (vmovss 单指令 load, 2 loads/cyc throughput)
+// int 字段: 返回 uint32_t (mov 单指令 load, 2 loads/cyc throughput)
+//   避免 static_cast<float>(int): vcvtsi2ss 转换端口仅 1/cyc, 成为瓶颈.
+// Name 的 size() 取低 32bit 作为 uint32_t, 避免 64→32 显式转换.
 inline float comp_touch(const Position& p) noexcept { return p.x; }
 inline float comp_touch(const Velocity& v) noexcept { return v.vx; }
-inline float comp_touch(const Health& h) noexcept { return static_cast<float>(h.current); }
-inline float comp_touch(const Damage& d) noexcept { return static_cast<float>(d.amount); }
-inline float comp_touch(const Armor& a) noexcept { return static_cast<float>(a.defense); }
+inline uint32_t comp_touch(const Health& h) noexcept { return static_cast<uint32_t>(h.current); }
+inline uint32_t comp_touch(const Damage& d) noexcept { return static_cast<uint32_t>(d.amount); }
+inline uint32_t comp_touch(const Armor& a) noexcept { return static_cast<uint32_t>(a.defense); }
 inline float comp_touch(const Speed& s) noexcept { return s.value; }
-inline float comp_touch(const Name& n) noexcept { return static_cast<float>(n.value.size()); }
+inline uint32_t comp_touch(const Name& n) noexcept { return static_cast<uint32_t>(n.value.size()); }
 inline float comp_touch(const Rotation& r) noexcept { return r.x; }
 inline float comp_touch(const Scale& s) noexcept { return s.x; }
 inline float comp_touch(const Mass& m) noexcept { return m.value; }
 
+// 统一 uint32_t 读取器: 用于 add-chain 模式 (无 asm barrier, 编译器可自由调度 load 跨实体)
+// float 字段: bit_cast<uint32_t> (vmovd XMM→GPR, 2/cyc, 无 vcvtsi2ss 转换瓶颈)
+// int 字段: 直接返回 (mov, 2/cyc)
+// Name: size() 返回 size_t, 取低 32bit
+inline uint32_t comp_touch_u32(const Position& p) noexcept { return std::bit_cast<uint32_t>(p.x); }
+inline uint32_t comp_touch_u32(const Velocity& v) noexcept { return std::bit_cast<uint32_t>(v.vx); }
+inline uint32_t comp_touch_u32(const Health& h) noexcept { return static_cast<uint32_t>(h.current); }
+inline uint32_t comp_touch_u32(const Damage& d) noexcept { return static_cast<uint32_t>(d.amount); }
+inline uint32_t comp_touch_u32(const Armor& a) noexcept { return static_cast<uint32_t>(a.defense); }
+inline uint32_t comp_touch_u32(const Speed& s) noexcept { return std::bit_cast<uint32_t>(s.value); }
+inline uint32_t comp_touch_u32(const Name& n) noexcept { return static_cast<uint32_t>(n.value.size()); }
+inline uint32_t comp_touch_u32(const Rotation& r) noexcept { return std::bit_cast<uint32_t>(r.x); }
+inline uint32_t comp_touch_u32(const Scale& s) noexcept { return std::bit_cast<uint32_t>(s.x); }
+inline uint32_t comp_touch_u32(const Mass& m) noexcept { return std::bit_cast<uint32_t>(m.value); }
+
+// touch_barrier: 标记值已使用, 防止死代码消除, 不创建串行依赖
+#if defined(_MSC_VER)
+    // MSVC x64 无 inline asm, 用 volatile + 屏障
+    inline void touch_barrier(float v) noexcept
+    {
+        volatile float sink = v;
+        _ReadWriteBarrier();
+        (void)sink;
+    }
+    inline void touch_barrier(uint32_t v) noexcept
+    {
+        volatile uint32_t sink = v;
+        _ReadWriteBarrier();
+        (void)sink;
+    }
+#else
+    // GCC/Clang: "x" 入 XMM, "r" 入 GPR
+    inline void touch_barrier(float v) noexcept { asm volatile("" : : "x"(v) :); }
+    inline void touch_barrier(uint32_t v) noexcept { asm volatile("" : : "r"(v) :); }
+#endif
+
+// 批量屏障: 所有值作为函数参数先求值 (所有 load 先于任何 barrier),
+// 再依次施加 barrier. 消除 touch_barrier 之间的串行依赖,
+// 使编译器可自由调度所有 load 指令 (2 loads/cyc 并行发射).
+// 对比旧方案 (touch_barrier(comp_touch(comps)), ...):
+//   - 旧方案 comma fold 把 load-barrier 交错, asm volatile 是编译器屏障,
+//     编译器无法把 load_i+1 调度到 load_i 之前, load 被串行化.
+//   - 新方案 所有 load 作为实参先求值, 编译器可自由重排 load 顺序.
+template <typename... Ts>
+inline void touch_all(Ts... vs) noexcept
+{
+    (touch_barrier(vs), ...);
+}
+
 // 通用 multi_view for_each 基准: 对任意 1~10 组件组合统一测量
+// 设计要点:
+//   1. 构造 view 一次复用, warmup 预建 mappings (ensure_mappings 的 rebuild_mappings
+//      做 N-1 次 2MB memcmp, 10 组件 ~0.6ms, 必须排除出计时区).
+//   2. touch_all(comp_touch(comps)...) — load-all-then-barrier:
+//      - 所有 comp_touch 作为 touch_all 实参先求值 (N 个独立 load 并行发射).
+//      - touch_all 内 (touch_barrier(vs), ...) 仅施加 asm 屏障, 不产生指令.
+//      - 编译器自由调度所有 load, 瓶颈回到 load throughput (2 loads/cyc).
+//   3. int 字段返回 uint32_t 走 "r" 约束 (GPR load), 避免 vcvtsi2ss 1/cyc 瓶颈.
+//   4. 多次重复取最小值 (REPEAT=3): 9+ comps 数据量 52MB+ 远超 L3(32MB), 测量
+//      噪声大 (TLB/L3 驱逐/调度抖动), 取最小值反映真实循环吞吐能力.
+//   注: add-chain (sink += fold) 经测试更慢 — fold 内部 N 级串行 add 被编译器
+//      跨实体串行化, 且 bit_cast 的 vmovd (XMM→GPR) 引入额外依赖. touch_all
+//      的 asm barrier 不创建数据依赖, 仅约束编译器重排, 负载仍可并行发射.
 template <typename... Comps>
 size_t bench_multi_view(ecs::manager& mgr, const char* label) noexcept
 {
-    timer t;
-    size_t cnt = 0;
-    t.reset();
-    mgr.view<Comps...>().for_each([&](Comps&... comps) {
-        ++cnt;
-        volatile float d = (comp_touch(comps) + ... + 0.0f);
-        (void)d;
+    auto v = mgr.view<Comps...>();
+    size_t cnt = v.size();
+    // warmup: 预建 mappings + 预热 cache (不计入计时)
+    //   3 次 warmup 确保 L3 充分预热, 减少 TLB/L3 驱逐导致的测量噪声
+    v.for_each([&](Comps&... comps) {
+        touch_all(comp_touch(comps)...);
     });
-    print_perf(label, cnt, t.elapsed_ms());
+    v.for_each([&](Comps&... comps) {
+        touch_all(comp_touch(comps)...);
+    });
+    v.for_each([&](Comps&... comps) {
+        touch_all(comp_touch(comps)...);
+    });
+    // timed run: 多次取最小值 (减少大数据集 L3 越界导致的测量噪声)
+    //   REPEAT=10 平衡采样数与测量时间, 取最小值反映真实循环吞吐能力
+    constexpr int REPEAT = 10;
+    double best_ms = 1e9;
+    for (int r = 0; r < REPEAT; ++r)
+    {
+        timer t;
+        t.reset();
+        v.for_each([&](Comps&... comps) {
+            touch_all(comp_touch(comps)...);
+        });
+        double ms = t.elapsed_ms();
+        if (ms < best_ms) best_ms = ms;
+    }
+    print_perf(label, cnt, best_ms);
     return cnt;
 }
 
-// 带 entity 的 multi_view 基准
 template <typename... Comps>
 size_t bench_multi_view_ent(ecs::manager& mgr, const char* label) noexcept
 {
+    auto v = mgr.view<Comps...>();
+    size_t cnt = v.size();
+    v.for_each([&](entity e, Comps&... comps) {
+        touch_all(e.parts_.index_, comp_touch(comps)...);
+    });
     timer t;
-    size_t cnt = 0;
     t.reset();
-    mgr.view<Comps...>().for_each([&](entity e, Comps&... comps) {
-        ++cnt;
-        volatile float d = (comp_touch(comps) + ... + 0.0f) + static_cast<float>(e.parts_.index_);
-        (void)d;
+    v.for_each([&](entity e, Comps&... comps) {
+        touch_all(e.parts_.index_, comp_touch(comps)...);
     });
     print_perf(label, cnt, t.elapsed_ms());
     return cnt;
@@ -79,20 +243,17 @@ int main()
 
     std::cout << "========================================================\n"
               << "  lcf-ecs 性能测试 / Performance Benchmark\n"
-              << "  编译器: MinGW GCC 15.2.0  (-O3 -std=c++20 -mavx2 -mbmi -mbmi2)\n"
+              << "  编译器: " LCF_COMPILER_NAME " (" LCF_BANNER_OPTS ")\n"
               << "========================================================\n";
 
     constexpr size_t N = 1000000;  // 1M / 百万实体
     ecs::manager ecss;
     timer t;
 
-    // 实体句柄池 (全局共享)
     dense<entity> entities;
     entities.increase_capacity(N);
 
-    // ============================================================
-    // Section 0: Data Setup / 数据准备 (1M/百万)
-    // ============================================================
+    // === Section 0: Data Setup / 数据准备 (1M/百万) ===
     print_section(0, "Data Setup / 数据准备 (1M/百万)");
     {
         print_perf_sub("0.1 实体预分配与创建 (1M/百万)");
@@ -228,7 +389,6 @@ int main()
                        std::span<const Mass>(masses.data(), name_count));
         print_perf("add_batch Mass", name_count, t.elapsed_ms());
 
-        // 数据分布摘要
         std::cout << "\n  ┌─ 数据分布 / Data Distribution (10 组件)\n";
         std::cout << "  │ Position: " << N << " (100%)\n";
         std::cout << "  │ Health:   " << N << " (100%)\n";
@@ -242,80 +402,66 @@ int main()
         std::cout << "  │ Mass:     " << name_count << " (10%)\n";
     }
 
-    // ============================================================
-    // Section 1: Basic Types / 基础类型 (entity / type_id) (1M/百万)
-    // ============================================================
+    // === Section 1: Basic Types / 基础类型 (entity / type_id) (1M/百万) ===
     print_section(1, "Basic Types / 基础类型 (entity / type_id) (1M/百万)");
     {
         print_perf_sub("1.1 entity 构造与比较 (1M/百万)");
         t.reset();
         entity e_test;
-        volatile uint32_t e_idx = 0, e_ver = 0;
         for (size_t i = 0; i < N; ++i)
         {
             e_test = entity(static_cast<uint32_t>(i), static_cast<uint32_t>(i));
-            e_idx = e_test.parts_.index_;
-            e_ver = e_test.parts_.version_;
+            lcf_sink_all(e_test.parts_.index_, e_test.parts_.version_);
         }
         print_perf("entity construct", N, t.elapsed_ms());
 
         t.reset();
         entity e1(1, 1), e2(1, 1), e3(2, 1);
-        volatile bool b1 = false, b2 = false, b3 = false;
         for (size_t i = 0; i < N; ++i)
         {
-            b1 = e1.is_valid();
-            b2 = (e1 == e2);
-            b3 = (e1 != e3);
+            lcf_sink_all(e1.is_valid(), (e1 == e2), (e1 != e3));
         }
         print_perf("entity is_valid/==/!=", N * 3, t.elapsed_ms());
 
         t.reset();
         std::hash<entity> eh;
-        volatile size_t hv = 0;
         for (size_t i = 0; i < N; ++i)
         {
-            hv = eh(entity(static_cast<uint32_t>(i), 1));
+            lcf_sink(eh(entity(static_cast<uint32_t>(i), 1)));
         }
         print_perf("std::hash<entity>", N, t.elapsed_ms());
 
         print_perf_sub("1.2 type_id 与 entity_mask (1M/百万)");
         t.reset();
-        volatile int tid = 0;
         for (int i = 0; i < static_cast<int>(N); ++i)
         {
-            tid = type_id::get_type_id<Position>();
+            lcf_sink(type_id::get_type_id<Position>());
         }
         print_perf("type_id::get_type_id", N, t.elapsed_ms());
 
         t.reset();
-        volatile uint64_t mask = 0;
         for (size_t i = 0; i < N; ++i)
         {
-            mask = ecss.get_entity_mask(entities[i]);
+            lcf_sink(ecss.get_entity_mask(entities[i]));
         }
         print_perf("get_entity_mask", N, t.elapsed_ms());
 
         t.reset();
-        volatile uint64_t blk = 0;
         for (size_t i = 0; i < N; ++i)
         {
-            blk = ecss.get_entity_block(entities[i], 0);
+            lcf_sink(ecss.get_entity_block(entities[i], 0));
         }
         print_perf("get_entity_block", N, t.elapsed_ms());
 
         t.reset();
-        volatile uint32_t nmb = 0;
         for (int i = 0; i < 1000000; ++i)
         {
-            nmb = ecss.num_mask_blocks();
+            lcf_sink(ecss.num_mask_blocks());
         }
         print_perf("num_mask_blocks", 1000000, t.elapsed_ms());
     }
 
-    // ============================================================
-    // Section 2: class_pool / 组件池 (1M/百万)
-    // ============================================================
+    // === Section 2: class_pool / 组件池 (1M/百万) ===
     print_section(2, "class_pool / 组件池 (1M/百万)");
     {
         print_perf_sub("2.1 写入接口 (1M/百万)");
@@ -447,90 +593,395 @@ int main()
         }
 
         t.reset();
-        volatile int v_idx = 0;
         for (size_t i = 0; i < N; ++i)
         {
-            v_idx = cp_acc[i];
+            lcf_sink(cp_acc[i]);
         }
         print_perf("operator[]", N, t.elapsed_ms());
 
         t.reset();
-        volatile int v_get = 0;
         for (size_t i = 0; i < N; ++i)
         {
-            v_get = cp_acc.get(i);
+            lcf_sink(cp_acc.get(i));
         }
         print_perf("get(i) 等价 operator[]", N, t.elapsed_ms());
 
         // get(index, error_index): 越界保护访问, 一半合法一半越界
         t.reset();
-        volatile int v_getb = 0;
         for (size_t i = 0; i < N; ++i)
         {
-            // i < N 时合法, 用 (i + N) 模拟越界, error_index=0
-            v_getb = cp_acc.get(i + N, 0);
+            lcf_sink(cp_acc.get(i + N, 0));
         }
         print_perf("get(i+N, 0) 全越界", N, t.elapsed_ms());
 
         t.reset();
-        volatile int v_fb = 0;
         for (size_t i = 0; i < N; ++i)
         {
-            v_fb = cp_acc.front();
-            v_fb = cp_acc.back();
+            lcf_sink_all(cp_acc.front(), cp_acc.back());
         }
         print_perf("front/back", N * 2, t.elapsed_ms());
 
         t.reset();
-        volatile long long sum = 0;
         for (int iter = 0; iter < 10; ++iter)
         {
             for (auto it = cp_acc.cbegin(); it != cp_acc.cend(); ++it)
             {
-                sum = *it;
+                lcf_sink(*it);
             }
         }
         print_perf("cbegin/cend iter (10x)", N * 10, t.elapsed_ms());
 
         // range-for (begin/end 迭代器): 基准对照
         t.reset();
-        volatile long long sum_rf = 0;
         for (int iter = 0; iter < 10; ++iter)
         {
             for (auto& v : cp_acc)
             {
-                sum_rf = v;
+                lcf_sink(v);
             }
         }
         print_perf("range-for iter (10x)", N * 10, t.elapsed_ms());
 
         print_perf_sub("2.4 状态查询 (1M/百万)");
         t.reset();
-        volatile bool d = false;
         for (int i = 0; i < 1000000; ++i)
         {
-            d = cp_acc.is_dense();
+            lcf_sink(cp_acc.is_dense());
         }
         print_perf("is_dense", 1000000, t.elapsed_ms());
 
         t.reset();
-        volatile size_t sq = 0;
-        volatile bool eq = false;
         for (int i = 0; i < 1000000; ++i)
         {
-            sq = cp_acc.size();
-            sq = cp_acc.capacity();
-            sq = cp_acc.sparse_capacity();
-            sq = cp_acc.size_bytes();
-            sq = cp_acc.capacity_bytes();
-            eq = cp_acc.empty();
+            lcf_sink_all(cp_acc.size(), cp_acc.capacity(), cp_acc.sparse_capacity(), cp_acc.size_bytes(), cp_acc.capacity_bytes(), cp_acc.empty());
         }
         print_perf("capacity queries", 1000000 * 6, t.elapsed_ms());
     }
 
-    // ============================================================
-    // Section 3: void_any / 类型擦除 (1M/百万)
-    // ============================================================
+    // === Section 2.5: class_pool 视图 (cpv 命名空间) (1M/百万) ===
+    print_section(2, "class_pool 视图 / cpv namespace (1M/百万)");
+    {
+        print_perf_sub("2.5.1 子范围与反向视图 (1M/百万)");
+        class_pool<int> cpv_p;
+        cpv_p.increase_capacity(N);
+        for (size_t i = 0; i < N; ++i)
+        {
+            cpv_p.emplace_back(static_cast<int>(i));
+        }
+
+        t.reset();
+        for (int i = 0; i < 1000000; ++i)
+        {
+            auto sp = cpv::subspan(cpv_p, N / 4, N / 2);
+            lcf_sink(sp.size());
+        }
+        print_perf("subspan(off, cnt)", 1000000, t.elapsed_ms());
+
+        t.reset();
+        for (int i = 0; i < 1000000; ++i)
+        {
+            auto sp = cpv::subspan(cpv_p, N / 2);
+            lcf_sink(sp.size());
+        }
+        print_perf("subspan(off)", 1000000, t.elapsed_ms());
+
+        t.reset();
+        for (int i = 0; i < 1000000; ++i)
+        {
+            auto f = cpv::first(cpv_p, N / 4);
+            auto l = cpv::last(cpv_p, N / 4);
+            lcf_sink(f.size() + l.size());
+        }
+        print_perf("first(n)/last(n)", 1000000 * 2, t.elapsed_ms());
+
+        t.reset();
+        for (int i = 0; i < 1000000; ++i)
+        {
+            auto f = cpv::first_fixed<int, 8>(cpv_p);
+            auto l = cpv::last_fixed<int, 8>(cpv_p);
+            lcf_sink(f.size() + l.size());
+        }
+        print_perf("first_fixed<N>/last_fixed<N>", 1000000 * 2, t.elapsed_ms());
+
+        t.reset();
+        for (int i = 0; i < 100; ++i)
+        {
+            cpv::reverse_for_each(cpv_p, [&](int& v) { lcf_sink(v); });
+        }
+        print_perf("reverse_for_each", N * 100, t.elapsed_ms());
+
+        print_perf_sub("2.5.2 步进与变换视图 (1M/百万)");
+        t.reset();
+        for (int i = 0; i < 100; ++i)
+        {
+            cpv::strided_for_each(cpv_p, 0, 4, [&](int& v) { lcf_sink(v); });
+        }
+        print_perf("strided_for_each (rt step=4)", (N / 4) * 100, t.elapsed_ms());
+
+        t.reset();
+        for (int i = 0; i < 100; ++i)
+        {
+            cpv::strided_for_each<int, 4>(cpv_p, [&](int& v) { lcf_sink(v); });
+        }
+        print_perf("strided_for_each<4> (ct step)", (N / 4) * 100, t.elapsed_ms());
+
+        t.reset();
+        for (int i = 0; i < 100; ++i)
+        {
+            cpv::strided_for_each<int, 1>(cpv_p, [&](int& v) { lcf_sink(v); });
+        }
+        print_perf("strided_for_each<1> (fast path)", N * 100, t.elapsed_ms());
+
+        t.reset();
+        for (int i = 0; i < 100; ++i)
+        {
+            cpv::transform_for_each(
+                cpv_p,
+                [](int& v) -> int { return v; },
+                [&](int v) { lcf_sink(v); });
+        }
+        print_perf("transform_for_each", N * 100, t.elapsed_ms());
+
+        t.reset();
+        class_pool<int> cpv_dst;
+        cpv_dst.increase_capacity(N);
+        for (int i = 0; i < 100; ++i)
+        {
+            cpv::transform_to<int, int>(cpv_p, cpv_dst.data(), N, [](const int& v) -> int { return v; });
+        }
+        print_perf("transform_to", N * 100, t.elapsed_ms());
+
+        print_perf_sub("2.5.3 过滤与查找 (1M/百万)");
+        t.reset();
+        int target = static_cast<int>(N / 2);
+        for (int i = 0; i < 100; ++i)
+        {
+            int* r = cpv::find(cpv_p, target);
+            lcf_sink(r ? *r : 0);
+        }
+        print_perf("find (mid hit)", 100, t.elapsed_ms());
+
+        t.reset();
+        bool found = false;
+        for (int i = 0; i < 100; ++i)
+        {
+            found = cpv::contains(cpv_p, target);
+        }
+        print_perf("contains (mid hit)", 100, t.elapsed_ms());
+
+        t.reset();
+        for (int i = 0; i < 100; ++i)
+        {
+            int* r = cpv::find_if(cpv_p, [&](const int& v) { return v == target; });
+            lcf_sink(r ? *r : 0);
+        }
+        print_perf("find_if (mid hit)", 100, t.elapsed_ms());
+
+        t.reset();
+        for (int i = 0; i < 10; ++i)
+        {
+            lcf_sink(cpv::count_if(cpv_p, [](const int&) { return true; }));
+        }
+        print_perf("count_if", N * 10, t.elapsed_ms());
+
+        t.reset();
+        for (int i = 0; i < 100; ++i)
+        {
+            cpv::filter_for_each(cpv_p, [](const int&) { return true; }, [&](int& v) { lcf_sink(v); });
+        }
+        print_perf("filter_for_each (all)", N * 100, t.elapsed_ms());
+
+        t.reset();
+        class_pool<size_t> idx_dst;
+        idx_dst.increase_capacity(N);
+        for (int i = 0; i < 10; ++i)
+        {
+            idx_dst.clear();
+            cpv::filter_indices_to(cpv_p, idx_dst, [](const int&) { return true; });
+        }
+        print_perf("filter_indices_to", N * 10, t.elapsed_ms());
+
+        print_perf_sub("2.5.4 规约与极值 (1M/百万)");
+        t.reset();
+        for (int i = 0; i < 100; ++i)
+        {
+            int r = cpv::reduce(cpv_p, [](int acc, const int& v) -> int { return acc + v; }, 0);
+            lcf_sink(r);
+        }
+        print_perf("reduce", N * 100, t.elapsed_ms());
+
+        t.reset();
+        for (int i = 0; i < 100; ++i)
+        {
+            int r = cpv::reduce_pairwise(cpv_p, [](int acc, const int& v) -> int { return acc + v; }, 0);
+            lcf_sink(r);
+        }
+        print_perf("reduce_pairwise", N * 100, t.elapsed_ms());
+
+        t.reset();
+        for (int i = 0; i < 100; ++i)
+        {
+            int* r = cpv::min_element(cpv_p);
+            lcf_sink(r ? *r : 0);
+        }
+        print_perf("min_element", N * 100, t.elapsed_ms());
+
+        t.reset();
+        for (int i = 0; i < 100; ++i)
+        {
+            int* r = cpv::max_element(cpv_p);
+            lcf_sink(r ? *r : 0);
+        }
+        print_perf("max_element", N * 100, t.elapsed_ms());
+
+        t.reset();
+        for (int i = 0; i < 100; ++i)
+        {
+            int s = cpv::sum(cpv_p);
+            lcf_sink(s);
+        }
+        print_perf("sum (ivdep)", N * 100, t.elapsed_ms());
+
+        t.reset();
+        class_pool<int> cpv_other;
+        cpv_other.increase_capacity(N);
+        for (size_t i = 0; i < N; ++i)
+        {
+            cpv_other.emplace_back(static_cast<int>(i * 2));
+        }
+        for (int i = 0; i < 100; ++i)
+        {
+            int r = cpv::dot_product(cpv_p, cpv_other.data(), N);
+            lcf_sink(r);
+        }
+        print_perf("dot_product", N * 100, t.elapsed_ms());
+
+        print_perf_sub("2.5.5 窗口/分块/枚举/zip (1M/百万)");
+        t.reset();
+        for (int i = 0; i < 100; ++i)
+        {
+            cpv::for_each_window<int, 4>(cpv_p, [&](std::span<int, 4> w) { lcf_sink(w[0]); });
+        }
+        print_perf("for_each_window<4>", (N - 3) * 100, t.elapsed_ms());
+
+        t.reset();
+        for (int i = 0; i < 100; ++i)
+        {
+            cpv::for_each_chunk<int, 4>(cpv_p, [&](std::span<int, 4> c) { lcf_sink(c[0]); });
+        }
+        print_perf("for_each_chunk<4>", (N / 4) * 100, t.elapsed_ms());
+
+        t.reset();
+        for (int i = 0; i < 100; ++i)
+        {
+            cpv::for_each_enumerated(cpv_p, [&](size_t, int& v) { lcf_sink(v); });
+        }
+        print_perf("for_each_enumerated", N * 100, t.elapsed_ms());
+
+        t.reset();
+        for (int i = 0; i < 100; ++i)
+        {
+            cpv::for_each_zip(cpv_p, cpv_other, [&](int& a, int& b) { lcf_sink(a + b); });
+        }
+        print_perf("for_each_zip (pool)", N * 100, t.elapsed_ms());
+
+        t.reset();
+        int* other_ptr = cpv_other.data();
+        for (int i = 0; i < 100; ++i)
+        {
+            cpv::for_each_zip(cpv_p, other_ptr, N, [&](int& a, int& b) { lcf_sink(a + b); });
+        }
+        print_perf("for_each_zip (ptr)", N * 100, t.elapsed_ms());
+
+        t.reset();
+        for (int i = 0; i < 100; ++i)
+        {
+            cpv::zip_with_to<int, int, int>(cpv_p, cpv_other.data(), cpv_dst.data(), N,
+                [](const int& a, const int& b) -> int { return a + b; });
+        }
+        print_perf("zip_with_to", N * 100, t.elapsed_ms());
+
+        t.reset();
+        class_pool<int> cpv_cpy = cpv_p;
+        for (int i = 0; i < 100; ++i)
+        {
+            bool r = cpv::equal(cpv_p, cpv_cpy);
+            lcf_sink(r ? 1 : 0);
+        }
+        print_perf("equal (pool)", N * 100, t.elapsed_ms());
+
+        t.reset();
+        const int* eq_ptr = cpv_cpy.data();
+        for (int i = 0; i < 100; ++i)
+        {
+            bool r = cpv::equal(cpv_p, eq_ptr, N);
+            lcf_sink(r ? 1 : 0);
+        }
+        print_perf("equal (ptr, count)", N * 100, t.elapsed_ms());
+
+        print_perf_sub("2.5.6 SIMD/对齐与拷贝视图 (1M/百万)");
+        t.reset();
+        for (int i = 0; i < 100; ++i)
+        {
+            cpv::simd_for_each(cpv_p, [&](int& v) { lcf_sink(v); });
+        }
+        print_perf("simd_for_each", N * 100, t.elapsed_ms());
+
+        t.reset();
+        for (int i = 0; i < 100; ++i)
+        {
+            cpv::copy_to(cpv_p, cpv_dst.data(), N);
+        }
+        print_perf("copy_to", N * 100, t.elapsed_ms());
+
+        t.reset();
+        for (int i = 0; i < 100; ++i)
+        {
+            cpv::move_to(cpv_p, cpv_dst.data(), N);
+        }
+        print_perf("move_to", N * 100, t.elapsed_ms());
+
+        t.reset();
+        for (int i = 0; i < 100; ++i)
+        {
+            cpv::reverse_copy_to(cpv_p, cpv_dst.data(), N);
+        }
+        print_perf("reverse_copy_to", N * 100, t.elapsed_ms());
+
+        print_perf_sub("2.5.7 稀疏模式视图 (1M/百万)");
+        class_pool<int> cpv_sparse = cpv_p;
+        for (size_t i = 0; i < N; i += 4)
+        {
+            cpv_sparse.sparse_erase_at(i);
+        }
+        const size_t live = cpv_sparse.count();
+
+        t.reset();
+        for (int i = 0; i < 10; ++i)
+        {
+            cpv::simd_for_each(cpv_sparse, [&](int& v) { lcf_sink(v); });
+        }
+        print_perf("sparse simd_for_each (degraded)", live * 10, t.elapsed_ms());
+
+        t.reset();
+        for (int i = 0; i < 10; ++i)
+        {
+            cpv::filter_for_each(cpv_sparse, [](const int&) { return true; }, [&](int& v) { lcf_sink(v); });
+        }
+        print_perf("sparse filter_for_each", live * 10, t.elapsed_ms());
+
+        t.reset();
+        for (int i = 0; i < 10; ++i)
+        {
+            size_t c = cpv::compact_to(cpv_sparse, cpv_dst.data(), N);
+            lcf_sink(c);
+        }
+        print_perf("sparse compact_to", live * 10, t.elapsed_ms());
+
+        (void)found;
+    }
+
+    // === Section 3: void_any / 类型擦除 (1M/百万) ===
     print_section(3, "void_any / 类型擦除 (1M/百万)");
     {
         print_perf_sub("3.1 构造与赋值 (1M/百万)");
@@ -557,35 +1008,34 @@ int main()
         {
             if (va_pool[i].has_value()) ++hv;
         }
+        lcf_sink(hv);
         print_perf("has_value", N, t.elapsed_ms());
 
         t.reset();
-        volatile int tidv = 0;
         for (size_t i = 0; i < N; ++i)
         {
-            tidv = va_pool[i].type_id();
+            lcf_sink(va_pool[i].type_id());
         }
         print_perf("type_id", N, t.elapsed_ms());
 
         t.reset();
-        volatile double* dp = nullptr;
         for (size_t i = 0; i < N; ++i)
         {
-            dp = va_pool[i].get_ptr<double>();
+            lcf_sink(va_pool[i].get_ptr<double>());
         }
         print_perf("get_ptr<T>", N, t.elapsed_ms());
 
         t.reset();
         for (size_t i = 0; i < N; ++i)
         {
-            dp = va_pool[i].fast_get_ptr<double>();
+            lcf_sink(va_pool[i].fast_get_ptr<double>());
         }
         print_perf("fast_get_ptr<T>", N, t.elapsed_ms());
 
         t.reset();
         for (size_t i = 0; i < N; ++i)
         {
-            dp = va_pool[i].get_ptr_unchecked<double>();
+            lcf_sink(va_pool[i].get_ptr_unchecked<double>());
         }
         print_perf("get_ptr_unchecked<T>", N, t.elapsed_ms());
 
@@ -622,9 +1072,7 @@ int main()
         print_perf("move ctor", N, t.elapsed_ms());
     }
 
-    // ============================================================
-    // Section 4: memory_pool / 内存池 (1M/百万)
-    // ============================================================
+    // === Section 4: memory_pool / 内存池 (1M/百万) ===
     print_section(4, "memory_pool / 内存池 (1M/百万)");
     {
         print_perf_sub("4.1 分配与释放 (1M/百万)");
@@ -682,23 +1130,16 @@ int main()
         print_perf("reset", 10000, t.elapsed_ms());
 
         t.reset();
-        volatile bool own = false;
         for (int i = 0; i < 1000000; ++i)
         {
-            own = mp.owns(ptrs[i % 10000]);
+            lcf_sink(mp.owns(ptrs[i % 10000]));
         }
         print_perf("owns", 1000000, t.elapsed_ms());
 
         t.reset();
-        volatile size_t ta = 0, tu = 0;
-        volatile bool em = false;
-        volatile size_t cs = 0;
         for (int i = 0; i < 1000000; ++i)
         {
-            ta = mp.total_allocated();
-            tu = mp.total_used();
-            em = mp.empty();
-            cs = mp.chunk_size();
+            lcf_sink_all(mp.total_allocated(), mp.total_used(), mp.empty(), mp.chunk_size());
         }
         print_perf("state queries", 1000000 * 4, t.elapsed_ms());
 
@@ -711,9 +1152,7 @@ int main()
         print_perf("stats", 1000000, t.elapsed_ms());
     }
 
-    // ============================================================
-    // Section 5: Allocators / 分配器 (arena / slab / layered) (1M/百万)
-    // ============================================================
+    // === Section 5: Allocators / 分配器 (arena / slab / layered) (1M/百万) ===
     print_section(5, "Allocators / 分配器 (arena/slab/layered) (1M/百万)");
     {
         const size_t alloc_count = 1000000;
@@ -721,15 +1160,15 @@ int main()
         print_perf_sub("5.1 arena_allocator (1M/百万)");
         t.reset();
         arena_allocator ar(16 * 1024 * 1024);
-        volatile void* p = nullptr;
         for (size_t i = 0; i < alloc_count; ++i)
         {
-            p = ar.allocate(16);
+            void* p = ar.allocate(16);
             if (!p)
             {
                 ar.reset();
                 p = ar.allocate(16);
             }
+            lcf_sink(p);
         }
         print_perf("arena allocate(16)", alloc_count, t.elapsed_ms());
 
@@ -741,23 +1180,17 @@ int main()
         print_perf("arena reset", 1000000, t.elapsed_ms());
 
         t.reset();
-        volatile size_t au = 0, ac = 0, ar2 = 0;
-        volatile bool ae = false;
         for (int i = 0; i < 1000000; ++i)
         {
-            au = ar.used();
-            ac = ar.capacity();
-            ar2 = ar.remaining();
-            ae = ar.empty();
+            lcf_sink_all(ar.used(), ar.capacity(), ar.remaining(), ar.empty());
         }
         print_perf("arena state queries", 1000000 * 4, t.elapsed_ms());
 
         void* q = ar.allocate(32);
         t.reset();
-        volatile bool ao = false;
         for (int i = 0; i < 1000000; ++i)
         {
-            ao = ar.owns(q);
+            lcf_sink(ar.owns(q));
         }
         print_perf("arena owns", 1000000, t.elapsed_ms());
 
@@ -791,22 +1224,16 @@ int main()
 
         void* test_p = sl.allocate();
         t.reset();
-        volatile bool so = false;
         for (int i = 0; i < 1000000; ++i)
         {
-            so = sl.owns(test_p);
+            lcf_sink(sl.owns(test_p));
         }
         print_perf("slab owns", 1000000, t.elapsed_ms());
 
         t.reset();
-        volatile size_t sb = 0, st2 = 0, sf = 0;
-        volatile bool se = false;
         for (int i = 0; i < 1000000; ++i)
         {
-            sb = sl.block_size();
-            st2 = sl.total_blocks();
-            sf = sl.free_blocks();
-            se = sl.empty();
+            lcf_sink_all(sl.block_size(), sl.total_blocks(), sl.free_blocks(), sl.empty());
         }
         print_perf("slab state queries", 1000000 * 4, t.elapsed_ms());
 
@@ -856,29 +1283,24 @@ int main()
 
         void* lo_p = la.allocate(48);
         t.reset();
-        volatile bool lo = false;
         for (int i = 0; i < 1000000; ++i)
         {
-            lo = la.owns(lo_p);
+            lcf_sink(la.owns(lo_p));
         }
         print_perf("layered owns", 1000000, t.elapsed_ms());
 
         t.reset();
-        volatile size_t ls = 0;
         for (int i = 0; i < 1000000; ++i)
         {
-            ls = la.slab_max();
+            lcf_sink(la.slab_max());
         }
         print_perf("layered slab_max", 1000000, t.elapsed_ms());
     }
 
-    // ============================================================
-    // Section 6: operating_message / 操作消息 (1M/百万)
-    // ============================================================
+    // === Section 6: operating_message / 操作消息 (1M/百万) ===
     print_section(6, "operating_message / 操作消息 (1M/百万)");
     {
         const size_t om_count = 1000000;
-        volatile size_t sink = 0;
 
         print_perf_sub("6.1 write_message 系列 (1M/百万)");
         t.reset();
@@ -888,7 +1310,7 @@ int main()
             om1.reset();
             om1.write_message(true, "msg", i);
         }
-        sink += om1.message_size();
+        lcf_sink(om1.message_size());
         print_perf("write_message", om_count, t.elapsed_ms());
 
         t.reset();
@@ -898,7 +1320,7 @@ int main()
             om2.reset();
             om2.write_message_fmt(true, "fmt: {} + {}", i, i + 1);
         }
-        sink += om2.message_size();
+        lcf_sink(om2.message_size());
         print_perf("write_message_fmt", om_count, t.elapsed_ms());
 
         t.reset();
@@ -909,7 +1331,7 @@ int main()
             om_lv.reset();
             om_lv.write_message_level(msg_level::info, true, "msg", i);
         }
-        sink += om_lv.message_size();
+        lcf_sink(om_lv.message_size());
         print_perf("write_message_level", om_count, t.elapsed_ms());
 
         t.reset();
@@ -920,7 +1342,7 @@ int main()
             om_lv2.reset();
             om_lv2.write_message_fmt_level(msg_level::warn, true, "v={}", i);
         }
-        sink += om_lv2.message_size();
+        lcf_sink(om_lv2.message_size());
         print_perf("write_message_fmt_level", om_count, t.elapsed_ms());
 
         // 等级过滤快速路径
@@ -932,10 +1354,9 @@ int main()
             om_f.reset();
             om_f.write_message_level(msg_level::debug, true, "filtered", i);
         }
-        sink += om_f.message_size();
+        lcf_sink(om_f.message_size());
         print_perf("level filter fast path", om_count, t.elapsed_ms());
 
-        // 混合类型
         t.reset();
         operating_message om_mix;
         for (size_t i = 0; i < om_count; ++i)
@@ -943,7 +1364,7 @@ int main()
             om_mix.reset();
             om_mix.write_message(true, "i=", i, " d=", 3.14, " s=", std::string_view("x"));
         }
-        sink += om_mix.message_size();
+        lcf_sink(om_mix.message_size());
         print_perf("write_message mixed", om_count, t.elapsed_ms());
 
         print_perf_sub("6.2 operator+= 与状态查询 (1M/百万)");
@@ -953,7 +1374,7 @@ int main()
             operating_message om3;
             om3 += "hello";
             om3 += " world";
-            sink += om3.message_size();
+            lcf_sink(om3.message_size());
         }
         print_perf("operator+=(str)", om_count * 2, t.elapsed_ms());
 
@@ -963,7 +1384,7 @@ int main()
             operating_message om4, om5;
             om5.write_message(true, "src");
             om4 += std::move(om5);
-            sink += om4.message_size();
+            lcf_sink(om4.message_size());
         }
         print_perf("operator+=(om&&)", om_count, t.elapsed_ms());
 
@@ -974,9 +1395,8 @@ int main()
         {
             om6.reset();
             om6.set_switch_bool(false);
-            volatile bool b = om6.get_switch_bool();
+            lcf_sink(om6.get_switch_bool());
             om6.clear_message();
-            (void)b;
         }
         print_perf("reset/clear/switch", om_count, t.elapsed_ms());
 
@@ -985,19 +1405,14 @@ int main()
         om6.write_message(true, "test");
         for (size_t i = 0; i < om_count; ++i)
         {
-            volatile bool b = (bool)om6;
+            lcf_sink((bool)om6);
             auto sv = om6.read_message();
             (void)sv;
-            (void)b;
         }
         print_perf("read/bool", om_count, t.elapsed_ms());
-
-        (void)sink;
     }
 
-    // ============================================================
-    // Section 7: id_allocation / ID 分配 (1M/百万)
-    // ============================================================
+    // === Section 7: id_allocation / ID 分配 (1M/百万) ===
     print_section(7, "id_allocation / ID 分配 (1M/百万)");
     {
         const size_t id_count = 1000000;
@@ -1005,12 +1420,10 @@ int main()
         print_perf_sub("7.1 分配与回收 (1M/百万)");
         t.reset();
         id_allocation<int> ida;
-        volatile int id_sink = 0;
         for (size_t i = 0; i < id_count; ++i)
         {
-            id_sink = ida.get_id();
+            lcf_sink(ida.get_id());
         }
-        (void)id_sink;
         print_perf("get_id", id_count, t.elapsed_ms());
 
         t.reset();
@@ -1026,29 +1439,22 @@ int main()
         }
         print_perf("free_id", id_count, t.elapsed_ms());
 
-        // 回收再分配
         t.reset();
-        volatile int id_sink2 = 0;
         for (size_t i = 0; i < id_count; ++i)
         {
-            id_sink2 = ida.get_id();
+            lcf_sink(ida.get_id());
         }
-        (void)id_sink2;
         print_perf("recycle get_id", id_count, t.elapsed_ms());
 
         t.reset();
-        volatile size_t tn = 0, mx = 0;
         for (int i = 0; i < 1000000; ++i)
         {
-            tn = ida.total_number_of_ids();
-            mx = ida.maximum_id();
+            lcf_sink_all(ida.total_number_of_ids(), ida.maximum_id());
         }
         print_perf("total/maximum", 1000000, t.elapsed_ms());
     }
 
-    // ============================================================
-    // Section 8: single_class_set / 组件集合 (1M/百万)
-    // ============================================================
+    // === Section 8: single_class_set / 组件集合 (1M/百万) ===
     print_section(8, "single_class_set / 组件集合 (1M/百万)");
     {
         const size_t scs_count = 1000000;
@@ -1064,7 +1470,6 @@ int main()
             scs.add(ents[i], Position{static_cast<float>(i), 0, 0});
         }
 
-        // add_batch (span)
         t.reset();
         single_class_set scs_b;
         scs_b.increase_capacity(scs_count);
@@ -1081,7 +1486,6 @@ int main()
                         std::span<const Position>(p_arr.data(), p_arr.size()));
         print_perf("add_batch(span)", scs_count / 10, t.elapsed_ms());
 
-        // add_batch (class_pool 右值)
         t.reset();
         single_class_set scs_b2;
         scs_b2.increase_capacity(scs_count);
@@ -1100,64 +1504,59 @@ int main()
 
         print_perf_sub("8.2 查询接口 (1M/百万)");
         t.reset();
-        volatile uint32_t gv = 0;
         for (size_t i = 0; i < scs_count; ++i)
         {
-            gv = scs.get_version(static_cast<uint32_t>(i));
+            lcf_sink(scs.get_version(static_cast<uint32_t>(i)));
         }
         print_perf("get_version", scs_count, t.elapsed_ms());
 
         t.reset();
         for (size_t i = 0; i < scs_count; ++i)
         {
-            gv = scs.get_version_unchecked(static_cast<uint32_t>(i));
+            lcf_sink(scs.get_version_unchecked(static_cast<uint32_t>(i)));
         }
         print_perf("get_version_unchecked", scs_count, t.elapsed_ms());
 
         t.reset();
-        volatile uint32_t gd = 0;
         for (size_t i = 0; i < scs_count; ++i)
         {
-            gd = scs.get_dense_at(static_cast<uint32_t>(i));
+            lcf_sink(scs.get_dense_at(static_cast<uint32_t>(i)));
         }
         print_perf("get_dense_at", scs_count, t.elapsed_ms());
 
         t.reset();
-        volatile uint32_t sda = 0;
         for (size_t i = 0; i < scs_count; ++i)
         {
-            sda = scs.sparse_dense_at_public(static_cast<uint32_t>(i));
+            lcf_sink(scs.sparse_dense_at_public(static_cast<uint32_t>(i)));
         }
         print_perf("sparse_dense_at_public", scs_count, t.elapsed_ms());
 
         t.reset();
         for (size_t i = 0; i < scs_count; ++i)
         {
-            sda = scs.sparse_version_at_public(static_cast<uint32_t>(i));
+            lcf_sink(scs.sparse_version_at_public(static_cast<uint32_t>(i)));
         }
         print_perf("sparse_version_at_public", scs_count, t.elapsed_ms());
 
         t.reset();
-        volatile bool ce = false;
         for (size_t i = 0; i < scs_count; ++i)
         {
-            ce = scs.contains_entity(ents[i]);
+            lcf_sink(scs.contains_entity(ents[i]));
         }
         print_perf("contains_entity", scs_count, t.elapsed_ms());
 
         print_perf_sub("8.3 get_ptr 与预取 (1M/百万)");
         t.reset();
-        volatile Position* pp = nullptr;
         for (size_t i = 0; i < scs_count; ++i)
         {
-            pp = scs.get_ptr<Position>(ents[i]);
+            lcf_sink(scs.get_ptr<Position>(ents[i]));
         }
         print_perf("get_ptr<T>", scs_count, t.elapsed_ms());
 
         t.reset();
         for (size_t i = 0; i < scs_count; ++i)
         {
-            pp = scs.get_ptr_fast<Position>(ents[i]);
+            lcf_sink(scs.get_ptr_fast<Position>(ents[i]));
         }
         print_perf("get_ptr_fast<T>", scs_count, t.elapsed_ms());
 
@@ -1182,7 +1581,6 @@ int main()
         }
         print_perf("prefetch_ptr_batch", 100 * 64, t.elapsed_ms());
 
-        // get_ptr_batch
         {
             dense<Position*> results;
             results.increase_capacity(64);
@@ -1196,10 +1594,9 @@ int main()
 
         print_perf_sub("8.4 元数据与状态 (1M/百万)");
         t.reset();
-        volatile size_t ss = 0;
         for (int i = 0; i < 1000000; ++i)
         {
-            ss = scs.get_sparse_size();
+            lcf_sink(scs.get_sparse_size());
         }
         print_perf("sparse_size", 1000000, t.elapsed_ms());
 
@@ -1211,30 +1608,19 @@ int main()
         print_perf("clear_hot_set", 1000000, t.elapsed_ms());
 
         t.reset();
-        volatile dense<Position>* tpp = nullptr;
-        volatile dense<uint32_t>* eip = nullptr;
-        volatile uint64_t pv = 0;
         for (int i = 0; i < 1000000; ++i)
         {
-            tpp = scs.get_typed_pool_ptr<Position>();
-            eip = &scs.get_entity_indices();
-            pv = scs.get_pool_version();
+            lcf_sink_all(scs.get_typed_pool_ptr<Position>(), &scs.get_entity_indices(), scs.get_pool_version());
         }
         print_perf("metadata queries", 1000000 * 3, t.elapsed_ms());
 
         t.reset();
-        volatile size_t sz = 0;
-        volatile bool ey = false;
-        volatile int ti = 0;
         for (int i = 0; i < 1000000; ++i)
         {
-            sz = scs.size();
-            ey = scs.empty();
-            ti = scs.get_type_id();
+            lcf_sink_all(scs.size(), scs.empty(), scs.get_type_id());
         }
         print_perf("size/empty/type_id", 1000000 * 3, t.elapsed_ms());
 
-        // soft_remove / hard_remove
         t.reset();
         single_class_set scs_sr;
         scs_sr.increase_capacity(scs_count);
@@ -1252,9 +1638,7 @@ int main()
         print_perf("soft_remove", scs_count, t.elapsed_ms());
     }
 
-    // ============================================================
-    // Section 9: radix_sort / 基数排序 (1M/百万)
-    // ============================================================
+    // === Section 9: radix_sort / 基数排序 (1M/百万) ===
     print_section(9, "radix_sort & tiered_sort / 排序 (1M/百万)");
     {
         const size_t rdx_count = 1000000;
@@ -1368,19 +1752,15 @@ int main()
             ::operator delete(v16);
         }
 
-        // radix_key
         t.reset();
-        volatile unsigned int rk = 0;
         for (size_t i = 0; i < rdx_count; ++i)
         {
-            rk = radix_key(static_cast<int>(i));
+            lcf_sink(radix_key(static_cast<int>(i)));
         }
         print_perf("radix_key<int>", rdx_count, t.elapsed_ms());
     }
 
-    // ============================================================
-    // Section 10: Manager / 管理器核心接口 (1M/百万)
-    // ============================================================
+    // === Section 10: Manager / 管理器核心接口 (1M/百万) ===
     print_section(10, "Manager Core / 管理器核心接口 (1M/百万)");
     {
         const size_t op_count = 1000000;
@@ -1482,8 +1862,7 @@ int main()
             for (size_t i = 0; i < op_count; ++i)
             {
                 auto* p = ecss.get_ptr<Position>(query_ents[i]);
-                volatile bool b = (p != nullptr);
-                (void)b;
+                lcf_sink(p != nullptr);
             }
             print_perf("get_ptr<T>", op_count, t.elapsed_ms());
 
@@ -1491,8 +1870,7 @@ int main()
             for (size_t i = 0; i < op_count; ++i)
             {
                 auto* p = ecss.get_ptr_fast<Position>(query_ents[i]);
-                volatile bool b = (p != nullptr);
-                (void)b;
+                lcf_sink(p != nullptr);
             }
             print_perf("get_ptr_fast<T>", op_count, t.elapsed_ms());
 
@@ -1530,8 +1908,7 @@ int main()
                 if (p)
                 {
                     ++pf_hit;
-                    volatile float d = p->x;
-                    (void)d;
+                    lcf_sink(p->x);
                 }
             }
             print_perf("prefetch+get_ptr", pf_hit, t.elapsed_ms());
@@ -1560,8 +1937,7 @@ int main()
                 if (p)
                 {
                     ++cached_hit;
-                    volatile float d = p->x;
-                    (void)d;
+                    lcf_sink(p->x);
                 }
             }
             print_perf("cached+prefetch", cached_hit, t.elapsed_ms());
@@ -1591,14 +1967,12 @@ int main()
                     if (p)
                     {
                         ++ctx_hit;
-                        volatile float d = p->x;
-                        (void)d;
+                        lcf_sink(p->x);
                     }
                 }
             }
             print_perf("query_context+prefetch", ctx_hit, t.elapsed_ms());
 
-            // get_ptr_batch
             {
                 dense<Position*> results;
                 results.reserve_exact(op_count);
@@ -1607,7 +1981,6 @@ int main()
                 print_perf("get_ptr_batch", op_count, t.elapsed_ms());
             }
 
-            // prefetch_ptr_batch
             t.reset();
             for (int iter = 0; iter < 100; ++iter)
             {
@@ -1619,50 +1992,45 @@ int main()
         print_perf_sub("10.3 元数据与状态查询 (1M/百万)");
         {
             t.reset();
-            volatile bool ev = false;
             for (size_t i = 0; i < N; ++i)
             {
-                ev = ecss.is_entity_valid(entities[i]);
+                lcf_sink(ecss.is_entity_valid(entities[i]));
             }
             print_perf("is_entity_valid", N, t.elapsed_ms());
 
             t.reset();
-            volatile uint64_t cb = 0;
             for (int i = 0; i < 1000000; ++i)
             {
-                cb = ecss.get_component_bit<Position>();
+                lcf_sink(ecss.get_component_bit<Position>());
             }
             print_perf("get_component_bit", 1000000, t.elapsed_ms());
 
             t.reset();
-            volatile const ecs::component_meta* cm = nullptr;
             int pid = type_id::get_type_id<Position>();
             for (int i = 0; i < 1000000; ++i)
             {
-                cm = ecss.get_component_meta(pid);
+                lcf_sink(ecss.get_component_meta(pid));
             }
             print_perf("get_component_meta", 1000000, t.elapsed_ms());
 
             t.reset();
-            volatile single_class_set* scs = nullptr;
             for (int i = 0; i < 1000000; ++i)
             {
-                scs = ecss.get_single_class_set<Position>();
+                lcf_sink(ecss.get_single_class_set<Position>());
             }
             print_perf("get_single_class_set", 1000000, t.elapsed_ms());
 
             t.reset();
             for (int i = 0; i < 1000000; ++i)
             {
-                scs = ecss.get_single_class_set_by_id(pid);
+                lcf_sink(ecss.get_single_class_set_by_id(pid));
             }
             print_perf("get_single_class_set_by_id", 1000000, t.elapsed_ms());
 
             t.reset();
-            volatile dense<Position>* cv = nullptr;
             for (int i = 0; i < 1000000; ++i)
             {
-                cv = ecss.get_component_container<Position>();
+                lcf_sink(ecss.get_component_container<Position>());
             }
             print_perf("get_component_container", 1000000, t.elapsed_ms());
 
@@ -1703,7 +2071,6 @@ int main()
                 [](const Velocity& a, const Velocity& b) noexcept { return a.vx < b.vx; });
             print_perf("reorder_by_component", sort_n_, t.elapsed_ms());
 
-            // delete_type_container
             t.reset();
             sort_mgr.delete_type_container<Velocity>();
             print_perf("delete_type_container", sort_n_, t.elapsed_ms());
@@ -1816,11 +2183,10 @@ int main()
             {
                 ecs::manager mgr_chk;
                 t.reset();
-                volatile bool hp = false;
                 for (int i = 0; i < 1000000; ++i)
                 {
-                    hp = mgr_chk.has_pending_entity_signals();
-                    hp = mgr_chk.has_pending_component_signals();
+                    lcf_sink_all(mgr_chk.has_pending_entity_signals(),
+                                 mgr_chk.has_pending_component_signals());
                 }
                 print_perf("has_pending_signals", 1000000 * 2, t.elapsed_ms());
 
@@ -1830,11 +2196,10 @@ int main()
                 print_perf("reserve_signal_capacity", 2, t.elapsed_ms());
 
                 t.reset();
-                volatile uint64_t ov = 0;
                 for (int i = 0; i < 1000000; ++i)
                 {
-                    ov = mgr_chk.entity_signal_overflow_count();
-                    ov = mgr_chk.comp_signal_overflow_count();
+                    lcf_sink_all(mgr_chk.entity_signal_overflow_count(),
+                                 mgr_chk.comp_signal_overflow_count());
                 }
                 print_perf("overflow_count query", 1000000 * 2, t.elapsed_ms());
 
@@ -1851,9 +2216,7 @@ int main()
         }
     }
 
-    // ============================================================
-    // Section 11: Views / 视图查询 (1M/百万)
-    // ============================================================
+    // === Section 11: Views / 视图查询 (1M/百万) ===
     print_section(11, "Views / 视图查询 (1M/百万)");
     {
         const size_t view_count = N;
@@ -1863,12 +2226,10 @@ int main()
         size_t cnt_sv = 0;
         ecss.view<Position>().for_each([&](Position& p) {
             ++cnt_sv;
-            volatile float d = p.x;
-            (void)d;
+            lcf_sink(p.x);
         });
         print_perf("single_view for_each", cnt_sv, t.elapsed_ms());
 
-        // single_view 索引接口
         {
             auto v = ecss.view<Position>();
             t.reset();
@@ -1896,33 +2257,30 @@ int main()
             print_perf("single_view get_entity_at_index", view_count, t.elapsed_ms());
 
             t.reset();
-            volatile Position* cp = nullptr;
             for (size_t i = 0; i < view_count; ++i)
             {
-                cp = v.get_component_at_index(i);
+                lcf_sink(v.get_component_at_index(i));
             }
             print_perf("single_view get_component_at_index", view_count, t.elapsed_ms());
 
             t.reset();
             for (size_t i = 0; i < view_count; ++i)
             {
-                cp = v.get_component_for_entity(entities[i]);
+                lcf_sink(v.get_component_for_entity(entities[i]));
             }
             print_perf("single_view get_component_for_entity", view_count, t.elapsed_ms());
 
             t.reset();
-            volatile bool ct = false;
             for (size_t i = 0; i < view_count; ++i)
             {
-                ct = v.contains(entities[i]);
+                lcf_sink(v.contains(entities[i]));
             }
             print_perf("single_view contains", view_count, t.elapsed_ms());
 
             t.reset();
-            volatile float sum = 0;
             for (auto it = v.component_begin(); it != v.component_end(); ++it)
             {
-                sum = it->x;
+                lcf_sink(it->x);
             }
             print_perf("single_view component_begin/end", view_count, t.elapsed_ms());
         }
@@ -1945,21 +2303,96 @@ int main()
         // 带 entity (2 组件对照)
         size_t cnt_ent = bench_multi_view_ent<Position, Velocity>(ecss, "multi_view 2 comps +entity");
 
-        // include_optional_component
+        // 11.2b: 相同实体数下 1-10 组件单次查询延迟对比 / Single-query latency scaling (equal entity count)
+        // 每个实体都拥有全部 10 个组件, 消除匹配数差异, 纯测组件数对延迟的影响
+        // eq_n=250K: 10 comps × 108B × 250K = 27MB < L3(32MB), 全部装入 L3
+        //   消除 DRAM 带宽瓶颈, 纯测架构查询延迟
+        print_perf_sub("11.2b multi_view 1~10 comps equal-count (250K/二十五万, L3-resident)");
+        {
+            constexpr size_t eq_n = 250000;
+            ecs::manager eq_mgr;
+            eq_mgr.disable_track_changes();
+            eq_mgr.disable_comp_signals();
+            eq_mgr.append_preallocated_entities(eq_n);
+
+            std::mt19937 eq_gen(77);
+            std::uniform_real_distribution<float> eq_dist(-100.0f, 100.0f);
+            std::uniform_int_distribution<int> eq_idist(1, 100);
+
+            dense<Position> eq_pos;     eq_pos.increase_capacity(eq_n);
+            dense<Health>   eq_hp;      eq_hp.increase_capacity(eq_n);
+            dense<Velocity> eq_vel;     eq_vel.increase_capacity(eq_n);
+            dense<Damage>   eq_dmg;     eq_dmg.increase_capacity(eq_n);
+            dense<Armor>    eq_arm;     eq_arm.increase_capacity(eq_n);
+            dense<Rotation> eq_rot;     eq_rot.increase_capacity(eq_n);
+            dense<Speed>    eq_spd;     eq_spd.increase_capacity(eq_n);
+            dense<Scale>    eq_scl;     eq_scl.increase_capacity(eq_n);
+            dense<Name>     eq_name;    eq_name.increase_capacity(eq_n);
+            dense<Mass>     eq_mass;    eq_mass.increase_capacity(eq_n);
+            dense<entity>   eq_ents;    eq_ents.increase_capacity(eq_n);
+
+            for (size_t i = 0; i < eq_n; ++i)
+            {
+                eq_ents.emplace_back(eq_mgr.create_entity());
+                eq_pos.emplace_back(eq_dist(eq_gen), eq_dist(eq_gen), eq_dist(eq_gen));
+                eq_hp.emplace_back(eq_idist(eq_gen), 100);
+                eq_vel.emplace_back(eq_dist(eq_gen), eq_dist(eq_gen), eq_dist(eq_gen));
+                eq_dmg.emplace_back(eq_idist(eq_gen));
+                eq_arm.emplace_back(eq_idist(eq_gen));
+                eq_rot.emplace_back(eq_dist(eq_gen), eq_dist(eq_gen), eq_dist(eq_gen), 1.0f);
+                eq_spd.emplace_back(eq_dist(eq_gen));
+                eq_scl.emplace_back(eq_dist(eq_gen), eq_dist(eq_gen), eq_dist(eq_gen));
+                eq_name.emplace_back("E" + std::to_string(i));
+                eq_mass.emplace_back(eq_dist(eq_gen) * 10.0f);
+            }
+
+            eq_mgr.add_batch(std::span<const entity>(eq_ents.data(), eq_n),
+                             std::span<const Position>(eq_pos.data(), eq_n));
+            eq_mgr.add_batch(std::span<const entity>(eq_ents.data(), eq_n),
+                             std::span<const Health>(eq_hp.data(), eq_n));
+            eq_mgr.add_batch(std::span<const entity>(eq_ents.data(), eq_n),
+                             std::span<const Velocity>(eq_vel.data(), eq_n));
+            eq_mgr.add_batch(std::span<const entity>(eq_ents.data(), eq_n),
+                             std::span<const Damage>(eq_dmg.data(), eq_n));
+            eq_mgr.add_batch(std::span<const entity>(eq_ents.data(), eq_n),
+                             std::span<const Armor>(eq_arm.data(), eq_n));
+            eq_mgr.add_batch(std::span<const entity>(eq_ents.data(), eq_n),
+                             std::span<const Rotation>(eq_rot.data(), eq_n));
+            eq_mgr.add_batch(std::span<const entity>(eq_ents.data(), eq_n),
+                             std::span<const Speed>(eq_spd.data(), eq_n));
+            eq_mgr.add_batch(std::span<const entity>(eq_ents.data(), eq_n),
+                             std::span<const Scale>(eq_scl.data(), eq_n));
+            eq_mgr.add_batch(std::span<const entity>(eq_ents.data(), eq_n),
+                             std::span<const Name>(eq_name.data(), eq_n));
+            eq_mgr.add_batch(std::span<const entity>(eq_ents.data(), eq_n),
+                             std::span<const Mass>(eq_mass.data(), eq_n));
+
+            bench_multi_view<Position>(eq_mgr, "eq 1 comp");
+            bench_multi_view<Position, Health>(eq_mgr, "eq 2 comps");
+            bench_multi_view<Position, Health, Velocity>(eq_mgr, "eq 3 comps");
+            bench_multi_view<Position, Health, Velocity, Damage>(eq_mgr, "eq 4 comps");
+            bench_multi_view<Position, Health, Velocity, Damage, Armor>(eq_mgr, "eq 5 comps");
+            bench_multi_view<Position, Health, Velocity, Damage, Armor, Rotation>(eq_mgr, "eq 6 comps");
+            bench_multi_view<Position, Health, Velocity, Damage, Armor, Rotation, Speed>(eq_mgr, "eq 7 comps");
+            bench_multi_view<Position, Health, Velocity, Damage, Armor, Rotation, Speed, Scale>(eq_mgr, "eq 8 comps");
+            bench_multi_view<Position, Health, Velocity, Damage, Armor, Rotation, Speed, Scale, Name>(eq_mgr, "eq 9 comps");
+            bench_multi_view<Position, Health, Velocity, Damage, Armor, Rotation, Speed, Scale, Name, Mass>(eq_mgr, "eq 10 comps");
+        }
+
         {
             auto v_opt = ecss.view<Position, Velocity>().include_optional_component<Health>();
             t.reset();
-            volatile size_t cnt = 0;
+            size_t cnt = 0;
             v_opt.for_each([&](entity, Position&, Velocity&, Health* h) {
                 if (h)
                 {
                     cnt = cnt + 1;
                 }
             });
+            lcf_sink(cnt);
             print_perf("include_optional_component", view_count, t.elapsed_ms());
         }
 
-        // multi_view 索引接口
         {
             auto v2 = ecss.view<Position, Velocity>();
             t.reset();
@@ -1971,23 +2404,20 @@ int main()
             print_perf("multi_view get_first_entity", 1000000, t.elapsed_ms());
 
             t.reset();
-            volatile Position* pp = nullptr;
             for (size_t i = 0; i < view_count; ++i)
             {
-                pp = v2.get_component_for_entity<Position>(entities[i]);
+                lcf_sink(v2.get_component_for_entity<Position>(entities[i]));
             }
             print_perf("multi_view get_component_for_entity", view_count, t.elapsed_ms());
 
             t.reset();
-            volatile bool ct = false;
             for (size_t i = 0; i < view_count; ++i)
             {
-                ct = v2.contains(entities[i]);
+                lcf_sink(v2.contains(entities[i]));
             }
             print_perf("multi_view contains", view_count, t.elapsed_ms());
         }
 
-        // page / track_changes / sorted
         print_perf_sub("11.3 page / track_changes / sorted (500K/五十万)");
         t.reset();
         size_t cnt_page = 0;
@@ -2006,7 +2436,6 @@ int main()
         }
         print_perf("track_changes", cnt_changed, t.elapsed_ms());
 
-        // sorted_by_component (小规模)
         {
             constexpr size_t sort_n = 1000000;
             ecs::manager sort_mgr;
@@ -2043,13 +2472,13 @@ int main()
             print_perf("sorted_by_component_value", cnt_grp, t.elapsed_ms());
         }
 
-        // filter_changed / filter_added
         print_perf_sub("11.4 filter_changed / filter_added / exactly_one / find_one");
         {
             auto cv = ecss.view<Position>().filter_changed();
             t.reset();
-            volatile size_t cnt = 0;
+            size_t cnt = 0;
             cv.for_each([&](Position&) { cnt = cnt + 1; });
+            lcf_sink(cnt);
             print_perf("single_view filter_changed first", view_count, t.elapsed_ms());
 
             // 修改部分组件后增量
@@ -2060,17 +2489,17 @@ int main()
             t.reset();
             cnt = 0;
             cv.for_each([&](Position&) { cnt = cnt + 1; });
+            lcf_sink(cnt);
             print_perf("single_view filter_changed delta", view_count / 10, t.elapsed_ms());
             cv.reset_tracking();
 
-            // multi_view filter_changed
             auto mcv = ecss.view<Position, Velocity>().filter_changed<Position>();
             t.reset();
-            volatile size_t mcnt = 0;
+            size_t mcnt = 0;
             mcv.for_each([&](Position&, Velocity&) { mcnt = mcnt + 1; });
+            lcf_sink(mcnt);
             print_perf("multi_view filter_changed", view_count, t.elapsed_ms());
 
-            // filter_added
             ecs::manager mgr_fa;
             mgr_fa.disable_track_changes();
             mgr_fa.disable_comp_signals();
@@ -2084,12 +2513,12 @@ int main()
                 mgr_fa.add(ents_fa[i], Position{static_cast<float>(i), 0, 0});
             }
             t.reset();
-            volatile size_t acnt = 0;
+            size_t acnt = 0;
             av.for_each([&](Position&) { acnt = acnt + 1; });
+            lcf_sink(acnt);
             print_perf("single_view filter_added", view_count, t.elapsed_ms());
         }
 
-        // exactly_one / find_one / iter_over_entities
         {
             ecs::manager mgr_eo;
             mgr_eo.append_preallocated_entities(10);
@@ -2099,11 +2528,10 @@ int main()
 
             auto v_eo = mgr_eo.view<Position, Velocity>();
             t.reset();
-            volatile float px = 0;
             for (int i = 0; i < 1000000; ++i)
             {
                 auto [p, v] = v_eo.exactly_one();
-                px = p.x;
+                lcf_sink(p.x);
             }
             print_perf("multi_view exactly_one", 1000000, t.elapsed_ms());
 
@@ -2112,22 +2540,19 @@ int main()
             for (int i = 0; i < 1000000; ++i)
             {
                 auto& p = v_eo2.exactly_one();
-                px = p.x;
+                lcf_sink(p.x);
             }
             print_perf("single_view exactly_one", 1000000, t.elapsed_ms());
 
-            // find_one
             auto v_fo = ecss.view<Position, Velocity>();
             t.reset();
-            volatile Position* pp = nullptr;
             for (size_t i = 0; i < view_count; ++i)
             {
                 auto [p, v] = v_fo.find_one(entities[i]);
-                pp = p;
+                lcf_sink(p);
             }
             print_perf("multi_view find_one", view_count, t.elapsed_ms());
 
-            // iter_over_entities
             dense<entity> targets;
             targets.increase_capacity(view_count / 10);
             for (size_t i = 0; i < view_count; i += 10)
@@ -2136,8 +2561,9 @@ int main()
             }
             auto v_ie = ecss.view<Position, Velocity>().iter_over_entities(targets);
             t.reset();
-            volatile size_t cnt = 0;
+            size_t cnt = 0;
             v_ie.for_each([&](Position&, Velocity&) { cnt = cnt + 1; });
+            lcf_sink(cnt);
             print_perf("iter_over_entities", targets.size(), t.elapsed_ms());
         }
 
@@ -2219,7 +2645,6 @@ int main()
             print_perf("filter_or_view", cnt_for, elapsed);
         }
 
-        // 匹配数汇总
         std::cout << "\n  ┌─ 匹配数汇总 / Match Counts\n";
         std::cout << "  │ single_view Position:        " << cnt_sv << "\n";
         std::cout << "  │ multi_view 1 comp:           " << cnt_1 << "\n";
@@ -2242,9 +2667,7 @@ int main()
         std::cout << "  │ filter_or_view:              " << cnt_for << "\n";
     }
 
-    // ============================================================
-    // Section 12: Groups / Group 系统 (500K/五十万)
-    // ============================================================
+    // === Section 12: Groups / Group 系统 (500K/五十万) ===
     print_section(12, "Groups / Group 系统 (500K/五十万)");
     {
         const size_t grp_count = 500000;
@@ -2273,8 +2696,7 @@ int main()
             size_t cnt = 0;
             g.for_each([&](Position& p, Velocity& v) {
                 ++cnt;
-                volatile float d = p.x * v.vx;
-                (void)d;
+                lcf_sink(p.x * v.vx);
             });
             print_perf("group for_each", cnt, t.elapsed_ms());
 
@@ -2295,28 +2717,23 @@ int main()
             print_perf("group back", 1000000, t.elapsed_ms());
 
             t.reset();
-            volatile Position* gp = nullptr;
             for (size_t i = 0; i < grp_count; ++i)
             {
-                gp = g.get<Position>(ents[i]);
+                lcf_sink(g.get<Position>(ents[i]));
             }
             print_perf("group get<T>", grp_count, t.elapsed_ms());
 
             t.reset();
-            volatile bool ct = false;
             for (size_t i = 0; i < grp_count; ++i)
             {
-                ct = g.contains(ents[i]);
+                lcf_sink(g.contains(ents[i]));
             }
             print_perf("group contains", grp_count, t.elapsed_ms());
 
             t.reset();
-            volatile size_t gs = 0;
-            volatile bool ge = false;
             for (int i = 0; i < 1000000; ++i)
             {
-                gs = g.size();
-                ge = g.empty();
+                lcf_sink_all(g.size(), g.empty());
             }
             print_perf("group size/empty", 1000000 * 2, t.elapsed_ms());
         }
@@ -2333,8 +2750,7 @@ int main()
             size_t cnt = 0;
             og.for_each([&](Position& p, Velocity& v) {
                 ++cnt;
-                volatile float d = p.x * v.vx;
-                (void)d;
+                lcf_sink(p.x * v.vx);
             });
             print_perf("owning_group for_each", cnt, t.elapsed_ms());
 
@@ -2347,18 +2763,16 @@ int main()
             print_perf("owning_group front", 1000000, t.elapsed_ms());
 
             t.reset();
-            volatile Position* gp = nullptr;
             for (size_t i = 0; i < grp_count; ++i)
             {
-                gp = og.get<Position>(ents[i]);
+                lcf_sink(og.get<Position>(ents[i]));
             }
             print_perf("owning_group get<T>", grp_count, t.elapsed_ms());
 
             t.reset();
-            volatile bool ct = false;
             for (size_t i = 0; i < grp_count; ++i)
             {
-                ct = og.contains(ents[i]);
+                lcf_sink(og.contains(ents[i]));
             }
             print_perf("owning_group contains", grp_count, t.elapsed_ms());
         }
@@ -2375,8 +2789,7 @@ int main()
             size_t cnt = 0;
             rg.for_each([&](Position& p, Velocity& v) {
                 ++cnt;
-                volatile float d = p.x * v.vx;
-                (void)d;
+                lcf_sink(p.x * v.vx);
             });
             print_perf("reorder_group for_each", cnt, t.elapsed_ms());
 
@@ -2389,40 +2802,34 @@ int main()
             print_perf("reorder_group front", 1000000, t.elapsed_ms());
 
             t.reset();
-            volatile Position* gp = nullptr;
             for (size_t i = 0; i < grp_count; ++i)
             {
-                gp = rg.get<Position>(ents[i]);
+                lcf_sink(rg.get<Position>(ents[i]));
             }
             print_perf("reorder_group get<T>", grp_count, t.elapsed_ms());
 
             t.reset();
-            volatile bool ct = false;
             for (size_t i = 0; i < grp_count; ++i)
             {
-                ct = rg.contains(ents[i]);
+                lcf_sink(rg.contains(ents[i]));
             }
             print_perf("reorder_group contains", grp_count, t.elapsed_ms());
 
-            // share_with
             auto rg2 = mgr.group<Position, Velocity>(ecs::reorder<Position>);
             t.reset();
             rg2.share_with(rg);
             print_perf("reorder_group share_with", 1, t.elapsed_ms());
 
             t.reset();
-            volatile size_t gs = 0;
             for (int i = 0; i < 1000000; ++i)
             {
-                gs = rg2.size();
+                lcf_sink(rg2.size());
             }
             print_perf("reorder_group shared size", 1000000, t.elapsed_ms());
         }
     }
 
-    // ============================================================
-    // Section 13: runtime_view / 运行时视图 (500K/五十万)
-    // ============================================================
+    // === Section 13: runtime_view / 运行时视图 (500K/五十万) ===
     print_section(13, "runtime_view / 运行时视图 (500K/五十万)");
     {
         const size_t rv_count = 500000;
@@ -2448,28 +2855,23 @@ int main()
         print_perf("runtime_view_create", 1, t.elapsed_ms());
 
         t.reset();
-        volatile size_t rs = 0;
-        volatile bool re = false;
         for (int i = 0; i < 1000000; ++i)
         {
-            rs = rv.size();
-            re = rv.empty();
+            lcf_sink_all(rv.size(), rv.empty());
         }
         print_perf("size/empty", 1000000 * 2, t.elapsed_ms());
 
         t.reset();
-        volatile bool ct = false;
         for (size_t i = 0; i < rv_count; ++i)
         {
-            ct = rv.contains(ents[i]);
+            lcf_sink(rv.contains(ents[i]));
         }
         print_perf("contains", rv_count, t.elapsed_ms());
 
         t.reset();
-        volatile Position* rp = nullptr;
         for (size_t i = 0; i < rv_count; ++i)
         {
-            rp = rv.get_ptr<Position>(ents[i]);
+            lcf_sink(rv.get_ptr<Position>(ents[i]));
         }
         print_perf("get_ptr<T>", rv_count, t.elapsed_ms());
 
@@ -2482,33 +2884,36 @@ int main()
         print_perf("get_first_entity", 1000000, t.elapsed_ms());
 
         t.reset();
-        volatile size_t rc = 0;
         for (int i = 0; i < 10; ++i)
         {
-            rc = rv.count();
+            lcf_sink(rv.count());
         }
         print_perf("count()", 10, t.elapsed_ms());
 
         print_perf_sub("13.2 for_each 系列 (500K/五十万)");
         t.reset();
-        volatile size_t cnt = 0;
+        size_t cnt = 0;
         rv.for_each([&](entity) { cnt = cnt + 1; });
+        lcf_sink(cnt);
         print_perf("for_each", rv_count, t.elapsed_ms());
 
         t.reset();
         cnt = 0;
         rv.for_each_typed<Position, Velocity>([&](entity, Position&, Velocity&) { cnt = cnt + 1; });
+        lcf_sink(cnt);
         print_perf("for_each_typed", rv_count, t.elapsed_ms());
 
         t.reset();
         cnt = 0;
         rv.for_each_parallel(0, 2, [&](entity, size_t) { cnt = cnt + 1; });
         rv.for_each_parallel(1, 2, [&](entity) { cnt = cnt + 1; });
+        lcf_sink(cnt);
         print_perf("for_each_parallel(2w)", rv_count, t.elapsed_ms());
 
         t.reset();
         cnt = 0;
         rv.for_each_paged(0, rv_count / 2, [&](entity) { cnt = cnt + 1; });
+        lcf_sink(cnt);
         print_perf("for_each_paged", rv_count / 2, t.elapsed_ms());
 
         t.reset();
@@ -2517,6 +2922,7 @@ int main()
         {
             cnt = cnt + 1;
         }
+        lcf_sink(cnt);
         print_perf("begin/end iter", rv_count, t.elapsed_ms());
 
         print_perf_sub("13.3 变更追踪 (500K/五十万)");
@@ -2527,10 +2933,9 @@ int main()
         }
 
         t.reset();
-        volatile bool ch = false;
         for (int i = 0; i < 1000000; ++i)
         {
-            ch = rv.changed();
+            lcf_sink(rv.changed());
         }
         print_perf("changed()", 1000000, t.elapsed_ms());
 
@@ -2540,6 +2945,7 @@ int main()
         {
             rv.for_each_changed([&](entity) { cnt = cnt + 1; });
         }
+        lcf_sink(cnt);
         print_perf("for_each_changed", rv_count, t.elapsed_ms());
 
         t.reset();
@@ -2565,17 +2971,15 @@ int main()
         t.reset();
         cnt = 0;
         rv_term.for_each([&](entity) { cnt = cnt + 1; });
+        lcf_sink(cnt);
         print_perf("term OR/NOT/OPTIONAL", rv_count, t.elapsed_ms());
 
-        // rebuild
         t.reset();
         rv.rebuild();
         print_perf("rebuild", 1, t.elapsed_ms());
     }
 
-    // ============================================================
-    // Section 14: command_buffer / 命令缓冲 (500K/五十万)
-    // ============================================================
+    // === Section 14: command_buffer / 命令缓冲 (500K/五十万) ===
     print_section(14, "command_buffer / 命令缓冲 (500K/五十万)");
     {
         const size_t cb_count = 500000;
@@ -2600,12 +3004,9 @@ int main()
         print_perf("add_component record", cb_count, t.elapsed_ms());
 
         t.reset();
-        volatile size_t cs = 0;
-        volatile bool ce = false;
         for (int i = 0; i < 1000000; ++i)
         {
-            cs = cb.size();
-            ce = cb.empty();
+            lcf_sink_all(cb.size(), cb.empty());
         }
         print_perf("size/empty", 1000000 * 2, t.elapsed_ms());
 
@@ -2639,9 +3040,7 @@ int main()
         print_perf("clear", cb_count, t.elapsed_ms());
     }
 
-    // ============================================================
-    // Section 15: Cache / 缓存命中率测试 (100K/十万 + 1M/百万)
-    // ============================================================
+    // === Section 15: Cache / 缓存命中率测试 (100K/十万 + 1M/百万) ===
     print_section(15, "Cache Analysis / 缓存命中率测试");
     {
         print_perf_sub("15.1 class_pool 顺序 vs 随机 (Position 12B × 100K = 1.2MB)");
@@ -2651,20 +3050,18 @@ int main()
             cp.increase_capacity(cache_n);
             for (size_t i = 0; i < cache_n; ++i)
             {
-                cp.emplace_back(static_cast<float>(i), 0, 0);
+                cp.emplace_back(static_cast<float>(i), 0.0f, 0.0f);
             }
 
             const Position* base = cp.data();
             const size_t stride = sizeof(Position);
 
-            // 顺序访问
             auto seq_addrs = make_sequential_addresses(base, cache_n, stride);
             auto seq_report = measure_cache_hits(seq_addrs);
             print_cache_report("顺序访问 (逐次)", seq_report);
             auto seq_batch = measure_cache_batch(seq_addrs, 10);
             print_cache_batch("顺序访问 (批量×10)", seq_batch);
 
-            // 随机访问
             auto rnd_addrs = make_random_addresses(base, cache_n, stride, 42);
             auto rnd_report = measure_cache_hits(rnd_addrs);
             print_cache_report("随机访问 (逐次)", rnd_report);
@@ -2753,8 +3150,7 @@ int main()
             auto getptr_stats = benchmark_cycles(2000, 200, [&]() {
                 entity e = entities[gi % N];
                 Position* p = ecss.get_ptr<Position>(e);
-                volatile float sink = p ? p->x : 0.0f;
-                (void)sink;
+                lcf_sink(p ? p->x : 0.0f);
                 ++gi;
             });
             print_stats("get_ptr 随机延迟", getptr_stats, "周期");
@@ -2767,8 +3163,7 @@ int main()
                 size_t pn = pos_pool->size();
                 auto direct_stats = benchmark_cycles(2000, 200, [&]() {
                     Position& p = (*pos_pool)[di % pn];
-                    volatile float sink = p.x;
-                    (void)sink;
+                    lcf_sink(p.x);
                     ++di;
                 });
                 print_stats("直接数组访问", direct_stats, "周期");
@@ -2795,7 +3190,7 @@ int main()
                 cp_sz.increase_capacity(tc.count);
                 for (size_t i = 0; i < tc.count; ++i)
                 {
-                    cp_sz.emplace_back(static_cast<float>(i), 0, 0);
+                    cp_sz.emplace_back(static_cast<float>(i), 0.0f, 0.0f);
                 }
 
                 const Position* base = cp_sz.data();
@@ -2853,12 +3248,9 @@ int main()
         }
     }
 
-    // ========================================================
-    // 16. entity_mask_manager 扩容/缩容/状态查询 (1M/百万)
-    // ========================================================
+    // === Section 16: entity_mask_manager 扩容/缩容/状态查询 (1M/百万) ===
     print_section(16, "entity_mask_manager 掩码管理 (1M/百万)");
     {
-        // 16.1 单块 (num_blocks_==1) 扩容与写入
         print_perf_sub("16.1 单块扩容与写入 (1M/百万)");
         {
             entity_mask_manager m1;
@@ -2883,16 +3275,13 @@ int main()
             print_perf("set_bit_no_check ×N", N, t.elapsed_ms());
 
             t.reset();
-            volatile uint64_t sink = 0;
             for (size_t i = 0; i < N; ++i)
             {
-                sink += m1.get_block(static_cast<uint32_t>(i), 0);
+                lcf_sink(m1.get_block(static_cast<uint32_t>(i), 0));
             }
-            (void)sink;
             print_perf("get_block ×N", N, t.elapsed_ms());
         }
 
-        // 16.2 状态查询开销 (百万次调用)
         print_perf_sub("16.2 状态查询开销 (1M/百万次)");
         {
             entity_mask_manager m1;
@@ -2903,43 +3292,34 @@ int main()
             }
 
             t.reset();
-            volatile size_t s = 0;
             for (size_t i = 0; i < N; ++i)
             {
-                s += m1.size();
+                lcf_sink(m1.size());
             }
-            (void)s;
             print_perf("size() ×N", N, t.elapsed_ms());
 
             t.reset();
-            volatile size_t c = 0;
             for (size_t i = 0; i < N; ++i)
             {
-                c += m1.capacity();
+                lcf_sink(m1.capacity());
             }
-            (void)c;
             print_perf("capacity() ×N", N, t.elapsed_ms());
 
             t.reset();
-            volatile bool e = false;
             for (size_t i = 0; i < N; ++i)
             {
-                e = m1.empty();
+                lcf_sink(m1.empty());
             }
-            (void)e;
             print_perf("empty() ×N", N, t.elapsed_ms());
 
             t.reset();
-            volatile size_t b = 0;
             for (size_t i = 0; i < N; ++i)
             {
-                b += m1.size_bytes();
+                lcf_sink(m1.size_bytes());
             }
-            (void)b;
             print_perf("size_bytes() ×N", N, t.elapsed_ms());
         }
 
-        // 16.3 缩容/清空/预留 (单次, 规模 N)
         print_perf_sub("16.3 缩容/清空/预留 (单次, N=1M)");
         {
             entity_mask_manager m1;
@@ -2966,7 +3346,6 @@ int main()
             print_perf("clear", 1, t.elapsed_ms());
         }
 
-        // 16.4 多块 (num_blocks_==2) 单位转换开销
         print_perf_sub("16.4 多块写入与查询 (2块, 1M/百万)");
         {
             entity_mask_manager m2;
@@ -2991,23 +3370,227 @@ int main()
             print_perf("多块 set_bit_no_check ×2N", N, t.elapsed_ms());
 
             t.reset();
-            volatile uint64_t sink = 0;
             for (size_t i = 0; i < N; ++i)
             {
-                sink += m2.get_block(static_cast<uint32_t>(i), 0);
-                sink += m2.get_block(static_cast<uint32_t>(i), 1);
+                lcf_sink_all(m2.get_block(static_cast<uint32_t>(i), 0),
+                             m2.get_block(static_cast<uint32_t>(i), 1));
             }
-            (void)sink;
             print_perf("多块 get_block ×2N", N, t.elapsed_ms());
 
             t.reset();
-            volatile size_t cb = 0;
             for (size_t i = 0; i < N; ++i)
             {
-                cb += m2.capacity_bytes();
+                lcf_sink(m2.capacity_bytes());
             }
-            (void)cb;
             print_perf("多块 capacity_bytes() ×N", N, t.elapsed_ms());
+        }
+
+        // 证明 entity_mask_manager 在多组件查询时的性能优势
+        // 测试矩阵: 2/3/5/8 组件 × mask_path/sparse_path
+        // 关键: group 的 use_mask_path_ = (N>=3) || (块数<=5)
+        //   N=2, 块数<=5 → mask_path (但优势小)
+        //   N=3, 块数<=5 → mask_path (优势开始显现)
+        //   N=5, 块数<=5 → mask_path (优势显著)
+        //   N=8, 块数<=5 → mask_path (优势最大)
+        print_perf_sub("16.5 mask_path vs sparse_path 实战对比 (500K/五十万)");
+        {
+            constexpr size_t mask_n = 500000;
+            ecs::manager mgr;
+            mgr.disable_track_changes();
+            mgr.disable_comp_signals();
+            mgr.append_preallocated_entities(mask_n);
+            dense<entity> ents;
+            ents.increase_capacity(mask_n);
+            for (size_t i = 0; i < mask_n; ++i)
+            {
+                ents.emplace_back(mgr.create_entity());
+                // 全员全组件: 确保所有 group 查询都命中全部实体
+                mgr.add(ents[i], Position{static_cast<float>(i), 0, 0});
+                mgr.add(ents[i], Velocity{1.0f, 0, 0});
+                mgr.add(ents[i], Health{static_cast<int>(i), 100});
+                mgr.add(ents[i], Damage{static_cast<int>(i % 50)});
+                mgr.add(ents[i], Armor{static_cast<int>(i % 200)});
+                mgr.add(ents[i], Speed{static_cast<float>(i % 100)});
+                mgr.add(ents[i], Rotation{1.0f, 0, 0, 1.0f});
+                mgr.add(ents[i], Scale{1.0f, 1.0f, 1.0f});
+            }
+
+            // 通用基准函数: 计时 rebuild + for_each, 多次取最小值
+            auto bench_group = [](auto& g, const char* label, size_t cnt) noexcept
+            {
+                g.rebuild();
+                g.for_each([&](auto&... comps) {
+                    float tmp = 0;
+                    ((tmp += comp_touch(comps)), ...);
+                    lcf_sink(tmp);
+                });
+
+                // timed rebuild (取最小值)
+                constexpr int REPEAT = 5;
+                double best_rebuild = 1e9;
+                double best_iter = 1e9;
+                for (int r = 0; r < REPEAT; ++r)
+                {
+                    timer tr;
+                    tr.reset();
+                    g.rebuild();
+                    double ms_r = tr.elapsed_ms();
+                    if (ms_r < best_rebuild) best_rebuild = ms_r;
+
+                    timer ti;
+                    ti.reset();
+                    g.for_each([&](auto&... comps) {
+                        float tmp = 0;
+                        ((tmp += comp_touch(comps)), ...);
+                        lcf_sink(tmp);
+                    });
+                    double ms_i = ti.elapsed_ms();
+                    if (ms_i < best_iter) best_iter = ms_i;
+                }
+                print_perf(label, cnt, best_iter);
+                std::cout << "      rebuild: " << std::fixed << std::setprecision(3)
+                          << best_rebuild << " ms\n";
+            };
+
+            std::cout << "\n  ── 2 组件 (N=2, mask_path 启用因块数<=5) ──\n";
+            {
+                auto g2 = mgr.group<Position, Velocity>();
+                bench_group(g2, "2-comp group for_each", mask_n);
+            }
+
+            std::cout << "\n  ── 3 组件 (N=3, mask_path 强制启用) ──\n";
+            {
+                auto g3 = mgr.group<Position, Velocity, Health>();
+                bench_group(g3, "3-comp group for_each", mask_n);
+            }
+
+            std::cout << "\n  ── 5 组件 (N=5, mask_path 优势显著) ──\n";
+            {
+                auto g5 = mgr.group<Position, Velocity, Health, Damage, Armor>();
+                bench_group(g5, "5-comp group for_each", mask_n);
+            }
+
+            std::cout << "\n  ── 8 组件 (N=8, mask_path 优势最大) ──\n";
+            {
+                auto g8 = mgr.group<Position, Velocity, Health, Damage, Armor, Speed, Rotation, Scale>();
+                bench_group(g8, "8-comp group for_each", mask_n);
+            }
+
+            // 对比: multi_view (无 mask_path, 用 pools_aligned_ 快路径)
+            // 证明 mask_path 不是唯一快路径, 但在非对齐场景下 mask 是关键
+            std::cout << "\n  ── 对比 multi_view (pools_aligned_ 快路径, 对齐数据) ──\n";
+            {
+                auto mv3 = mgr.view<Position, Velocity, Health>();
+                size_t cnt = mv3.size();
+                mv3.for_each([&](Position& p, Velocity& v, Health& h) {
+                    lcf_sink(comp_touch(p) + comp_touch(v) + comp_touch(h));
+                });
+
+                constexpr int REPEAT = 5;
+                double best = 1e9;
+                for (int r = 0; r < REPEAT; ++r)
+                {
+                    timer ti;
+                    ti.reset();
+                    mv3.for_each([&](Position& p, Velocity& v, Health& h) {
+                        lcf_sink(comp_touch(p) + comp_touch(v) + comp_touch(h));
+                    });
+                    double ms = ti.elapsed_ms();
+                    if (ms < best) best = ms;
+                }
+                print_perf("3-comp multi_view for_each (aligned)", cnt, best);
+            }
+
+            // 16.6 非对齐数据测试: 证明 mask_path 在 pools_aligned_ 失效时的价值
+            // 场景: 50% 实体缺失部分组件 → pools_aligned_ = false
+            // 此时 multi_view 走 SoA mapping 慢路径, group 走 mask_path + mapping
+            print_perf_sub("16.6 非对齐数据: mask_path 真正价值 (500K/五十万)");
+            {
+                constexpr size_t unaligned_n = 500000;
+                ecs::manager mgr2;
+                mgr2.disable_track_changes();
+                mgr2.disable_comp_signals();
+                mgr2.append_preallocated_entities(unaligned_n);
+                dense<entity> ents2;
+                ents2.increase_capacity(unaligned_n);
+                for (size_t i = 0; i < unaligned_n; ++i)
+                {
+                    ents2.emplace_back(mgr2.create_entity());
+                    mgr2.add(ents2[i], Position{static_cast<float>(i), 0, 0});
+                    mgr2.add(ents2[i], Velocity{1.0f, 0, 0});
+                    // 仅 50% 实体有 Health/Damage/Armor → pools_aligned_ 失效
+                    if ((i & 1) == 0)
+                    {
+                        mgr2.add(ents2[i], Health{static_cast<int>(i), 100});
+                        mgr2.add(ents2[i], Damage{static_cast<int>(i % 50)});
+                        mgr2.add(ents2[i], Armor{static_cast<int>(i % 200)});
+                    }
+                }
+                // 命中数: 250K (50% 实体拥有全部 5 组件)
+
+                std::cout << "\n  ── 5 组件非对齐 (50% 命中, mask_path 过滤) ──\n";
+                {
+                    auto g5 = mgr2.group<Position, Velocity, Health, Damage, Armor>();
+                    size_t cnt = 0;
+                    g5.rebuild();
+                    cnt = g5.size();
+
+                    g5.for_each([&](Position& p, Velocity& v, Health& h, Damage& d, Armor& a) {
+                        lcf_sink(comp_touch(p) + comp_touch(v) + comp_touch(h)
+                              + comp_touch(d) + comp_touch(a));
+                    });
+
+                    constexpr int REPEAT = 5;
+                    double best_rebuild = 1e9;
+                    double best_iter = 1e9;
+                    for (int r = 0; r < REPEAT; ++r)
+                    {
+                        timer tr;
+                        tr.reset();
+                        g5.rebuild();
+                        double ms_r = tr.elapsed_ms();
+                        if (ms_r < best_rebuild) best_rebuild = ms_r;
+
+                        timer ti;
+                        ti.reset();
+                        g5.for_each([&](Position& p, Velocity& v, Health& h, Damage& d, Armor& a) {
+                            lcf_sink(comp_touch(p) + comp_touch(v) + comp_touch(h)
+                               + comp_touch(d) + comp_touch(a));
+                        });
+                        double ms_i = ti.elapsed_ms();
+                        if (ms_i < best_iter) best_iter = ms_i;
+                    }
+                    print_perf("5-comp group for_each (unaligned)", cnt, best_iter);
+                    std::cout << "      rebuild: " << std::fixed << std::setprecision(3)
+                              << best_rebuild << " ms\n";
+                }
+
+                std::cout << "\n  ── 5 组件非对齐 multi_view (SoA mapping, 无 mask_path) ──\n";
+                {
+                    auto mv5 = mgr2.view<Position, Velocity, Health, Damage, Armor>();
+                    size_t cnt = mv5.size();
+
+                    mv5.for_each([&](Position& p, Velocity& v, Health& h, Damage& d, Armor& a) {
+                        lcf_sink(comp_touch(p) + comp_touch(v) + comp_touch(h)
+                              + comp_touch(d) + comp_touch(a));
+                    });
+
+                    constexpr int REPEAT = 5;
+                    double best = 1e9;
+                    for (int r = 0; r < REPEAT; ++r)
+                    {
+                        timer ti;
+                        ti.reset();
+                        mv5.for_each([&](Position& p, Velocity& v, Health& h, Damage& d, Armor& a) {
+                            lcf_sink(comp_touch(p) + comp_touch(v) + comp_touch(h)
+                               + comp_touch(d) + comp_touch(a));
+                        });
+                        double ms = ti.elapsed_ms();
+                        if (ms < best) best = ms;
+                    }
+                    print_perf("5-comp multi_view for_each (unaligned)", cnt, best);
+                }
+            }
         }
     }
 

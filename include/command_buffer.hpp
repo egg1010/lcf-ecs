@@ -10,7 +10,6 @@ namespace ecs
 
 class manager;
 
-// 命令类型
 enum class command_op : uint8_t
 {
     add_component,
@@ -61,7 +60,6 @@ public:
     command_buffer(command_buffer&&) noexcept = default;
     command_buffer& operator=(command_buffer&&) noexcept = default;
 
-    // 录制:延迟到 flush 执行 mgr->add<T>
     template <typename T>
     void add_component(entity e, T&& comp) noexcept
     {
@@ -71,7 +69,6 @@ public:
             &apply_add<std::decay_t<T>>});
     }
 
-    // 录制:延迟到 flush 执行 mgr->soft_remove<T>
     template <typename T>
     void remove_component(entity e) noexcept
     {
@@ -81,7 +78,6 @@ public:
             &apply_remove<T>});
     }
 
-    // 录制:延迟到 flush 执行 mgr->delete_entity
     void destroy_entity(entity e) noexcept
     {
         commands_.emplace_back(command{
