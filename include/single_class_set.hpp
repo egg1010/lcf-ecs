@@ -1214,6 +1214,7 @@ public:
     , dense_(std::move(other.dense_))
     , type_id_(other.type_id_)
     , typed_pool_(other.typed_pool_)
+    , typed_pool_data_(other.typed_pool_data_)
     , pending_increase_capacity_(other.pending_increase_capacity_)
     , component_size_(other.component_size_)
     , ops_(other.ops_)
@@ -1232,6 +1233,7 @@ public:
         std::memcpy(hot_set_, other.hot_set_, sizeof(hot_set_));
         other.sparse_size_ = 0;
         other.typed_pool_ = nullptr;
+        other.typed_pool_data_ = nullptr;
         other.ops_ = {};
         other.type_id_ = -1;
         other.pending_increase_capacity_ = 0;
@@ -1258,6 +1260,7 @@ public:
             std::memcpy(hot_set_, other.hot_set_, sizeof(hot_set_));
             dense_ = std::move(other.dense_);
             typed_pool_ = other.typed_pool_;
+            typed_pool_data_ = other.typed_pool_data_;
             ops_ = other.ops_;
             pending_increase_capacity_ = other.pending_increase_capacity_;
             component_size_ = other.component_size_;
@@ -1276,6 +1279,7 @@ public:
 
             other.sparse_size_ = 0;
             other.typed_pool_ = nullptr;
+            other.typed_pool_data_ = nullptr;
             other.ops_ = {};
             other.type_id_ = -1;
             other.pending_increase_capacity_ = 0;

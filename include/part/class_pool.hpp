@@ -504,7 +504,6 @@ public:
 	}
 	
 	void reserve_exact(size_t new_capacity) noexcept;
-	void resize(size_t new_size, const T& value) noexcept;
 
 	template <typename... Args>
 	iterator emplace(const_iterator pos, Args&&... args) noexcept;

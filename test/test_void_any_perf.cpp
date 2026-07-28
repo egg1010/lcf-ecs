@@ -257,6 +257,66 @@ static void test_access(size_t ops)
         print_ns("get_ptr<Other> (mismatch)", ops, ns / static_cast<double>(ops));
     }
 
+    // 4.6 get_void (void* 设计理念)
+    {
+        double ns = best_ns(REPEAT, [&]() {
+            void* p = nullptr;
+            for (size_t i = 0; i < ops; ++i) p = a.get_void();
+            touch_ptr(p);
+            return p;
+        });
+        print_ns("get_void (void*)", ops, ns / static_cast<double>(ops));
+    }
+
+    print_footer();
+}
+
+// === Section 5: 编译期已知 T 的高性能接口 ===
+template <typename T>
+static void test_compile_time(size_t ops)
+{
+    print_header(("Section 5: compile-time T (T=" + to_string(sizeof(T)) + "B)").c_str());
+    constexpr int REPEAT = 3;
+
+    // 5.1 copy_from (编译期 sizeof, 避免 vtable 读取)
+    {
+        T v{};
+        double ns = best_ns(REPEAT, [&]() {
+            void_any a;
+            for (size_t i = 0; i < ops; ++i) a.copy_from(v);
+            compiler_barrier();
+            return a.has_value();
+        });
+        print_ns("copy_from<T> (ct)", ops, ns / static_cast<double>(ops));
+    }
+
+    // 5.2 move_from (编译期 sizeof)
+    {
+        double ns = best_ns(REPEAT, [&]() {
+            void_any a;
+            for (size_t i = 0; i < ops; ++i)
+            {
+                T tmp{};
+                a.move_from(std::move(tmp));
+            }
+            compiler_barrier();
+            return a.has_value();
+        });
+        print_ns("move_from<T> (ct)", ops, ns / static_cast<double>(ops));
+    }
+
+    // 5.3 对比: set (运行时路径)
+    {
+        T v{};
+        double ns = best_ns(REPEAT, [&]() {
+            void_any a;
+            for (size_t i = 0; i < ops; ++i) a.set(v);
+            compiler_barrier();
+            return a.has_value();
+        });
+        print_ns("set(T) (对比)", ops, ns / static_cast<double>(ops));
+    }
+
     print_footer();
 }
 
@@ -275,24 +335,28 @@ int main()
     test_assign<Small>(OPS);
     test_query<Small>();
     test_access<Small>(OPS);
+    test_compile_time<Small>(OPS);
 
     cout << "\n=== Medium (32B, SSO) ===\n";
     test_construct<Medium>(OPS);
     test_assign<Medium>(OPS);
     test_query<Medium>();
     test_access<Medium>(OPS);
+    test_compile_time<Medium>(OPS);
 
     cout << "\n=== Large (256B, heap) ===\n";
     test_construct<Large>(OPS);
     test_assign<Large>(OPS);
     test_query<Large>();
     test_access<Large>(OPS);
+    test_compile_time<Large>(OPS);
 
     cout << "\n=== NonTrivial (std::string, heap) ===\n";
     test_construct<NonTrivial>(OPS);
     test_assign<NonTrivial>(OPS);
     test_query<NonTrivial>();
     test_access<NonTrivial>(OPS);
+    test_compile_time<NonTrivial>(OPS);
 
     cout << "\n============================================================\n";
     cout << "  测试完成\n";

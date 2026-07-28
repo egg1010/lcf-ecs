@@ -173,9 +173,7 @@ endif()
 if(BUILD_MODULE_PERF_TESTS)
     # 容器模块
     lcf_add_executable(test_dense_perf               test/test_dense_perf.cpp)
-    lcf_add_executable(test_dense_views_perf         test/test_dense_views_perf.cpp)
     lcf_add_executable(test_class_pool_perf          test/test_class_pool_perf.cpp)
-    lcf_add_executable(test_class_pool_views_perf    test/test_class_pool_views_perf.cpp)
     lcf_add_executable(test_ring_buffer_perf         test/test_ring_buffer_perf.cpp)
 
     # 分配器模块
@@ -183,7 +181,7 @@ if(BUILD_MODULE_PERF_TESTS)
 
     # 实体模块
     lcf_add_executable(test_entity_perf              test/test_entity_perf.cpp)
-    lcf_add_executable(test_entity_mask_manager_perf test/test_entity_mask_manager_perf.cpp)
+    lcf_add_executable(test_multi_block_bitmask_perf test/test_multi_block_bitmask_perf.cpp)
 
     # 辅助模块
     lcf_add_executable(test_type_id_perf             test/test_type_id_perf.cpp)

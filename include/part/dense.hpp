@@ -468,54 +468,17 @@ public:
 		}
 	}
 
+	// 只扩容不缩容: new_capacity <= size 时直接返回, 不销毁任何对象
+	// 复用 fill_bulk 的 AVX2 批量填充路径
 	void increase_capacity(size_t new_capacity, const T& value) noexcept {
 		if (new_capacity <= index_) [[likely]] {
 			return;
 		}
-
-		if (new_capacity > maximum_quantity_) [[unlikely]] {
-			grow_data(calculate_growth_for_reserve(new_capacity));
-		}
-
-		if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) <= 8) {
-			for (size_t i = index_; i < new_capacity; ++i) {
-				std::memcpy(&data_ptr_[i], &value, sizeof(T));
-			}
-		}
-		else {
-			for (size_t i = index_; i < new_capacity; ++i) {
-				new (&data_ptr_[i]) T(value);
-			}
-		}
-		index_ = new_capacity;
+		fill_bulk(value, index_, new_capacity - index_);
 	}
 
 	void reserve_exact(size_t new_capacity) noexcept {
 		grow_data(new_capacity);
-	}
-
-	void resize(size_t new_size, const T& value) noexcept {
-		if (new_size <= index_) [[unlikely]] {
-			destroy_range(new_size, index_);
-			index_ = new_size;
-			return;
-		}
-
-		if (new_size > maximum_quantity_) [[unlikely]] {
-			grow_data(calculate_growth_for_reserve(new_size));
-		}
-
-		if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) <= 8) {
-			for (size_t i = index_; i < new_size; ++i) {
-				std::memcpy(&data_ptr_[i], &value, sizeof(T));
-			}
-		}
-		else {
-			for (size_t i = index_; i < new_size; ++i) {
-				new (&data_ptr_[i]) T(value);
-			}
-		}
-		index_ = new_size;
 	}
 
 	void shrink_to_fit() noexcept {

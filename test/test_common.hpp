@@ -25,6 +25,13 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+// 控制台 UTF-8 输出 (解决中文乱码)
+namespace lcf_test_detail {
+    struct console_utf8_init {
+        console_utf8_init() noexcept { SetConsoleOutputCP(CP_UTF8); }
+    };
+    inline console_utf8_init g_console_utf8_inst;
+}
 #endif
 
 using ecs::entity;

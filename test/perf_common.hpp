@@ -10,6 +10,19 @@
 #include <algorithm>
 #include <random>
 #include <string>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+// 控制台 UTF-8 输出 (解决中文乱码)
+namespace lcf_perf_detail {
+    struct console_utf8_init {
+        console_utf8_init() noexcept { SetConsoleOutputCP(CP_UTF8); }
+    };
+    inline console_utf8_init g_console_utf8_inst;
+}
+#endif
 
 // 编译器屏障宏
 #if defined(_MSC_VER)

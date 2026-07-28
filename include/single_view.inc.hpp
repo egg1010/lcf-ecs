@@ -393,7 +393,7 @@
 
                 struct sort_entry { KeyType key; size_t index; };
                 dense<sort_entry> entries;
-                entries.resize(n, {});
+                entries.increase_capacity(n, {});
 
                 for (size_t i = 0; i < n; ++i)
                 {
@@ -413,8 +413,8 @@
                     });
                 }
 
-                sorted_indices_.resize(n, size_t{0});
-                group_keys_.resize(n, KeyType{});
+                sorted_indices_.increase_capacity(n, size_t{0});
+                group_keys_.increase_capacity(n, KeyType{});
                 for (size_t i = 0; i < n; ++i)
                 {
                     sorted_indices_[i] = entries[i].index;

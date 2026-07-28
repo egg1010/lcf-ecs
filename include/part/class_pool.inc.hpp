@@ -910,20 +910,51 @@ void class_pool<T>::increase_capacity(size_t new_capacity, const T& value) noexc
 		grow_data_and_bitmap(calculate_growth_for_reserve(new_capacity));
 	}
 
-	if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) <= 8) {
-		for (size_t i = index_; i < new_capacity; ++i) {
-			std::memcpy(&data_ptr_[i], &value, sizeof(T));
-			bitmap_set(sparse_bits_, i);
-			bitmap_set(live_bits_, i);
+	const size_t count = new_capacity - index_;
+	T* dst = data_ptr_ + index_;
+
+	if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) == 1) {
+		std::memset(dst, static_cast<unsigned char>(value), count);
+	}
+	else if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) <= 8) {
+		const size_t elem_per_ymm = 32 / sizeof(T);
+		const size_t chunks = count / elem_per_ymm;
+		const size_t remainder = count - chunks * elem_per_ymm;
+#ifdef __AVX2__
+		__m256i broadcast;
+		if constexpr (sizeof(T) == 2) {
+			broadcast = _mm256_set1_epi16(std::bit_cast<int16_t>(value));
+		}
+		else if constexpr (sizeof(T) == 4) {
+			broadcast = _mm256_set1_epi32(std::bit_cast<int32_t>(value));
+		}
+		else {
+			broadcast = _mm256_set1_epi64x(std::bit_cast<int64_t>(value));
+		}
+		__m256i* d = static_cast<__m256i*>(static_cast<void*>(dst));
+		for (size_t i = 0; i < chunks; ++i) {
+			_mm256_storeu_si256(d + i, broadcast);
+		}
+#else
+		for (size_t i = 0; i < chunks; ++i) {
+			std::memcpy(dst + i * elem_per_ymm, &value, elem_per_ymm * sizeof(T));
+		}
+#endif
+		for (size_t i = 0; i < remainder; ++i) {
+			dst[chunks * elem_per_ymm + i] = value;
+		}
+	}
+	else if constexpr (std::is_trivially_copyable_v<T>) {
+		for (size_t i = 0; i < count; ++i) {
+			dst[i] = value;
 		}
 	}
 	else {
-		for (size_t i = index_; i < new_capacity; ++i) {
-			new (&data_ptr_[i]) T(value);
-			bitmap_set(sparse_bits_, i);
-			bitmap_set(live_bits_, i);
+		for (size_t i = 0; i < count; ++i) {
+			new (&dst[i]) T(value);
 		}
 	}
+	bulk_set_bits(index_, new_capacity);
 	index_ = new_capacity;
 }
 
@@ -1109,48 +1140,6 @@ template <typename T>
 void class_pool<T>::reserve_exact(size_t new_capacity) noexcept {
 	invalidate_count_cache();
 	grow_data_and_bitmap(new_capacity);
-}
-
-template <typename T>
-void class_pool<T>::resize(size_t new_size, const T& value) noexcept {
-	invalidate_count_cache();
-	if (new_size <= index_) [[unlikely]] {
-		if constexpr (!std::is_trivially_destructible_v<T>) {
-			for (size_t i = new_size; i < index_; ++i) {
-				if (bitmap_test(live_bits_, i)) {
-					data_ptr_[i].~T();
-				}
-			}
-		}
-		for (size_t i = new_size; i < index_; ++i) {
-			bitmap_reset(sparse_bits_, i);
-			bitmap_reset(live_bits_, i);
-		}
-		index_ = new_size;
-		hole_count_ = static_cast<size_t>(-1);
-		update_dense_status();
-		return;
-	}
-
-	if (new_size > maximum_quantity_) [[unlikely]] {
-		grow_data_and_bitmap(calculate_growth_for_reserve(new_size));
-	}
-
-	if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) <= 8) {
-		for (size_t i = index_; i < new_size; ++i) {
-			std::memcpy(&data_ptr_[i], &value, sizeof(T));
-			bitmap_set(sparse_bits_, i);
-			bitmap_set(live_bits_, i);
-		}
-	}
-	else {
-		for (size_t i = index_; i < new_size; ++i) {
-			new (&data_ptr_[i]) T(value);
-			bitmap_set(sparse_bits_, i);
-			bitmap_set(live_bits_, i);
-		}
-	}
-	index_ = new_size;
 }
 
 template <typename T>

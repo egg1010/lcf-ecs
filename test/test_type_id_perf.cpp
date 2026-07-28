@@ -2,6 +2,7 @@
 #include "perf_common.hpp"
 #include "include/part/type_id.hpp"
 
+
 using namespace std;
 
 // 测试用类型

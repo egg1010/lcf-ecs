@@ -49,7 +49,8 @@
                     if (b > max_block_) max_block_ = b;
                 };
                 (update_block(type_id::get_type_id<ExcludeTypes>()), ...);
-                exclude_masks_.resize(max_block_ + 1, 0);
+                exclude_masks_.clear();
+                exclude_masks_.increase_capacity(max_block_ + 1, 0);
                 auto fill_mask = [&](int tid) noexcept {
                     uint32_t block = block_of(tid);
                     uint32_t offset = static_cast<uint32_t>(tid - 1) % 64;
@@ -359,7 +360,7 @@
             size_t max_idx = max_entity_index();
             if (max_idx == 0) return;
             dense<uint64_t> visited;
-            visited.resize((max_idx >> 6) + 1, 0);
+            visited.increase_capacity((max_idx >> 6) + 1, 0);
 
             for (size_t set_idx = 0; set_idx < N; ++set_idx)
             {

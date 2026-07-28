@@ -23,7 +23,7 @@ inline group<First, Rest...>::group(manager* mgr, std::array<single_class_set*, 
         if (b > max_block_) max_block_ = b;
     };
     (update_block(type_id::get_type_id<Rest>()), ...);
-    required_masks_.resize(max_block_ + 1, 0);
+    required_masks_.increase_capacity(max_block_ + 1, 0);
     auto fill_mask = [&](int tid) noexcept {
         uint32_t block = block_of(tid);
         uint32_t offset = static_cast<uint32_t>(tid - 1) % 64;
@@ -32,7 +32,7 @@ inline group<First, Rest...>::group(manager* mgr, std::array<single_class_set*, 
     fill_mask(type_id::get_type_id<First>());
     (fill_mask(type_id::get_type_id<Rest>()), ...);
     use_mask_path_ = (N >= 3) || ((max_block_ + 1) <= 5);
-    req_sets_.resize(N, nullptr);
+    req_sets_.increase_capacity(N, nullptr);
     for (size_t i = 0; i < N; ++i) req_sets_[i] = sets_[i];
     rebuild();
 }
@@ -106,7 +106,7 @@ inline void group<First, Rest...>::rebuild() noexcept
     if (use_mask_path_ && !cached_.empty())
     {
         dense_mappings_.reserve_exact(cached_.size());
-        dense_mappings_.resize(cached_.size(), std::array<uint32_t, N>{});
+        dense_mappings_.increase_capacity(cached_.size(), std::array<uint32_t, N>{});
         for (size_t i = 0; i < cached_.size(); ++i)
         {
             auto& entry = dense_mappings_[i];
@@ -137,7 +137,7 @@ inline owning_group<First, Rest...>::owning_group(manager* mgr, std::array<singl
         if (b > max_block_) max_block_ = b;
     };
     (update_block(type_id::get_type_id<Rest>()), ...);
-    required_masks_.resize(max_block_ + 1, 0);
+    required_masks_.increase_capacity(max_block_ + 1, 0);
     auto fill_mask = [&](int tid) noexcept {
         uint32_t block = block_of(tid);
         uint32_t offset = static_cast<uint32_t>(tid - 1) % 64;
@@ -146,7 +146,7 @@ inline owning_group<First, Rest...>::owning_group(manager* mgr, std::array<singl
     fill_mask(type_id::get_type_id<First>());
     (fill_mask(type_id::get_type_id<Rest>()), ...);
     use_mask_path_ = (N >= 3) || ((max_block_ + 1) <= 5);
-    req_sets_.resize(N, nullptr);
+    req_sets_.increase_capacity(N, nullptr);
     for (size_t i = 0; i < N; ++i) req_sets_[i] = sets_[i];
     rebuild();
 }
@@ -236,7 +236,7 @@ inline reorder_group<First, Rest...>::reorder_group(manager* mgr, std::array<sin
         if (b > max_block_) max_block_ = b;
     };
     (update_block(type_id::get_type_id<Rest>()), ...);
-    required_masks_.resize(max_block_ + 1, 0);
+    required_masks_.increase_capacity(max_block_ + 1, 0);
     auto fill_mask = [&](int tid) noexcept {
         uint32_t block = block_of(tid);
         uint32_t offset = static_cast<uint32_t>(tid - 1) % 64;
@@ -245,7 +245,7 @@ inline reorder_group<First, Rest...>::reorder_group(manager* mgr, std::array<sin
     fill_mask(type_id::get_type_id<First>());
     (fill_mask(type_id::get_type_id<Rest>()), ...);
     use_mask_path_ = (N >= 3) || ((max_block_ + 1) <= 5);
-    req_sets_.resize(N, nullptr);
+    req_sets_.increase_capacity(N, nullptr);
     for (size_t i = 0; i < N; ++i) req_sets_[i] = sets_[i];
     rebuild();
 }

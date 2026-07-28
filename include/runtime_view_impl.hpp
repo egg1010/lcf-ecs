@@ -66,8 +66,8 @@ inline runtime_query::runtime_query(manager* mgr, std::span<const int> required_
         exc_sets_.emplace_back(mgr->get_single_class_set_by_id(tid));
     }
 
-    req_masks_.resize(max_block_ + 1, 0);
-    exc_masks_.resize(max_block_ + 1, 0);
+    req_masks_.increase_capacity(max_block_ + 1, 0);
+    exc_masks_.increase_capacity(max_block_ + 1, 0);
     for (int tid : required_ids_)
     {
         uint32_t block = block_of(tid);
@@ -99,8 +99,10 @@ inline runtime_query::runtime_query(manager* mgr, std::span<const runtime_term> 
         if (b > max_block_) max_block_ = b;
     }
 
-    req_masks_.resize(max_block_ + 1, 0);
-    exc_masks_.resize(max_block_ + 1, 0);
+    req_masks_.clear();
+    req_masks_.increase_capacity(max_block_ + 1, 0);
+    exc_masks_.clear();
+    exc_masks_.increase_capacity(max_block_ + 1, 0);
 
     // term 分发上下文
     struct term_ctx
@@ -341,7 +343,7 @@ inline void runtime_view::for_each_hit_impl(Func&& func) noexcept
         if (max_sparse == 0) return;
 
         dense<bool> visited;
-        visited.resize(max_sparse, false);
+        visited.increase_capacity(max_sparse, false);
 
         for (size_t k = 0; k < query_.or_sets_.size(); ++k)
         {

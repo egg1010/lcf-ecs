@@ -378,8 +378,8 @@ int main()
         print_item("reserve_exact(size_t) 仅扩容", cp3.capacity() >= 100);
 
         dense<int> cp4;
-        cp4.resize(static_cast<size_t>(5), 77);
-        print_item("resize(size_t, value)", (cp4.size() == 5 && cp4[0] == 77 && cp4[4] == 77));
+        cp4.increase_capacity(static_cast<size_t>(5), 77);
+        print_item("increase_capacity(size_t, value)", (cp4.size() == 5 && cp4[0] == 77 && cp4[4] == 77));
 
         // increase_capacity(size_t, const T&) 扩容并填充值
         dense<int> cp_fill;
@@ -995,7 +995,10 @@ int main()
         va1.set(3.14);
         print_item("set()", (va1.has_value() && va1.get_ptr<double>() && *va1.get_ptr<double>() == 3.14));
 
-        print_item("type_id()", va1.type_id() == type_id::get_type_id<double>());
+        // inline 编码模式下 type_id() 返回类型标签指针低 32 位 (与 type_id::get_type_id 解耦)
+        // 通过 get_ptr<T>() 验证类型匹配正确性
+        print_item("type_id()", (va1.type_id() != -1 && va1.get_ptr<double>() != nullptr
+                                  && va1.get_ptr<int>() == nullptr));
 
         double* p = va1.get_ptr<double>();
         print_item("get_ptr()", (p && *p == 3.14));
@@ -1113,10 +1116,13 @@ int main()
         }
 
         // 7. type_id 缓存正确性
+        // inline 编码模式下 type_id() 返回类型标签指针低 32 位, 同类型实例一致
         {
-            void_any vi(1), vd(2.0);
-            print_item("type_id缓存: int", vi.type_id() == type_id::get_type_id<int>());
-            print_item("type_id缓存: double", vd.type_id() == type_id::get_type_id<double>());
+            void_any vi(1), vd(2.0), vi2(100);
+            print_item("type_id缓存: int", (vi.type_id() != -1 && vi.type_id() == vi2.type_id()
+                                              && vi.get_ptr<int>() != nullptr));
+            print_item("type_id缓存: double", (vd.type_id() != -1
+                                                && vd.get_ptr<double>() != nullptr));
             print_item("type_id缓存: get_ptr匹配", vi.get_ptr<int>() != nullptr);
             print_item("type_id缓存: get_ptr不匹配", vi.get_ptr<double>() == nullptr);
         }
@@ -1127,6 +1133,46 @@ int main()
             const int* p = va.get_ptr<int>();
             uintptr_t addr = reinterpret_cast<uintptr_t>(p);
             print_item("SSO 对齐8", (addr % 8) == 0);
+        }
+
+        // 9. get_void (void* 设计理念)
+        {
+            void_any va(42);
+            void* vp = va.get_void();
+            int* ip = static_cast<int*>(vp);
+            print_item("get_void()", (ip && *ip == 42));
+
+            void_any empty;
+            print_item("get_void() 空值", empty.get_void() == nullptr);
+        }
+
+        // 10. copy_from (编译期已知 T)
+        {
+            void_any va;
+            va.copy_from(123);
+            const int* p = va.get_ptr<int>();
+            print_item("copy_from<int>", (p && *p == 123));
+
+            va.copy_from(3.14);
+            const double* dp = va.get_ptr<double>();
+            print_item("copy_from<double>", (dp && *dp == 3.14));
+        }
+
+        // 11. move_from (编译期已知 T)
+        {
+            void_any va;
+            std::string s = "hello";
+            va.move_from(std::move(s));
+            const std::string* sp = va.get_ptr<std::string>();
+            print_item("move_from<string>", (sp && *sp == "hello"));
+        }
+
+        // 12. get_void const
+        {
+            const void_any cva(99);
+            const void* vp = cva.get_void();
+            const int* ip = static_cast<const int*>(vp);
+            print_item("get_void() const", (ip && *ip == 99));
         }
     }
 
@@ -1177,6 +1223,58 @@ int main()
 
         mp.deallocate(mp.allocate(32));
         print_item("empty() 释放后", mp.empty());
+
+        // ---- memory_pool 模板化 sized 接口 ----
+        std::cout << "\n  [memory_pool 模板化 sized 接口: allocate_sized / deallocate_sized]\n";
+
+        // 小块路径 (<=128B)
+        {
+            memory_pool mps(4096);
+            void* sp = mps.allocate_sized<64>();
+            print_item("allocate_sized<64>() 非空", sp != nullptr);
+            print_item("allocate_sized<64>() 16字节对齐", (reinterpret_cast<uintptr_t>(sp) % 16) == 0);
+            mps.deallocate_sized<64>(sp);
+            print_item("deallocate_sized<64>() 后 empty", mps.empty());
+
+            // 重用验证: 同 size class 缓存 LIFO
+            void* sp1 = mps.allocate_sized<64>();
+            void* sp2 = mps.allocate_sized<64>();
+            mps.deallocate_sized<64>(sp1);
+            void* sp3 = mps.allocate_sized<64>();
+            print_item("sized 小块 LIFO 重用", sp3 == sp1);
+            mps.deallocate_sized<64>(sp2);
+            mps.deallocate_sized<64>(sp3);
+            print_item("sized 小块全部释放", mps.empty());
+        }
+
+        // 大块路径 (>128B)
+        {
+            memory_pool mpl(4096);
+            void* lp = mpl.allocate_sized<256>();
+            print_item("allocate_sized<256>() 非空", lp != nullptr);
+            print_item("allocate_sized<256>() 16字节对齐", (reinterpret_cast<uintptr_t>(lp) % 16) == 0);
+            mpl.deallocate_sized<256>(lp);
+            print_item("deallocate_sized<256>() 后 empty", mpl.empty());
+        }
+
+        // 边界: Size=0 返回 nullptr
+        {
+            memory_pool mpz(4096);
+            void* zp = mpz.allocate_sized<0>();
+            print_item("allocate_sized<0>() 返回nullptr", zp == nullptr);
+            mpz.deallocate_sized<0>(nullptr);  // 不崩溃
+            print_item("deallocate_sized<0>(nullptr) 安全", true);
+        }
+
+        // 与 construct/destroy 一致性
+        {
+            memory_pool mpc(4096);
+            struct Pod { uint64_t a, b, c; };
+            Pod* pod = mpc.construct<Pod>(1, 2, 3);
+            print_item("construct<Pod> 经 sized 路径", (pod != nullptr && pod->a == 1 && pod->b == 2 && pod->c == 3));
+            mpc.destroy(pod);
+            print_item("destroy<Pod> 经 sized 路径", mpc.empty());
+        }
 
         mp.increase_capacity(8192);
         print_item("increase_capacity(8192)", mp.total_allocated() >= 8192);
@@ -3344,7 +3442,7 @@ int main()
             ents.increase_capacity(2048);
             for (size_t i = 0; i < 2048; ++i) ents.emplace_back(mgr.create_entity());
             for (size_t i = 0; i < 2048; ++i) mgr.add(ents[i], Position{static_cast<float>(i), 0, 0});
-            print_item("溢出计数 > 0", mgr.comp_signal_overflow_count() > 0);
+            print_item("无界缓冲区不溢出 (overflow==0)", mgr.comp_signal_overflow_count() == 0);
             size_t added = 0;
             mgr.flush_component_signals([&](uint32_t type, uint32_t, uint32_t) noexcept {
                 if (type == 0) ++added;
@@ -3447,7 +3545,7 @@ int main()
             ents.increase_capacity(2048);
             for (size_t i = 0; i < 2048; ++i) ents.emplace_back(mgr.create_entity());
             for (size_t i = 0; i < 2048; ++i) mgr.add(ents[i], Position{static_cast<float>(i), 0, 0});
-            print_item("reserve 后大批 add 溢出计数 > 0", mgr.comp_signal_overflow_count() > 0);
+            print_item("reserve 后大批 add 无界不溢出 (overflow==0)", mgr.comp_signal_overflow_count() == 0);
             mgr.flush_component_signals([&](uint32_t, uint32_t, uint32_t) noexcept {});
             print_item("reserve + flush 后缓冲区为空", !mgr.has_pending_component_signals());
         }
@@ -3744,75 +3842,857 @@ int main()
         }
     }
 
-    // 15. entity_mask_manager 扩容/缩容/状态查询
+    // 15. multi_block_bitmask 多块位掩码
     {
-        print_section(15, "entity_mask_manager 扩容/缩容/状态查询");
+        print_section(15, "multi_block_bitmask 多块位掩码");
 
-        // 单块 (num_blocks_==1) 场景
-        entity_mask_manager m1;
-        m1.ensure_entity(0);
-        m1.ensure_entity(1);
-        m1.set_bit(0, 0, 3);
-        print_item("单块 size()==2", m1.size() == 2);
-        print_item("单块 empty()==false", m1.empty() == false);
-
-        size_t cap_before = m1.capacity();
-        m1.increase_capacity(1000);
-        print_item("increase_capacity 只增不减",
-                   (m1.capacity() >= cap_before && m1.capacity() >= 1000));
-        print_item("increase_capacity 不改 size", m1.size() == 2);
-
-        m1.reserve_exact(5000);
-        print_item("reserve_exact 预留", m1.capacity() >= 5000);
-
-        m1.shrink_to_fit();
-        print_item("shrink_to_fit 后 capacity==size", m1.capacity() == m1.size());
-
-        m1.reduce_capacity(1);
-        print_item("reduce_capacity(1) 截断 size", m1.size() == 1);
-
-        print_item("capacity_bytes>=size_bytes",
-                   m1.capacity_bytes() >= m1.size_bytes());
-
-        m1.clear();
-        print_item("clear 后 size()==0", m1.size() == 0);
-        print_item("clear 后 empty()", m1.empty() == true);
-        print_item("clear 后 num_blocks 仍为 1", m1.num_blocks() == 1);
-
-        // 多块 (num_blocks_==2) 场景, 验证实体单位转换
-        entity_mask_manager m2;
-        m2.reserve_blocks(2);
-        m2.ensure_entity(0);
-        m2.ensure_entity(1);
-        m2.ensure_entity(2);
-        m2.set_bit(0, 0, 5);
-        m2.set_bit(0, 1, 10);
-        print_item("多块 size()==3", m2.size() == 3);
-
-        m2.increase_capacity(2000);
-        print_item("多块 increase_capacity (实体单位)", m2.capacity() >= 2000);
-
-        // capacity_bytes 应 >= size_bytes
-        print_item("多块 capacity_bytes 一致性",
-                   m2.capacity_bytes() >= m2.size_bytes());
-
-        m2.shrink_to_fit();
-        print_item("多块 shrink_to_fit 后 capacity==size",
-                   m2.capacity() == m2.size());
-
-        m2.clear();
-        print_item("多块 clear 后 num_blocks 仍为 2", m2.num_blocks() == 2);
-        print_item("多块 clear 后 empty", m2.empty() == true);
-
-        // reduce_capacity 小于 size 时截断
-        entity_mask_manager m3;
-        for (uint32_t i = 0; i < 10; ++i)
+        // --- 静态辅助 ---
+        std::cout << "\n  [静态辅助]\n";
         {
-            m3.ensure_entity(i);
+            print_item("bits_per_block==64",
+                       multi_block_bitmask::bits_per_block == 64);
+            print_item("block_count_for_bits(0)==0",
+                       multi_block_bitmask::block_count_for_bits(0) == 0);
+            print_item("block_count_for_bits(1)==1",
+                       multi_block_bitmask::block_count_for_bits(1) == 1);
+            print_item("block_count_for_bits(64)==1",
+                       multi_block_bitmask::block_count_for_bits(64) == 1);
+            print_item("block_count_for_bits(65)==2",
+                       multi_block_bitmask::block_count_for_bits(65) == 2);
+            print_item("block_count_for_bits(200)==4",
+                       multi_block_bitmask::block_count_for_bits(200) == 4);
         }
-        print_item("m3 size()==10", m3.size() == 10);
-        m3.reduce_capacity(4);
-        print_item("reduce_capacity(4) 截断到 4", m3.size() == 4);
+
+        // --- 容量与块管理 ---
+        std::cout << "\n  [容量与块管理]\n";
+        {
+            // 单块 (num_blocks_==1) 场景
+            multi_block_bitmask m1;
+            m1.ensure_entity(0);
+            m1.ensure_entity(1);
+            m1.set_bit(0, 0, 3);
+            print_item("单块 size()==2", m1.size() == 2);
+            print_item("单块 empty()==false", m1.empty() == false);
+
+            size_t cap_before = m1.capacity();
+            m1.increase_capacity(1000);
+            print_item("increase_capacity 只增不减",
+                       (m1.capacity() >= cap_before && m1.capacity() >= 1000));
+            print_item("increase_capacity 不改 size", m1.size() == 2);
+
+            m1.reserve_exact(5000);
+            print_item("reserve_exact 预留", m1.capacity() >= 5000);
+
+            m1.shrink_to_fit();
+            print_item("shrink_to_fit 后 capacity==size", m1.capacity() == m1.size());
+
+            m1.reduce_capacity(1);
+            print_item("reduce_capacity(1) 截断 size", m1.size() == 1);
+
+            print_item("capacity_bytes>=size_bytes",
+                       m1.capacity_bytes() >= m1.size_bytes());
+
+            m1.clear();
+            print_item("clear 后 size()==0", m1.size() == 0);
+            print_item("clear 后 empty()", m1.empty() == true);
+            print_item("clear 后 num_blocks 仍为 1", m1.num_blocks() == 1);
+
+            // 多块 (num_blocks_==2) 场景, 验证实体单位转换
+            multi_block_bitmask m2;
+            m2.reserve_blocks(2);
+            m2.ensure_entity(0);
+            m2.ensure_entity(1);
+            m2.ensure_entity(2);
+            m2.set_bit(0, 0, 5);
+            m2.set_bit(0, 1, 10);
+            print_item("多块 size()==3", m2.size() == 3);
+
+            m2.increase_capacity(2000);
+            print_item("多块 increase_capacity (实体单位)", m2.capacity() >= 2000);
+
+            // capacity_bytes 应 >= size_bytes
+            print_item("多块 capacity_bytes 一致性",
+                       m2.capacity_bytes() >= m2.size_bytes());
+
+            m2.shrink_to_fit();
+            print_item("多块 shrink_to_fit 后 capacity==size",
+                       m2.capacity() == m2.size());
+
+            m2.clear();
+            print_item("多块 clear 后 num_blocks 仍为 2", m2.num_blocks() == 2);
+            print_item("多块 clear 后 empty", m2.empty() == true);
+
+            // reduce_capacity 小于 size 时截断
+            multi_block_bitmask m3;
+            for (uint32_t i = 0; i < 10; ++i)
+            {
+                m3.ensure_entity(i);
+            }
+            print_item("m3 size()==10", m3.size() == 10);
+            m3.reduce_capacity(4);
+            print_item("reduce_capacity(4) 截断到 4", m3.size() == 4);
+
+            // reserve_blocks 扩容触发 overflow 重分配
+            multi_block_bitmask m4;
+            m4.reserve_blocks(2);
+            m4.ensure_entity(0);
+            m4.set_bit(0, 1, 5);
+            m4.reserve_blocks(4);
+            print_item("reserve_blocks 扩容后保留块 1 数据",
+                       m4.get_block(0, 1) == (1ULL << 5));
+            print_item("reserve_blocks 扩容后 num_blocks==4", m4.num_blocks() == 4);
+            print_item("reserve_blocks 缩容请求被忽略 (只增不减)",
+                       (m4.num_blocks() == 4));
+        }
+
+        // --- 查询接口 ---
+        std::cout << "\n  [查询接口]\n";
+        {
+            multi_block_bitmask m;
+            m.reserve_blocks(2);
+            m.ensure_entity(0);
+            m.ensure_entity(1);
+            m.set_bit(0, 0, 5);
+            m.set_bit(0, 1, 10);
+            m.set_bit(1, 0, 0);
+
+            // test_bit
+            print_item("test_bit(0,0,5)==true", m.test_bit(0, 0, 5) == true);
+            print_item("test_bit(0,0,6)==false", m.test_bit(0, 0, 6) == false);
+            print_item("test_bit(0,1,10)==true", m.test_bit(0, 1, 10) == true);
+            print_item("test_bit(0,1,11)==false", m.test_bit(0, 1, 11) == false);
+            print_item("test_bit 越界 block 返回 false",
+                       m.test_bit(0, 5, 0) == false);
+
+            // any_set_in_block
+            print_item("any_set_in_block(0,0)==true", m.any_set_in_block(0, 0) == true);
+            print_item("any_set_in_block(1,0)==true", m.any_set_in_block(1, 0) == true);
+            print_item("any_set_in_block(1,1)==false", m.any_set_in_block(1, 1) == false);
+
+            // any_set / is_zero
+            print_item("any_set(0)==true", m.any_set(0) == true);
+            print_item("any_set(1)==true", m.any_set(1) == true);
+            print_item("any_set 越界 slot 返回 false", m.any_set(100) == false);
+            print_item("is_zero(0)==false", m.is_zero(0) == false);
+
+            m.clear_bit(1, 0, 0);
+            print_item("is_zero(1)==true (清空后)", m.is_zero(1) == true);
+            print_item("any_set(1)==false (清空后)", m.any_set(1) == false);
+
+            // count_set_bits
+            m.set_bit(1, 0, 2);
+            m.set_bit(1, 0, 3);
+            m.set_bit(1, 1, 7);
+            print_item("count_set_bits(1)==3", m.count_set_bits(1) == 3);
+            print_item("count_set_bits(0)==2 (跨块)", m.count_set_bits(0) == 2);
+            print_item("count_set_bits 越界返回 0", m.count_set_bits(100) == 0);
+
+            // find_first_set
+            uint32_t fb = 0xFF, fo = 0xFF;
+            print_item("find_first_set(0) 找到", m.find_first_set(0, fb, fo) == true);
+            print_item("find_first_set(0) block==0", fb == 0);
+            print_item("find_first_set(0) offset==5", fo == 5);
+
+            // find_first_set 越界 slot
+            print_item("find_first_set 越界返回 false",
+                       m.find_first_set(100, fb, fo) == false);
+
+            // find_last_set
+            print_item("find_last_set(0) 找到", m.find_last_set(0, fb, fo) == true);
+            print_item("find_last_set(0) block==1", fb == 1);
+            print_item("find_last_set(0) offset==10", fo == 10);
+
+            // find_next_set
+            print_item("find_next_set(0,0,5) 跳过 5 找到 10",
+                       m.find_next_set(0, 0, 5, fb, fo) == true);
+            print_item("find_next_set block==1", fb == 1);
+            print_item("find_next_set offset==10", fo == 10);
+            print_item("find_next_set(0,1,10) 之后无更多",
+                       m.find_next_set(0, 1, 10, fb, fo) == false);
+
+            // find_first_set / find_next_set 联合遍历
+            {
+                std::vector<std::pair<uint32_t, uint32_t>> bits;
+                uint32_t cur_b = 0, cur_o = UINT32_MAX;
+                while (m.find_next_set(0, cur_b, cur_o, fb, fo))
+                {
+                    bits.emplace_back(fb, fo);
+                    cur_b = fb;
+                    cur_o = fo;
+                }
+                print_item("find_next_set 遍历 count==2", bits.size() == 2);
+                print_item("find_next_set 遍历首位 (0,5)",
+                           (bits[0].first == 0 && bits[0].second == 5));
+                print_item("find_next_set 遍历末位 (1,10)",
+                           (bits[1].first == 1 && bits[1].second == 10));
+            }
+
+            // 空槽位查询
+            multi_block_bitmask empty_m;
+            empty_m.ensure_entity(0);
+            print_item("空槽 any_set==false", empty_m.any_set(0) == false);
+            print_item("空槽 is_zero==true", empty_m.is_zero(0) == true);
+            print_item("空槽 count_set_bits==0", empty_m.count_set_bits(0) == 0);
+            print_item("空槽 find_first_set==false",
+                       empty_m.find_first_set(0, fb, fo) == false);
+            print_item("空槽 find_last_set==false",
+                       empty_m.find_last_set(0, fb, fo) == false);
+        }
+
+        // --- 整块写入 ---
+        std::cout << "\n  [整块写入]\n";
+        {
+            multi_block_bitmask m;
+            m.reserve_blocks(2);
+            m.ensure_entity(0);
+
+            // set_block_value
+            m.set_block_value(0, 0, 0xDEADBEEFCAFEBABEULL);
+            print_item("set_block_value block 0",
+                       m.get_block(0, 0) == 0xDEADBEEFCAFEBABEULL);
+            m.set_block_value(0, 1, 0x123456789ABCDEF0ULL);
+            print_item("set_block_value block 1 (触发 overflow 分配)",
+                       m.get_block(0, 1) == 0x123456789ABCDEF0ULL);
+            print_item("set_block_value 后 overflow_entity_count==1",
+                       m.overflow_entity_count() == 1);
+
+            // or_block_value
+            m.or_block_value(0, 0, 0xFULL);
+            print_item("or_block_value block 0",
+                       m.get_block(0, 0) == (0xDEADBEEFCAFEBABEULL | 0xFULL));
+
+            // and_block_value
+            m.and_block_value(0, 0, 0xFFFFULL);
+            print_item("and_block_value block 0",
+                       m.get_block(0, 0) == ((0xDEADBEEFCAFEBABEULL | 0xFULL) & 0xFFFFULL));
+
+            // xor_block_value
+            m.xor_block_value(0, 0, 0xFFFFULL);
+            print_item("xor_block_value block 0",
+                       m.get_block(0, 0) == (((0xDEADBEEFCAFEBABEULL | 0xFULL) & 0xFFFFULL) ^ 0xFFFFULL));
+
+            // 越界块号不扩容不写入
+            m.set_block_value(0, 5, 1ULL);
+            print_item("set_block_value 越界 block 静默丢弃",
+                       m.get_block(0, 5) == 0);
+
+            // set_block_value 自动 ensure_entity
+            m.set_block_value(10, 0, 42ULL);
+            print_item("set_block_value 自动 ensure_entity block 0",
+                       m.get_block(10, 0) == 42ULL);
+        }
+
+        // --- 批量位操作 ---
+        std::cout << "\n  [批量位操作]\n";
+        {
+            multi_block_bitmask m;
+            m.reserve_blocks(2);
+            m.ensure_entity(0);
+
+            // set_bits_at
+            uint32_t offsets1[] = {1, 3, 5, 7, 9};
+            m.set_bits_at(0, 0, offsets1);
+            print_item("set_bits_at block 0",
+                       (m.test_bit(0, 0, 1) && m.test_bit(0, 0, 3)
+                        && m.test_bit(0, 0, 5) && m.test_bit(0, 0, 7)
+                        && m.test_bit(0, 0, 9)));
+            print_item("set_bits_at 未设位为 false",
+                       (!m.test_bit(0, 0, 0) && !m.test_bit(0, 0, 2)
+                        && !m.test_bit(0, 0, 4)));
+
+            // set_bits_at block 1
+            uint32_t offsets2[] = {10, 20, 30};
+            m.set_bits_at(0, 1, offsets2);
+            print_item("set_bits_at block 1 触发 overflow 分配",
+                       (m.test_bit(0, 1, 10) && m.test_bit(0, 1, 20)
+                        && m.test_bit(0, 1, 30)));
+
+            // clear_bits_at
+            uint32_t clear_off[] = {1, 5, 9};
+            m.clear_bits_at(0, 0, clear_off);
+            print_item("clear_bits_at 部分清除",
+                       (!m.test_bit(0, 0, 1) && !m.test_bit(0, 0, 5)
+                        && !m.test_bit(0, 0, 9) && m.test_bit(0, 0, 3)
+                        && m.test_bit(0, 0, 7)));
+
+            // toggle_bits_at
+            // bit offset 范围 0-63; 3 已置位 -> 清, 60 未置位 -> 置
+            uint32_t toggle_off[] = {3, 60};
+            m.toggle_bits_at(0, 0, toggle_off);
+            print_item("toggle_bits_at 翻转",
+                       (!m.test_bit(0, 0, 3) && m.test_bit(0, 0, 60)));
+
+            // toggle_bits_at 再翻一次恢复
+            m.toggle_bits_at(0, 0, toggle_off);
+            print_item("toggle_bits_at 双翻恢复",
+                       (m.test_bit(0, 0, 3) && !m.test_bit(0, 0, 60)));
+        }
+
+        // --- 整槽多块读写 ---
+        std::cout << "\n  [整槽多块读写]\n";
+        {
+            multi_block_bitmask m;
+            m.reserve_blocks(3);
+            m.ensure_entity(0);
+            m.ensure_entity(1);
+
+            // assign_slot
+            uint64_t data[] = {0xAA, 0xBB, 0xCC};
+            m.assign_slot(0, data);
+            print_item("assign_slot block 0", m.get_block(0, 0) == 0xAA);
+            print_item("assign_slot block 1", m.get_block(0, 1) == 0xBB);
+            print_item("assign_slot block 2", m.get_block(0, 2) == 0xCC);
+
+            // assign_slot 自动扩容块数
+            multi_block_bitmask m2;
+            m2.ensure_entity(0);
+            uint64_t data2[] = {0x11, 0x22, 0x33, 0x44};
+            m2.assign_slot(0, data2);
+            print_item("assign_slot 自动 reserve_blocks 扩容",
+                       m2.num_blocks() == 4);
+            print_item("assign_slot 扩容后 block 3", m2.get_block(0, 3) == 0x44);
+
+            // copy_slot_to
+            uint64_t out[3] = {0, 0, 0};
+            m.copy_slot_to(0, out);
+            print_item("copy_slot_to block 0", out[0] == 0xAA);
+            print_item("copy_slot_to block 1", out[1] == 0xBB);
+            print_item("copy_slot_to block 2", out[2] == 0xCC);
+
+            // copy_slot_to dst 大于 num_blocks 多余部分补零
+            uint64_t out_big[5] = {1, 1, 1, 1, 1};
+            m.copy_slot_to(0, out_big);
+            print_item("copy_slot_to 超出部分补零 block 3", out_big[3] == 0);
+            print_item("copy_slot_to 超出部分补零 block 4", out_big[4] == 0);
+
+            // copy_slot_to dst 小于 num_blocks 只拷贝 dst.size() 块
+            uint64_t out_small[1] = {0};
+            m.copy_slot_to(0, out_small);
+            print_item("copy_slot_to 小 dst 只拷贝 1 块", out_small[0] == 0xAA);
+
+            // copy_slot_to 越界 slot 全零
+            uint64_t out_invalid[2] = {0xFF, 0xFF};
+            m.copy_slot_to(100, out_invalid);
+            print_item("copy_slot_to 越界 slot 全零",
+                       (out_invalid[0] == 0 && out_invalid[1] == 0));
+
+            // assign_slot 空 data 不操作
+            m.assign_slot(1, {});
+            print_item("assign_slot 空 data 不操作",
+                       m.get_block(1, 0) == 0);
+        }
+
+        // --- 遍历接口 ---
+        std::cout << "\n  [遍历接口]\n";
+        {
+            multi_block_bitmask m;
+            m.reserve_blocks(2);
+            m.ensure_entity(0);
+            m.ensure_entity(1);
+            m.ensure_entity(2);
+
+            // slot 0: block 0 位 0/3/7, block 1 位 10
+            m.set_bit(0, 0, 0);
+            m.set_bit(0, 0, 3);
+            m.set_bit(0, 0, 7);
+            m.set_bit(0, 1, 10);
+            // slot 1: 空
+            // slot 2: block 0 位 5
+            m.set_bit(2, 0, 5);
+
+            // for_each_set_bit (单槽)
+            {
+                std::vector<std::pair<uint32_t, uint32_t>> bits;
+                m.for_each_set_bit(0, [&](uint32_t b, uint32_t o) {
+                    bits.emplace_back(b, o);
+                });
+                print_item("for_each_set_bit 单槽 count==4", bits.size() == 4);
+                print_item("for_each_set_bit 首位 (0,0)",
+                           (bits[0].first == 0 && bits[0].second == 0));
+                print_item("for_each_set_bit 末位 (1,10)",
+                           (bits[3].first == 1 && bits[3].second == 10));
+            }
+
+            // for_each_set_bit 空槽
+            {
+                std::vector<std::pair<uint32_t, uint32_t>> bits;
+                m.for_each_set_bit(1, [&](uint32_t b, uint32_t o) {
+                    bits.emplace_back(b, o);
+                });
+                print_item("for_each_set_bit 空槽 count==0", bits.size() == 0);
+            }
+
+            // for_each_set_slot
+            {
+                std::vector<uint32_t> slots;
+                m.for_each_set_slot([&](uint32_t s) {
+                    slots.push_back(s);
+                });
+                print_item("for_each_set_slot count==2", slots.size() == 2);
+                print_item("for_each_set_slot 含 slot 0", slots[0] == 0);
+                print_item("for_each_set_slot 含 slot 2", slots[1] == 2);
+            }
+
+            // for_each_set_bit_global
+            {
+                std::vector<std::tuple<uint32_t, uint32_t, uint32_t>> all;
+                m.for_each_set_bit_global([&](uint32_t s, uint32_t b, uint32_t o) {
+                    all.emplace_back(s, b, o);
+                });
+                print_item("for_each_set_bit_global count==5", all.size() == 5);
+                print_item("for_each_set_bit_global 首位 (0,0,0)",
+                           (std::get<0>(all[0]) == 0 && std::get<1>(all[0]) == 0
+                            && std::get<2>(all[0]) == 0));
+                print_item("for_each_set_bit_global 末位 (2,0,5)",
+                           (std::get<0>(all[4]) == 2 && std::get<1>(all[4]) == 0
+                            && std::get<2>(all[4]) == 5));
+            }
+
+            // count_set_bits_global
+            print_item("count_set_bits_global==5", m.count_set_bits_global() == 5);
+
+            // for_each_set_bit_global 空容器
+            multi_block_bitmask empty_m;
+            std::vector<std::tuple<uint32_t, uint32_t, uint32_t>> empty_all;
+            empty_m.for_each_set_bit_global([&](uint32_t s, uint32_t b, uint32_t o) {
+                empty_all.emplace_back(s, b, o);
+            });
+            print_item("for_each_set_bit_global 空容器 count==0", empty_all.size() == 0);
+            print_item("count_set_bits_global 空容器==0",
+                       empty_m.count_set_bits_global() == 0);
+        }
+
+        // --- 视图接口 ---
+        std::cout << "\n  [视图接口]\n";
+        {
+            multi_block_bitmask m;
+            m.reserve_blocks(2);
+            m.ensure_entity(0);
+            m.ensure_entity(1);
+            m.set_bit(0, 0, 5);
+            m.set_bit(0, 1, 10);
+            m.set_bit(1, 0, 2);
+
+            // inline_span
+            std::span<uint64_t> is = m.inline_span();
+            print_item("inline_span size==2", is.size() == 2);
+            print_item("inline_span[0]==(1<<5)", is[0] == (1ULL << 5));
+            print_item("inline_span[1]==(1<<2)", is[1] == (1ULL << 2));
+
+            // const 视图
+            const multi_block_bitmask& cm = m;
+            std::span<const uint64_t> cis = cm.inline_span();
+            print_item("inline_span const size==2", cis.size() == 2);
+
+            // overflow_span
+            std::span<uint64_t> os0 = m.overflow_span(0);
+            print_item("overflow_span(0) size==1", os0.size() == 1);
+            print_item("overflow_span(0)[0]==(1<<10)", os0[0] == (1ULL << 10));
+
+            std::span<uint64_t> os1 = m.overflow_span(1);
+            print_item("overflow_span(1) 未分配为空 span", os1.empty());
+
+            std::span<uint64_t> os_invalid = m.overflow_span(100);
+            print_item("overflow_span 越界返回空 span", os_invalid.empty());
+
+            // const overflow_span
+            std::span<const uint64_t> cos0 = cm.overflow_span(0);
+            print_item("overflow_span const size==1", cos0.size() == 1);
+
+            // 通过 span 修改后反映到对象
+            is[0] = 0;
+            print_item("通过 inline_span 修改生效", m.get_block(0, 0) == 0);
+
+            // 空 inline_span
+            multi_block_bitmask empty_m;
+            print_item("空容器 inline_span empty", empty_m.inline_span().empty());
+        }
+
+        // --- 集合运算 ---
+        std::cout << "\n  [集合运算]\n";
+        {
+            multi_block_bitmask a, b;
+            a.reserve_blocks(2);
+            b.reserve_blocks(2);
+            a.ensure_entity(0);
+            a.ensure_entity(1);
+            b.ensure_entity(0);
+            b.ensure_entity(1);
+
+            // a = {slot 0: block0 位 1/3, block1 位 10}
+            // b = {slot 0: block0 位 1/5, block1 位 11}
+            // a = {slot 1: block0 位 7}
+            a.set_bit(0, 0, 1);
+            a.set_bit(0, 0, 3);
+            a.set_bit(0, 1, 10);
+            a.set_bit(1, 0, 7);
+            b.set_bit(0, 0, 1);
+            b.set_bit(0, 0, 5);
+            b.set_bit(0, 1, 11);
+
+            // or_with: a |= b
+            multi_block_bitmask a_or = a;
+            a_or.or_with(b);
+            print_item("or_with block 0 含 1/3/5",
+                       (a_or.test_bit(0, 0, 1) && a_or.test_bit(0, 0, 3)
+                        && a_or.test_bit(0, 0, 5)));
+            print_item("or_with block 1 含 10/11",
+                       (a_or.test_bit(0, 1, 10) && a_or.test_bit(0, 1, 11)));
+            print_item("or_with slot 1 保留", a_or.test_bit(1, 0, 7));
+
+            // and_with: a &= b
+            multi_block_bitmask a_and = a;
+            a_and.and_with(b);
+            print_item("and_with block 0 仅含 1",
+                       (a_and.test_bit(0, 0, 1) && !a_and.test_bit(0, 0, 3)
+                        && !a_and.test_bit(0, 0, 5)));
+            print_item("and_with block 1 全清 (b 有 a 无 10)",
+                       (!a_and.test_bit(0, 1, 10) && !a_and.test_bit(0, 1, 11)));
+            // slot 1 在 b 中不存在, and_with 后应清零
+            print_item("and_with slot 1 (b 不存在) 清零",
+                       a_and.is_zero(1));
+
+            // xor_with: a ^= b
+            multi_block_bitmask a_xor = a;
+            a_xor.xor_with(b);
+            print_item("xor_with block 0 含 3/5 (异或后)",
+                       (a_xor.test_bit(0, 0, 3) && a_xor.test_bit(0, 0, 5)
+                        && !a_xor.test_bit(0, 0, 1)));
+            print_item("xor_with block 1 含 10/11",
+                       (a_xor.test_bit(0, 1, 10) && a_xor.test_bit(0, 1, 11)));
+
+            // subtract: a &= ~b
+            multi_block_bitmask a_sub = a;
+            a_sub.subtract(b);
+            print_item("subtract block 0 仅含 3",
+                       (!a_sub.test_bit(0, 0, 1) && a_sub.test_bit(0, 0, 3)
+                        && !a_sub.test_bit(0, 0, 5)));
+            print_item("subtract block 1 保留 10",
+                       a_sub.test_bit(0, 1, 10));
+            print_item("subtract slot 1 保留", a_sub.test_bit(1, 0, 7));
+
+            // overlaps
+            print_item("overlaps(a, b)==true (slot 0 block 0 位 1 共有)",
+                       a.overlaps(b) == true);
+            multi_block_bitmask c;
+            c.reserve_blocks(2);
+            c.ensure_entity(0);
+            c.set_bit(0, 0, 63);  // 与 a/b 不重叠
+            print_item("overlaps(a, c)==false", a.overlaps(c) == false);
+
+            // contains_all
+            multi_block_bitmask subset;
+            subset.reserve_blocks(2);
+            subset.ensure_entity(0);
+            subset.set_bit(0, 0, 1);  // a 中也有
+            print_item("contains_all(a, subset)==true", a.contains_all(subset));
+            print_item("contains_all(subset, a)==false", !subset.contains_all(a));
+
+            multi_block_bitmask not_subset;
+            not_subset.reserve_blocks(2);
+            not_subset.ensure_entity(0);
+            not_subset.set_bit(0, 0, 63);  // a 中没有 (a 在 block 0 仅有 1/3)
+            print_item("contains_all(a, not_subset)==false",
+                       !a.contains_all(not_subset));
+
+            // equals
+            multi_block_bitmask a_copy = a.clone();
+            print_item("equals(a, a_copy)==true", a.equals(a_copy));
+            a_copy.clear_bit(0, 0, 1);
+            print_item("equals 修改后 false", !a.equals(a_copy));
+
+            // equals 不同 slot 数
+            multi_block_bitmask smaller;
+            smaller.ensure_entity(0);
+            print_item("equals 不同 size 返回 false", !a.equals(smaller));
+
+            // equals 不同 overflow_block_count_
+            multi_block_bitmask diff_blocks;
+            diff_blocks.reserve_blocks(3);
+            diff_blocks.ensure_entity(0);
+            diff_blocks.ensure_entity(1);
+            diff_blocks.set_bit(0, 0, 1);
+            diff_blocks.set_bit(0, 0, 3);
+            diff_blocks.set_bit(0, 1, 10);
+            diff_blocks.set_bit(1, 0, 7);
+            print_item("equals 不同 num_blocks 返回 false",
+                       !a.equals(diff_blocks));
+        }
+
+        // --- 复制与交换 ---
+        std::cout << "\n  [复制与交换]\n";
+        {
+            multi_block_bitmask a;
+            a.reserve_blocks(2);
+            a.ensure_entity(0);
+            a.set_bit(0, 0, 5);
+            a.set_bit(0, 1, 10);
+
+            // 拷贝构造 (深拷贝)
+            multi_block_bitmask b(a);
+            print_item("拷贝构造 inline 一致",
+                       b.get_block(0, 0) == (1ULL << 5));
+            print_item("拷贝构造 overflow 一致",
+                       b.get_block(0, 1) == (1ULL << 10));
+            print_item("拷贝构造 overflow_entity_count 一致",
+                       b.overflow_entity_count() == 1);
+
+            // 修改 b 不影响 a
+            b.set_bit(0, 0, 6);
+            print_item("深拷贝独立 (b 改 a 不变)",
+                       a.get_block(0, 0) == (1ULL << 5));
+
+            // 拷贝赋值
+            multi_block_bitmask c;
+            c = a;
+            print_item("拷贝赋值一致", c.equals(a));
+
+            // 移动构造
+            multi_block_bitmask d(std::move(c));
+            print_item("移动构造 inline 一致",
+                       d.get_block(0, 0) == (1ULL << 5));
+            print_item("移动构造 overflow 一致",
+                       d.get_block(0, 1) == (1ULL << 10));
+            print_item("移动源 overflow_entity_count==0",
+                       c.overflow_entity_count() == 0);
+
+            // 移动赋值
+            multi_block_bitmask e;
+            e = std::move(d);
+            print_item("移动赋值一致", e.get_block(0, 0) == (1ULL << 5));
+
+            // clone
+            multi_block_bitmask f = a.clone();
+            print_item("clone 一致", f.equals(a));
+            f.clear_bit(0, 0, 5);
+            print_item("clone 独立 (改 f 不影响 a)",
+                       a.test_bit(0, 0, 5));
+
+            // swap 成员
+            multi_block_bitmask g, h;
+            g.reserve_blocks(2);
+            g.ensure_entity(0);
+            g.set_bit(0, 0, 1);
+            h.ensure_entity(0);
+            h.set_bit(0, 0, 2);
+            g.swap(h);
+            print_item("swap 后 g 含 h 的位", g.test_bit(0, 0, 2));
+            print_item("swap 后 h 含 g 的位", h.test_bit(0, 0, 1));
+
+            // 自由 swap
+            swap(g, h);
+            print_item("自由 swap 后还原", g.test_bit(0, 0, 1));
+
+            // 自赋值
+            a = a;
+            print_item("自赋值安全", a.get_block(0, 0) == (1ULL << 5));
+            // 注: 自移动赋值会触发 -Wself-move 警告, 不进行测试
+        }
+
+        // --- 内存压缩 ---
+        std::cout << "\n  [内存压缩]\n";
+        {
+            multi_block_bitmask m;
+            m.reserve_blocks(2);
+            m.ensure_entity(0);
+            m.ensure_entity(1);
+            m.set_bit(0, 1, 5);
+            m.set_bit(1, 1, 7);
+            print_item("compact 前 overflow_entity_count==2",
+                       m.overflow_entity_count() == 2);
+
+            // compact_slot: slot 0 overflow 非零, 不释放
+            m.compact_slot(0);
+            print_item("compact_slot 非零 overflow 不释放",
+                       m.overflow_entity_count() == 2);
+
+            // 清零 slot 0 的 overflow, 再 compact
+            m.clear_bit(0, 1, 5);
+            m.compact_slot(0);
+            print_item("compact_slot 全零 overflow 释放",
+                       m.overflow_entity_count() == 1);
+            print_item("compact_slot 后 overflow_span 空",
+                       m.overflow_span(0).empty());
+
+            // compact_slot 越界安全
+            m.compact_slot(100);
+            print_item("compact_slot 越界安全",
+                       m.overflow_entity_count() == 1);
+
+            // compact_all
+            m.clear_bit(1, 1, 7);
+            m.compact_all();
+            print_item("compact_all 全局压缩",
+                       m.overflow_entity_count() == 0);
+
+            // compact_all 空容器安全
+            multi_block_bitmask empty_m;
+            empty_m.compact_all();
+            print_item("compact_all 空容器安全",
+                       empty_m.overflow_entity_count() == 0);
+        }
+    }
+
+    // 16. ring_buffer 基础功能
+    print_section(16, "ring_buffer 环形缓冲区");
+    {
+        struct event
+        {
+            int type;
+            int data;
+        };
+
+        // 基本写入与读取
+        {
+            ring_buffer<event, 8> rb;
+            print_item("空时 empty", rb.empty());
+            print_item("空时 pending_count==0", rb.pending_count() == 0);
+            print_item("空时 peek 返回 nullptr", rb.peek() == nullptr);
+            print_item("空时 pop 返回 false", !rb.pop());
+
+            bool p1 = rb.push({1, 100});
+            bool p2 = rb.emplace(2, 200);
+            print_item("push/emplace 返回 true", p1 && p2);
+            print_item("非空 has_pending", rb.has_pending());
+            print_item("pending_count==2", rb.pending_count() == 2);
+
+            const event* peeked = rb.peek();
+            print_item("peek 队首 type==1", peeked && peeked->type == 1);
+
+            size_t total = rb.drain([](const event& e) {
+                (void)e;
+            });
+            print_item("drain 处理 2 个", total == 2);
+            print_item("drain 后 empty", rb.empty());
+        }
+
+        // 无界特性: N=4 push 远超 N
+        {
+            ring_buffer<event, 4> rb;
+            for (size_t i = 0; i < 1000; ++i)
+            {
+                rb.push({static_cast<int>(i), 0});
+            }
+            print_item("N=4 push 1000 个", rb.pending_count() == 1000);
+
+            size_t total = 0;
+            rb.drain([&](const event& e) {
+                if (e.type == static_cast<int>(total)) ++total;
+            });
+            print_item("drain 1000 个顺序正确", total == 1000);
+        }
+
+        // pop 逐个出队
+        {
+            ring_buffer<event, 8> rb;
+            for (int i = 0; i < 5; ++i) rb.push({i, 0});
+
+            int expected = 0;
+            while (rb.has_pending())
+            {
+                const event* e = rb.peek();
+                if (e && e->type == expected) ++expected;
+                rb.pop();
+            }
+            print_item("pop 顺序 0..4", expected == 5);
+            print_item("pop 完后 empty", rb.empty());
+        }
+
+        // drain_with_budget 限制
+        {
+            ring_buffer<event, 8> rb;
+            for (int i = 0; i < 10; ++i) rb.push({i, 0});
+
+            size_t n = rb.drain_with_budget(3, [](const event&) {});
+            print_item("drain_with_budget(3) 处理 3 个", n == 3);
+            print_item("剩余 7 个", rb.pending_count() == 7);
+
+            rb.drain_with_budget(100, [](const event&) {});
+            print_item("drain_with_budget(100) 清空", rb.empty());
+        }
+
+        // clear 清空
+        {
+            ring_buffer<event, 8> rb;
+            for (int i = 0; i < 5; ++i) rb.push({i, 0});
+            rb.clear();
+            print_item("clear 后 empty", rb.empty());
+            print_item("clear 后 pending_count==0", rb.pending_count() == 0);
+        }
+
+        // move 语义
+        {
+            ring_buffer<event, 8> rb1;
+            for (int i = 0; i < 3; ++i) rb1.push({i, 0});
+
+            ring_buffer<event, 8> rb2(std::move(rb1));
+            print_item("move 后 rb2 有 3 个", rb2.pending_count() == 3);
+            print_item("move 后 rb1 empty", rb1.empty());
+
+            ring_buffer<event, 8> rb3;
+            rb3 = std::move(rb2);
+            print_item("move assign 后 rb3 有 3 个", rb3.pending_count() == 3);
+            print_item("move assign 后 rb2 empty", rb2.empty());
+        }
+
+        // capacity 与 slots_per_chunk
+        {
+            ring_buffer<event, 256> rb;
+            print_item("capacity()==256", ring_buffer<event, 256>::capacity() == 256);
+            print_item("slots_per_chunk() > 0", ring_buffer<event, 256>::slots_per_chunk() > 0);
+        }
+
+        // 静态池
+        {
+            ring_buffer<event, 8>::shrink_static_pool();
+            print_item("shrink 后 static_pool_size==0",
+                       ring_buffer<event, 8>::static_pool_size() == 0);
+
+            {
+                ring_buffer<event, 8> rb;
+                for (int i = 0; i < 100; ++i) rb.push({i, 0});
+                rb.clear();
+            }
+            print_item("使用后 static_pool_size > 0",
+                       ring_buffer<event, 8>::static_pool_size() > 0);
+
+            ring_buffer<event, 8>::shrink_static_pool();
+            print_item("再次 shrink 后 ==0",
+                       ring_buffer<event, 8>::static_pool_size() == 0);
+        }
+
+        // 非平凡类型
+        {
+            struct nontrivial
+            {
+                int* p;
+                nontrivial() : p(new int(42)) {}
+                ~nontrivial() { delete p; }
+                nontrivial(const nontrivial& o) : p(new int(*o.p)) {}
+                nontrivial& operator=(const nontrivial& o)
+                {
+                    if (this != &o) { delete p; p = new int(*o.p); }
+                    return *this;
+                }
+                nontrivial(nontrivial&& o) noexcept : p(o.p) { o.p = nullptr; }
+                nontrivial& operator=(nontrivial&& o) noexcept
+                {
+                    if (this != &o) { delete p; p = o.p; o.p = nullptr; }
+                    return *this;
+                }
+            };
+
+            {
+                ring_buffer<nontrivial, 4> rb;
+                for (int i = 0; i < 10; ++i) rb.push(nontrivial{});
+                print_item("非平凡类型 push 10 个", rb.pending_count() == 10);
+
+                size_t n = rb.drain([](const nontrivial& e) {
+                    (void)e;
+                });
+                print_item("非平凡类型 drain 10 个", n == 10);
+            }
+        }
     }
     print_summary("功能测试");
     return 0;

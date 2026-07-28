@@ -37,7 +37,7 @@
     - [25. layered_allocator — 分层分配器](#25-layered_allocator--分层分配器)
     - [26. ring_buffer — 环形缓冲区](#26-ring_buffer--环形缓冲区)
     - [27. time — 计时与基准测量](#27-time--计时与基准测量)
-    - [28. entity_mask_manager — 无上限实体掩码存储](#28-entity_mask_manager--无上限实体掩码存储)
+    - [28. multi_block_bitmask — 多块位掩码存储](#28-multi_block_bitmask--多块位掩码存储)
 
 ---
 
@@ -639,7 +639,7 @@ mgr.register_system(ecs::system_context{
 
 ### 实体掩码（无上限）
 
-基于 `entity_mask_manager` 的动态位掩码存储，无组件类型上限。通过 `reserve_blocks(n)` 预分配掩码块数。
+基于 `multi_block_bitmask` 的动态位掩码存储，无组件类型上限。通过 `reserve_blocks(n)` 预分配掩码块数。
 
 #### `component_meta` 结构体
 
@@ -684,7 +684,7 @@ if (meta && meta->mask_block == 0)
 mgr.reserve_mask_blocks(2);
 ```
 
-> 默认块数为 1（支持 64 种组件）。组件注册时 `register_component_meta` 自动扩容掩码块数，无需手动调用 `reserve_mask_blocks`。手动预分配可避免运行中扩容开销。多块掩码查询通过 `get_entity_block(e, block_idx)` 或 `get_entity_block_by_idx(idx, block_idx)` 访问任意块。详见 [§ 27. entity_mask_manager](#27-entity_mask_manager--无上限实体掩码存储)。
+> 默认块数为 1（支持 64 种组件）。组件注册时 `register_component_meta` 自动扩容掩码块数，无需手动调用 `reserve_mask_blocks`。手动预分配可避免运行中扩容开销。多块掩码查询通过 `get_entity_block(e, block_idx)` 或 `get_entity_block_by_idx(idx, block_idx)` 访问任意块。详见 [§ 28. multi_block_bitmask](#28-multi_block_bitmask--多块位掩码存储)。
 
 ### 不要做什么
 
@@ -2431,13 +2431,12 @@ for (int i = 0; i < 1000; ++i) {
 | `erase(first, last)` | 删除范围元素 |
 | `pop_back()` | 删除尾部元素 |
 | `clear()` | 清空所有元素 |
-| `increase_capacity(capacity)` | 扩容（不增加元素） |
-| `increase_capacity(capacity, value)` | 扩容并填充值到新槽位 |
+| `increase_capacity(capacity)` | 扩容（只扩容不缩容，不增加元素） |
+| `increase_capacity(capacity, value)` | 扩容并填充值到新槽位（只扩容不缩容，`capacity <= size` 时直接返回不销毁任何对象） |
 | `reduce_capacity(capacity)` | 缩容（截断超出元素） |
 | `reduce_capacity(capacity, dst)` | 缩容，超出元素移至 dst |
 | `shrink_to_fit()` | 缩容至 `size()` |
 | `reserve_exact(capacity)` | 精确扩容（分配到精确大小，不增加元素） |
-| `resize(size_t, const T& value)` | 调整大小并填充值（支持缩小） |
 | `fill_bulk(value, start, count)` | 从 `start` 开始填充 `count` 个 `value`（自动扩容；非平凡类型会先析构已有对象再重新构造） |
 | `prepare_dense(new_size)` | 预备密集模式到 `new_size`（扩容 + 默认构造新槽位 + 标记为已分配，使容器进入密集模式） |
 | `swap(other)` | 交换两个容器 |
@@ -2462,7 +2461,6 @@ for (int i = 0; i < 1000; ++i) {
 | `sparse_erase_at(index)` | **产生空洞** → 变稀疏 |
 | `emplace_at(index)` | **可能填充空洞** → 可能变连续 |
 | `sparse_emplace_at(index)` | **可能填充空洞** → 可能变连续 |
-| `resize()` 缩小 | **可能消除空洞** → 可能变连续 |
 | `reduce_capacity()` 缩小 | **可能消除空洞** → 可能变连续 |
 
 ### 插入/删除
@@ -2534,7 +2532,7 @@ fastest.append_n(1'000'000, 0);  // 直接追加 1M 个 0
 // 精确扩容（不增加元素，分配到精确大小）
 class_pool<int> reserved;
 reserved.reserve_exact(1000);        // capacity >= 1000，size 不变
-reserved.resize(10, 0);             // 调整 size 到 10 并填充 0
+reserved.increase_capacity(10, 0);  // 扩容 size 到 10 并填充 0（只扩容不缩容）
 
 // 位置插入
 pool.emplace(std::next(pool.begin(), 1), 42);  // 在位置 1 插入
@@ -2573,7 +2571,7 @@ pool.is_dense();              // 检查是否连续
 |---------|------|---------|
 | `sparse_erase_at()` 后仍期望连续迭代 | 产生空洞，迭代变稀疏模式 | 用 `emplace_at()` 填充空洞，或用 `erase()` 替代 |
 | 频繁 `sparse_erase_at()` + `emplace_at()` 来回切换 | 每次切换触发模式扫描 | 批量操作，或统一使用 `erase()`/`emplace()` 保持连续 |
-| `emplace_at()` 在远超 `size()` 的索引上构造 | 中间留大量未初始化槽位，`size()` 暴增 | 用 `resize(n, value)` 预填充，或改用 `sparse_emplace_at()` |
+| `emplace_at()` 在远超 `size()` 的索引上构造 | 中间留大量未初始化槽位，`size()` 暴增 | 用 `increase_capacity(n, value)` 预填充，或改用 `sparse_emplace_at()` |
 | 在 sparse 模式下使用 `data()` + `span()` 做线性遍历 | 未初始化槽位包含垃圾数据 | 始终通过迭代器遍历，或先确认 `is_dense()` 为 true |
 | `increase_capacity(n)` 期望精确分配到 n | 实际容量可能大于 n | 精确分配用 `reserve_exact(n)` |
 | `emplace_at()` 期望覆盖已有值 | `emplace_at` 是 get-or-create，不覆盖 | 使用 `sparse_emplace_at()` 实现 insert-or-assign |
@@ -2747,7 +2745,19 @@ size_t live = compact_to(pool, compact, pool.size());
 
 ## 15. void_any — 类型擦除存储
 
-使用 `type_id` 进行类型识别。支持 SSO 和内存池（通过宏配置）。
+类型擦除容器，保持 `void*` 设计理念，通过位编码将元信息打包到单个 64 位字中，减少内存访问。支持 SSO 和内存池（通过宏配置）。
+
+### 存储模式
+
+64 位平台下，`void_any` 根据类型特征自动选择三种存储模式之一：
+
+| 模式 | 适用条件 | 特征 |
+|------|---------|------|
+| inline 编码 | SSO + trivially_copyable + trivially_destructible | 无 vtable 访问，type_id 通过编译期类型标签比较 |
+| SSO vtable | SSO 但非 trivially_copyable/destructible | 内联存储，通过 vtable 调用 copy/move/destroy |
+| heap vtable | 超出 SSO 容量 | 堆分配，通过 vtable 管理 |
+
+inline 编码模式将 `element_size`、`trivially_destructible`、`trivially_copyable` 等信息编码到 vtable 指针的空闲位中，对 trivial 类型完全跳过 vtable 访问，copy/move 操作仅执行分级内存复制。
 
 ### 构造与赋值
 
@@ -2765,7 +2775,7 @@ size_t live = compact_to(pool, compact, pool.size());
 | 接口 | 说明 |
 |------|------|
 | `set(T&&)` | 设置新值（先析构旧值再构造新值） |
-| `type_id()` | 获取类型 ID（空值返回 -1） |
+| `type_id()` | 获取类型 ID（空值返回 -1；inline 编码模式返回类型标签派生值，仅用于同类型一致性比较） |
 | `get_ptr<T>()` | 获取指针（带类型检查，不匹配返回 nullptr） |
 | `get_ptr<T>() const` | const 版本 |
 | `fast_get_ptr<T>()` | 快速获取（跳过 type_id 检查） |
@@ -2773,15 +2783,21 @@ size_t live = compact_to(pool, compact, pool.size());
 | `get_ptr_unchecked<T>()` | 无检查获取（不验证 has_value 和 type_id） |
 | `get_ptr_unchecked<T>() const` | const 版本 |
 | `get<T>()` | 获取值副本（空值或类型不匹配返回默认构造） |
+| `get_void()` | 获取 `void*`（空值返回 nullptr） |
+| `get_void() const` | const 版本 |
+| `copy_from<T>(const T&)` | 编译期已知 T 的拷贝赋值 |
+| `move_from<T>(T&&)` | 编译期已知 T 的移动赋值 |
 | `has_value()` | 是否有值 |
 | `reset()` | 清空（析构并置空） |
+
+> 注：`type_id()` 在 inline 编码模式下返回类型标签指针派生值，不等于 `type_id::get_type_id<T>()`。需要类型匹配判断时使用 `get_ptr<T>()`。
 
 ### 使用
 
 ```cpp
 void_any a(42);
 a.has_value();                 // true
-a.type_id();                   // int 的 ID
+a.type_id();                   // 类型标识 (空值返回 -1)
 
 int* p = a.get_ptr<int>();     // 带类型检查
 int* pf = a.fast_get_ptr<int>();  // 无 type_id 检查
@@ -2801,6 +2817,18 @@ void_any b_assign;
 b_assign = b_copy;             // 拷贝赋值
 void_any b_move_assign;
 b_move_assign = std::move(b_move);  // 移动赋值
+
+// void* 访问
+void* vp = a.get_void();       // 返回 void* (空值返回 nullptr)
+
+// 编译期已知 T 的高性能接口
+void_any c;
+c.copy_from(42);               // 编译期已知 int, 跳过 vtable 间接调用
+c.move_from(std::string("x")); // 编译期已知 string
+
+// 类型一致性比较 (inline 编码模式)
+void_any x(1), y(2);
+x.type_id() == y.type_id();    // true, 同类型返回相同值
 ```
 
 ### 不要做什么
@@ -2811,6 +2839,7 @@ b_move_assign = std::move(b_move);  // 移动赋值
 | 依赖 `get<T>()` 返回默认值来判断类型 | 默认构造值可能与实际值相同 | 先用 `get_ptr<T>()` 检查指针是否为空 |
 | 移动后继续使用 | 移动后源对象为空 | 移动后仅可调用 `reset()` 或重新赋值 |
 | 在 `set()` 之前访问 | `has_value()` 为 false，get_ptr 返回 nullptr | 先 `set()` 或构造时传值 |
+| 用 `type_id() == type_id::get_type_id<T>()` 判断类型 | inline 编码模式下两者不相等 | 用 `get_ptr<T>() != nullptr` 判断类型 |
 
 ---
 
@@ -2864,7 +2893,7 @@ uint32_t id3 = alloc.get_id();  // 1（复用）
 
 ## 18. memory_pool — 内存池
 
-基于 TLSF（Two-Level Segregated Fit）算法的分桶式内存池，减少频繁 malloc/free 开销。
+基于 TLSF（Two-Level Segregated Fit）算法的分桶式内存池，减少频繁 malloc/free 开销。内部维护 chunk 预分配池，`reset()` 和 `reduce_capacity()` 释放的 chunk 优先归还预分配池，后续 `allocate` 优先从池中取用，减少系统调用。预分配池容量有限，超限的 chunk 归还系统。
 
 ### 内存布局
 
@@ -2910,9 +2939,12 @@ uint32_t id3 = alloc.get_id();  // 1（复用）
 | `memory_pool(memory_pool&&)` | 移动构造 |
 | `operator=(memory_pool&&)` | 移动赋值 |
 | `allocate(size_t size)` | 分配内存，返回 16 字节对齐指针 |
+| `allocate_sized<Size>()` | 模板化分配，Size 为编译期大小，小块走快路径 |
 | `deallocate(void* ptr)` | 释放内存（自动合并相邻块） |
-| `construct<T>(Args...)` | 分配并构造对象 |
-| `destroy<T>(T* ptr)` | 析构并释放对象 |
+| `deallocate(void* ptr, size_t size)` | 释放内存（size 必须与 allocate 一致） |
+| `deallocate_sized<Size>(void* ptr)` | 模板化释放，Size 为编译期大小，与 `allocate_sized<Size>()` 配对 |
+| `construct<T>(Args...)` | 分配并构造对象（内部走 `allocate_sized<sizeof(T)>()`） |
+| `destroy<T>(T* ptr)` | 析构并释放对象（内部走 `deallocate_sized<sizeof(T)>(ptr)`） |
 | `total_allocated()` | 已分配总量 |
 | `total_used()` | 已使用量 |
 | `chunk_size()` | 获取块大小 |
@@ -2922,7 +2954,7 @@ uint32_t id3 = alloc.get_id();  // 1（复用）
 | `iterate_free(Fn&& fn)` | 遍历空闲块，回调签名 `void(void* data_ptr, size_t block_size)` |
 | `increase_capacity(size_t size)` | 扩容（只扩容不缩容） |
 | `reduce_capacity(size_t target)` | 缩容（只缩容不扩容，释放空闲 chunk 直到总量 <= target） |
-| `reset()` | 释放所有内存块，回到初始状态 |
+| `reset()` | 释放所有内存块，chunk 归还预分配池（不归还系统），回到初始状态 |
 
 > 注：`memory_pool` 禁止拷贝。
 
@@ -2931,14 +2963,21 @@ uint32_t id3 = alloc.get_id();  // 1（复用）
 ```cpp
 memory_pool pool;
 void* p = pool.allocate(64);
-pool.deallocate(p);
+pool.deallocate(p);                  // unsized deallocate
+
+void* q = pool.allocate(64);
+pool.deallocate(q, 64);              // sized deallocate, size 与 allocate 一致
+
+// sized 模板路径: Size 编译期已知, 小块走快路径, 与 allocate_sized<Size>() 配对
+void* r = pool.allocate_sized<64>();
+pool.deallocate_sized<64>(r);
 
 std::string* s = pool.construct<std::string>("hello");
 pool.destroy(s);
 
 pool.increase_capacity(1024 * 1024);  // 扩容至 1MB
 pool.reduce_capacity(4096);          // 缩容，释放空闲 chunk 至总量 <= 4096
-pool.reset();                        // 释放所有，回到初始状态
+pool.reset();                        // 释放所有，chunk 归还预分配池,回到初始状态
 
 // owns: 判断指针归属
 void* q = pool.allocate(32);
@@ -2968,6 +3007,7 @@ pool.iterate_free([&](void* data_ptr, size_t block_size) {
 | 拷贝 `memory_pool` | 禁止拷贝，内部指针所有权混乱 | 使用移动语义或引用传递 |
 | 在 `iterate_free` 回调中修改池状态 | 遍历中增删块会破坏链表 | 仅在回调中读取信息，不调用 `allocate`/`deallocate` |
 | 依赖 `owns()` 区分池内不同块 | `owns` 仅判断指针是否属于本池，不区分具体块 | 用 `stats()`/`iterate_free()` 获取块信息 |
+| 期望 `reset()` 立即归还内存给系统 | chunk 优先进入预分配池，析构时才归还系统 | 如需立即归还，销毁 pool 对象或用新对象替换 |
 
 ### arena_allocator — 线性 bump 分配器
 
@@ -3207,10 +3247,9 @@ bool in_la = la.owns(small);
 
 | 接口 | 说明 |
 |------|------|
-| `increase_capacity(new_capacity)` | 扩容到 `new_capacity`（只增不减，不改变 `size`） |
-| `increase_capacity(new_capacity, value)` | 扩容并以 `value` 填充新增位置（同时改变 `size`） |
+| `increase_capacity(new_capacity)` | 扩容到 `new_capacity`（只扩容不缩容，不改变 `size`） |
+| `increase_capacity(new_capacity, value)` | 扩容并以 `value` 填充新增位置（只扩容不缩容，`new_capacity <= size` 时直接返回不销毁任何对象） |
 | `reserve_exact(new_capacity)` | 精确预留容量（强制增长） |
-| `resize(new_size, value)` | 调整 `size`（扩大时以 `value` 填充） |
 | `shrink_to_fit()` | 缩容到 `size`（释放多余内存） |
 | `reduce_capacity(new_capacity)` | 缩容到 `new_capacity`（只减不增，超出部分截断） |
 | `reduce_capacity(new_capacity, dense<T>& dst)` | 缩容并将截断元素迁移到 `dst` |
@@ -3360,7 +3399,7 @@ bulk.append_bulk(init.data(), init.size());
 // 容量控制
 pool.increase_capacity(1000);
 pool.shrink_to_fit();
-pool.resize(10, 99);
+pool.increase_capacity(10, 99);
 
 // 元素访问
 int v = pool[0];
@@ -3802,23 +3841,26 @@ alloc.deallocate(small, 64);  // 直接路由到 slab
 
 `#include "part/ring_buffer.hpp"`，全局命名空间。`noexcept`。
 
-通用固定容量环形缓冲区，堆分配存储，栈上仅占指针大小。容量 N 必须为 2 的幂，内部用位掩码取模。不做元素零初始化，调用方仅在 `[read_, write_)` 区间读取。
+无界环形缓冲区，模板参数 `N` 作为编译期最小保证容量（实际无界）。`push` 永不失败（OOM 时 `std::abort`）。
 
 ### 接口
 
 | 接口 | 说明 |
 |------|------|
-| `ring_buffer()` | 默认构造，堆分配 N 个元素 |
-| `push(const T&)` / `push(T&&)` | 写入一个事件，满返回 false |
-| `emplace(args...)` | 原位构造写入，满返回 false |
+| `ring_buffer()` | 默认构造 |
+| `push(const T&)` / `push(T&&)` | 写入一个事件，恒返回 true |
+| `emplace(args...)` | 原位构造写入，恒返回 true |
 | `drain(handler)` | 读取并处理所有待处理事件，返回处理数 |
 | `drain_with_budget(budget, handler)` | 带预算的 drain，防止 handler 内追加导致无限循环 |
 | `peek()` | 仅读队首（不推进），空返回 nullptr |
 | `pop()` | 弹出队首，空返回 false |
 | `empty()` / `has_pending()` | 是否空 / 是否有待处理 |
 | `pending_count()` | 待处理数量 |
-| `capacity()` | 容量（编译期常量 N） |
-| `clear()` | 清空（read_=write_=0） |
+| `capacity()` | 编译期最小保证容量 N |
+| `slots_per_chunk()` | 单块槽位数 |
+| `static_pool_size()` | 静态池当前缓存块数 |
+| `shrink_static_pool()` | 释放静态池所有缓存块 |
+| `clear()` | 清空所有事件 |
 
 ### 使用
 
@@ -3843,22 +3885,18 @@ buf.push({3, 300});
 buf.drain_with_budget(1, [](const event& e) {
     // 只处理 1 个，即使 handler 内追加也不会无限循环
 });
+
+// 内存紧张时释放静态池缓存
+ring_buffer<event>::shrink_static_pool();
 ```
 
-### 机制
-
-- 存储用 `std::unique_ptr<T[]>`，栈上仅 `unique_ptr` + 2 个 `uint32_t`（read_/write_）≈ 16 字节
-- 容量 N 必须为 2 的幂，取模用 `& (N-1)` 位运算
-- `drain_with_budget` 限制最大处理数，防止 handler 内 `push` 导致无限循环
-- 不做元素零初始化，trivial 类型不 memset
-
-### 不要做什么
+### 注意事项
 
 | 错误做法 | 问题 | 正确做法 |
 |---------|------|---------|
-| 容量 N 不是 2 的幂 | `static_assert` 编译失败 | N 必须为 2, 4, 8, ..., 1024, ... |
+| 依赖 `push` 返回 false 判断满 | `push` 恒返回 true | 用 `pending_count()` 监控积压 |
 | `drain` 的 handler 内 `push` 新事件 | 可能无限循环 | 用 `drain_with_budget` 限制处理数 |
-| 依赖 `peek()` 指针在 `pop` 后有效 | `pop` 推进 read_，指针指向数据未定义 | `peek` 后立即处理或先拷贝 |
+| 依赖 `peek()` 指针在 `pop` 后有效 | `pop` 推进读位置，指针失效 | `peek` 后立即处理或先拷贝 |
 
 ---
 
@@ -4081,102 +4119,276 @@ for (auto& e : entities)
 
 ---
 
-## 28. entity_mask_manager — 无上限实体掩码存储
+## 28. multi_block_bitmask — 多块位掩码存储
 
-`include/part/entity_mask_manager.hpp`，无命名空间。基于 `class_pool<mask_entry>` 的位掩码存储，支持无限组件类型。
+`include/part/multi_block_bitmask.hpp`，无命名空间。每槽 1+ 个 64 位块的多块位掩码容器，块 0 内嵌，块 1+ 按需分配。通用位掩码场景（布隆过滤、稀疏集合、组件标签、哈希位图等）均适用。
 
 ### 接口
 
+#### 静态辅助
+
 | 接口 | 说明 |
 |------|------|
-| `reserve_blocks(uint32_t num_blocks)` | 预分配掩码块数（仅扩容，不缩容；注册组件前调用） |
-| `num_blocks() const` | 当前每实体掩码块数 |
-| `ensure_entity(uint32_t entity_index)` | 确保实体容量（与 `entity_manager` 同步增长） |
-| `set_bit(entity_index, block_idx, bit_offset)` | 设置掩码位（带边界检查，必要时自动扩容） |
-| `set_bit_no_check(entity_index, block_idx, bit_offset)` | 设置掩码位（无边界检查，调用方保证 `entity_index` 已分配且 `block_idx < num_blocks()`） |
-| `clear_bit(entity_index, block_idx, bit_offset)` | 清除掩码位（带边界检查） |
-| `clear_bit_no_check(entity_index, block_idx, bit_offset)` | 清除掩码位（无边界检查） |
-| `get_block(entity_index, block_idx) const` | 获取掩码块值（越界返回 0；`get_block(e, 0)` 等价于原 `get_mask`） |
-| `clear_entity(entity_index)` | 清零该实体所有掩码块（删除实体时调用） |
-| `resize_entities(uint32_t new_count)` | 批量扩容到 `new_count` 个实体（预分配实体时使用） |
-| `increase_capacity(size_t new_entity_capacity)` | 扩容到能容纳指定实体数（只增不减，不改变 `size`；与 `class_pool` 同名） |
-| `reserve_exact(size_t new_entity_capacity)` | 精确预留容量（强制增长到指定容量，不改变 `size`） |
-| `shrink_to_fit()` | 缩容到实际实体数，释放多余内存 |
-| `reduce_capacity(size_t new_entity_capacity)` | 缩容到指定实体容量（只减不增，超出部分截断） |
-| `clear()` | 清空所有掩码数据（`size=0`，`capacity`/`num_blocks` 保留） |
-| `size() const` | 当前实体数（已分配掩码的实体数） |
-| `capacity() const` | 实体容量 |
+| `static constexpr uint32_t bits_per_block` | 每块位数（64） |
+| `static constexpr uint32_t block_count_for_bits(size_t bit_count)` | 给定位数算所需块数 |
+
+#### 块管理
+
+| 接口 | 说明 |
+|------|------|
+| `reserve_blocks(uint32_t num_blocks)` | 预分配掩码块数（仅扩容，不缩容） |
+| `num_blocks() const` | 当前每槽掩码块数（= 1 + overflow_block_count_） |
+| `overflow_entity_count() const` | 已分配 overflow 的槽位数 |
+
+#### 容量管理
+
+| 接口 | 说明 |
+|------|------|
+| `ensure_entity(uint32_t slot)` | 确保槽位容量（必要时自动扩容） |
+| `resize_entities(uint32_t new_count)` | 批量扩容到 `new_count` 个槽位 |
+| `increase_capacity(size_t new_slot_capacity)` | 扩容到指定槽位容量（只增不减，不改变 `size`） |
+| `reserve_exact(size_t new_slot_capacity)` | 精确预留容量（不改变 `size`） |
+| `shrink_to_fit()` | 缩容到实际槽位数 |
+| `reduce_capacity(size_t new_slot_capacity)` | 缩容到指定容量（超出部分截断） |
+| `clear()` | 清空所有数据（`size=0`，`capacity`/`num_blocks` 保留） |
+| `size() const` | 当前槽位数 |
+| `capacity() const` | 槽位容量 |
 | `empty() const` | 是否为空 |
 | `size_bytes() const` | 已用内存（字节） |
 | `capacity_bytes() const` | 容量内存（字节） |
-| `for_each_set_bit(entity_index, func) const` | 遍历该实体所有已置位的位，回调签名为 `func(uint32_t block_idx, uint32_t bit_offset)`（block_idx=0 为内嵌块，≥1 为溢出块；越界静默返回） |
+
+#### 单位写入（带边界检查）
+
+| 接口 | 说明 |
+|------|------|
+| `set_bit(slot, block_idx, bit_offset)` | 设置位（必要时自动扩容 slot） |
+| `clear_bit(slot, block_idx, bit_offset)` | 清除位 |
+| `clear_entity(slot)` | 清零该槽位所有块 |
+
+#### 单位写入（无边界检查）
+
+调用方保证 `slot < size()` 且 `block_idx < num_blocks()`。
+
+| 接口 | 说明 |
+|------|------|
+| `set_bit_no_check(slot, block_idx, bit_offset)` | 设置位 |
+| `clear_bit_no_check(slot, block_idx, bit_offset)` | 清除位 |
+
+#### 整块写入
+
+替代读-改-写，直接写入整块值。
+
+| 接口 | 说明 |
+|------|------|
+| `set_block_value(slot, block_idx, uint64_t value)` | 整块赋值 |
+| `or_block_value(slot, block_idx, uint64_t mask)` | 原地或 |
+| `and_block_value(slot, block_idx, uint64_t mask)` | 原地与 |
+| `xor_block_value(slot, block_idx, uint64_t mask)` | 原地异或 |
+
+#### 批量位操作（同块多位）
+
+| 接口 | 说明 |
+|------|------|
+| `set_bits_at(slot, block_idx, std::span<const uint32_t> offsets)` | 批量设置多位 |
+| `clear_bits_at(slot, block_idx, std::span<const uint32_t> offsets)` | 批量清除多位 |
+| `toggle_bits_at(slot, block_idx, std::span<const uint32_t> offsets)` | 批量翻转多位 |
+
+#### 整槽多块读写
+
+| 接口 | 说明 |
+|------|------|
+| `assign_slot(slot, std::span<const uint64_t> data)` | 写入整槽所有块（`data[0]`→block 0，`data[1]`→block 1，…；若 `data.size() > num_blocks()` 自动 `reserve_blocks`） |
+| `copy_slot_to(slot, std::span<uint64_t> dst) const` | 读取整槽所有块到 `dst`（`dst.size()` 决定读取块数，不足部分补零） |
+
+#### 查询接口
+
+| 接口 | 说明 |
+|------|------|
+| `get_block(slot, block_idx) const` | 获取块值（越界返回 0） |
+| `test_bit(slot, block_idx, bit_offset) const` | 测试位是否置位 |
+| `any_set_in_block(slot, block_idx) const` | 块是否非零 |
+| `any_set(slot) const` | 槽位是否有任意位置位（含 overflow） |
+| `is_zero(slot) const` | 槽位是否全零 |
+| `count_set_bits(slot) const` | 槽位置位数（含 overflow，基于 `std::popcount`） |
+| `find_first_set(slot, out_block, out_offset) const` | 找首个置位，写入 `out_block`/`out_offset`，返回是否找到 |
+| `find_last_set(slot, out_block, out_offset) const` | 找末个置位 |
+| `find_next_set(slot, after_block, after_offset, out_block, out_offset) const` | 从指定位置之后找下一个置位 |
+
+#### 遍历接口
+
+回调受 `std::invocable` concepts 约束，编译期捕获签名错误。
+
+| 接口 | 回调签名 | 说明 |
+|------|---------|------|
+| `for_each_set_bit(slot, func) const` | `func(uint32_t block_idx, uint32_t bit_offset)` | 遍历该槽位所有置位 |
+| `for_each_set_slot(func) const` | `func(uint32_t slot)` | 遍历所有非空槽位 |
+| `for_each_set_bit_global(func) const` | `func(uint32_t slot, uint32_t block_idx, uint32_t bit_offset)` | 全局遍历所有置位 |
+| `count_set_bits_global() const` | — | 全局置位总数 |
+
+#### 视图接口
+
+| 接口 | 说明 |
+|------|------|
+| `inline_span() noexcept` / `inline_span() const noexcept` | 返回 block 0 全局视图 `std::span<uint64_t>` / `std::span<const uint64_t>` |
+| `overflow_span(slot) noexcept` / `overflow_span(slot) const noexcept` | 返回某槽位的 overflow 块视图（block 1+），未分配则返回空 span |
+
+#### 复制与交换
+
+| 接口 | 说明 |
+|------|------|
+| `multi_block_bitmask(const multi_block_bitmask&)` | 深拷贝构造 |
+| `operator=(const multi_block_bitmask&)` | 深拷贝赋值 |
+| `multi_block_bitmask(multi_block_bitmask&&)` | 移动构造 |
+| `operator=(multi_block_bitmask&&)` | 移动赋值 |
+| `swap(multi_block_bitmask&) noexcept` | 成员交换 |
+| `clone() const` | 显式深拷贝工厂 |
+| 自由函数 `swap(a, b) noexcept` | 自由交换 |
+
+#### 集合运算（原地，处理共同 slot 与共同块）
+
+| 接口 | 说明 |
+|------|------|
+| `and_with(const multi_block_bitmask& o)` | `this &= o`（`this` 中 `o` 不存在的 slot 清零） |
+| `or_with(const multi_block_bitmask& o)` | `this \|= o`（仅处理共同 slot，不扩容） |
+| `xor_with(const multi_block_bitmask& o)` | `this ^= o` |
+| `subtract(const multi_block_bitmask& o)` | `this &= ~o`（差集） |
+| `overlaps(const multi_block_bitmask& o) const` | 是否与 `o` 有任意共同置位 |
+| `contains_all(const multi_block_bitmask& o) const` | `this` 是否包含 `o` 的所有置位（超集） |
+| `equals(const multi_block_bitmask& o) const` | 是否相等 |
+
+#### 内存压缩
+
+| 接口 | 说明 |
+|------|------|
+| `compact_slot(slot)` | 若该槽位 overflow 全零则释放 |
+| `compact_all()` | 全局压缩所有全零 overflow |
 
 ### 机制
 
-- **块 0 内嵌**：每实体 `mask_entry` 直接存储块 0 的 `uint64_t`，无需间接访问
-- **溢出按需分配**：块 1+ 仅在 `set_bit` 写入时按需分配，未使用溢出的实体无额外内存
+- **块 0 内嵌**：每槽 `inline_bits_[slot]` 直接存储块 0 的 `uint64_t`，无间接访问
+- **溢出按需分配**：块 1+ 仅在写入时按需分配 32 字节对齐的 overflow 数组，未使用溢出的槽位无额外内存
 - **越界保护**：`set_bit` / `clear_bit` 检查 `block_idx < num_blocks()`，越界静默返回；`*_no_check` 版本跳过检查用于热路径
-- **容量单位**：`increase_capacity` / `reserve_exact` / `reduce_capacity` / `capacity` 的参数与返回值均以"实体数"为单位
+- **容量单位**：`increase_capacity` / `reserve_exact` / `reduce_capacity` / `capacity` 的参数与返回值均以"槽位数"为单位
+- **集合运算语义**：仅处理双方共同 slot 与共同块，`this` 中超出 `o` 的 slot 在 `and_with` 下清零，其他运算保留
+- **深拷贝**：拷贝构造/赋值深拷贝 `inline_bits_` 与每个 overflow 块，独立所有权
 
 ### 使用
 
 ```cpp
-entity_mask_manager masks;
-masks.reserve_blocks(2);            // 预分配 2 块 = 支持 128 种组件
+multi_block_bitmask masks;
+masks.reserve_blocks(2);                    // 预分配 2 块 = 支持 128 位
 masks.ensure_entity(0);
-masks.set_bit(0, 0, 5);             // 实体 0 块 0 位 5
-masks.set_bit(0, 1, 10);            // 实体 0 块 1 位 10
+masks.set_bit(0, 0, 5);                     // 槽 0 块 0 位 5
+masks.set_bit(0, 1, 10);                    // 槽 0 块 1 位 10
 uint64_t b0 = masks.get_block(0, 0);
 uint64_t b1 = masks.get_block(0, 1);
-masks.clear_entity(0);              // 删除实体时清零
+masks.clear_entity(0);                      // 清零整槽
 
-// 扩容 / 缩容 / 状态查询 (与 class_pool 命名一致)
-masks.increase_capacity(10000);     // 预留 1 万实体容量
-masks.reserve_exact(50000);         // 精确预留 5 万实体容量
-size_t cap = masks.capacity();      // 当前实体容量
-size_t n   = masks.size();          // 当前实体数
-masks.shrink_to_fit();              // 缩容到实际实体数
-masks.reduce_capacity(1000);        // 缩容到 1000 实体容量 (超出截断)
-masks.clear();                      // 清空数据 (capacity/num_blocks 保留)
+// 查询
+bool has = masks.test_bit(0, 0, 5);
+bool any = masks.any_set(0);
+uint32_t cnt = masks.count_set_bits(0);
+uint32_t blk, off;
+if (masks.find_first_set(0, blk, off)) { /* ... */ }
+
+// 批量位操作
+uint32_t offsets[] = {1, 3, 5, 7};
+masks.set_bits_at(0, 0, offsets);
+
+// 整块写入
+masks.set_block_value(0, 0, 0xFFFFFFFFULL);
+masks.or_block_value(0, 0, 0x1ULL << 10);
+
+// 整槽读写
+uint64_t data[] = {0xFF, 0xAA};
+masks.assign_slot(0, data);
+uint64_t out[2];
+masks.copy_slot_to(0, out);
+
+// 视图
+std::span<const uint64_t> inline_view = masks.inline_span();
+std::span<const uint64_t> ovf_view = masks.overflow_span(0);
+
+// 遍历
+masks.for_each_set_bit(0, [](uint32_t blk, uint32_t off) { /* ... */ });
+masks.for_each_set_slot([](uint32_t slot) { /* ... */ });
+masks.for_each_set_bit_global([](uint32_t slot, uint32_t blk, uint32_t off) { /* ... */ });
+size_t total = masks.count_set_bits_global();
+
+// 集合运算
+multi_block_bitmask a, b;
+a.reserve_blocks(2); b.reserve_blocks(2);
+a.ensure_entity(0); b.ensure_entity(0);
+a.set_bit(0, 0, 1); b.set_bit(0, 0, 2);
+a.or_with(b);                             // a 现在 = {1, 2}
+bool inter = a.overlaps(b);
+bool sup = a.contains_all(b);
+bool eq = a.equals(b);
+
+// 复制与交换
+multi_block_bitmask c = a.clone();
+multi_block_bitmask d = std::move(c);
+d.swap(a);
+swap(d, a);                               // 自由 swap
+
+// 内存压缩
+masks.clear_bit(0, 1, 10);
+masks.compact_slot(0);                     // overflow 全零则释放
+masks.compact_all();                       // 全局压缩
+
+// 扩容 / 缩容 / 状态查询 (与 class_pool / dense 命名一致)
+masks.increase_capacity(10000);
+masks.reserve_exact(50000);
+size_t cap = masks.capacity();
+size_t n   = masks.size();
+masks.shrink_to_fit();
+masks.reduce_capacity(1000);
+masks.clear();
 bool isEmpty = masks.empty();
 size_t used  = masks.size_bytes();
-size_t total = masks.capacity_bytes();
+size_t total_cap = masks.capacity_bytes();
+size_t ovf_count = masks.overflow_entity_count();
+
+// 静态辅助
+constexpr uint32_t blk = multi_block_bitmask::block_count_for_bits(200);  // = 4
 ```
 
 ### 批量注册推荐用法
 
-逐个 `ensure_entity` 每次都做边界检查 + size 读取 + 可能的 resize。批量注册实体时用三步法可以减少重复检查:
+逐个 `ensure_entity` 每次都做边界检查 + size 读取 + 可能的扩容。批量注册时用三步法减少重复检查:
 
 ```cpp
-entity_mask_manager masks;
-masks.reserve_blocks(2);            // 步骤 0: 预分配块数 (必须先于步骤 1)
+multi_block_bitmask masks;
+masks.reserve_blocks(2);                   // 步骤 0: 预分配块数 (必须先于步骤 1)
 
-// 三步法批量注册 N 个实体
-masks.increase_capacity(N);         // 步骤 1: 扩 capacity (避免后续 resize 时 realloc)
-masks.resize_entities(N);           // 步骤 2: 撑 size (使 set_bit_no_check 的 masks_[idx] 合法)
+// 三步法批量注册 N 个槽位
+masks.increase_capacity(N);                // 步骤 1: 扩 capacity
+masks.resize_entities(N);                  // 步骤 2: 撑 size
 for (uint32_t i = 0; i < N; ++i)
 {
-    masks.set_bit_no_check(i, 0, i & 63);  // 步骤 3: 跳过边界检查写入 (调用方保证 i < size)
+    masks.set_bit_no_check(i, 0, i & 63);  // 步骤 3: 跳过边界检查写入
 }
 ```
 
 | 步骤 | 作用 | 跳过后果 |
 |------|------|----------|
-| `increase_capacity(N)` | 预留容量,避免 `resize_entities` 内部触发 realloc | 性能回退到逐次 resize 路径 |
+| `increase_capacity(N)` | 预留容量,避免 `resize_entities` 内部触发 realloc | 性能回退到逐次扩容路径 |
 | `resize_entities(N)` | 把 `size()` 撑到 N,使 `set_bit_no_check` 访问合法 | `set_bit_no_check` 越界写崩 |
 | `set_bit_no_check(...)` | 跳过边界检查的写入 | 退回 `set_bit` 的带检查路径 |
 
-> 注:`increase_capacity` 只扩 capacity 不动 size,`set_bit_no_check` 要求 `entity_index < size()`。
+> 注:`increase_capacity` 只扩 capacity 不动 size,`set_bit_no_check` 要求 `slot < size()`。
 > 因此步骤 1 和步骤 2 **都不可省略**,否则 `set_bit_no_check` 越界。
 
 ### 不要做什么
 
 | 错误做法 | 问题 | 正确做法 |
 |---------|------|---------|
-| 注册组件后再调 `reserve_blocks` | 触发现有溢出实体扩容 | 启动时预估类型数，注册前调 `reserve_blocks` |
-| 对未 `ensure_entity` 的实体调 `set_bit_no_check` | 越界写崩 | 先 `ensure_entity`,或批量场景用 `increase_capacity` + `resize_entities` 三步法 (见上节) |
-| `increase_capacity(N)` 后直接 `set_bit_no_check` | capacity 扩了但 size 未撑,`masks_[idx]` 越界写崩 | 必须再调 `resize_entities(N)` 撑 size,见"批量注册推荐用法" |
+| 注册组件后再调 `reserve_blocks` | 触发现有溢出槽位扩容 | 启动时预估类型数，注册前调 `reserve_blocks` |
+| 对未 `ensure_entity` 的槽位调 `set_bit_no_check` | 越界写崩 | 先 `ensure_entity`,或批量场景用 `increase_capacity` + `resize_entities` 三步法 |
+| `increase_capacity(N)` 后直接 `set_bit_no_check` | capacity 扩了但 size 未撑,越界写崩 | 必须再调 `resize_entities(N)` 撑 size |
 | 对 `block_idx >= num_blocks()` 调 `set_bit` | 静默丢弃（不会扩容块数） | 先 `reserve_blocks` 扩容 |
-| 假设 `get_block(e, b)` 跨进程稳定 | 布局可能变化 | 仅当前进程内有效 |
+| 假设 `get_block(slot, b)` 跨进程稳定 | 布局可能变化 | 仅当前进程内有效 |
 | `reduce_capacity(n)` 传小于当前 `size` 的值 | 超出部分被截断丢失 | 缩容前确认 `n >= size()`，或先 `shrink_to_fit` |
-| `clear()` 后假设 `num_blocks_` 归 1 | `clear` 只清数据不重置块数 | 重置块数需重新构造实例 |
+| `clear()` 后假设 `num_blocks()` 归 1 | `clear` 只清数据不重置块数 | 重置块数需重新构造实例 |
+| 集合运算后假设 `this` 的 `num_blocks()` 与 `o` 一致 | 集合运算不扩容块数，仅处理共同块 | 需要扩容先调 `reserve_blocks` |
+| `overflow_span(slot)` 返回的 span 跨 `reserve_blocks` 使用 | `reserve_blocks` 会重分配 overflow 内存，span 失效 | 视图即时使用，不跨写操作持有 |

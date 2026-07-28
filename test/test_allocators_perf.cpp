@@ -5,6 +5,7 @@
 #include "include/part/slab_allocator.hpp"
 #include "include/part/layered_allocator.hpp"
 #include "include/part/arena_allocator.hpp"
+#include "include/part/dense.hpp"
 
 using namespace std;
 
@@ -19,7 +20,8 @@ static void test_memory_pool()
     {
         mt19937 rng(42);
         uniform_int_distribution<size_t> dist(16, 128);
-        vector<size_t> sizes(OPS);
+        dense<size_t> sizes;
+        sizes.increase_capacity(OPS, 0);
         for (size_t i = 0; i < OPS; ++i) sizes[i] = dist(rng);
 
         double ns = best_ns(REPEAT, [&]() {
@@ -39,12 +41,14 @@ static void test_memory_pool()
     {
         mt19937 rng(42);
         uniform_int_distribution<size_t> dist(16, 256);
-        vector<size_t> sizes(OPS);
+        dense<size_t> sizes;
+        sizes.increase_capacity(OPS, 0);
         for (size_t i = 0; i < OPS; ++i) sizes[i] = dist(rng);
 
         double ns = best_ns(REPEAT, [&]() {
             memory_pool pool;
-            vector<void*> ptrs(OPS);
+            dense<void*> ptrs;
+            ptrs.increase_capacity(OPS, nullptr);
             for (size_t i = 0; i < OPS; ++i) { ptrs[i] = pool.allocate(sizes[i]); }
             for (size_t i = 0; i < OPS; ++i) { pool.deallocate(ptrs[i]); }
             compiler_barrier();
@@ -57,7 +61,8 @@ static void test_memory_pool()
     {
         mt19937 rng(42);
         uniform_int_distribution<size_t> dist(1024, 16384);
-        vector<size_t> sizes(OPS / 16);
+        dense<size_t> sizes;
+        sizes.increase_capacity(OPS / 16, 0);
         for (size_t i = 0; i < OPS / 16; ++i) sizes[i] = dist(rng);
 
         double ns = best_ns(REPEAT, [&]() {
@@ -78,7 +83,8 @@ static void test_memory_pool()
         struct Obj { uint64_t a, b, c; };
         double ns = best_ns(REPEAT, [&]() {
             memory_pool pool;
-            vector<Obj*> ptrs(OPS);
+            dense<Obj*> ptrs;
+            ptrs.increase_capacity(OPS, nullptr);
             for (size_t i = 0; i < OPS; ++i) ptrs[i] = pool.construct<Obj>(i, i + 1, i + 2);
             for (size_t i = 0; i < OPS; ++i) pool.destroy(ptrs[i]);
             compiler_barrier();
@@ -109,7 +115,8 @@ static void test_memory_pool()
     // 1.6 owns (二分查找)
     {
         memory_pool pool;
-        vector<void*> ptrs(1000);
+        dense<void*> ptrs;
+        ptrs.increase_capacity(1000, nullptr);
         for (size_t i = 0; i < 1000; ++i) ptrs[i] = pool.allocate(64);
         double ns = best_ns(REPEAT, [&]() {
             volatile bool sink = false;
@@ -215,7 +222,8 @@ static void test_slab_allocator()
     {
         double ns = best_ns(REPEAT, [&]() {
             slab_allocator slab(64);
-            vector<void*> ptrs(OPS);
+            dense<void*> ptrs;
+            ptrs.increase_capacity(OPS, nullptr);
             for (size_t i = 0; i < OPS; ++i) ptrs[i] = slab.allocate();
             for (size_t i = 0; i < OPS; ++i) slab.deallocate(ptrs[i]);
             compiler_barrier();
@@ -230,7 +238,8 @@ static void test_slab_allocator()
         {
             double ns = best_ns(REPEAT, [&]() {
                 slab_allocator slab(bs);
-                vector<void*> ptrs(OPS);
+                dense<void*> ptrs;
+                ptrs.increase_capacity(OPS, nullptr);
                 for (size_t i = 0; i < OPS; ++i) ptrs[i] = slab.allocate();
                 for (size_t i = 0; i < OPS; ++i) slab.deallocate(ptrs[i]);
                 compiler_barrier();
@@ -258,8 +267,8 @@ static void test_slab_allocator()
     // 2.5 owns (多 chunk, 二分)
     {
         slab_allocator slab(64, 16, 64);  // blocks_per_chunk=64
-        vector<void*> ptrs;
-        for (size_t i = 0; i < 10000; ++i) ptrs.push_back(slab.allocate());
+        dense<void*> ptrs;
+        for (size_t i = 0; i < 10000; ++i) ptrs.emplace_back(slab.allocate());
         double ns = best_ns(REPEAT, [&]() {
             volatile bool sink = false;
             for (size_t i = 0; i < 10000; ++i) sink = slab.owns(ptrs[i]);
@@ -316,7 +325,8 @@ static void test_layered_allocator()
     {
         mt19937 rng(42);
         uniform_int_distribution<size_t> dist(16, 128);
-        vector<size_t> sizes(OPS);
+        dense<size_t> sizes;
+        sizes.increase_capacity(OPS, 0);
         for (size_t i = 0; i < OPS; ++i) sizes[i] = dist(rng);
 
         double ns = best_ns(REPEAT, [&]() {
@@ -336,7 +346,8 @@ static void test_layered_allocator()
     {
         mt19937 rng(42);
         uniform_int_distribution<size_t> dist(129, 1024);
-        vector<size_t> sizes(OPS / 4);
+        dense<size_t> sizes;
+        sizes.increase_capacity(OPS / 4, 0);
         for (size_t i = 0; i < OPS / 4; ++i) sizes[i] = dist(rng);
 
         double ns = best_ns(REPEAT, [&]() {
@@ -356,12 +367,14 @@ static void test_layered_allocator()
     {
         mt19937 rng(42);
         uniform_int_distribution<size_t> dist(16, 128);
-        vector<size_t> sizes(OPS);
+        dense<size_t> sizes;
+        sizes.increase_capacity(OPS, 0);
         for (size_t i = 0; i < OPS; ++i) sizes[i] = dist(rng);
 
         double ns = best_ns(REPEAT, [&]() {
             layered_allocator la;
-            vector<void*> ptrs(OPS);
+            dense<void*> ptrs;
+            ptrs.increase_capacity(OPS, nullptr);
             for (size_t i = 0; i < OPS; ++i) ptrs[i] = la.allocate(sizes[i]);
             for (size_t i = 0; i < OPS; ++i) la.deallocate(ptrs[i]);  // 无大小提示
             compiler_barrier();
@@ -374,12 +387,14 @@ static void test_layered_allocator()
     {
         mt19937 rng(42);
         uniform_int_distribution<size_t> dist(16, 128);
-        vector<size_t> sizes(OPS);
+        dense<size_t> sizes;
+        sizes.increase_capacity(OPS, 0);
         for (size_t i = 0; i < OPS; ++i) sizes[i] = dist(rng);
 
         double ns = best_ns(REPEAT, [&]() {
             layered_allocator la;
-            vector<void*> ptrs(OPS);
+            dense<void*> ptrs;
+            ptrs.increase_capacity(OPS, nullptr);
             for (size_t i = 0; i < OPS; ++i) ptrs[i] = la.allocate(sizes[i]);
             for (size_t i = 0; i < OPS; ++i) la.deallocate(ptrs[i], sizes[i]);  // 带大小提示
             compiler_barrier();
@@ -393,7 +408,8 @@ static void test_layered_allocator()
         struct Obj { uint64_t a, b; };
         double ns = best_ns(REPEAT, [&]() {
             layered_allocator la;
-            vector<Obj*> ptrs(OPS);
+            dense<Obj*> ptrs;
+            ptrs.increase_capacity(OPS, nullptr);
             for (size_t i = 0; i < OPS; ++i) ptrs[i] = la.construct<Obj>(i, i + 1);
             for (size_t i = 0; i < OPS; ++i) la.destroy(ptrs[i]);
             compiler_barrier();

@@ -4,7 +4,7 @@
 #include "part/id_.hpp"
 #include "part/dense.hpp"
 #include "part/ring_buffer.hpp"
-#include "part/entity_mask_manager.hpp"
+#include "part/multi_block_bitmask.hpp"
 
 namespace ecs
 {
@@ -38,7 +38,7 @@ public:
 private:
     id_allocation<uint32_t> id_manager_;
     dense<uint32_t> version_v_;
-    entity_mask_manager masks_;
+    multi_block_bitmask masks_;
     dense<entity_state> entity_states_;
 
     dense<entity> preallocated_entities_;
@@ -103,12 +103,12 @@ private:
     {
         if (idx >= version_v_.size()) [[unlikely]]
         {
-            version_v_.resize(idx + 1, 1);
+            version_v_.increase_capacity(idx + 1, 1);
         }
         masks_.ensure_entity(idx);
         if (idx >= entity_states_.size()) [[unlikely]]
         {
-            entity_states_.resize(idx + 1, entity_state{static_cast<uint32_t>(entity_flag::active), 0, 0, 0});
+            entity_states_.increase_capacity(idx + 1, entity_state{static_cast<uint32_t>(entity_flag::active), 0, 0, 0});
         }
     }
 
@@ -135,13 +135,11 @@ public:
         size_t max_idx = count + 1;
         if (max_idx > version_v_.size())
         {
-            version_v_.increase_capacity(max_idx);
-            version_v_.resize(max_idx, 1);
+            version_v_.increase_capacity(max_idx, 1);
         }
         if (max_idx > entity_states_.size())
         {
-            entity_states_.increase_capacity(max_idx);
-            entity_states_.resize(max_idx, entity_state{static_cast<uint32_t>(entity_flag::active), 0, 0, 0});
+            entity_states_.increase_capacity(max_idx, entity_state{static_cast<uint32_t>(entity_flag::active), 0, 0, 0});
         }
         masks_.resize_entities(static_cast<uint32_t>(max_idx));
 

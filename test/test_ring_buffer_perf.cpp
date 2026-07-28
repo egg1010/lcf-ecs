@@ -20,7 +20,7 @@ static void test_push()
             ring_buffer<T, N> rb;
             for (size_t i = 0; i < OPS; ++i)
             {
-                if (!rb.push(v)) [[unlikely]] { rb.pop(); rb.push(v); }
+                rb.push(v);
             }
             compiler_barrier();
             return rb.pending_count();
@@ -34,7 +34,7 @@ static void test_push()
             for (size_t i = 0; i < OPS; ++i)
             {
                 T v{};
-                if (!rb.push(std::move(v))) [[unlikely]] { rb.pop(); rb.push(std::move(v)); }
+                rb.push(std::move(v));
             }
             compiler_barrier();
             return rb.pending_count();
@@ -47,7 +47,7 @@ static void test_push()
             ring_buffer<T, N> rb;
             for (size_t i = 0; i < OPS; ++i)
             {
-                if (!rb.emplace()) [[unlikely]] { rb.pop(); rb.emplace(); }
+                rb.emplace();
             }
             compiler_barrier();
             return rb.pending_count();
@@ -70,7 +70,7 @@ static void test_pop_peek()
         T v{};
         double ns = best_ns(REPEAT, [&]() {
             ring_buffer<T, N> rb;
-            for (size_t i = 0; i < N - 1; ++i) rb.push(v);
+            for (size_t i = 0; i < N; ++i) rb.push(v);
             for (size_t i = 0; i < OPS; ++i)
             {
                 rb.pop();
@@ -86,7 +86,7 @@ static void test_pop_peek()
         T v{};
         double ns = best_ns(REPEAT, [&]() {
             ring_buffer<T, N> rb;
-            for (size_t i = 0; i < N - 1; ++i) rb.push(v);
+            for (size_t i = 0; i < N; ++i) rb.push(v);
             const T* p = nullptr;
             for (size_t i = 0; i < OPS; ++i) { p = rb.peek(); touch_ptr(p); }
             compiler_barrier();
@@ -99,11 +99,11 @@ static void test_pop_peek()
         T v{};
         double ns = best_ns(REPEAT, [&]() {
             ring_buffer<T, N> rb;
-            for (size_t i = 0; i < N - 1; ++i) rb.push(v);
+            for (size_t i = 0; i < N; ++i) rb.push(v);
             size_t total = 0;
-            for (size_t i = 0; i < OPS / (N - 1); ++i)
+            for (size_t i = 0; i < OPS / N; ++i)
             {
-                for (size_t k = 0; k < N - 1; ++k) rb.push(v);
+                for (size_t k = 0; k < N; ++k) rb.push(v);
                 total += rb.drain([](const T&) {});
             }
             compiler_barrier();
@@ -116,7 +116,7 @@ static void test_pop_peek()
         T v{};
         double ns = best_ns(REPEAT, [&]() {
             ring_buffer<T, N> rb;
-            for (size_t i = 0; i < N - 1; ++i) rb.push(v);
+            for (size_t i = 0; i < N; ++i) rb.push(v);
             size_t total = 0;
             for (size_t i = 0; i < OPS / 64; ++i)
             {
@@ -142,7 +142,7 @@ static void test_status()
 
     ring_buffer<T, N> rb;
     T v{};
-    for (size_t i = 0; i < N / 2; ++i) rb.push(v);
+    for (size_t i = 0; i < N; ++i) rb.push(v);
 
     {
         double ns = best_ns(REPEAT, [&]() {
@@ -162,7 +162,7 @@ static void test_status()
     {
         double ns = best_ns(REPEAT, [&]() {
             ring_buffer<T, N> tmp;
-            for (size_t i = 0; i < N - 1; ++i) tmp.push(v);
+            for (size_t i = 0; i < N; ++i) tmp.push(v);
             tmp.clear();
             compiler_barrier();
             return tmp.pending_count();
@@ -173,20 +173,66 @@ static void test_status()
     print_footer();
 }
 
-// === Section 4: 不同 N 的 push/pop 吞吐对比 ===
+// === Section 4: 无界特性 (N=16 push 远超 N) ===
 template <typename T>
-static void test_capacity_sweep()
+static void test_unbounded()
 {
-    print_header(("Section 4: capacity sweep (T=" + to_string(sizeof(T)) + "B)").c_str());
+    print_header(("Section 4: unbounded (T=" + to_string(sizeof(T)) + "B, N=16)").c_str());
     constexpr int REPEAT = 5;
     constexpr size_t OPS = 1 << 20;
     T v{};
 
-    auto run = [&](size_t N_val) {
-        // ring_buffer 的 N 是模板参数, 实际容量测试在 main 中分别实例化
-        (void)N_val;
-    };
-    run(16); run(64); run(256); run(1024);
+    {
+        double ns = best_ns(REPEAT, [&]() {
+            ring_buffer<T, 16> rb;
+            for (size_t i = 0; i < OPS; ++i)
+            {
+                rb.push(v);
+            }
+            compiler_barrier();
+            return rb.pending_count();
+        });
+        print_ns("push 1M into N=16", OPS, ns / static_cast<double>(OPS));
+    }
+
+    {
+        double ns = best_ns(REPEAT, [&]() {
+            ring_buffer<T, 16> rb;
+            for (size_t i = 0; i < OPS; ++i) rb.push(v);
+            size_t total = rb.drain([](const T&) {});
+            compiler_barrier();
+            return total;
+        });
+        print_ns("drain 1M from N=16", OPS, ns / static_cast<double>(OPS));
+    }
+
+    print_footer();
+}
+
+// === Section 5: 静态池 ===
+template <typename T>
+static void test_static_pool()
+{
+    print_header(("Section 5: static_pool (T=" + to_string(sizeof(T)) + "B)").c_str());
+    constexpr int REPEAT = 5;
+    constexpr size_t OPS = 1000000;
+
+    {
+        T v{};
+        ring_buffer<T, 256> rb;
+        for (size_t i = 0; i < 256; ++i) rb.push(v);
+        rb.clear();
+
+        double ns = best_ns(REPEAT, [&]() {
+            volatile size_t s = 0;
+            for (size_t i = 0; i < OPS; ++i)
+            {
+                s += ring_buffer<T, 256>::static_pool_size();
+            }
+            (void)s;
+        });
+        print_ns("static_pool_size", OPS, ns / static_cast<double>(OPS));
+    }
 
     print_footer();
 }
@@ -210,6 +256,8 @@ int main()
     test_pop_peek<POD4, 1024>();
 
     test_status<POD4, 256>();
+    test_unbounded<POD4>();
+    test_static_pool<POD4>();
 
     // T=POD32, 不同 N
     cout << "\n=== T = POD32 (32B) ===\n";
@@ -221,6 +269,8 @@ int main()
     test_pop_peek<POD32, 1024>();
 
     test_status<POD32, 256>();
+    test_unbounded<POD32>();
+    test_static_pool<POD32>();
 
     cout << "\n============================================================\n";
     cout << "  测试完成\n";

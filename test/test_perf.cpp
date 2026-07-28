@@ -542,8 +542,8 @@ int main()
 
         t.reset();
         dense<int> cp_rzv;
-        cp_rzv.resize(N, 77);
-        print_perf("resize(cap,val)", N, t.elapsed_ms());
+        cp_rzv.increase_capacity(N, 77);
+        print_perf("increase_capacity(cap,val) [empty]", N, t.elapsed_ms());
 
         t.reset();
         dense<int> cp_ic;
@@ -3248,12 +3248,12 @@ int main()
         }
     }
 
-    // === Section 16: entity_mask_manager 扩容/缩容/状态查询 (1M/百万) ===
-    print_section(16, "entity_mask_manager 掩码管理 (1M/百万)");
+    // === Section 16: multi_block_bitmask 扩容/缩容/状态查询 (1M/百万) ===
+    print_section(16, "multi_block_bitmask 掩码管理 (1M/百万)");
     {
         print_perf_sub("16.1 单块扩容与写入 (1M/百万)");
         {
-            entity_mask_manager m1;
+            multi_block_bitmask m1;
 
             t.reset();
             m1.increase_capacity(N);
@@ -3284,7 +3284,7 @@ int main()
 
         print_perf_sub("16.2 状态查询开销 (1M/百万次)");
         {
-            entity_mask_manager m1;
+            multi_block_bitmask m1;
             m1.increase_capacity(N);
             for (size_t i = 0; i < N; ++i)
             {
@@ -3322,7 +3322,7 @@ int main()
 
         print_perf_sub("16.3 缩容/清空/预留 (单次, N=1M)");
         {
-            entity_mask_manager m1;
+            multi_block_bitmask m1;
             m1.increase_capacity(N);
             for (size_t i = 0; i < N; ++i)
             {
@@ -3348,7 +3348,7 @@ int main()
 
         print_perf_sub("16.4 多块写入与查询 (2块, 1M/百万)");
         {
-            entity_mask_manager m2;
+            multi_block_bitmask m2;
             m2.reserve_blocks(2);
             m2.increase_capacity(N);
 
@@ -3385,7 +3385,7 @@ int main()
             print_perf("多块 capacity_bytes() ×N", N, t.elapsed_ms());
         }
 
-        // 证明 entity_mask_manager 在多组件查询时的性能优势
+        // 证明 multi_block_bitmask 在多组件查询时的性能优势
         // 测试矩阵: 2/3/5/8 组件 × mask_path/sparse_path
         // 关键: group 的 use_mask_path_ = (N>=3) || (块数<=5)
         //   N=2, 块数<=5 → mask_path (但优势小)
