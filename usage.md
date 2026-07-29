@@ -1,4 +1,4 @@
-# lcf-ecs 库接口文档
+﻿# lcf-ecs 库接口文档
 
 包含 `component.hpp` 即可使用。
 
@@ -17,13 +17,13 @@
     - [8. 函数存储（回调作为组件）](#8-函数存储回调作为组件)
     - [9. 生命周期信号](#9-生命周期信号)
     - [10. command_buffer — 延迟结构变更](#10-command_buffer--延迟结构变更)
+    - [11. reflection — 反射模块使用](#11-reflection--反射模块使用)
   - [二、宏配置](#二宏配置)
-    - [11. 编译与运行](#11-编译与运行)
     - [12. 可选宏配置](#12-可选宏配置)
   - [三、各种模块](#三各种模块)
     - [13. operating_message — 操作消息](#13-operating_message--操作消息)
     - [14. class_pool<T> — 核心容器](#14-class_poolt--核心容器)
-    - [14.5. class_pool 视图（cpv 命名空间）](#145-class_pool-视图cpv-命名空间)
+    - [14.5. class_pool 视图](#145-class_pool-视图)
     - [15. void_any — 类型擦除存储](#15-void_any--类型擦除存储)
     - [16. type_id — 类型ID](#16-type_id--类型id)
     - [17. id_allocation<T> — ID分配器](#17-id_allocationt--id分配器)
@@ -38,6 +38,11 @@
     - [26. ring_buffer — 环形缓冲区](#26-ring_buffer--环形缓冲区)
     - [27. time — 计时与基准测量](#27-time--计时与基准测量)
     - [28. multi_block_bitmask — 多块位掩码存储](#28-multi_block_bitmask--多块位掩码存储)
+    - [29. reflection — 反射元数据与存储](#29-reflection--反射元数据与存储)
+    - [30. aggregate_reflect — 聚合类型字段遍历](#30-aggregate_reflect--聚合类型字段遍历)
+    - [31. type_erasure — 类型擦除方法调用器](#31-type_erasure--类型擦除方法调用器)
+    - [32. member_offset — 成员偏移量访问](#32-member_offset--成员偏移量访问)
+    - [33. t_fun — 函数类型延迟调用器](#33-t_fun--函数类型延迟调用器)
 
 ---
 
@@ -746,7 +751,8 @@ mgr.view<Position>().for_each([](Position& p) { /* ... */ });
 
 | 接口 | 说明 |
 |------|------|
-| `size()` | 主集组件数量 |
+| `size()` | 实际匹配数（同时拥有所有组件的实体数） |
+| `pool_size()` | 主集组件数量（主集池大小，不含匹配过滤） |
 | `empty()` | 是否为空 |
 | `contains(entity)` | 是否同时拥有所有组件 |
 | `for_each(func)` | 遍历多组件（自动检测 entity 参数） |
@@ -756,11 +762,17 @@ mgr.view<Position>().for_each([](Position& p) { /* ... */ });
 | `get_entity_at_index(index)` | 返回主集第 index 个实体句柄 |
 | `include_optional_component<U>()` | 链式追加可选组件，回调中为指针（无组件时为 nullptr） |
 
+`size()` 与 `pool_size()` 的区别：当部分实体只拥有部分组件时，`pool_size()` 返回主集的实体总数，`size()` 返回其中真正同时拥有全部组件的实体数；若所有实体都拥有全部组件，两者相等。
+
 ```cpp
 // 双组件
 auto v2 = mgr.view<Position, Velocity>();
 v2.for_each([](Position& p, Velocity& v) { /* ... */ });
 v2.for_each([](entity e, Position& p, Velocity& v) { /* ... */ });
+
+// 匹配数与主集大小
+size_t matched = v2.size();       // 同时拥有 Position 和 Velocity 的实体数
+size_t total   = v2.pool_size();  // 主集（最小集）的实体数
 
 // 获取指定实体的组件
 Position* pp = v2.get_component_for_entity<Position>(some_entity);
@@ -1741,34 +1753,50 @@ auto rv = mgr.runtime_view_create_from_terms(std::move(terms));
 
 ## 8. 函数存储（回调作为组件）
 
-将函数/回调封装为组件，通过 `ecs::manager` 的标准组件接口存储与调用。
+`t_fun` 可直接作为 ECS 组件，无需任何包装结构体。不同函数签名自动推导为不同组件类型，通过 `ecs::manager` 的标准组件接口存储与调用。详见 [§ 33. t_fun](#33-t_fun--函数类型延迟调用器)。
 
 ### 使用
 
-定义一个包含 `std::function` 的组件结构体，然后像普通组件一样使用。
-
 ```cpp
-// 定义回调组件
-struct CallbackComponent
-{
-    std::function<void(int)> callback;
-    CallbackComponent(std::function<void(int)> cb) : callback(std::move(cb)) {}
-};
+#include "part/t_fun.hpp"
+
+// 回调目标函数
+int  on_add(int a, int b) { return a + b; }
+void on_callback(int x) { std::printf("cb: %d\n", x); }
 
 ecs::manager mgr;
 entity e = mgr.create_entity();
 
-// 存储 lambda 作为组件
-mgr.add(e, CallbackComponent([](int x) {
-    std::cout << "Lambda called: x=" << x << "\n";
-}));
+// 直接存储 t_fun 作为组件 (无需包装结构体)
+mgr.add(e, t_fun{on_add, 10, 20});
 
 // 获取并调用
-auto* cb = mgr.get_ptr<CallbackComponent>(e);
+auto* cb = mgr.get_ptr<t_fun<int(int,int)>>(e);
 if (cb)
 {
-    cb->callback(42);  // 输出: Lambda called: x=42
+    (*cb)();               // 30, 用绑定参数调用
+    (*cb)(3, 4);           // 7,  带参覆盖调用
+    cb->set_arg<0>(100);
+    (*cb)();               // 300
 }
+```
+
+### void 返回值与无参函数
+
+```cpp
+// void 回调
+entity e2 = mgr.create_entity();
+mgr.add(e2, t_fun{on_callback, 42});
+auto* v = mgr.get_ptr<t_fun<void(int)>>(e2);
+(*v)();                    // 打印 "cb: 42"
+v->result_ptr();           // nullptr
+
+// 无参函数
+void on_noop() {}
+entity e3 = mgr.create_entity();
+mgr.add(e3, t_fun{on_noop});
+auto* n = mgr.get_ptr<t_fun<void()>>(e3);
+(*n)();
 ```
 
 ### 通过 View 批量调用
@@ -1777,13 +1805,35 @@ if (cb)
 // 为多个实体添加回调
 entity e1 = mgr.create_entity();
 entity e2 = mgr.create_entity();
-mgr.add(e1, CallbackComponent([](int x) { std::cout << "e1: " << x << "\n"; }));
-mgr.add(e2, CallbackComponent([](int x) { std::cout << "e2: " << x << "\n"; }));
+entity e3 = mgr.create_entity();
+mgr.add(e1, t_fun{on_add, 1, 2});
+mgr.add(e2, t_fun{on_add, 10, 20});
+mgr.add(e3, t_fun{on_add, 100, 200});
 
 // 遍历所有回调组件并调用
-mgr.view<CallbackComponent>().for_each([](entity e, CallbackComponent& c) {
-    c.callback(0);  // 调用每个回调
+size_t count = 0;
+int sum = 0;
+mgr.view<t_fun<int(int,int)>>().for_each([&](entity, t_fun<int(int,int)>& c) {
+    sum += c();
+    ++count;
 });
+// count == 3, sum == 333
+```
+
+### 组件内修改持久化
+
+```cpp
+entity e = mgr.create_entity();
+mgr.add(e, t_fun{on_add, 1, 2});
+
+// 第一次查询修改
+auto* p1 = mgr.get_ptr<t_fun<int(int,int)>>(e);
+p1->set_arg<0>(100);
+p1->set_arg<1>(200);
+
+// 第二次查询验证持久化
+auto* p2 = mgr.get_ptr<t_fun<int(int,int)>>(e);
+(*p2)();                   // 300, 修改已持久化
 ```
 
 ---
@@ -2143,31 +2193,173 @@ cb.flush();
 
 ---
 
-# 二、宏配置
+## 11. reflection — 反射模块使用
 
-## 11. 编译与运行
+`#include "reflection/reflection.hpp"`，命名空间 `reflect`。`noexcept`。
 
-### CMake
+反射模块提供运行期类型元数据查询、字段访问与方法调用。支持聚合类型自动遍历公有字段、手填偏移量注册私有成员、宏注册成员/静态方法。支持运行时动态注册，注册线程安全。库独立，不创建线程，嵌入外部多线程架构。
 
-```bash
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-cmake --build . --config Release
+### 11.1 注册宏
+
+宏只能在命名空间作用域使用（通过 `inline` 变量初始化）。聚合类型字段名自动生成 `field_0`、`field_1`、…（上限由 `REFLECT_MAX_FIELDS` 决定，默认 64）。
+
+| 宏 | 说明 |
+|------|------|
+| `REGISTER(Cls)` | 注册聚合类型，自动遍历公有字段。注册线程安全 |
+| `REFLECT(Cls)` | 类内标记宏，声明 friend 授权反射访问私有成员 |
+| `REFLECT_PRIVATE(Cls, ...)` | 类外注册私有成员，偏移量和类型由成员指针自动推导 |
+| `REGISTER_PRIVATE_OFFSETS(Cls, ...)` | 手填偏移量注册私有成员（逃生通道，用于无法修改的第三方类型） |
+| `PRIV_FIELD(name, offset, type_id)` | 私有成员描述辅助宏 |
+| `REGISTER_METHOD(Cls, method)` | 注册成员方法，方法名自动字符串化 |
+| `REGISTER_STATIC_METHOD(Cls, method)` | 注册静态方法，方法名自动字符串化 |
+| `REGISTER_METHOD_OVERLOAD(Cls, method, ptr)` | 注册重载成员方法，显式指定方法指针 |
+| `REGISTER_STATIC_METHOD_OVERLOAD(Cls, method, ptr)` | 注册重载静态方法，显式指定方法指针 |
+
+### 11.2 查询入口
+
+查询统一入口，无需区分单/多线程。`query_view` 持有 `type_meta*`，注册后长期有效。
+
+| 接口 | 说明 |
+|------|------|
+| `reflect::get<T>()` | 按类型查询，返回 `query_view` |
+| `reflect::get_by_name(name)` | 按类型名查询，返回 `query_view` |
+| `reflect::global()` | 全局存储对象 |
+
+### 11.3 query_view 接口
+
+| 接口 | 说明 |
+|------|------|
+| `name()` | 类型名 |
+| `size()` | `sizeof(T)` |
+| `align()` | `alignof(T)` |
+| `field_count()` | 字段数 |
+| `method_count()` | 方法数 |
+| `type_id_value()` | 类型 id |
+| `field(i)` | 按索引取字段元数据 |
+| `field_by_name(name)` | 按名取字段元数据，未找到返回 nullptr |
+| `method(i)` | 按索引取方法元数据 |
+| `method_by_name(name)` | 按名取方法元数据，未找到返回 nullptr |
+| `get<R>(obj, i)` | 按索引取字段引用（编译期偏移） |
+| `get<R>(obj, i)` (const) | const 对象版本 |
+| `get_by_name<R>(obj, name)` | 按名取字段引用 |
+| `get_by_name<R>(obj, name)` (const) | const 对象版本 |
+| `get_ptr(obj, name)` | 按名取字段 `void*` |
+| `get_ptr(obj, name)` (const) | const 对象版本 |
+| `invoke<R>(obj, name, args...)` | 调用方法，返回 R |
+| `for_each_field(obj, f)` | 遍历实例字段，`f(name, ptr, type_id)` |
+| `for_each_field(obj, f)` (const) | const 对象版本 |
+| `for_each_field_meta(f)` | 遍历字段元数据，`f(field_meta&)` |
+| `for_each_method(f)` | 遍历方法元数据，`f(method_meta&)` |
+
+### 使用
+
+```cpp
+#include "reflection/reflection.hpp"
+
+// === 聚合类型 (自动遍历公有字段) ===
+struct Vec3 { float x, y, z; };
+struct Pod16 { int a, b, c, d; };
+
+REGISTER(Vec3);
+REGISTER(Pod16);
+
+// === 非聚合类型 (侵入式自动推导) ===
+class Account {
+    std::string name_;
+    int balance_;
+public:
+    REFLECT(Account);  // 类内: friend 授权
+    Account() : name_(""), balance_(0) {}
+    Account(std::string n, int b) : name_(n), balance_(b) {}
+    void deposit(int amt) { balance_ += amt; }
+    int get_balance() const { return balance_; }
+    static int version() { return 42; }
+};
+
+REGISTER(Account);
+
+// 类外: 只写字段名, 偏移量和类型自动推导
+REFLECT_PRIVATE(Account, name_, balance_);
+
+REGISTER_METHOD(Account, deposit);
+REGISTER_METHOD(Account, get_balance);
+REGISTER_STATIC_METHOD(Account, version);
+
+// 重载方法示例 (显式指定方法指针)
+struct Calc {
+    int add(int a, int b) { return a + b; }
+    int add(int a, int b, int c) { return a + b + c; }
+};
+REGISTER(Calc);
+REGISTER_METHOD_OVERLOAD(Calc, add,
+    static_cast<int(Calc::*)(int,int)>(&Calc::add));
+REGISTER_METHOD_OVERLOAD(Calc, add,
+    static_cast<int(Calc::*)(int,int,int)>(&Calc::add));
+
+// === 字段访问 ===
+Vec3 v{1.0f, 2.0f, 3.0f};
+auto view = reflect::get<Vec3>();
+
+view.get<float>(&v, 0);                    // 1.0 (按索引)
+view.get_by_name<float>(&v, "field_1");    // 2.0 (按名)
+view.get<float>(&v, 0) = 10.0f;            // 修改字段
+
+// 私有成员访问
+Account acc{"Alice", 100};
+auto acc_view = reflect::get<Account>();
+int bal = acc_view.get_by_name<int>(&acc, "balance_");  // 100
+acc_view.get_by_name<int>(&acc, "balance_") = 200;      // 修改私有成员
+
+// === 方法调用 ===
+acc_view.invoke<void>(&acc, "deposit", 50);  // void 返回
+int bal2 = acc_view.invoke<int>(&acc, "get_balance");  // 250
+int ver  = acc_view.invoke<int>(nullptr, "version");   // 42 (静态方法)
+
+// === 遍历字段 ===
+view.for_each_field(&v, [](const char* name, void* ptr, int tid) {
+    std::cout << name << " = " << *static_cast<float*>(ptr) << "\n";
+});
+
+view.for_each_field_meta([](const reflect::field_meta& fm) {
+    std::cout << fm.name << " offset=" << fm.offset << "\n";
+});
+
+// === 按类型名查询 ===
+auto v2 = reflect::get_by_name("Vec3");
+
+// === 运行时动态注册 (线程安全) ===
+struct Dynamic { int a, b; };
+reflect::global().register_type<Dynamic>("Dynamic");
+auto dv = reflect::get<Dynamic>();
 ```
 
-### 运行示例
+### 注意事项
 
-```bash
-./build/usagec.exe    # 完整接口示例
-./build/test.exe      # 测试
-```
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 在函数内部使用 `REGISTER` 等注册宏 | `inline` 变量不能在块作用域声明 | 宏在命名空间作用域使用；函数内直接调 `reflect::global().register_type<T>(name)` |
+| 未注册类型就查询 | `std::abort()` | 先 `REGISTER(T)` 再 `reflect::get<T>()` |
+| 未注册私有成员就访问 | `field_by_name` 返回 nullptr，解引用崩溃 | 先 `REFLECT_PRIVATE` 或 `REGISTER_PRIVATE_OFFSETS` |
+| `REFLECT_PRIVATE` 字段名写错 | 编译错误（成员不存在） | 字段名与类定义一致 |
+| `REGISTER_PRIVATE_OFFSETS` 偏移量填错 | 访问错误内存 | 优先用 `REFLECT_PRIVATE` 自动推导；第三方类型用 `offsetof` 确认 |
+| 方法参数数量不匹配 | `std::abort()` | 调用 `invoke` 时参数数量与方法签名一致 |
+| 静态方法传非空 `obj` | 被忽略，不影响结果 | 静态方法传 `nullptr` |
+| 字段数超过 `MAX_FIELDS_PER_TYPE`（256） | `std::abort()` | 单类型字段数不超过上限 |
+| 方法数超过 `MAX_METHODS_PER_TYPE`（256） | `std::abort()` | 单类型方法数不超过上限 |
+| 类型 id 超过 `MAX_TYPE_ID`（65536） | 注册被忽略 | 类型总数不超过上限 |
 
-### 编译要求
+### 私有成员注册方式选择
 
-- C++20（需支持 `std::format`）
-- CMake 3.16+
+| 方式 | 适用场景 | 用户输入 |
+|------|---------|---------|
+| `REFLECT` + `REFLECT_PRIVATE` | 可修改类定义的类型 | 类内 1 行 friend，类外只写字段名 |
+| `REGISTER_PRIVATE_OFFSETS` | 无法修改的第三方类型 | 手填字段名、偏移量、类型 |
+
+`REFLECT_PRIVATE` 通过成员指针自动推导偏移量和类型，编译期保证正确性，优先使用。
 
 ---
+
+# 二、宏配置
 
 ## 12. 可选宏配置
 
@@ -2205,7 +2397,26 @@ target_compile_definitions(my_target PRIVATE LCF_MINIMAL_STACK=1)
 | `VOID_ANY_MEMORY_POOL_NOT_ENABLED` | 禁用内存池（与 `VOID_ANY_ENABLE_MEMORY_POOL` 互斥） |
 | `VOID_ANY_SSO_NOT_ENABLED` | 禁用 SSO（与 `VOID_ANY_ENABLE_SSO` 互斥） |
 
-### 12.3 配置示例
+### 12.3 反射模块配置（`config/reflect_config.hpp`）
+
+影响反射模块的类型注册上限与单类型字段/方法数组大小。
+
+| 宏 | 默认值 | 说明 |
+|------|--------|------|
+| `REFLECT_MAX_FIELDS` | `64` | 聚合类型字段遍历上限，支持 16/32/64/128/256 |
+| `MAX_FIELDS_PER_TYPE` | `256` | 单类型 fields 数组大小 |
+| `MAX_METHODS_PER_TYPE` | `256` | 单类型 methods 数组大小 |
+| `MAX_TYPE_ID` | `65536` | storage 类型槽位上限，限制可注册类型总数 |
+
+```cpp
+// config/reflect_config.hpp
+#define REFLECT_MAX_FIELDS 128
+#define MAX_FIELDS_PER_TYPE 256
+#define MAX_METHODS_PER_TYPE 256
+#define MAX_TYPE_ID 65536
+```
+
+### 13.4 配置示例
 
 ```cpp
 // config/void_any_config.hpp
@@ -2226,7 +2437,7 @@ target_compile_definitions(my_target PRIVATE LCF_MINIMAL_STACK=1)
 #define VOID_ANY_SSO_ALIGNMENT 8
 ```
 
-### 12.4 不要做什么
+### 12.5 不要做什么
 
 | 错误做法 | 问题 | 正确做法 |
 |---------|------|---------|
@@ -2417,7 +2628,10 @@ for (int i = 0; i < 1000; ++i) {
 | 接口 | 说明 |
 |------|------|
 | `emplace_back(Args...)` | 尾部构造元素 |
-| `push_back_unchecked(const T&)` | 尾部拷贝追加（仅 dense 模式可用，调用方保证容量足够） |
+| `push_back(const T&)` | 尾部拷贝追加（容量不足自动扩容，trivially copyable 走 memcpy） |
+| `push_back(T&&)` | 尾部移动追加（容量不足自动扩容，trivially copyable 走 memcpy） |
+| `push_back_unchecked(const T&)` | 尾部拷贝追加（调用方保证容量足够，trivially copyable 走 memcpy） |
+| `push_back_unchecked(T&&)` | 尾部移动追加（调用方保证容量足够，trivially copyable 走 memcpy） |
 | `emplace_back_unchecked(Args...)` | 尾部原地构造（仅 dense 模式可用，调用方保证容量足够） |
 | `emplace_back_dense_unchecked(Args...)` | 尾部原地构造（仅 dense 模式可用） |
 | `append_n(n, const T&)` | 批量追加 n 个 value 副本 |
@@ -2453,7 +2667,7 @@ for (int i = 0; i < 1000; ++i) {
 
 | 操作 | 对 contiguity 的影响 |
 |------|---------------------|
-| `emplace_back()` | 保持连续 |
+| `emplace_back()` / `push_back()` | 保持连续 |
 | `emplace(pos)` / `insert(pos)` | 保持连续（元素右移） |
 | `erase(pos)` / `erase(first,last)` | 保持连续（元素左移） |
 | `pop_back()` | 保持连续 |
@@ -2495,6 +2709,11 @@ class_pool<int> pool;
 pool.emplace_back(10);
 pool.emplace_back(20);
 
+// push_back 拷贝/移动追加 (trivially copyable 走 memcpy 快路径)
+int v = 30;
+pool.push_back(v);                  // 拷贝追加
+pool.push_back(std::move(v));       // 移动追加
+
 // 任意位置构造（get-or-create）
 pool.emplace_at(100, 999);      // 在索引 100 构造
 pool.emplace_at(100, 888);      // 已构造，返回现有值（不覆盖）
@@ -2515,6 +2734,7 @@ class_pool<int> dense_pool;
 dense_pool.emplace_back(1);
 dense_pool.emplace_back(2);
 dense_pool.push_back_unchecked(3);
+dense_pool.push_back_unchecked(std::move(v));  // 移动追加
 dense_pool.emplace_back_unchecked(4);
 dense_pool.emplace_back_dense_unchecked(5);
 
@@ -2559,7 +2779,8 @@ pool.is_dense();              // 检查是否连续
 
 | 场景 | 推荐操作 | 原因 |
 |------|---------|------|
-| 尾部追加元素 | `emplace_back()` | O(1)，保持连续 |
+| 尾部追加元素（已有值对象） | `push_back(value)` | O(1)，保持连续，trivially copyable 走 memcpy |
+| 尾部追加元素（直接构造） | `emplace_back(args...)` | O(1)，保持连续，原地构造避免临时对象 |
 | 任意位置插入/删除并保持连续 | `emplace(pos)` / `erase(pos)` | 移动后续元素，O(n)，保持连续 |
 | 稀疏数组（大索引跳跃） | `emplace_at()` / `sparse_erase_at()` | O(1)，不移动其他元素，但产生空洞 |
 | 批量填充已知索引 | `emplace_at()` | 填充空洞后自动切回连续 |
@@ -2575,7 +2796,7 @@ pool.is_dense();              // 检查是否连续
 | 在 sparse 模式下使用 `data()` + `span()` 做线性遍历 | 未初始化槽位包含垃圾数据 | 始终通过迭代器遍历，或先确认 `is_dense()` 为 true |
 | `increase_capacity(n)` 期望精确分配到 n | 实际容量可能大于 n | 精确分配用 `reserve_exact(n)` |
 | `emplace_at()` 期望覆盖已有值 | `emplace_at` 是 get-or-create，不覆盖 | 使用 `sparse_emplace_at()` 实现 insert-or-assign |
-| 在 sparse 模式下使用 `push_back_unchecked` / `emplace_back_unchecked` | 不更新 `count()` 缓存 | 用 `emplace_back()` 自动维护缓存，或手动 `invalidate_count_cache()` |
+| 在 sparse 模式下使用 `push_back_unchecked` / `emplace_back_unchecked` | 不更新 `count()` 缓存 | 用 `push_back()` / `emplace_back()` 自动维护缓存，或手动 `invalidate_count_cache()` |
 | 软删除后对象仍占内存 | `soft_sparse_delete` / `soft_dense_delete` 保留对象不析构 | 用 `sparse_erase_at()` 真正析构，或 `emplace_at()` / `fill_the_hole()` 填洞复用 |
 
 ### fill_the_hole — 填洞或追加
@@ -2641,9 +2862,9 @@ size_t idx = pool2.fill_the_hole_at(99);  // 填洞 at 0, 返回 0
 
 ---
 
-## 14.5 class_pool 视图（cpv 命名空间）
+## 14.5 class_pool 视图
 
-`class_pool<T>` 视图接口位于独立头文件 `include/part/class_pool_views.hpp`，命名空间 `cpv::`。设计原则：
+`class_pool<T>` 视图接口位于独立头文件 `include/part/class_pool_views.hpp`，全局命名空间（与 `dense` / `class_pool` 保持一致）。设计原则：
 - **不修改原容器**：仅依赖 `class_pool<T>` 公开 API
 - **双路径策略**：`is_dense()` 走连续内存快路径（SIMD/memcpy 友好），稀疏模式复用 `basic_iterator`（AVX2 位图扫描）
 - **零分配**：所有视图为 POD 结构或纯函数
@@ -2653,40 +2874,40 @@ size_t idx = pool2.fill_the_hole_at(99);  // 填洞 at 0, 返回 0
 
 | 分类 | 接口 | 说明 |
 |------|------|------|
-| **A 子范围** | `subspan(p, off, cnt)` / `subspan(p, off)` | 返回 `std::span<T>`，密集模式零开销切片（与 `dense::subspan` / `std::span::subspan` 命名一致） |
+| **子范围** | `subspan(p, off, cnt)` / `subspan(p, off)` | 返回 `std::span<T>`，密集模式零开销切片（与 `dense::subspan` / `std::span::subspan` 命名一致） |
 |  | `first(p, n)` / `last(p, n)` | 前/后 n 个元素的 span |
 |  | `first_fixed<T, N>(p)` / `last_fixed<T, N>(p)` | 编译期固定长度 `std::span<T, N>` |
-| **B 反向** | `reverse_for_each(p, f)` | 反向遍历，复用 `rbegin()/rend()` |
-| **C 步进** | `strided_span_view(p, start, step, cnt)` | POD 视图结构 `strided_span<T>`（与 `dense::strided_span` 命名一致） |
+| **反向** | `reverse_for_each(p, f)` | 反向遍历，复用 `rbegin()/rend()` |
+| **步进** | `strided_span_view(p, start, step, cnt)` | 返回 POD 视图结构 `pool_strided_span<T>`（持有 class_pool 指针 + 步进参数，与 `dense::strided_span` 区分） |
 |  | `strided_for_each(p, start, step, f)` | 运行时步长遍历 |
 |  | `strided_for_each<T, Step>(p, f)` | 编译期步长；`Step=1` 退化为 `for_each` 快路径 |
-| **D 变换** | `transform_for_each(p, tr, con)` | 融合 transform + consume，避免中间临时容器 |
+| **变换** | `transform_for_each(p, tr, con)` | 融合 transform + consume，避免中间临时容器 |
 |  | `transform_to<T, R>(p, dst, n, f)` | 变换写入目标裸指针 |
-| **E 过滤** | `find(p, v)` / `find_if(p, pred)` / `find_if_not(p, pred)` | 线性查找，返回指针 |
+| **过滤** | `find(p, v)` / `find_if(p, pred)` / `find_if_not(p, pred)` | 线性查找，返回指针 |
 |  | `contains(p, v)` | 存在性检查 |
 |  | `count_if(p, pred)` | 条件计数 |
 |  | `filter_for_each(p, pred, f)` | 过滤遍历，零分配 |
 |  | `filter_indices_to(p, dst, pred)` | 输出满足条件的索引到 `class_pool<size_t>` |
-| **F 规约** | `reduce(p, f, init)` | 顺序规约 |
+| **规约** | `reduce(p, f, init)` | 顺序规约 |
 |  | `reduce_pairwise(p, f, init)` | 密集模式 ivdep 提示向量化 |
 |  | `min_element(p)` / `max_element(p)` / `minmax_element(p)` | 极值查找 |
 |  | `sum(p)` | 算术求和（仅算术类型，ivdep） |
 |  | `dot_product(p, other, n)` | 点积（密集模式 ivdep） |
-| **G 窗口/分块** | `for_each_window<T, N>(p, f)` | 滑动窗口遍历（密集模式连续切片） |
+| **窗口/分块** | `for_each_window<T, N>(p, f)` | 滑动窗口遍历（密集模式连续切片） |
 |  | `for_each_chunk<T, N>(p, f)` | 不重叠分块遍历 |
 |  | `window_span<T, N>(p, off)` / `chunk_span<T, N>(p, idx)` | 返回 `std::span<T, N>` |
-| **H 枚举** | `for_each_enumerated(p, f)` | `(index, value)` 同步遍历 |
-| **I 双容器** | `for_each_zip(a, b, f)` | 双 `class_pool` 同步遍历（按活跃元素） |
+| **枚举** | `for_each_enumerated(p, f)` | `(index, value)` 同步遍历 |
+| **双容器** | `for_each_zip(a, b, f)` | 双 `class_pool` 同步遍历（按活跃元素） |
 |  | `for_each_zip(a, ptr, n, f)` | `class_pool` + 裸指针同步 |
 |  | `zip_with_to<T, U, R>(a, b, dst, n, f)` | 双容器变换写入目标 |
 |  | `equal(a, b)` / `equal(a, ptr, n)` / `equal(a, span)` | 相等性比较（与 `dense::equal` 命名一致；密集 + trivially copyable 走 `memcmp` 快路径） |
-| **J SIMD/对齐** | `aligned_data(p)` / `aligned_span(p)` | 返回对齐裸指针 / span |
+| **SIMD/对齐** | `aligned_data(p)` / `aligned_span(p)` | 返回对齐裸指针 / span |
 |  | `simd_for_each(p, f)` | trivially copyable 且 `sizeof(T)≤32` 走 SIMD 路径，稀疏退化为 `for_each` |
 |  | `unaligned_tail_offset(p)` | AVX2 YMM 无法处理的尾部偏移 |
-| **K 拷贝/移动** | `copy_to(p, dst, n)` / `copy_to(p, span)` | trivially copyable 走 `memcpy` |
+| **拷贝/移动** | `copy_to(p, dst, n)` / `copy_to(p, span)` | trivially copyable 走 `memcpy` |
 |  | `move_to(p, dst, n)` | 移动写入 |
 |  | `reverse_copy_to(p, dst, n)` | 反向拷贝 |
-| **L class_pool 独有** | `compact_to(p, dst, n)` | 压缩稀疏池为密集数组（消除空洞），返回写入元素数 |
+| **class_pool 独有** | `compact_to(p, dst, n)` | 压缩稀疏池为密集数组（消除空洞），返回写入元素数 |
 |  | `live_count(p)` | 活跃元素数（语义等价 `p.count()`） |
 |  | `holes_count(p)` | 空洞数 = `p.size() - p.count()` |
 
@@ -2694,7 +2915,7 @@ size_t idx = pool2.fill_the_hole_at(99);  // 填洞 at 0, 返回 0
 
 ```cpp
 #include "include/part/class_pool_views.hpp"
-using namespace cpv;
+// 视图接口位于全局命名空间, 无需 using namespace
 
 class_pool<POD32> pool;
 for (size_t i = 0; i < 1000; ++i) pool.push_back_unchecked({static_cast<float>(i)});
@@ -3227,8 +3448,11 @@ bool in_la = la.owns(small);
 
 | 接口 | 说明 |
 |------|------|
+| `push_back(const T&)` | 尾部拷贝追加（容量不足自动扩容，trivially copyable 走 memcpy） |
+| `push_back(T&&)` | 尾部移动追加（容量不足自动扩容，trivially copyable 走 memcpy） |
 | `emplace_back(Args&&...)` | 尾部原地构造（容量不足自动扩容） |
-| `push_back_unchecked(const T&)` | 尾部拷贝追加（调用方保证容量足够） |
+| `push_back_unchecked(const T&)` | 尾部拷贝追加（调用方保证容量足够，trivially copyable 走 memcpy） |
+| `push_back_unchecked(T&&)` | 尾部移动追加（调用方保证容量足够，trivially copyable 走 memcpy） |
 | `emplace_back_unchecked(Args&&...)` | 尾部原地构造（调用方保证容量足够） |
 | `emplace_back_dense_unchecked(Args&&...)` | 等价 `emplace_back_unchecked`（dense 路径） |
 | `append_n(size_t n, const T& value)` | 批量追加 `n` 个 `value` |
@@ -3390,6 +3614,11 @@ dense<int> init = {10, 20, 30};           // 初始化列表
 pool.emplace_back(1);
 pool.emplace_back(2);
 pool.emplace_back(3);
+
+// push_back 拷贝/移动 (trivially copyable 走 memcpy 快路径)
+int v = 42;
+pool.push_back(v);                        // 拷贝追加
+pool.push_back(std::move(v));             // 移动追加
 
 // 批量追加
 dense<int> bulk;
@@ -3841,13 +4070,14 @@ alloc.deallocate(small, 64);  // 直接路由到 slab
 
 `#include "part/ring_buffer.hpp"`，全局命名空间。`noexcept`。
 
-无界环形缓冲区，模板参数 `N` 作为编译期最小保证容量（实际无界）。`push` 永不失败（OOM 时 `std::abort`）。
+模板参数 `N`（默认 1024）作为编译期最小保证容量（实际无界）。`push` 永不失败（OOM 时 `std::abort`）。不可拷贝，可移动。
 
 ### 接口
 
 | 接口 | 说明 |
 |------|------|
 | `ring_buffer()` | 默认构造 |
+| `ring_buffer(ring_buffer&&)` / `operator=(ring_buffer&&)` | 移动构造/赋值 |
 | `push(const T&)` / `push(T&&)` | 写入一个事件，恒返回 true |
 | `emplace(args...)` | 原位构造写入，恒返回 true |
 | `drain(handler)` | 读取并处理所有待处理事件，返回处理数 |
@@ -3856,11 +4086,11 @@ alloc.deallocate(small, 64);  // 直接路由到 slab
 | `pop()` | 弹出队首，空返回 false |
 | `empty()` / `has_pending()` | 是否空 / 是否有待处理 |
 | `pending_count()` | 待处理数量 |
-| `capacity()` | 编译期最小保证容量 N |
-| `slots_per_chunk()` | 单块槽位数 |
-| `static_pool_size()` | 静态池当前缓存块数 |
-| `shrink_static_pool()` | 释放静态池所有缓存块 |
 | `clear()` | 清空所有事件 |
+| `capacity()` | 编译期最小保证容量 N（static） |
+| `slots_per_chunk()` | 单块槽位数（static） |
+| `static_pool_size()` | 静态池当前缓存块数（static） |
+| `shrink_static_pool()` | 释放静态池所有缓存块（static） |
 
 ### 使用
 
@@ -3886,8 +4116,15 @@ buf.drain_with_budget(1, [](const event& e) {
     // 只处理 1 个，即使 handler 内追加也不会无限循环
 });
 
-// 内存紧张时释放静态池缓存
-ring_buffer<event>::shrink_static_pool();
+// 移动语义
+ring_buffer<event, 1024> buf2(std::move(buf));
+// buf 现在 empty
+
+// 静态接口
+size_t cap = ring_buffer<event, 1024>::capacity();       // 1024
+size_t spc = ring_buffer<event, 1024>::slots_per_chunk(); // 编译期常量
+size_t ps  = ring_buffer<event, 1024>::static_pool_size();
+ring_buffer<event, 1024>::shrink_static_pool();          // 释放缓存
 ```
 
 ### 注意事项
@@ -3897,6 +4134,7 @@ ring_buffer<event>::shrink_static_pool();
 | 依赖 `push` 返回 false 判断满 | `push` 恒返回 true | 用 `pending_count()` 监控积压 |
 | `drain` 的 handler 内 `push` 新事件 | 可能无限循环 | 用 `drain_with_budget` 限制处理数 |
 | 依赖 `peek()` 指针在 `pop` 后有效 | `pop` 推进读位置，指针失效 | `peek` 后立即处理或先拷贝 |
+| 拷贝构造 `ring_buffer` | 不可拷贝 | 用移动或重新填充 |
 
 ---
 
@@ -3906,7 +4144,7 @@ ring_buffer<event>::shrink_static_pool();
 
 计时与基准测量工具：墙钟计时、CPU 周期计数、缓存屏障、统计分布、在线分位数、缓存延迟测量。x86/x64 提供 `rdtsc`/`rdtscp` / `clflush` / `mfence` / `lfence`，其他平台返回 0 或空操作。
 
-### 27.1 timer — 墙钟计时器
+### 28.1 timer — 墙钟计时器
 
 | 接口 | 说明 |
 |------|------|
@@ -3923,7 +4161,7 @@ timer t;
 double ns = t.elapsed_ns();
 ```
 
-### 27.2 cycle_timer — CPU 周期计时器
+### 28.2 cycle_timer — CPU 周期计时器
 
 | 接口 | 说明 |
 |------|------|
@@ -3945,7 +4183,7 @@ uint64_t tsc = rdtsc();
 uint64_t tsc_serialized = rdtscp();
 ```
 
-### 27.3 stats — 统计分布
+### 28.3 stats — 统计分布
 
 | 字段/接口 | 说明 |
 |------|------|
@@ -3966,7 +4204,7 @@ stats s = compute_stats(std::move(samples));
 
 > 内部使用 `tiered_sort` 分级排序：n≤16 排序网络，n<1024 pdqsort，n≥1024 radix sort（O(n)）。
 
-### 27.4 benchmark — 基准测量
+### 28.4 benchmark — 基准测量
 
 | 接口 | 说明 |
 |------|------|
@@ -3987,7 +4225,7 @@ p2_benchmark_result r = benchmark_p2(1000000, 100, []() {
 // r.p50, r.p90, r.p95, r.p99
 ```
 
-### 27.5 缓存命中测量
+### 28.5 缓存命中测量
 
 | 接口 | 说明 |
 |------|------|
@@ -4026,7 +4264,7 @@ cache_report r_l1 = measure_cache_hits(addrs, th_l1);
 
 > 不同 CPU 缓存层级不同（嵌入式可能仅 1-2 级），默认 `cache_levels=3`。可通过 `detect_cache_latency_thresholds()` 自动检测实际层级，或手动设置 `cache_levels`。
 
-### 27.6 x86 缓存屏障
+### 28.6 x86 缓存屏障
 
 | 接口 | 说明 |
 |------|------|
@@ -4044,7 +4282,7 @@ cache_flush_range(&data, sizeof(data));
 
 > 非 x86 平台以上均为空操作。
 
-### 27.7 P² 在线分位数
+### 28.7 P² 在线分位数
 
 | 接口 | 说明 |
 |------|------|
@@ -4064,7 +4302,7 @@ double p99 = est.estimate();
 // 无需存储 100 万个样本，内存 O(1)
 ```
 
-### 27.8 CPU 频率
+### 28.8 CPU 频率
 
 | 接口 | 说明 |
 |------|------|
@@ -4081,7 +4319,7 @@ double ghz = cpu_ghz_cached();
 
 > 若需精确墙钟时间，优先使用 `timer`（`high_resolution_clock`），而非 `cycle_timer` + 频率估算。
 
-### 27.9 延迟异常检测
+### 28.9 延迟异常检测
 
 | 接口 | 说明 |
 |------|------|
@@ -4392,3 +4630,470 @@ for (uint32_t i = 0; i < N; ++i)
 | `clear()` 后假设 `num_blocks()` 归 1 | `clear` 只清数据不重置块数 | 重置块数需重新构造实例 |
 | 集合运算后假设 `this` 的 `num_blocks()` 与 `o` 一致 | 集合运算不扩容块数，仅处理共同块 | 需要扩容先调 `reserve_blocks` |
 | `overflow_span(slot)` 返回的 span 跨 `reserve_blocks` 使用 | `reserve_blocks` 会重分配 overflow 内存，span 失效 | 视图即时使用，不跨写操作持有 |
+
+---
+
+## 29. reflection — 反射元数据与存储
+
+`#include "reflection/reflection.hpp"`，命名空间 `reflect`。`noexcept`。
+
+反射模块底层元数据结构与存储接口。高层使用接口见 [§ 11. reflection — 反射模块使用](#11-reflection--反射模块使用)。
+
+### 30.1 元数据结构
+
+| 结构 | 字段 |
+|------|------|
+| `field_meta` | `name`, `offset`, `type_id`, `is_const`, `is_private` |
+| `method_meta` | `name`, `arg_count`, `return_type_id`, `invoker`, `is_const`, `is_static` |
+| `type_meta` | `name`, `registered`, `field_count`, `method_count`, `size`, `align`, `type_id`, `fields`, `methods` |
+| `MAX_TYPE_ID` | 类型槽位上限（65536） |
+| `MAX_FIELDS_PER_TYPE` | 单类型字段上限（256） |
+| `MAX_METHODS_PER_TYPE` | 单类型方法上限（256） |
+
+### 30.2 storage 接口
+
+| 接口 | 说明 |
+|------|------|
+| `storage::register_type<T>(name)` | 注册类型，聚合类型自动遍历公有字段 |
+| `storage::register_private_offsets<T>(descs, count)` | 手填偏移量注册私有成员 |
+| `storage::register_field<T, M, Ptr>(name)` | 成员指针注册字段，偏移量和类型自动推导 |
+| `storage::register_method<Fn>(name)` | 注册成员方法 |
+| `storage::register_static_method<C, Fn>(name)` | 注册静态方法 |
+| `storage::get_type(tid)` | 按类型 id 查询 `type_meta*` |
+| `storage::find_type(name)` | 按类型名查询 `type_meta*` |
+| `reflect::global()` | 全局 storage 对象 |
+
+---
+
+## 30. aggregate_reflect — 聚合类型字段遍历
+
+`#include "part/aggregate_reflect.hpp"`，全局命名空间。`noexcept`。编译期常量。
+
+编译期探测聚合类型字段数并遍历字段。仅支持聚合类型（无自定义构造、无私有/受保护非静态数据成员、无虚函数、无基类）。非聚合类型字段数为 0。
+
+### 字段上限配置
+
+通过宏 `REFLECT_MAX_FIELDS` 配置自动反射字段上限，支持 16/32/64/128/256。默认 64。配置统一在 `include/config/reflect_config.hpp`，修改该文件或在 include 前定义对应宏即可调整：
+
+```cpp
+// 默认 64 字段
+#include "part/aggregate_reflect.hpp"
+
+// 扩展到 128 字段: 编辑 config/reflect_config.hpp 或在 include 前定义
+#define REFLECT_MAX_FIELDS 128
+#include "part/aggregate_reflect.hpp"
+```
+
+字段数超过 `REFLECT_MAX_FIELDS` 时触发编译期 `static_assert` 错误。
+
+### 接口
+
+| 接口 | 说明 |
+|------|------|
+| `aggregate_field_count_v<T>` | 编译期常量，类型 T 的字段数（非聚合为 0，上限由 `REFLECT_MAX_FIELDS` 决定） |
+| `for_each_aggregate_member(obj, f)` | 遍历对象字段，`f(member, idx)` 接收引用和索引 |
+| `for_each_aggregate_member(obj, f)` (const) | const 对象版本，`f` 接收 const 引用 |
+| `member_offset(M T::*member)` | 通过成员指针计算偏移量（需访问权限） |
+
+### 使用
+
+```cpp
+#include "part/aggregate_reflect.hpp"
+
+struct Vec3 { float x, y, z; };
+struct Pod4 { int a, b, c, d; };
+struct Empty {};
+
+// 编译期字段计数
+static_assert(aggregate_field_count_v<Vec3> == 3);
+static_assert(aggregate_field_count_v<Pod4> == 4);
+static_assert(aggregate_field_count_v<Empty> == 0);
+
+// 遍历字段
+Vec3 v{1.0f, 2.0f, 3.0f};
+for_each_aggregate_member(v, [&](auto& member, size_t idx) {
+    std::cout << "field " << idx << " = " << member << "\n";
+});
+
+// 修改字段
+for_each_aggregate_member(v, [&](auto& member, size_t idx) {
+    (void)idx;
+    member = 0.0f;
+});
+
+// const 对象遍历
+const Vec3 cv{5.0f, 6.0f, 7.0f};
+for_each_aggregate_member(cv, [&](const auto& member, size_t idx) {
+    std::cout << idx << ": " << member << "\n";
+});
+
+// 成员偏移量
+size_t off_y = member_offset(&Vec3::y);  // 4
+```
+
+### 注意事项
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 用于非聚合类型 | 字段数为 0，遍历不执行 | 仅用于聚合类型 |
+| 字段含 C 数组 | 数组被识别为多字段聚合 | 避免在含数组字段类型上使用 |
+| 字段数超过 `REFLECT_MAX_FIELDS` | 编译期 `static_assert` 错误 | include 前增大 `REFLECT_MAX_FIELDS` |
+| `for_each_aggregate_member` 修改 const 对象 | 编译错误 | 用非 const 对象修改字段 |
+
+---
+
+## 31. type_erasure — 类型擦除方法调用器
+
+`#include "part/type_erasure.hpp"`，全局命名空间。`noexcept`。
+
+将任意成员函数指针、const 成员函数指针、静态函数指针包装为统一签名的 `invoker_func` 函数指针。支持任意参数数量。
+
+### 接口
+
+| 接口 | 说明 |
+|------|------|
+| `mfn_traits<MFnType>` | 方法签名 traits，提取 `class_type`/`return_type`/`arg_count`/`is_const`/`is_static` |
+| `mfn_invoker_t<Fn, MFnType>::invoke(obj, args, result)` | 成员方法 invoker（普通/const 统一） |
+| `sfn_invoker_t<Fn, MFnType>::invoke(obj, args, result)` | 静态方法 invoker（`obj` 忽略） |
+| `arg_ids_maker<MFnType>::make()` | 生成参数类型 id 的 `dense<int>` |
+| `return_type_id<R>()` | 返回类型 id（void 为 -1） |
+| `invoker_func` | invoker 函数指针类型 |
+
+### invoker 签名
+
+```cpp
+using invoker_func = void(*)(void* obj, const void* const* args, void* result);
+```
+
+- `obj`：对象指针（静态方法传 `nullptr`）
+- `args`：参数指针数组，每个元素指向一个参数
+- `result`：返回值缓冲区（void 方法不写）
+
+### 使用
+
+```cpp
+#include "part/type_erasure.hpp"
+
+class Calculator
+{
+public:
+    int add(int a, int b) { return a + b; }
+    bool is_positive(int x) const { return x > 0; }
+    void no_return(int x) { (void)x; }
+};
+
+int free_multiply(int a, int b) { return a * b; }
+
+// === 普通/const 成员方法 ===
+Calculator calc;
+using FnType = decltype(&Calculator::add);
+constexpr FnType fn = &Calculator::add;
+
+int a = 10, b = 20;
+const void* args[] = { &a, &b };
+alignas(alignof(std::max_align_t)) char result_buf[64];
+
+mfn_invoker_t<fn, FnType>::invoke(&calc, args, result_buf);
+int result = *reinterpret_cast<int*>(result_buf);  // 30
+
+// === 静态方法 ===
+using FnType2 = decltype(&free_multiply);
+constexpr FnType2 fn2 = &free_multiply;
+sfn_invoker_t<fn2, FnType2>::invoke(nullptr, args, result_buf);
+int product = *reinterpret_cast<int*>(result_buf);  // 200
+
+// === 通过 invoker_func 调用 ===
+invoker_func inv = &mfn_invoker_t<fn, FnType>::invoke;
+inv(&calc, args, result_buf);
+
+// === traits 与元数据 ===
+using Traits = mfn_traits<decltype(&Calculator::add)>;
+static_assert(Traits::arg_count == 2);
+static_assert(!Traits::is_const);
+static_assert(!Traits::is_static);
+
+dense<int> arg_ids = arg_ids_maker<decltype(&Calculator::add)>::make();
+// arg_ids.size() == 2, arg_ids[0] == type_id::get_type_id<int>()
+
+int ret_id = return_type_id<int>();      // 返回 int 的 type_id
+int void_id = return_type_id<void>();    // -1
+```
+
+### 注意事项
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 返回值缓冲区未对齐 | placement new 未对齐访问崩溃 | `alignas(alignof(std::max_align_t))` |
+| 参数数量与签名不符 | 未定义行为 | 调用前确认 `arg_count` |
+| 返回 std::string 未析构 | 内存泄漏 | 手动调用 `~basic_string()` |
+| 静态方法传非空 `obj` | 被忽略 | 静态方法传 `nullptr` |
+
+---
+
+## 32. member_offset — 成员偏移量访问
+
+`#include "part/member_offset.hpp"`，全局命名空间。`noexcept`。
+
+通过偏移量访问对象成员，支持突破私有访问限制。提供 `offset_desc` 结构用于批量描述字段。
+
+### 接口
+
+| 接口 | 说明 |
+|------|------|
+| `offset_of(M T::*member)` | 通过成员指针计算偏移量（需访问权限） |
+| `offset_access<M>(obj, offset)` | 按偏移量访问成员引用 |
+| `offset_access<M>(obj, offset)` (const) | const 对象版本 |
+| `ub_access<T, M>(obj, offset)` | UB 反向构造成员指针，突破私有访问 |
+| `offset_desc` | 字段描述结构 `{name, offset, type_id}` |
+
+### 使用
+
+```cpp
+#include "part/member_offset.hpp"
+
+struct Pod3 { float x, y, z; };
+struct Mixed { char c; int i; double d; };
+
+class Account
+{
+    int balance_;
+public:
+    Account(int b) : balance_(b) {}
+    int get_balance() const { return balance_; }
+};
+
+// === offset_of 成员指针偏移 ===
+size_t off_x = offset_of(&Pod3::x);  // 0
+size_t off_y = offset_of(&Pod3::y);  // 4
+size_t off_z = offset_of(&Pod3::z);  // 8
+
+// === offset_access 直接指针访问 ===
+Pod3 v{1.0f, 2.0f, 3.0f};
+float y = offset_access<float>(&v, 4);   // 2.0
+offset_access<float>(&v, 8) = 100.0f;    // 修改 z
+
+// const 对象
+const Pod3 cv{5.0f, 6.0f, 7.0f};
+float cx = offset_access<float>(&cv, 0);  // 5.0
+
+// 混合类型
+Mixed m{'A', 42, 3.14};
+char c = offset_access<char>(&m, 0);      // 'A'
+int i = offset_access<int>(&m, 4);        // 42
+double d = offset_access<double>(&m, 8);  // 3.14
+
+// === ub_access 突破私有访问 ===
+Account acc(100);
+// 假设 balance_ 在偏移 0 (首成员)
+int bal = ub_access<Account, int>(acc, 0);  // 100
+ub_access<Account, int>(acc, 0) = 999;      // 修改私有成员
+acc.get_balance();  // 999
+
+// === offset_desc 批量描述 ===
+offset_desc descs[] = {
+    {"name_",    0,  type_id::get_type_id<std::string>()},
+    {"balance_", 32, type_id::get_type_id<int>()}
+};
+```
+
+### 注意事项
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| `ub_access` 偏移量错误 | 访问错误内存 | 用 `offsetof` 或编译期推导确认偏移量 |
+| `ub_access` 用于虚函数类 | vptr 干扰偏移布局 | 仅用于无非虚函数的类 |
+| 假设 `ub_access` 可移植 | 严格 UB，依赖编译器实现 | 仅在受控环境使用 |
+| 对齐错误的偏移量访问 | 未对齐访问崩溃 | 确保偏移量与类型对齐匹配 |
+
+## 33. t_fun — 函数类型延迟调用器
+
+`#include "part/t_fun.hpp"`，全局命名空间。`noexcept`。
+
+编译期推导函数类型的延迟调用器，支持函数指针、成员函数指针（const/非 const）。用户无需输入模板参数，通过 CTAD 自动推导。void 返回值特化，`result_ptr()` 返回 `nullptr`。
+
+### 接口
+
+| 接口 | 说明 |
+|------|------|
+| `t_fun v{f, args...}` | 构造，绑定函数与参数（CTAD 推导） |
+| `v()` | 用绑定参数调用 |
+| `v(a, b)` | 用传入参数调用，不修改绑定参数 |
+| `v.fun()` / `v.fun(a, b)` | 等价 operator() |
+| `v.result_ptr()` | 非 void 返回 `R*`；void 返回 `nullptr` |
+| `v.result_reset()` | 非 void 重置为默认值；void 无副作用 |
+| `v.target()` | 原始可调用对象（函数指针 / 成员函数指针） |
+| `v.bound_arg<I>()` | 第 I 个绑定参数引用（const/非 const 重载） |
+| `v.set_arg<I>(v)` | 修改第 I 个绑定参数 |
+| `v.object()` | 成员函数指针版本，对象指针 |
+| `v.arity` | 编译期常量，参数数量 |
+| `v.return_type` | 编译期类型别名，返回值类型 |
+| `v.args_tuple` | 编译期类型别名，参数 tuple |
+| `v.then_call(g)` | 链式调用，`g(v())`；void 版本 `v(); g();` |
+| `v.compose(g, more...)` | 多级组合，依次调用 g, more... |
+| `v.bind_front(args...)` | 设置前 N 个绑定参数 |
+| `v.apply_n(count)` | 重复调用 N 次，返回最后结果 |
+| `v.apply_range(data, n)` | 对数组批量调用（arity==1） |
+| `v.swap(other)` | O(1) 交换 |
+| `v == other` / `v != other` | 比较 target 与绑定参数 |
+| `v.hash()` | 哈希值 |
+| `v.empty()` | 是否已释放 |
+| `v.release()` | 释放所有权 |
+| `v.reset(args...)` | 重置所有绑定参数 |
+| `os << v` | 流输出诊断信息 |
+
+### 使用
+
+```cpp
+#include "part/t_fun.hpp"
+#include <string>
+
+int  free_add(int a, int b) { return a + b; }
+void free_void(int x) { (void)x; }
+void free_noop() {}
+std::string free_make_str(const char* s) { return std::string(s); }
+
+class Calculator
+{
+public:
+    int add(int a, int b) { return a + b; }
+    bool is_positive(int x) const { return x > 0; }
+    void no_return(int x) { (void)x; }
+};
+
+// === 函数指针: 绑定参数调用 ===
+t_fun v1{free_add, 10, 20};
+v1();                  // 30, 用绑定的 10,20
+v1.fun();              // 30, 等价
+v1(3, 4);              // 7,  用传入参数, 不修改绑定参数
+v1();                  // 仍 30, 绑定参数未被覆盖
+
+// === result_ptr / result_reset ===
+int* p = v1.result_ptr();   // &result_, *p == 30
+v1.result_reset();          // *p 变为 0
+v1.result_ptr();            // &result_, *p == 0
+
+// === target / bound_arg / set_arg ===
+v1.target()(10, 20);        // 30, 直接调用原始函数指针
+v1.bound_arg<0>();          // 10
+v1.set_arg<0>(100);
+v1.set_arg<1>(200);
+v1();                       // 300
+
+// === 编译期元信息 ===
+static_assert(decltype(v1)::arity == 2);
+static_assert(std::is_same_v<decltype(v1)::return_type, int>);
+
+// === void 返回值 ===
+t_fun v2{free_void, 42};
+v2();                       // 调用, 无返回值
+void* p2 = v2.result_ptr(); // nullptr
+v2.result_reset();          // 无副作用
+
+t_fun v3{free_noop};        // 无参函数
+v3();
+
+// === std::string 返回值 ===
+t_fun v4{free_make_str, "abc"};
+std::string s = v4();       // "abc"
+std::string* p4 = v4.result_ptr();  // &result_, *p4 == "abc"
+v4.result_reset();          // 空字符串
+
+// === 成员函数指针 ===
+Calculator calc;
+t_fun m1{&Calculator::add, &calc, 10, 20};
+m1();                       // 30, 绑定对象与参数
+m1(3, 4);                   // 7,  带参调用
+m1.object();                // &calc
+m1.target();                // &Calculator::add
+
+// const 成员函数
+t_fun m2{&Calculator::is_positive, &calc, 5};
+m2();                       // true
+
+// void 成员函数
+t_fun m3{&Calculator::no_return, &calc, 0};
+m3();
+
+// === 移动与拷贝 ===
+t_fun v5{std::move(v1)};    // 移动构造
+t_fun v6{v5};                // 拷贝构造
+v5 = std::move(v6);          // 移动赋值
+
+// === then_call 链式调用 ===
+t_fun v7{free_add, 10, 20};
+int doubled = v7.then_call([](int x){ return x * 2; });  // 60
+// void 版本: v(); g();
+
+// === compose 多级组合 ===
+int composed = v7.compose(
+    [](int x){ return x * 2; },
+    [](int x){ return x + 1; }
+);  // (30*2)+1 = 61
+
+// === bind_front 设置前 N 个参数 ===
+t_fun v8{free_add, 0, 0};
+v8.bind_front(100);          // 设置第 0 个参数为 100
+v8.set_arg<1>(200);
+v8();                        // 300
+
+// === apply_n 批量调用 ===
+t_fun v9{free_add, 1, 2};
+int last = v9.apply_n(1000); // 调用 1000 次, 返回最后结果 (3)
+
+// === apply_range 范围应用 (arity==1) ===
+t_fun v10{free_identity};
+int data[] = {1, 2, 3, 4, 5};
+int last_r = v10.apply_range(data, 5);  // 对每个元素调用, 返回最后 (5)
+
+// === swap 交换 ===
+t_fun a{free_add, 1, 2};
+t_fun b{free_add, 10, 20};
+a.swap(b);
+a();                         // 30 (交换后)
+b();                         // 3
+
+// === operator== / != ===
+t_fun c1{free_add, 10, 20};
+t_fun c2{free_add, 10, 20};
+t_fun c3{free_add, 30, 40};
+c1 == c2;                    // true (target 与绑定参数相同)
+c1 != c3;                    // true
+
+// === hash ===
+size_t h = c1.hash();        // 哈希值
+
+// === empty / release ===
+t_fun v11{free_add, 10, 20};
+v11.empty();                 // false
+v11.release();               // 释放所有权
+v11.empty();                 // true
+
+// === reset 重置所有绑定参数 ===
+t_fun v12{free_add, 0, 0};
+v12.reset(5, 6);
+v12();                       // 11
+
+// === operator<< 流输出 ===
+t_fun v13{free_add, 10, 20};
+std::cout << v13;            // [t_fun arity=2 target=set]
+v13.release();
+std::cout << v13;            // [t_fun arity=2 target=null]
+```
+
+### 注意事项
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 返回值类型不可默认构造 | 编译期报错 | 确保 `R` 可默认构造 |
+| `set_arg<I>` 越界 | 编译期报错 | I < arity |
+| `bound_arg<I>` 越界 | 编译期报错 | I < arity |
+| 带参调用参数数与签名不符 | 编译期报错 | 参数数量与函数签名一致 |
+| 成员函数指针版本不传对象 | 编译期报错 | 构造时第二参数传 `C*` |
+| const 成员函数传非 const 对象指针 | 编译期报错 | 传 `const C*` |
+| `result_ptr()` 未调用就解引用 | 读到默认构造值 | 先调用 `v()` |
+| 使用后忘记 `result_reset()` | 读到上次调用结果 | 需要重置时调用 |
+| `apply_range` 用于 arity != 1 | 编译期报错 | 仅 arity == 1 时可用 |
+| `release` 后再调用 | 解引用空指针 | 调用前检查 `empty()` |
+| `bind_front` 参数数超过 arity | 编译期报错 | 参数数 <= arity |
+| `reset` 参数数与 arity 不符 | 编译期报错 | 参数数 == arity |
+| `then_call` 的 g 参数类型不匹配 | 编译期报错 | g 接受 R 类型参数 |

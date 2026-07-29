@@ -313,7 +313,29 @@ static void test_append(size_t n)
     print_header(("Section 5: append (T=" + to_string(sizeof(T)) + "B, N=" + to_string(n) + ")").c_str());
     constexpr int REPEAT = 3;
 
-    // 5.1 push_back_unchecked
+    // 5.1 push_back (带容量检查 + count_cache 维护)
+    {
+        double ns = best_ns(REPEAT, [&]() {
+            class_pool<T> p; p.increase_capacity(n);
+            for (size_t i = 0; i < n; ++i) p.push_back(make_value<T>(static_cast<uint32_t>(i)));
+            compiler_barrier();
+            return p.size();
+        });
+        print_ns("push_back", n, ns / static_cast<double>(n));
+    }
+
+    // 5.2 push_back(T&&) 移动追加 (带容量检查)
+    {
+        double ns = best_ns(REPEAT, [&]() {
+            class_pool<T> p; p.increase_capacity(n);
+            for (size_t i = 0; i < n; ++i) p.push_back(std::move(make_value<T>(static_cast<uint32_t>(i))));
+            compiler_barrier();
+            return p.size();
+        });
+        print_ns("push_back(T&&)", n, ns / static_cast<double>(n));
+    }
+
+    // 5.3 push_back_unchecked
     {
         double ns = best_ns(REPEAT, [&]() {
             class_pool<T> p; p.increase_capacity(n);
@@ -324,7 +346,18 @@ static void test_append(size_t n)
         print_ns("push_back_unchecked", n, ns / static_cast<double>(n));
     }
 
-    // 5.2 emplace_back_unchecked
+    // 5.4 push_back_unchecked(T&&) 移动追加
+    {
+        double ns = best_ns(REPEAT, [&]() {
+            class_pool<T> p; p.increase_capacity(n);
+            for (size_t i = 0; i < n; ++i) p.push_back_unchecked(std::move(make_value<T>(static_cast<uint32_t>(i))));
+            compiler_barrier();
+            return p.size();
+        });
+        print_ns("push_back_unchecked(T&&)", n, ns / static_cast<double>(n));
+    }
+
+    // 5.5 emplace_back_unchecked
     {
         double ns = best_ns(REPEAT, [&]() {
             class_pool<T> p; p.increase_capacity(n);
@@ -335,7 +368,7 @@ static void test_append(size_t n)
         print_ns("emplace_back_unchecked", n, ns / static_cast<double>(n));
     }
 
-    // 5.3 emplace_back (带容量检查)
+    // 5.6 emplace_back (带容量检查)
     {
         double ns = best_ns(REPEAT, [&]() {
             class_pool<T> p; p.increase_capacity(n);
@@ -346,7 +379,7 @@ static void test_append(size_t n)
         print_ns("emplace_back", n, ns / static_cast<double>(n));
     }
 
-    // 5.4 append_n
+    // 5.7 append_n
     {
         T v = make_value<T>(0);
         double ns = best_ns(REPEAT, [&]() {
@@ -358,7 +391,7 @@ static void test_append(size_t n)
         print_ns("append_n", n, ns / static_cast<double>(n));
     }
 
-    // 5.5 fill_bulk (区间填充, AVX2 广播)
+    // 5.8 fill_bulk (区间填充, AVX2 广播)
     {
         T v = make_value<T>(42);
         double ns = best_ns(REPEAT, [&]() {
@@ -723,7 +756,7 @@ static void test_subrange_views(size_t n)
     // A.1 subspan(offset, count) 遍历 (与 dense::subspan 命名一致)
     {
         double ns = best_ns(REPEAT, [&]() {
-            auto sp = cpv::subspan(p, n / 4, n / 2);
+            auto sp = subspan(p, n / 4, n / 2);
             uint32_t sum = 0;
             for (auto& v : sp) { sum += checksum(v); }
             return opaque(sum);
@@ -735,7 +768,7 @@ static void test_subrange_views(size_t n)
     // A.2 subspan(offset) 末段遍历
     {
         double ns = best_ns(REPEAT, [&]() {
-            auto sp = cpv::subspan(p, n / 2);
+            auto sp = subspan(p, n / 2);
             uint32_t sum = 0;
             for (auto& v : sp) { sum += checksum(v); }
             return opaque(sum);
@@ -746,8 +779,8 @@ static void test_subrange_views(size_t n)
     // A.3 first(n) / last(n) 遍历
     {
         double ns = best_ns(REPEAT, [&]() {
-            auto f = cpv::first(p, n / 4);
-            auto l = cpv::last(p, n / 4);
+            auto f = first(p, n / 4);
+            auto l = last(p, n / 4);
             uint32_t sum = 0;
             for (auto& v : f) { sum += checksum(v); }
             for (auto& v : l) { sum += checksum(v); }
@@ -760,8 +793,8 @@ static void test_subrange_views(size_t n)
     {
         constexpr size_t FN = 8;
         double ns = best_ns(REPEAT, [&]() {
-            auto f = cpv::first_fixed<T, FN>(p);
-            auto l = cpv::last_fixed<T, FN>(p);
+            auto f = first_fixed<T, FN>(p);
+            auto l = last_fixed<T, FN>(p);
             uint32_t sum = 0;
             for (auto& v : f) { sum += checksum(v); }
             for (auto& v : l) { sum += checksum(v); }
@@ -809,7 +842,7 @@ static void test_reverse_views(size_t n)
     {
         double ns = best_ns(REPEAT, [&]() {
             uint32_t sum = 0;
-            cpv::reverse_for_each(p, [&](T& v) { sum += checksum(v); });
+            reverse_for_each(p, [&](T& v) { sum += checksum(v); });
             return opaque(sum);
         });
         print_ns("reverse_for_each", n, ns / static_cast<double>(n));
@@ -820,7 +853,7 @@ static void test_reverse_views(size_t n)
         const class_pool<T>& cp = p;
         double ns = best_ns(REPEAT, [&]() {
             uint32_t sum = 0;
-            cpv::reverse_for_each(cp, [&](const T& v) { sum += checksum(v); });
+            reverse_for_each(cp, [&](const T& v) { sum += checksum(v); });
             return opaque(sum);
         });
         print_ns("reverse_for_each const", n, ns / static_cast<double>(n));
@@ -845,7 +878,7 @@ static void test_strided_views(size_t n)
     // C.1 strided_span_view + for_each
     {
         double ns = best_ns(REPEAT, [&]() {
-            auto sv = cpv::strided_span_view(p, 0, step, cnt);
+            auto sv = strided_span_view(p, 0, step, cnt);
             uint32_t sum = 0;
             sv.for_each([&](T& v) { sum += checksum(v); });
             return opaque(sum);
@@ -858,7 +891,7 @@ static void test_strided_views(size_t n)
     {
         double ns = best_ns(REPEAT, [&]() {
             uint32_t sum = 0;
-            cpv::strided_for_each(p, 0, step, [&](T& v) { sum += checksum(v); });
+            strided_for_each(p, 0, step, [&](T& v) { sum += checksum(v); });
             return opaque(sum);
         });
         print_ns("strided_for_each (rt step)", cnt, ns / static_cast<double>(cnt));
@@ -870,7 +903,7 @@ static void test_strided_views(size_t n)
         const class_pool<T>& cp = p;
         double ns = best_ns(REPEAT, [&]() {
             uint32_t sum = 0;
-            cpv::strided_for_each(cp, 0, step, [&](const T& v) { sum += checksum(v); });
+            strided_for_each(cp, 0, step, [&](const T& v) { sum += checksum(v); });
             return opaque(sum);
         });
         print_ns("strided_for_each const", cnt, ns / static_cast<double>(cnt));
@@ -880,7 +913,7 @@ static void test_strided_views(size_t n)
     {
         double ns = best_ns(REPEAT, [&]() {
             uint32_t sum = 0;
-            cpv::strided_for_each<T, 4>(p, [&](T& v) { sum += checksum(v); });
+            strided_for_each<T, 4>(p, [&](T& v) { sum += checksum(v); });
             return opaque(sum);
         });
         print_ns("strided_for_each<4> (ct step)", cnt, ns / static_cast<double>(cnt));
@@ -890,7 +923,7 @@ static void test_strided_views(size_t n)
     {
         double ns = best_ns(REPEAT, [&]() {
             uint32_t sum = 0;
-            cpv::strided_for_each<T, 1>(p, [&](T& v) { sum += checksum(v); });
+            strided_for_each<T, 1>(p, [&](T& v) { sum += checksum(v); });
             return opaque(sum);
         });
         print_ns("strided_for_each<1> (fast path)", n, ns / static_cast<double>(n));
@@ -914,7 +947,7 @@ static void test_transform_views(size_t n)
     {
         double ns = best_ns(REPEAT, [&]() {
             uint32_t sum = 0;
-            cpv::transform_for_each(
+            transform_for_each(
                 p,
                 [](T& v) -> T { return v; },
                 [&](T v) { sum += checksum(v); });
@@ -928,7 +961,7 @@ static void test_transform_views(size_t n)
         const class_pool<T>& cp = p;
         double ns = best_ns(REPEAT, [&]() {
             uint32_t sum = 0;
-            cpv::transform_for_each(
+            transform_for_each(
                 cp,
                 [](const T& v) -> T { return v; },
                 [&](T v) { sum += checksum(v); });
@@ -942,7 +975,7 @@ static void test_transform_views(size_t n)
         class_pool<T> dst;
         dst.increase_capacity(n);
         double ns = best_ns(REPEAT, [&]() {
-            cpv::transform_to<T, T>(p, dst.data(), n, [](const T& v) -> T { return v; });
+            transform_to<T, T>(p, dst.data(), n, [](const T& v) -> T { return v; });
             uint32_t sum = 0;
             for (size_t i = 0; i < n; ++i) { sum += checksum(dst[i]); }
             return opaque(sum);
@@ -968,7 +1001,7 @@ static void test_filter_views(size_t n)
     // E.1 find (命中中段)
     {
         double ns = best_ns(REPEAT, [&]() {
-            T* r = cpv::find(p, target);
+            T* r = find(p, target);
             touch_ptr(r);
             return r;
         });
@@ -982,7 +1015,7 @@ static void test_filter_views(size_t n)
         double ns = best_ns(REPEAT, [&]() {
             uint32_t seed = opaque(miss_seed);
             T miss = make_value<T>(seed);
-            T* r = cpv::find(p, miss);
+            T* r = find(p, miss);
             return r;
         });
         print_ns("find (miss)", 1, ns);
@@ -992,7 +1025,7 @@ static void test_filter_views(size_t n)
     // E.3 contains
     {
         double ns = best_ns(REPEAT, [&]() {
-            bool b = cpv::contains(p, target);
+            bool b = contains(p, target);
             return opaque(b);
         });
         print_ns("contains", 1, ns);
@@ -1001,7 +1034,7 @@ static void test_filter_views(size_t n)
     // E.4 find_if (命中中段)
     {
         double ns = best_ns(REPEAT, [&]() {
-            T* r = cpv::find_if(p, [&](const T& v) { return v == target; });
+            T* r = find_if(p, [&](const T& v) { return v == target; });
             touch_ptr(r);
             return r;
         });
@@ -1012,7 +1045,7 @@ static void test_filter_views(size_t n)
     // E.5 find_if_not
     {
         double ns = best_ns(REPEAT, [&]() {
-            T* r = cpv::find_if_not(p, [&](const T& v) { return v != target; });
+            T* r = find_if_not(p, [&](const T& v) { return v != target; });
             touch_ptr(r);
             return r;
         });
@@ -1024,7 +1057,7 @@ static void test_filter_views(size_t n)
         uint32_t idx = 0;
         double ns = best_ns(REPEAT, [&]() {
             idx = 0;
-            size_t c = cpv::count_if(p, [&](const T&) { return (idx++ & 1) == 0; });
+            size_t c = count_if(p, [&](const T&) { return (idx++ & 1) == 0; });
             return opaque(static_cast<uint32_t>(c));
         });
         print_ns("count_if", n, ns / static_cast<double>(n));
@@ -1034,7 +1067,7 @@ static void test_filter_views(size_t n)
     {
         double ns = best_ns(REPEAT, [&]() {
             uint32_t sum = 0;
-            cpv::filter_for_each(p, [](const T&) { return true; }, [&](T& v) { sum += checksum(v); });
+            filter_for_each(p, [](const T&) { return true; }, [&](T& v) { sum += checksum(v); });
             return opaque(sum);
         });
         print_ns("filter_for_each (all)", n, ns / static_cast<double>(n));
@@ -1046,7 +1079,7 @@ static void test_filter_views(size_t n)
         double ns = best_ns(REPEAT, [&]() {
             idx = 0;
             uint32_t sum = 0;
-            cpv::filter_for_each(p, [&](const T&) { return (idx++ & 1) == 0; }, [&](T& v) { sum += checksum(v); });
+            filter_for_each(p, [&](const T&) { return (idx++ & 1) == 0; }, [&](T& v) { sum += checksum(v); });
             return opaque(sum);
         });
         print_ns("filter_for_each (half)", n / 2, ns / static_cast<double>(n / 2));
@@ -1058,7 +1091,7 @@ static void test_filter_views(size_t n)
         indices.increase_capacity(n);
         double ns = best_ns(REPEAT, [&]() {
             indices.clear();
-            cpv::filter_indices_to(p, indices, [](const T&) { return true; });
+            filter_indices_to(p, indices, [](const T&) { return true; });
             uint32_t sum = 0;
             for (size_t i = 0; i < indices.size(); ++i) { sum += static_cast<uint32_t>(indices[i]); }
             return opaque(sum);
@@ -1083,7 +1116,7 @@ static void test_reduction_views(size_t n)
     // F.1 reduce (顺序)
     {
         double ns = best_ns(REPEAT, [&]() {
-            T r = cpv::reduce(p, [](T acc, const T& v) -> T {
+            T r = reduce(p, [](T acc, const T& v) -> T {
                 if constexpr (is_same_v<T, POD4>) { return {acc.v + checksum(v)}; }
                 else if constexpr (is_same_v<T, POD32>)
                 {
@@ -1101,7 +1134,7 @@ static void test_reduction_views(size_t n)
     // F.2 reduce_pairwise
     {
         double ns = best_ns(REPEAT, [&]() {
-            T r = cpv::reduce_pairwise(p, [](T acc, const T& v) -> T {
+            T r = reduce_pairwise(p, [](T acc, const T& v) -> T {
                 if constexpr (is_same_v<T, POD4>) { return {acc.v + checksum(v)}; }
                 else if constexpr (is_same_v<T, POD32>)
                 {
@@ -1119,7 +1152,7 @@ static void test_reduction_views(size_t n)
     // F.3 min_element
     {
         double ns = best_ns(REPEAT, [&]() {
-            T* r = cpv::min_element(p);
+            T* r = min_element(p);
             touch_ptr(r);
             return r;
         });
@@ -1129,7 +1162,7 @@ static void test_reduction_views(size_t n)
     // F.4 max_element
     {
         double ns = best_ns(REPEAT, [&]() {
-            T* r = cpv::max_element(p);
+            T* r = max_element(p);
             touch_ptr(r);
             return r;
         });
@@ -1139,7 +1172,7 @@ static void test_reduction_views(size_t n)
     // F.5 minmax_element
     {
         double ns = best_ns(REPEAT, [&]() {
-            auto pr = cpv::minmax_element(p);
+            auto pr = minmax_element(p);
             touch_ptr(pr.first);
             touch_ptr(pr.second);
             return pr.first;
@@ -1167,7 +1200,7 @@ static void test_arithmetic_reduction(size_t n)
     // F2.1 sum (ivdep)
     {
         double ns = best_ns(REPEAT, [&]() {
-            uint32_t s = cpv::sum(p);
+            uint32_t s = sum(p);
             return opaque(s);
         });
         print_ns("sum (uint32_t ivdep)", n, ns / static_cast<double>(n));
@@ -1176,7 +1209,7 @@ static void test_arithmetic_reduction(size_t n)
     // F2.2 dot_product
     {
         double ns = best_ns(REPEAT, [&]() {
-            uint32_t s = cpv::dot_product(p, other.data(), n);
+            uint32_t s = dot_product(p, other.data(), n);
             return opaque(s);
         });
         print_ns("dot_product", n, ns / static_cast<double>(n));
@@ -1201,7 +1234,7 @@ static void test_window_chunk_views(size_t n)
     {
         double ns = best_ns(REPEAT, [&]() {
             uint32_t sum = 0;
-            cpv::for_each_window<T, WN>(p, [&](std::span<T, WN> w) { sum += checksum(w[0]); });
+            for_each_window<T, WN>(p, [&](std::span<T, WN> w) { sum += checksum(w[0]); });
             return opaque(sum);
         });
         print_ns("for_each_window<4>", n - WN + 1, ns / static_cast<double>(n - WN + 1));
@@ -1212,7 +1245,7 @@ static void test_window_chunk_views(size_t n)
         const class_pool<T>& cp = p;
         double ns = best_ns(REPEAT, [&]() {
             uint32_t sum = 0;
-            cpv::for_each_window<T, WN>(cp, [&](std::span<const T, WN> w) { sum += checksum(w[0]); });
+            for_each_window<T, WN>(cp, [&](std::span<const T, WN> w) { sum += checksum(w[0]); });
             return opaque(sum);
         });
         print_ns("for_each_window<4> const", n - WN + 1, ns / static_cast<double>(n - WN + 1));
@@ -1222,7 +1255,7 @@ static void test_window_chunk_views(size_t n)
     {
         double ns = best_ns(REPEAT, [&]() {
             uint32_t sum = 0;
-            cpv::for_each_chunk<T, WN>(p, [&](std::span<T, WN> c) { sum += checksum(c[0]); });
+            for_each_chunk<T, WN>(p, [&](std::span<T, WN> c) { sum += checksum(c[0]); });
             return opaque(sum);
         });
         print_ns("for_each_chunk<4>", n / WN, ns / static_cast<double>(n / WN));
@@ -1231,7 +1264,7 @@ static void test_window_chunk_views(size_t n)
     // G.4 window_span<N>
     {
         double ns = best_ns(REPEAT, [&]() {
-            auto w = cpv::window_span<T, WN>(p, n / 2);
+            auto w = window_span<T, WN>(p, n / 2);
             uint32_t sum = 0;
             for (auto& v : w) { sum += checksum(v); }
             return opaque(sum);
@@ -1242,7 +1275,7 @@ static void test_window_chunk_views(size_t n)
     // G.5 chunk_span<N>
     {
         double ns = best_ns(REPEAT, [&]() {
-            auto c = cpv::chunk_span<T, WN>(p, n / (WN * 2));
+            auto c = chunk_span<T, WN>(p, n / (WN * 2));
             uint32_t sum = 0;
             for (auto& v : c) { sum += checksum(v); }
             return opaque(sum);
@@ -1268,7 +1301,7 @@ static void test_enumerated_views(size_t n)
     {
         double ns = best_ns(REPEAT, [&]() {
             uint32_t sum = 0;
-            cpv::for_each_enumerated(p, [&](size_t i, T& v) { sum += checksum(v) + static_cast<uint32_t>(i); });
+            for_each_enumerated(p, [&](size_t i, T& v) { sum += checksum(v) + static_cast<uint32_t>(i); });
             return opaque(sum);
         });
         print_ns("for_each_enumerated", n, ns / static_cast<double>(n));
@@ -1279,7 +1312,7 @@ static void test_enumerated_views(size_t n)
         const class_pool<T>& cp = p;
         double ns = best_ns(REPEAT, [&]() {
             uint32_t sum = 0;
-            cpv::for_each_enumerated(cp, [&](size_t i, const T& v) { sum += checksum(v) + static_cast<uint32_t>(i); });
+            for_each_enumerated(cp, [&](size_t i, const T& v) { sum += checksum(v) + static_cast<uint32_t>(i); });
             return opaque(sum);
         });
         print_ns("for_each_enumerated const", n, ns / static_cast<double>(n));
@@ -1308,7 +1341,7 @@ static void test_zip_views(size_t n)
     {
         double ns = best_ns(REPEAT, [&]() {
             uint32_t sum = 0;
-            cpv::for_each_zip(a, b, [&](T& x, T& y) { sum += checksum(x) + checksum(y); });
+            for_each_zip(a, b, [&](T& x, T& y) { sum += checksum(x) + checksum(y); });
             return opaque(sum);
         });
         print_ns("for_each_zip (pool&)", n, ns / static_cast<double>(n));
@@ -1319,7 +1352,7 @@ static void test_zip_views(size_t n)
         T* bp = b.data();
         double ns = best_ns(REPEAT, [&]() {
             uint32_t sum = 0;
-            cpv::for_each_zip(a, bp, n, [&](T& x, T& y) { sum += checksum(x) + checksum(y); });
+            for_each_zip(a, bp, n, [&](T& x, T& y) { sum += checksum(x) + checksum(y); });
             return opaque(sum);
         });
         print_ns("for_each_zip (ptr)", n, ns / static_cast<double>(n));
@@ -1331,7 +1364,7 @@ static void test_zip_views(size_t n)
         const class_pool<T>& cb = b;
         double ns = best_ns(REPEAT, [&]() {
             uint32_t sum = 0;
-            cpv::for_each_zip(ca, cb, [&](const T& x, const T& y) { sum += checksum(x) + checksum(y); });
+            for_each_zip(ca, cb, [&](const T& x, const T& y) { sum += checksum(x) + checksum(y); });
             return opaque(sum);
         });
         print_ns("for_each_zip const", n, ns / static_cast<double>(n));
@@ -1342,7 +1375,7 @@ static void test_zip_views(size_t n)
         class_pool<T> dst;
         dst.increase_capacity(n);
         double ns = best_ns(REPEAT, [&]() {
-            cpv::zip_with_to<T, T, T>(a, b.data(), dst.data(), n,
+            zip_with_to<T, T, T>(a, b.data(), dst.data(), n,
                 [](const T& x, const T& y) -> T { (void)y; return x; });
             uint32_t sum = 0;
             for (size_t i = 0; i < n; ++i) { sum += checksum(dst[i]); }
@@ -1355,7 +1388,7 @@ static void test_zip_views(size_t n)
     {
         class_pool<T> c = a;
         double ns = best_ns(REPEAT, [&]() {
-            bool r = cpv::equal(a, c);
+            bool r = equal(a, c);
             return opaque(r);
         });
         print_ns("equal (true)", n, ns / static_cast<double>(n));
@@ -1364,7 +1397,7 @@ static void test_zip_views(size_t n)
     // I.6 equal (false)
     {
         double ns = best_ns(REPEAT, [&]() {
-            bool r = cpv::equal(a, b);
+            bool r = equal(a, b);
             return opaque(r);
         });
         print_ns("equal (false)", n, ns / static_cast<double>(n));
@@ -1387,7 +1420,7 @@ static void test_simd_views(size_t n)
     // J.1 aligned_data 遍历
     {
         double ns = best_ns(REPEAT, [&]() {
-            T* ptr = cpv::aligned_data(p);
+            T* ptr = aligned_data(p);
             uint32_t sum = 0;
             for (size_t i = 0; i < n; ++i) { sum += checksum(ptr[i]); }
             return opaque(sum);
@@ -1398,7 +1431,7 @@ static void test_simd_views(size_t n)
     // J.2 aligned_span 遍历
     {
         double ns = best_ns(REPEAT, [&]() {
-            auto sp = cpv::aligned_span(p);
+            auto sp = aligned_span(p);
             uint32_t sum = 0;
             for (auto& v : sp) { sum += checksum(v); }
             return opaque(sum);
@@ -1411,7 +1444,7 @@ static void test_simd_views(size_t n)
     {
         double ns = best_ns(REPEAT, [&]() {
             uint32_t sum = 0;
-            cpv::simd_for_each(p, [&](T& v) { sum += checksum(v); });
+            simd_for_each(p, [&](T& v) { sum += checksum(v); });
             return opaque(sum);
         });
         print_ns("simd_for_each", n, ns / static_cast<double>(n));
@@ -1427,7 +1460,7 @@ static void test_simd_views(size_t n)
         const class_pool<T>& cp = p;
         double ns = best_ns(REPEAT, [&]() {
             uint32_t sum = 0;
-            cpv::simd_for_each(cp, [&](const T& v) { sum += checksum(v); });
+            simd_for_each(cp, [&](const T& v) { sum += checksum(v); });
             return opaque(sum);
         });
         print_ns("simd_for_each const", n, ns / static_cast<double>(n));
@@ -1436,7 +1469,7 @@ static void test_simd_views(size_t n)
     // J.5 unaligned_tail_offset
     {
         double ns = best_ns(REPEAT, [&]() {
-            size_t t = cpv::unaligned_tail_offset(p);
+            size_t t = unaligned_tail_offset(p);
             return opaque(static_cast<uint32_t>(t));
         });
         print_ns("unaligned_tail_offset", 1, ns);
@@ -1461,7 +1494,7 @@ static void test_copy_move_views(size_t n)
         class_pool<T> dst;
         dst.increase_capacity(n);
         double ns = best_ns(REPEAT, [&]() {
-            cpv::copy_to(p, dst.data(), n);
+            copy_to(p, dst.data(), n);
             uint32_t sum = 0;
             for (size_t i = 0; i < n; ++i) { sum += checksum(dst[i]); }
             return opaque(sum);
@@ -1475,7 +1508,7 @@ static void test_copy_move_views(size_t n)
         dst.increase_capacity(n);
         double ns = best_ns(REPEAT, [&]() {
             std::span<T> sp(dst.data(), n);
-            cpv::copy_to(p, sp);
+            copy_to(p, sp);
             uint32_t sum = 0;
             for (size_t i = 0; i < n; ++i) { sum += checksum(dst[i]); }
             return opaque(sum);
@@ -1491,7 +1524,7 @@ static void test_copy_move_views(size_t n)
         class_pool<T> dst;
         dst.increase_capacity(n);
         double ns = best_ns(REPEAT, [&]() {
-            cpv::move_to(src, dst.data(), n);
+            move_to(src, dst.data(), n);
             uint32_t sum = 0;
             for (size_t i = 0; i < n; ++i) { sum += checksum(dst[i]); }
             return opaque(sum);
@@ -1504,7 +1537,7 @@ static void test_copy_move_views(size_t n)
         class_pool<T> dst;
         dst.increase_capacity(n);
         double ns = best_ns(REPEAT, [&]() {
-            cpv::reverse_copy_to(p, dst.data(), n);
+            reverse_copy_to(p, dst.data(), n);
             uint32_t sum = 0;
             for (size_t i = 0; i < n; ++i) { sum += checksum(dst[i]); }
             return opaque(sum);
@@ -1536,7 +1569,7 @@ static void test_sparse_views(size_t n)
     {
         cout << "  [稀疏模式] size=" << p.size()
              << " count=" << p.count()
-             << " holes=" << cpv::holes_count(p)
+             << " holes=" << holes_count(p)
              << " is_dense=" << p.is_dense() << "\n";
     }
 
@@ -1556,7 +1589,7 @@ static void test_sparse_views(size_t n)
     {
         double ns = best_ns(REPEAT, [&]() {
             uint32_t sum = 0;
-            cpv::simd_for_each(p, [&](T& v) { sum += checksum(v); });
+            simd_for_each(p, [&](T& v) { sum += checksum(v); });
             return opaque(sum);
         });
         const size_t live = p.count();
@@ -1567,7 +1600,7 @@ static void test_sparse_views(size_t n)
     {
         double ns = best_ns(REPEAT, [&]() {
             uint32_t sum = 0;
-            cpv::filter_for_each(p, [](const T&) { return true; }, [&](T& v) { sum += checksum(v); });
+            filter_for_each(p, [](const T&) { return true; }, [&](T& v) { sum += checksum(v); });
             return opaque(sum);
         });
         const size_t live = p.count();
@@ -1579,7 +1612,7 @@ static void test_sparse_views(size_t n)
         class_pool<T> dst;
         dst.increase_capacity(n);
         double ns = best_ns(REPEAT, [&]() {
-            size_t c = cpv::compact_to(p, dst.data(), n);
+            size_t c = compact_to(p, dst.data(), n);
             uint32_t sum = 0;
             for (size_t i = 0; i < c; ++i) { sum += checksum(dst[i]); }
             return opaque(sum);
@@ -1593,7 +1626,7 @@ static void test_sparse_views(size_t n)
     {
         double ns = best_ns(REPEAT, [&]() {
             uint32_t sum = 0;
-            cpv::strided_for_each(p, 0, 4, [&](T& v) { sum += checksum(v); });
+            strided_for_each(p, 0, 4, [&](T& v) { sum += checksum(v); });
             return opaque(sum);
         });
         const size_t cnt = n / 4;
@@ -1608,7 +1641,6 @@ int main()
 {
     cout << "============================================================\n";
     cout << "  class_pool<T> 独立性能测试 (含视图接口)\n";
-    cout << "  编译: MinGW GCC 15.2.0 -O3 -std=c++20 -mavx2 -mbmi -mbmi2\n";
     cout << "  覆盖: 1-8 基础接口 | A 子范围 | B 反向 | C 步进 | D 变换\n";
     cout << "        E 过滤 | F 规约 | G 窗口/分块 | H 枚举 | I zip\n";
     cout << "        J SIMD | K 拷贝/移动 | L 稀疏模式独有\n";

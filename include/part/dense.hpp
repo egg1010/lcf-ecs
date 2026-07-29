@@ -592,8 +592,47 @@ public:
 		++index_;
 	}
 
+	// push_back 拷贝 (trivially copyable 走 memcpy 快路径)
+	void push_back(const T& value) noexcept {
+		if (index_ >= maximum_quantity_) [[unlikely]] {
+			grow_data(calculate_new_capacity(maximum_quantity_));
+		}
+		if constexpr (std::is_trivially_copyable_v<T>) {
+			std::memcpy(&data_ptr_[index_], &value, sizeof(T));
+		} else {
+			new (&data_ptr_[index_]) T(value);
+		}
+		++index_;
+	}
+
+	// push_back 移动
+	void push_back(T&& value) noexcept {
+		if (index_ >= maximum_quantity_) [[unlikely]] {
+			grow_data(calculate_new_capacity(maximum_quantity_));
+		}
+		if constexpr (std::is_trivially_copyable_v<T>) {
+			std::memcpy(&data_ptr_[index_], &value, sizeof(T));
+		} else {
+			new (&data_ptr_[index_]) T(std::move(value));
+		}
+		++index_;
+	}
+
 	void push_back_unchecked(const T& value) noexcept {
-		new (&data_ptr_[index_]) T(value);
+		if constexpr (std::is_trivially_copyable_v<T>) {
+			std::memcpy(&data_ptr_[index_], &value, sizeof(T));
+		} else {
+			new (&data_ptr_[index_]) T(value);
+		}
+		++index_;
+	}
+
+	void push_back_unchecked(T&& value) noexcept {
+		if constexpr (std::is_trivially_copyable_v<T>) {
+			std::memcpy(&data_ptr_[index_], &value, sizeof(T));
+		} else {
+			new (&data_ptr_[index_]) T(std::move(value));
+		}
 		++index_;
 	}
 
@@ -729,7 +768,9 @@ public:
 			}
 #else
 			for (size_t i = 0; i < chunks; ++i) {
-				std::memcpy(data_ptr_ + start + i * elem_per_ymm, &value, elem_per_ymm * sizeof(T));
+				for (size_t j = 0; j < elem_per_ymm; ++j) {
+					data_ptr_[start + i * elem_per_ymm + j] = value;
+				}
 			}
 #endif
 			for (size_t i = 0; i < remainder; ++i) {

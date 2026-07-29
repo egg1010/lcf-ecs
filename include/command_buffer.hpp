@@ -64,7 +64,7 @@ public:
     template <typename T>
     void add_component(entity e, T&& comp) noexcept
     {
-        commands_.emplace_back(command{
+        commands_.push_back(command{
             e,
             void_any(std::forward<T>(comp)),
             &apply_add<std::decay_t<T>>});
@@ -73,7 +73,7 @@ public:
     template <typename T>
     void remove_component(entity e) noexcept
     {
-        commands_.emplace_back(command{
+        commands_.push_back(command{
             e,
             void_any{},
             &apply_remove<T>});
@@ -81,7 +81,7 @@ public:
 
     void destroy_entity(entity e) noexcept
     {
-        commands_.emplace_back(command{
+        commands_.push_back(command{
             e,
             void_any{},
             &apply_destroy});

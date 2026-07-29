@@ -20,6 +20,7 @@ static void build_full_manager(manager& mgr, size_t n, mt19937& rng)
 {
     uniform_real_distribution<float> rf(-1000, 1000);
     uniform_int_distribution<int> ri(0, 100);
+    mgr.append_preallocated_entities(n);
     for (size_t i = 0; i < n; ++i)
     {
         entity e(static_cast<uint32_t>(i), 1);
@@ -39,6 +40,7 @@ static void build_partial_manager(manager& mgr, size_t n, mt19937& rng)
 {
     uniform_real_distribution<float> rf(-1000, 1000);
     uniform_int_distribution<int> ri(0, 100);
+    mgr.append_preallocated_entities(n);
     for (size_t i = 0; i < n; ++i)
     {
         entity e(static_cast<uint32_t>(i), 1);
@@ -66,12 +68,21 @@ static void test_basic_impl(manager& mgr, size_t n, const char* types_str)
             volatile size_t s = 0;
             for (size_t i = 0; i < OPS; ++i)
             {
-                s += mv.size();
+                s += mv.pool_size();
                 s += mv.empty() ? 1 : 0;
             }
             (void)s;
         });
-        print_ns("size/empty", OPS, ns / static_cast<double>(OPS));
+        print_ns("pool_size/empty", OPS, ns / static_cast<double>(OPS));
+    }
+
+    {
+        double ns = best_ns(REPEAT, [&]() {
+            volatile size_t s = mv.size();
+            (void)s;
+            return s;
+        });
+        print_ns("size (cached count)", 1, ns);
     }
 
     {
@@ -160,7 +171,7 @@ static void test_nested_impl(manager& mgr, size_t n, const char* types_str)
     {
         auto pv = mv.page(n / 4, n / 2);
         double ns = best_ns(REPEAT, [&]() {
-            volatile size_t s = 0;
+            size_t s = 0;
             pv.for_each([&](auto&...) { ++s; });
             compiler_barrier();
             return s;
@@ -198,11 +209,8 @@ static void test_nested_impl(manager& mgr, size_t n, const char* types_str)
             return s;
         });
         print_ns("filter_any_changed (build+iter)", n, ns / static_cast<double>(n));
-    }
 
-    {
-        using First = tuple_element_t<0, tuple<Ts...>>;
-        double ns = best_ns(REPEAT, [&]() {
+        ns = best_ns(REPEAT, [&]() {
             auto fa = mv.template filter_added<First>();
             volatile size_t s = fa.size();
             fa.for_each([](auto&...) {});
@@ -215,6 +223,7 @@ static void test_nested_impl(manager& mgr, size_t n, const char* types_str)
     {
         // 构建只有一个匹配实体的 manager
         manager mgr2;
+        mgr2.append_preallocated_entities(1);
         entity e0(0, 1);
         mgr2.add(Pos{1, 2, 3}, e0);
         mgr2.add(Vel{4, 5, 6}, e0);
@@ -244,7 +253,6 @@ int main()
 {
     cout << "============================================================\n";
     cout << "  multi_view<T...> 独立性能测试\n";
-    cout << "  编译: MinGW GCC 15.2.0 -O3 -std=c++20 -mavx2 -mbmi -mbmi2\n";
     cout << "============================================================\n";
 
     const size_t N = 1 << 18;  // 256K

@@ -1071,7 +1071,6 @@ int main()
 
     std::cout << "========================================================\n"
               << "  single_class_set 独立性能测试\n"
-              << "  编译器: MinGW GCC 15.2.0 (-O3 -std=c++20 -mavx2 -mbmi -mbmi2)\n"
               << "  工具: time.hpp (timer/cycle_timer/benchmark_ns/measure_cache_hits)\n"
               << "========================================================\n";
 

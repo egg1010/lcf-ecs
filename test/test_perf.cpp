@@ -11,81 +11,6 @@
 #include "include/part/class_pool_views.hpp"
 #include <bit>
 
-// 编译器横幅宏 (动态拼接编译器版本 + 选项 + LTO 标记)
-#define LCF_STR_(x) #x
-#define LCF_STR(x)  LCF_STR_(x)
-
-// 检测顺序: __clang__ 优先 (clang-cl 同时定义 __clang__ 和 _MSC_VER)
-#if defined(__clang__)
-    #ifdef _MSC_VER
-        #define LCF_COMPILER_NAME \
-            "Clang-cl " LCF_STR(__clang_major__) "." LCF_STR(__clang_minor__) "." LCF_STR(__clang_patchlevel__) \
-            " (MSVC " LCF_STR(_MSC_VER) ")"
-    #else
-        #define LCF_COMPILER_NAME \
-            "Clang " LCF_STR(__clang_major__) "." LCF_STR(__clang_minor__) "." LCF_STR(__clang_patchlevel__)
-    #endif
-#elif defined(__GNUC__)
-    #ifdef __MINGW32__
-        #define LCF_COMPILER_NAME \
-            "MinGW GCC " LCF_STR(__GNUC__) "." LCF_STR(__GNUC_MINOR__) "." LCF_STR(__GNUC_PATCHLEVEL__)
-    #else
-        #define LCF_COMPILER_NAME \
-            "GCC " LCF_STR(__GNUC__) "." LCF_STR(__GNUC_MINOR__) "." LCF_STR(__GNUC_PATCHLEVEL__)
-    #endif
-#elif defined(_MSC_VER)
-    // 纯 MSVC: _MSC_VER VS2022=193x, VS2026=1950
-    #define LCF_COMPILER_NAME "MSVC " LCF_STR(_MSC_VER)
-#else
-    #define LCF_COMPILER_NAME "Unknown"
-#endif
-
-// 编译选项 (各编译器格式不同, clang-cl 走 MSVC 选项路径)
-#if defined(__clang__) && !defined(_MSC_VER)
-    #if defined(__AVX2__) && defined(__FMA__)
-        #ifdef LCF_HAS_LTO
-            #define LCF_BANNER_OPTS " -O3 -std=c++20 -mavx2 -mfma -mbmi -mbmi2 + LTO(thin)"
-        #else
-            #define LCF_BANNER_OPTS " -O3 -std=c++20 -mavx2 -mfma -mbmi -mbmi2"
-        #endif
-    #else
-        #ifdef LCF_HAS_LTO
-            #define LCF_BANNER_OPTS " -O3 -std=c++20 -msse2 -mbmi -mbmi2 + LTO(thin) (无 AVX2)"
-        #else
-            #define LCF_BANNER_OPTS " -O3 -std=c++20 -msse2 -mbmi -mbmi2 (无 AVX2)"
-        #endif
-    #endif
-#elif defined(_MSC_VER)
-    // MSVC / clang-cl: /O2 (Release 默认, MSVC 无 /O3) + /arch:AVX2 + 可选 /GL+/LTCG
-    #ifdef __AVX2__
-        #ifdef LCF_HAS_LTO
-            #define LCF_BANNER_OPTS " /O2 /std:c++20 /arch:AVX2 + /GL /LTCG"
-        #else
-            #define LCF_BANNER_OPTS " /O2 /std:c++20 /arch:AVX2"
-        #endif
-    #else
-        #ifdef LCF_HAS_LTO
-            #define LCF_BANNER_OPTS " /O2 /std:c++20 + /GL /LTCG (无 AVX2)"
-        #else
-            #define LCF_BANNER_OPTS " /O2 /std:c++20 (无 AVX2)"
-        #endif
-    #endif
-#else
-    #if defined(__AVX2__) && defined(__FMA__)
-        #ifdef LCF_HAS_LTO
-            #define LCF_BANNER_OPTS " -O3 -std=c++20 -mavx2 -mfma -mbmi -mbmi2 + LTO"
-        #else
-            #define LCF_BANNER_OPTS " -O3 -std=c++20 -mavx2 -mfma -mbmi -mbmi2"
-        #endif
-    #else
-        #ifdef LCF_HAS_LTO
-            #define LCF_BANNER_OPTS " -O3 -std=c++20 -msse2 -mbmi -mbmi2 + LTO (无 AVX2)"
-        #else
-            #define LCF_BANNER_OPTS " -O3 -std=c++20 -msse2 -mbmi -mbmi2 (无 AVX2)"
-        #endif
-    #endif
-#endif
-
 // 数量级格式化
 inline std::string mag(size_t n) noexcept
 {
@@ -243,7 +168,6 @@ int main()
 
     std::cout << "========================================================\n"
               << "  lcf-ecs 性能测试 / Performance Benchmark\n"
-              << "  编译器: " LCF_COMPILER_NAME " (" LCF_BANNER_OPTS ")\n"
               << "========================================================\n";
 
     constexpr size_t N = 1000000;  // 1M / 百万实体
@@ -672,7 +596,7 @@ int main()
         t.reset();
         for (int i = 0; i < 1000000; ++i)
         {
-            auto sp = cpv::subspan(cpv_p, N / 4, N / 2);
+            auto sp = subspan(cpv_p, N / 4, N / 2);
             lcf_sink(sp.size());
         }
         print_perf("subspan(off, cnt)", 1000000, t.elapsed_ms());
@@ -680,7 +604,7 @@ int main()
         t.reset();
         for (int i = 0; i < 1000000; ++i)
         {
-            auto sp = cpv::subspan(cpv_p, N / 2);
+            auto sp = subspan(cpv_p, N / 2);
             lcf_sink(sp.size());
         }
         print_perf("subspan(off)", 1000000, t.elapsed_ms());
@@ -688,8 +612,8 @@ int main()
         t.reset();
         for (int i = 0; i < 1000000; ++i)
         {
-            auto f = cpv::first(cpv_p, N / 4);
-            auto l = cpv::last(cpv_p, N / 4);
+            auto f = first(cpv_p, N / 4);
+            auto l = last(cpv_p, N / 4);
             lcf_sink(f.size() + l.size());
         }
         print_perf("first(n)/last(n)", 1000000 * 2, t.elapsed_ms());
@@ -697,8 +621,8 @@ int main()
         t.reset();
         for (int i = 0; i < 1000000; ++i)
         {
-            auto f = cpv::first_fixed<int, 8>(cpv_p);
-            auto l = cpv::last_fixed<int, 8>(cpv_p);
+            auto f = first_fixed<int, 8>(cpv_p);
+            auto l = last_fixed<int, 8>(cpv_p);
             lcf_sink(f.size() + l.size());
         }
         print_perf("first_fixed<N>/last_fixed<N>", 1000000 * 2, t.elapsed_ms());
@@ -706,7 +630,7 @@ int main()
         t.reset();
         for (int i = 0; i < 100; ++i)
         {
-            cpv::reverse_for_each(cpv_p, [&](int& v) { lcf_sink(v); });
+            reverse_for_each(cpv_p, [&](int& v) { lcf_sink(v); });
         }
         print_perf("reverse_for_each", N * 100, t.elapsed_ms());
 
@@ -714,28 +638,28 @@ int main()
         t.reset();
         for (int i = 0; i < 100; ++i)
         {
-            cpv::strided_for_each(cpv_p, 0, 4, [&](int& v) { lcf_sink(v); });
+            strided_for_each(cpv_p, 0, 4, [&](int& v) { lcf_sink(v); });
         }
         print_perf("strided_for_each (rt step=4)", (N / 4) * 100, t.elapsed_ms());
 
         t.reset();
         for (int i = 0; i < 100; ++i)
         {
-            cpv::strided_for_each<int, 4>(cpv_p, [&](int& v) { lcf_sink(v); });
+            strided_for_each<int, 4>(cpv_p, [&](int& v) { lcf_sink(v); });
         }
         print_perf("strided_for_each<4> (ct step)", (N / 4) * 100, t.elapsed_ms());
 
         t.reset();
         for (int i = 0; i < 100; ++i)
         {
-            cpv::strided_for_each<int, 1>(cpv_p, [&](int& v) { lcf_sink(v); });
+            strided_for_each<int, 1>(cpv_p, [&](int& v) { lcf_sink(v); });
         }
         print_perf("strided_for_each<1> (fast path)", N * 100, t.elapsed_ms());
 
         t.reset();
         for (int i = 0; i < 100; ++i)
         {
-            cpv::transform_for_each(
+            transform_for_each(
                 cpv_p,
                 [](int& v) -> int { return v; },
                 [&](int v) { lcf_sink(v); });
@@ -747,7 +671,7 @@ int main()
         cpv_dst.increase_capacity(N);
         for (int i = 0; i < 100; ++i)
         {
-            cpv::transform_to<int, int>(cpv_p, cpv_dst.data(), N, [](const int& v) -> int { return v; });
+            transform_to<int, int>(cpv_p, cpv_dst.data(), N, [](const int& v) -> int { return v; });
         }
         print_perf("transform_to", N * 100, t.elapsed_ms());
 
@@ -756,7 +680,7 @@ int main()
         int target = static_cast<int>(N / 2);
         for (int i = 0; i < 100; ++i)
         {
-            int* r = cpv::find(cpv_p, target);
+            int* r = find(cpv_p, target);
             lcf_sink(r ? *r : 0);
         }
         print_perf("find (mid hit)", 100, t.elapsed_ms());
@@ -765,14 +689,14 @@ int main()
         bool found = false;
         for (int i = 0; i < 100; ++i)
         {
-            found = cpv::contains(cpv_p, target);
+            found = contains(cpv_p, target);
         }
         print_perf("contains (mid hit)", 100, t.elapsed_ms());
 
         t.reset();
         for (int i = 0; i < 100; ++i)
         {
-            int* r = cpv::find_if(cpv_p, [&](const int& v) { return v == target; });
+            int* r = find_if(cpv_p, [&](const int& v) { return v == target; });
             lcf_sink(r ? *r : 0);
         }
         print_perf("find_if (mid hit)", 100, t.elapsed_ms());
@@ -780,14 +704,14 @@ int main()
         t.reset();
         for (int i = 0; i < 10; ++i)
         {
-            lcf_sink(cpv::count_if(cpv_p, [](const int&) { return true; }));
+            lcf_sink(count_if(cpv_p, [](const int&) { return true; }));
         }
         print_perf("count_if", N * 10, t.elapsed_ms());
 
         t.reset();
         for (int i = 0; i < 100; ++i)
         {
-            cpv::filter_for_each(cpv_p, [](const int&) { return true; }, [&](int& v) { lcf_sink(v); });
+            filter_for_each(cpv_p, [](const int&) { return true; }, [&](int& v) { lcf_sink(v); });
         }
         print_perf("filter_for_each (all)", N * 100, t.elapsed_ms());
 
@@ -797,7 +721,7 @@ int main()
         for (int i = 0; i < 10; ++i)
         {
             idx_dst.clear();
-            cpv::filter_indices_to(cpv_p, idx_dst, [](const int&) { return true; });
+            filter_indices_to(cpv_p, idx_dst, [](const int&) { return true; });
         }
         print_perf("filter_indices_to", N * 10, t.elapsed_ms());
 
@@ -805,7 +729,7 @@ int main()
         t.reset();
         for (int i = 0; i < 100; ++i)
         {
-            int r = cpv::reduce(cpv_p, [](int acc, const int& v) -> int { return acc + v; }, 0);
+            int r = reduce(cpv_p, [](int acc, const int& v) -> int { return acc + v; }, 0);
             lcf_sink(r);
         }
         print_perf("reduce", N * 100, t.elapsed_ms());
@@ -813,7 +737,7 @@ int main()
         t.reset();
         for (int i = 0; i < 100; ++i)
         {
-            int r = cpv::reduce_pairwise(cpv_p, [](int acc, const int& v) -> int { return acc + v; }, 0);
+            int r = reduce_pairwise(cpv_p, [](int acc, const int& v) -> int { return acc + v; }, 0);
             lcf_sink(r);
         }
         print_perf("reduce_pairwise", N * 100, t.elapsed_ms());
@@ -821,7 +745,7 @@ int main()
         t.reset();
         for (int i = 0; i < 100; ++i)
         {
-            int* r = cpv::min_element(cpv_p);
+            int* r = min_element(cpv_p);
             lcf_sink(r ? *r : 0);
         }
         print_perf("min_element", N * 100, t.elapsed_ms());
@@ -829,7 +753,7 @@ int main()
         t.reset();
         for (int i = 0; i < 100; ++i)
         {
-            int* r = cpv::max_element(cpv_p);
+            int* r = max_element(cpv_p);
             lcf_sink(r ? *r : 0);
         }
         print_perf("max_element", N * 100, t.elapsed_ms());
@@ -837,7 +761,7 @@ int main()
         t.reset();
         for (int i = 0; i < 100; ++i)
         {
-            int s = cpv::sum(cpv_p);
+            int s = sum(cpv_p);
             lcf_sink(s);
         }
         print_perf("sum (ivdep)", N * 100, t.elapsed_ms());
@@ -851,7 +775,7 @@ int main()
         }
         for (int i = 0; i < 100; ++i)
         {
-            int r = cpv::dot_product(cpv_p, cpv_other.data(), N);
+            int r = dot_product(cpv_p, cpv_other.data(), N);
             lcf_sink(r);
         }
         print_perf("dot_product", N * 100, t.elapsed_ms());
@@ -860,28 +784,28 @@ int main()
         t.reset();
         for (int i = 0; i < 100; ++i)
         {
-            cpv::for_each_window<int, 4>(cpv_p, [&](std::span<int, 4> w) { lcf_sink(w[0]); });
+            for_each_window<int, 4>(cpv_p, [&](std::span<int, 4> w) { lcf_sink(w[0]); });
         }
         print_perf("for_each_window<4>", (N - 3) * 100, t.elapsed_ms());
 
         t.reset();
         for (int i = 0; i < 100; ++i)
         {
-            cpv::for_each_chunk<int, 4>(cpv_p, [&](std::span<int, 4> c) { lcf_sink(c[0]); });
+            for_each_chunk<int, 4>(cpv_p, [&](std::span<int, 4> c) { lcf_sink(c[0]); });
         }
         print_perf("for_each_chunk<4>", (N / 4) * 100, t.elapsed_ms());
 
         t.reset();
         for (int i = 0; i < 100; ++i)
         {
-            cpv::for_each_enumerated(cpv_p, [&](size_t, int& v) { lcf_sink(v); });
+            for_each_enumerated(cpv_p, [&](size_t, int& v) { lcf_sink(v); });
         }
         print_perf("for_each_enumerated", N * 100, t.elapsed_ms());
 
         t.reset();
         for (int i = 0; i < 100; ++i)
         {
-            cpv::for_each_zip(cpv_p, cpv_other, [&](int& a, int& b) { lcf_sink(a + b); });
+            for_each_zip(cpv_p, cpv_other, [&](int& a, int& b) { lcf_sink(a + b); });
         }
         print_perf("for_each_zip (pool)", N * 100, t.elapsed_ms());
 
@@ -889,14 +813,14 @@ int main()
         int* other_ptr = cpv_other.data();
         for (int i = 0; i < 100; ++i)
         {
-            cpv::for_each_zip(cpv_p, other_ptr, N, [&](int& a, int& b) { lcf_sink(a + b); });
+            for_each_zip(cpv_p, other_ptr, N, [&](int& a, int& b) { lcf_sink(a + b); });
         }
         print_perf("for_each_zip (ptr)", N * 100, t.elapsed_ms());
 
         t.reset();
         for (int i = 0; i < 100; ++i)
         {
-            cpv::zip_with_to<int, int, int>(cpv_p, cpv_other.data(), cpv_dst.data(), N,
+            zip_with_to<int, int, int>(cpv_p, cpv_other.data(), cpv_dst.data(), N,
                 [](const int& a, const int& b) -> int { return a + b; });
         }
         print_perf("zip_with_to", N * 100, t.elapsed_ms());
@@ -905,7 +829,7 @@ int main()
         class_pool<int> cpv_cpy = cpv_p;
         for (int i = 0; i < 100; ++i)
         {
-            bool r = cpv::equal(cpv_p, cpv_cpy);
+            bool r = equal(cpv_p, cpv_cpy);
             lcf_sink(r ? 1 : 0);
         }
         print_perf("equal (pool)", N * 100, t.elapsed_ms());
@@ -914,7 +838,7 @@ int main()
         const int* eq_ptr = cpv_cpy.data();
         for (int i = 0; i < 100; ++i)
         {
-            bool r = cpv::equal(cpv_p, eq_ptr, N);
+            bool r = equal(cpv_p, eq_ptr, N);
             lcf_sink(r ? 1 : 0);
         }
         print_perf("equal (ptr, count)", N * 100, t.elapsed_ms());
@@ -923,28 +847,28 @@ int main()
         t.reset();
         for (int i = 0; i < 100; ++i)
         {
-            cpv::simd_for_each(cpv_p, [&](int& v) { lcf_sink(v); });
+            simd_for_each(cpv_p, [&](int& v) { lcf_sink(v); });
         }
         print_perf("simd_for_each", N * 100, t.elapsed_ms());
 
         t.reset();
         for (int i = 0; i < 100; ++i)
         {
-            cpv::copy_to(cpv_p, cpv_dst.data(), N);
+            copy_to(cpv_p, cpv_dst.data(), N);
         }
         print_perf("copy_to", N * 100, t.elapsed_ms());
 
         t.reset();
         for (int i = 0; i < 100; ++i)
         {
-            cpv::move_to(cpv_p, cpv_dst.data(), N);
+            move_to(cpv_p, cpv_dst.data(), N);
         }
         print_perf("move_to", N * 100, t.elapsed_ms());
 
         t.reset();
         for (int i = 0; i < 100; ++i)
         {
-            cpv::reverse_copy_to(cpv_p, cpv_dst.data(), N);
+            reverse_copy_to(cpv_p, cpv_dst.data(), N);
         }
         print_perf("reverse_copy_to", N * 100, t.elapsed_ms());
 
@@ -959,21 +883,21 @@ int main()
         t.reset();
         for (int i = 0; i < 10; ++i)
         {
-            cpv::simd_for_each(cpv_sparse, [&](int& v) { lcf_sink(v); });
+            simd_for_each(cpv_sparse, [&](int& v) { lcf_sink(v); });
         }
         print_perf("sparse simd_for_each (degraded)", live * 10, t.elapsed_ms());
 
         t.reset();
         for (int i = 0; i < 10; ++i)
         {
-            cpv::filter_for_each(cpv_sparse, [](const int&) { return true; }, [&](int& v) { lcf_sink(v); });
+            filter_for_each(cpv_sparse, [](const int&) { return true; }, [&](int& v) { lcf_sink(v); });
         }
         print_perf("sparse filter_for_each", live * 10, t.elapsed_ms());
 
         t.reset();
         for (int i = 0; i < 10; ++i)
         {
-            size_t c = cpv::compact_to(cpv_sparse, cpv_dst.data(), N);
+            size_t c = compact_to(cpv_sparse, cpv_dst.data(), N);
             lcf_sink(c);
         }
         print_perf("sparse compact_to", live * 10, t.elapsed_ms());

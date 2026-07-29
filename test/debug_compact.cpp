@@ -13,7 +13,7 @@ int main()
     std::cout << "size=" << sp.size() << " count=" << sp.count() << " is_dense=" << sp.is_dense() << "\n";
 
     int dst[100] = {};
-    size_t n = cpv::compact_to(sp, dst, 100);
+    size_t n = compact_to(sp, dst, 100);
     std::cout << "compact_to returned n=" << n << "\n";
 
     std::cout << "dst[0]=" << dst[0] << " (expected 0)\n";

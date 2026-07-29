@@ -355,7 +355,7 @@ stats benchmark_ns(size_t iterations, size_t warmup, F&& fn) noexcept
         auto t0 = std::chrono::high_resolution_clock::now();
         fn();
         auto t1 = std::chrono::high_resolution_clock::now();
-        samples.emplace_back(std::chrono::duration<double, std::nano>(t1 - t0).count());
+        samples.push_back(std::chrono::duration<double, std::nano>(t1 - t0).count());
     }
     return compute_stats(std::move(samples));
 }
@@ -376,7 +376,7 @@ stats benchmark_cycles(size_t iterations, size_t warmup, F&& fn) noexcept
         uint64_t c0 = rdtscp();
         fn();
         uint64_t c1 = rdtscp();
-        samples.emplace_back(static_cast<double>(c1 - c0));
+        samples.push_back(static_cast<double>(c1 - c0));
     }
     return compute_stats(std::move(samples));
 #else
@@ -443,7 +443,7 @@ inline cache_report measure_cache_hits(const dense<const void*>& addresses,
         (void)v;
         uint64_t c1 = rdtscp();
         double cyc = static_cast<double>(c1 - c0);
-        cycles.emplace_back(cyc);
+        cycles.push_back(cyc);
         sum += cyc;
         if (cyc < th.l1_max)
         {
@@ -496,7 +496,7 @@ inline dense<const void*> make_sequential_addresses(const void* base, size_t cou
     const uint8_t* p = static_cast<const uint8_t*>(base);
     for (size_t i = 0; i < count; ++i)
     {
-        v.emplace_back(p + i * stride);
+        v.push_back(p + i * stride);
     }
     return v;
 }
@@ -508,7 +508,7 @@ inline dense<const void*> make_random_addresses(const void* base, size_t count, 
     indices.increase_capacity(count);
     for (size_t i = 0; i < count; ++i)
     {
-        indices.emplace_back(i);
+        indices.push_back(i);
     }
     // LCG 洗牌
     uint64_t x = seed;
@@ -523,7 +523,7 @@ inline dense<const void*> make_random_addresses(const void* base, size_t count, 
     const uint8_t* p = static_cast<const uint8_t*>(base);
     for (size_t i = 0; i < indices.size(); ++i)
     {
-        v.emplace_back(p + indices[i] * stride);
+        v.push_back(p + indices[i] * stride);
     }
     return v;
 }

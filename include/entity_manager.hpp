@@ -66,7 +66,7 @@ private:
         if (!signal_buf_.push(signal_event{type, entity_idx})) [[unlikely]]
         {
             ++signal_overflow_count_;
-            signal_overflow_chain_.emplace_back(signal_event{type, entity_idx});
+            signal_overflow_chain_.push_back(signal_event{type, entity_idx});
         }
     }
 
@@ -146,7 +146,7 @@ public:
         for (size_t i = 0; i < count; ++i)
         {
             uint32_t idx = id_manager_.get_id();
-            preallocated_entities_.emplace_back_unchecked(entity(idx, version_v_[idx]));
+            preallocated_entities_.push_back_unchecked(entity(idx, version_v_[idx]));
         }
     }
 

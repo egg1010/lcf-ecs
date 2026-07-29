@@ -302,7 +302,52 @@ static void test_append(size_t n)
         print_ns("push_back_unchecked", n, ns / static_cast<double>(n));
     }
 
-    // 5.2 emplace_back_unchecked
+    // 5.2 push_back (拷贝, 带容量检查)
+    {
+        double ns = best_ns(REPEAT, [&]() {
+            dense<T> d; d.increase_capacity(n);
+            for (size_t i = 0; i < n; ++i)
+            {
+                T v = make_value<T>(static_cast<uint32_t>(i));
+                d.push_back(v);
+            }
+            compiler_barrier();
+            return d.size();
+        });
+        print_ns("push_back (copy)", n, ns / static_cast<double>(n));
+    }
+
+    // 5.3 push_back (移动)
+    {
+        double ns = best_ns(REPEAT, [&]() {
+            dense<T> d; d.increase_capacity(n);
+            for (size_t i = 0; i < n; ++i)
+            {
+                T v = make_value<T>(static_cast<uint32_t>(i));
+                d.push_back(std::move(v));
+            }
+            compiler_barrier();
+            return d.size();
+        });
+        print_ns("push_back (move)", n, ns / static_cast<double>(n));
+    }
+
+    // 5.4 push_back_unchecked (移动)
+    {
+        double ns = best_ns(REPEAT, [&]() {
+            dense<T> d; d.increase_capacity(n);
+            for (size_t i = 0; i < n; ++i)
+            {
+                T v = make_value<T>(static_cast<uint32_t>(i));
+                d.push_back_unchecked(std::move(v));
+            }
+            compiler_barrier();
+            return d.size();
+        });
+        print_ns("push_back_unchecked (move)", n, ns / static_cast<double>(n));
+    }
+
+    // 5.5 emplace_back_unchecked
     {
         double ns = best_ns(REPEAT, [&]() {
             dense<T> d; d.increase_capacity(n);
@@ -313,7 +358,7 @@ static void test_append(size_t n)
         print_ns("emplace_back_unchecked", n, ns / static_cast<double>(n));
     }
 
-    // 5.3 emplace_back (带容量检查)
+    // 5.6 emplace_back (带容量检查)
     {
         double ns = best_ns(REPEAT, [&]() {
             dense<T> d; d.increase_capacity(n);
@@ -324,7 +369,7 @@ static void test_append(size_t n)
         print_ns("emplace_back", n, ns / static_cast<double>(n));
     }
 
-    // 5.4 append_n (count 个相同值)
+    // 5.7 append_n (count 个相同值)
     {
         T v = make_value<T>(0);
         double ns = best_ns(REPEAT, [&]() {
@@ -336,7 +381,7 @@ static void test_append(size_t n)
         print_ns("append_n", n, ns / static_cast<double>(n));
     }
 
-    // 5.5 append_bulk (批量拷贝)
+    // 5.8 append_bulk (批量拷贝)
     {
         vector<T> src;
         src.reserve(n);
@@ -350,7 +395,7 @@ static void test_append(size_t n)
         print_ns("append_bulk", n, ns / static_cast<double>(n));
     }
 
-    // 5.6 append_bulk_move (批量移动)
+    // 5.9 append_bulk_move (批量移动)
     {
         double ns = best_ns(REPEAT, [&]() {
             vector<T> src; src.reserve(n);
@@ -363,11 +408,11 @@ static void test_append(size_t n)
         print_ns("append_bulk_move", n, ns / static_cast<double>(n));
     }
 
-    // 5.7 append_incrementing (要求 T 可从 uint64_t 赋值, 仅基础整数类型适用)
+    // 5.10 append_incrementing (要求 T 可从 uint64_t 赋值, 仅基础整数类型适用)
     // 单独在 main 中用 uint32_t 测试, 此处跳过
     (void)0;
 
-    // 5.8 fill_bulk (区间填充, AVX2 广播)
+    // 5.11 fill_bulk (区间填充, AVX2 广播)
     {
         T v = make_value<T>(42);
         double ns = best_ns(REPEAT, [&]() {
@@ -1421,7 +1466,6 @@ int main()
 {
     cout << "============================================================\n";
     cout << "  dense<T> 独立性能测试 (含视图接口)\n";
-    cout << "  编译: MinGW GCC 15.2.0 -O3 -std=c++20 -mavx2 -mbmi -mbmi2\n";
     cout << "  覆盖: 1-8 基础接口 | A 子范围 | B 反向 | C 步进 | D 变换\n";
     cout << "        E 过滤 | F 规约 | G 窗口/分块 | H 枚举 | I zip\n";
     cout << "        J SIMD | K 拷贝/移动\n";

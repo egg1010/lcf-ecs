@@ -573,7 +573,6 @@ int main()
     cout << "============================================================\n";
     cout << "  分配器独立性能测试\n";
     cout << "  memory_pool / slab_allocator / layered_allocator / arena_allocator\n";
-    cout << "  编译: MinGW GCC 15.2.0 -O3 -std=c++20 -mavx2 -mbmi -mbmi2\n";
     cout << "============================================================\n";
 
     test_memory_pool();

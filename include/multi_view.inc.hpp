@@ -12,12 +12,13 @@
         std::array<single_class_set*, N> sets_;
         size_t primary_idx_{0};
         manager* mgr_{nullptr};
-        dense<std::array<uint32_t, N>> dense_mappings_soa_;
-        dense<uint32_t> cached_entity_versions_;
-        uint64_t cached_versions_[N]{};
-        bool mappings_valid_{false};
-        bool all_valid_{false};
-        bool pools_aligned_{false};
+        mutable dense<std::array<uint32_t, N>> dense_mappings_soa_;
+        mutable dense<uint32_t> cached_entity_versions_;
+        mutable uint64_t cached_versions_[N]{};
+        mutable size_t cached_count_{0};
+        mutable bool mappings_valid_{false};
+        mutable bool all_valid_{false};
+        mutable bool pools_aligned_{false};
 
         using AllTypes = std::tuple<First, Rest...>;
 
@@ -35,7 +36,7 @@
             }
         }
 
-        void rebuild_mappings() noexcept
+        void rebuild_mappings() const noexcept
         {
             auto* primary = sets_[primary_idx_];
             auto& indices = primary->get_entity_indices();
@@ -79,6 +80,7 @@
                 cached_entity_versions_.clear();
                 all_valid_ = true;
                 pools_aligned_ = true;
+                cached_count_ = n;
                 for (size_t k = 0; k < N; ++k)
                     cached_versions_[k] = sets_[k]->get_pool_version();
                 mappings_valid_ = true;
@@ -165,9 +167,29 @@
             for (size_t k = 0; k < N; ++k)
                 cached_versions_[k] = sets_[k]->get_pool_version();
             mappings_valid_ = true;
+
+            cached_count_ = 0;
+            if (pools_aligned_)
+            {
+                cached_count_ = n;
+            }
+            else
+            {
+                auto* soa_data = dense_mappings_soa_.data();
+                for (size_t i = 0; i < n; ++i)
+                {
+                    bool valid = true;
+                    for (size_t k = 0; k < N; ++k)
+                    {
+                        if (k == primary_idx_) continue;
+                        if (soa_data[i][k] == UINT32_MAX) { valid = false; break; }
+                    }
+                    if (valid) ++cached_count_;
+                }
+            }
         }
 
-        void ensure_mappings() noexcept
+        void ensure_mappings() const noexcept
         {
             bool need_rebuild = !mappings_valid_;
             if (!need_rebuild)
@@ -588,7 +610,16 @@
             find_smallest();
         }
 
+        // 实际匹配数 (所有组件都存在的实体数)
         [[nodiscard]] size_t size() const noexcept
+        {
+            if (!all_sets_valid()) return 0;
+            ensure_mappings();
+            return cached_count_;
+        }
+
+        // 主组件池大小 (最小池的实体数, O(1))
+        [[nodiscard]] size_t pool_size() const noexcept
         {
             auto* p = sets_[primary_idx_];
             return p ? p->size() : 0;
@@ -809,8 +840,8 @@
                         size_t primary_i = sorted_indices_[i];
                         uint32_t eid = indices[primary_i];
                         uint32_t ver = primary->sparse_version_at_public(eid);
-                        sorted_entities_.emplace_back(entity(eid, ver));
-                        (std::get<Is>(sorted_pool_copies_).emplace_back(
+                        sorted_entities_.push_back(entity(eid, ver));
+                        (std::get<Is>(sorted_pool_copies_).push_back(
                             (*std::get<Is>(original_pools))[primary_i]), ...);
                     }
                 }
@@ -826,8 +857,8 @@
                         {
                             uint32_t eid = indices[primary_i];
                             uint32_t ver = primary->sparse_version_at_public(eid);
-                            sorted_entities_.emplace_back(entity(eid, ver));
-                            (std::get<Is>(sorted_pool_copies_).emplace_back(
+                            sorted_entities_.push_back(entity(eid, ver));
+                            (std::get<Is>(sorted_pool_copies_).push_back(
                                 (*std::get<Is>(original_pools))[m[Is]]), ...);
                         }
                     }
@@ -858,7 +889,7 @@
 
                 sorted_indices_.increase_capacity(n);
                 for (size_t i = 0; i < n; ++i)
-                    sorted_indices_.emplace_back(i);
+                    sorted_indices_.push_back(i);
 
                 size_t* idx_data = sorted_indices_.data();
 
@@ -1045,11 +1076,11 @@
                     group_keys_[i] = entries[i].key;
                 }
 
-                group_starts_.emplace_back(0);
+                group_starts_.push_back(0);
                 for (size_t i = 1; i < n; ++i)
                 {
                     if (group_keys_[i] != group_keys_[i - 1])
-                        group_starts_.emplace_back(i);
+                        group_starts_.push_back(i);
                 }
 
                 for (size_t i = 0; i < N; ++i)
@@ -1234,7 +1265,7 @@
                     uint32_t ver = primary->sparse_version_at_public(eid);
                     entity e(eid, ver);
                     if (base_.contains_impl(e, std::index_sequence_for<First, Rest...>{}))
-                        changed_indices_.emplace_back(i);
+                        changed_indices_.push_back(i);
                 }
                 needs_rebuild_ = false;
             }
@@ -1333,7 +1364,7 @@
                 const size_t n = indices.size();
                 // 仅扩展，不覆盖已追踪的版本号
                 while (last_observed_versions_.size() < n)
-                    last_observed_versions_.emplace_back(0);
+                    last_observed_versions_.push_back(0);
 
                 auto* track_set = base_.sets_[TrackIdx];
 
@@ -1354,7 +1385,7 @@
                             last_observed_versions_[i] = cur;
                         else
                             last_observed_versions_[i] = cur;
-                        changed_indices_.emplace_back(i);
+                        changed_indices_.push_back(i);
                     }
                 }
                 needs_rebuild_ = false;
@@ -1446,7 +1477,7 @@
                 auto& indices = primary->get_entity_indices();
                 const size_t n = indices.size();
                 while (last_observed_added_.size() < n)
-                    last_observed_added_.emplace_back(0);
+                    last_observed_added_.push_back(0);
 
                 auto* track_set = base_.sets_[TrackIdx];
 
@@ -1467,7 +1498,7 @@
                             last_observed_added_[i] = cur;
                         else
                             last_observed_added_[i] = cur;
-                        added_indices_.emplace_back(i);
+                        added_indices_.push_back(i);
                     }
                 }
                 needs_rebuild_ = false;

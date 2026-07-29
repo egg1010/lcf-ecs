@@ -57,7 +57,7 @@ inline void group<First, Rest...>::rebuild() noexcept
         for (size_t i = 0; i < n; ++i)
         {
             if (check_blocks(indices[i]))
-                cached_.emplace_back(static_cast<uint32_t>(i));
+                cached_.push_back(static_cast<uint32_t>(i));
         }
     }
     else
@@ -92,8 +92,8 @@ inline void group<First, Rest...>::rebuild() noexcept
             }
             if (has_all)
             {
-                cached_.emplace_back(static_cast<uint32_t>(i));
-                dense_mappings_.emplace_back(entry);
+                cached_.push_back(static_cast<uint32_t>(i));
+                dense_mappings_.push_back(entry);
             }
         }
     }

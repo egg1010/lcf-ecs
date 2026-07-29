@@ -37,7 +37,7 @@ inline runtime_query::runtime_query(manager* mgr, std::span<const int> required_
     required_ids_.increase_capacity(required_ids.size());
     for (int tid : required_ids)
     {
-        required_ids_.emplace_back(tid);
+        required_ids_.push_back(tid);
     }
     if (required_ids_.empty()) [[unlikely]] return;
 
@@ -51,7 +51,7 @@ inline runtime_query::runtime_query(manager* mgr, std::span<const int> required_
         uint32_t b = block_of(tid);
         if (b > max_block_) max_block_ = b;
         auto* set = mgr->get_single_class_set_by_id(tid);
-        req_sets_.emplace_back(set);
+        req_sets_.push_back(set);
         if (set && set->size() < min_size)
         {
             min_size = set->size();
@@ -63,7 +63,7 @@ inline runtime_query::runtime_query(manager* mgr, std::span<const int> required_
     {
         uint32_t b = block_of(tid);
         if (b > max_block_) max_block_ = b;
-        exc_sets_.emplace_back(mgr->get_single_class_set_by_id(tid));
+        exc_sets_.push_back(mgr->get_single_class_set_by_id(tid));
     }
 
     req_masks_.increase_capacity(max_block_ + 1, 0);
@@ -117,9 +117,9 @@ inline runtime_query::runtime_query(manager* mgr, std::span<const runtime_term> 
         // op=0 AND
         [](term_ctx& c, const runtime_term& t, single_class_set* set) noexcept
         {
-            c.self->required_ids_.emplace_back(t.type_id);
-            c.self->req_sets_.emplace_back(set);
-            c.self->req_access_.emplace_back(t.access);
+            c.self->required_ids_.push_back(t.type_id);
+            c.self->req_sets_.push_back(set);
+            c.self->req_access_.push_back(t.access);
             uint32_t block = static_cast<uint32_t>(t.type_id - 1) / 64;
             uint32_t offset = static_cast<uint32_t>(t.type_id - 1) % 64;
             c.self->req_masks_[block] |= (1ULL << offset);
@@ -133,12 +133,12 @@ inline runtime_query::runtime_query(manager* mgr, std::span<const runtime_term> 
         [](term_ctx& c, const runtime_term&, single_class_set* set) noexcept
         {
             c.self->has_or_ = true;
-            c.self->or_sets_.emplace_back(set);
+            c.self->or_sets_.push_back(set);
         },
         // op=2 NOT
         [](term_ctx& c, const runtime_term& t, single_class_set* set) noexcept
         {
-            c.self->exc_sets_.emplace_back(set);
+            c.self->exc_sets_.push_back(set);
             uint32_t block = static_cast<uint32_t>(t.type_id - 1) / 64;
             uint32_t offset = static_cast<uint32_t>(t.type_id - 1) % 64;
             c.self->exc_masks_[block] |= (1ULL << offset);
@@ -147,13 +147,13 @@ inline runtime_query::runtime_query(manager* mgr, std::span<const runtime_term> 
         [](term_ctx& c, const runtime_term&, single_class_set* set) noexcept
         {
             c.self->has_optional_ = true;
-            c.self->opt_sets_.emplace_back(set);
+            c.self->opt_sets_.push_back(set);
         }
     };
 
     for (const auto& term : terms)
     {
-        terms_.emplace_back(term);
+        terms_.push_back(term);
         auto* set = mgr->get_single_class_set_by_id(term.type_id);
 
         if (term.op < 4) [[likely]]
@@ -643,7 +643,7 @@ inline void runtime_view::reset_change_tracking() noexcept
     for (size_t k = 0; k < query_.req_sets_.size(); ++k)
     {
         auto* set = query_.req_sets_[k];
-        baseline_versions_.emplace_back(set ? set->get_pool_version() : 0);
+        baseline_versions_.push_back(set ? set->get_pool_version() : 0);
     }
 }
 
@@ -678,8 +678,8 @@ inline void runtime_view::sort_by_component(Compare&& cmp) noexcept
         uint32_t ver = sort_set->sparse_version_at_public(idx);
         if (dense == 0xFFFFFFFFu || ver != e.parts_.version_) return;
         if (!sort_pool || dense >= sort_pool->size()) return;
-        sorted_entities_.emplace_back(e);
-        components.emplace_back((*sort_pool)[dense]);
+        sorted_entities_.push_back(e);
+        components.push_back((*sort_pool)[dense]);
     });
 
     const size_t n = sorted_entities_.size();
@@ -693,7 +693,7 @@ inline void runtime_view::sort_by_component(Compare&& cmp) noexcept
     indices.increase_capacity(n);
     for (size_t i = 0; i < n; ++i)
     {
-        indices.emplace_back(i);
+        indices.push_back(i);
     }
 
     // MinGW+AVX2 下 std::sort+lambda 会崩溃, 使用 pdqsort 替代
@@ -706,7 +706,7 @@ inline void runtime_view::sort_by_component(Compare&& cmp) noexcept
     temp.increase_capacity(n);
     for (size_t i = 0; i < n; ++i)
     {
-        temp.emplace_back(sorted_entities_[indices[i]]);
+        temp.push_back(sorted_entities_[indices[i]]);
     }
     sorted_entities_ = std::move(temp);
     sorted_valid_ = true;

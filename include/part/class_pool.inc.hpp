@@ -711,11 +711,66 @@ void class_pool<T>::emplace_back(Args&&... args) noexcept {
 }
 
 template <typename T>
+void class_pool<T>::push_back(const T& value) noexcept {
+	if (count_cache_ != static_cast<size_t>(-1)) [[likely]] {
+		++count_cache_;
+	}
+	if (index_ >= maximum_quantity_) [[unlikely]] {
+		grow_data_and_bitmap(calculate_new_capacity(maximum_quantity_));
+	}
+	if constexpr (std::is_trivially_copyable_v<T>) {
+		std::memcpy(&data_ptr_[index_], &value, sizeof(T));
+	} else {
+		new (&data_ptr_[index_]) T(value);
+	}
+	bitmap_set(sparse_bits_, index_);
+	bitmap_set(live_bits_, index_);
+	++index_;
+}
+
+template <typename T>
+void class_pool<T>::push_back(T&& value) noexcept {
+	if (count_cache_ != static_cast<size_t>(-1)) [[likely]] {
+		++count_cache_;
+	}
+	if (index_ >= maximum_quantity_) [[unlikely]] {
+		grow_data_and_bitmap(calculate_new_capacity(maximum_quantity_));
+	}
+	if constexpr (std::is_trivially_copyable_v<T>) {
+		std::memcpy(&data_ptr_[index_], &value, sizeof(T));
+	} else {
+		new (&data_ptr_[index_]) T(std::move(value));
+	}
+	bitmap_set(sparse_bits_, index_);
+	bitmap_set(live_bits_, index_);
+	++index_;
+}
+
+template <typename T>
 void class_pool<T>::push_back_unchecked(const T& value) noexcept {
 	if (index_ >= maximum_quantity_) [[unlikely]] {
 		grow_data_and_bitmap(calculate_new_capacity(maximum_quantity_));
 	}
-	new (&data_ptr_[index_]) T(value);
+	if constexpr (std::is_trivially_copyable_v<T>) {
+		std::memcpy(&data_ptr_[index_], &value, sizeof(T));
+	} else {
+		new (&data_ptr_[index_]) T(value);
+	}
+	bitmap_set(sparse_bits_, index_);
+	bitmap_set(live_bits_, index_);
+	++index_;
+}
+
+template <typename T>
+void class_pool<T>::push_back_unchecked(T&& value) noexcept {
+	if (index_ >= maximum_quantity_) [[unlikely]] {
+		grow_data_and_bitmap(calculate_new_capacity(maximum_quantity_));
+	}
+	if constexpr (std::is_trivially_copyable_v<T>) {
+		std::memcpy(&data_ptr_[index_], &value, sizeof(T));
+	} else {
+		new (&data_ptr_[index_]) T(std::move(value));
+	}
 	bitmap_set(sparse_bits_, index_);
 	bitmap_set(live_bits_, index_);
 	++index_;
@@ -1086,14 +1141,14 @@ void class_pool<T>::reduce_capacity(size_t new_capacity, class_pool<T>& dst) noe
 
 	if (is_dense()) {
 		for (size_t i = new_capacity; i < index_; ++i) {
-			dst.emplace_back(std::move(data_ptr_[i]));
+			dst.push_back(std::move(data_ptr_[i]));
 		}
 		destroy_dense_range(new_capacity, index_);
 	}
 	else {
 		for (size_t i = new_capacity; i < index_; ++i) {
 			if (bitmap_test(sparse_bits_, i)) {
-				dst.emplace_back(std::move(data_ptr_[i]));
+				dst.push_back(std::move(data_ptr_[i]));
 			}
 		}
 		destroy_sparse_range(new_capacity, index_);

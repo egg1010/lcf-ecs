@@ -277,7 +277,7 @@
 
                 sorted_indices_.increase_capacity(n);
                 for (size_t i = 0; i < n; ++i)
-                    sorted_indices_.emplace_back(i);
+                    sorted_indices_.push_back(i);
 
                 size_t* idx_data = sorted_indices_.data();
 
@@ -300,10 +300,10 @@
                 for (size_t i = 0; i < n; ++i)
                 {
                     size_t idx = sorted_indices_[i];
-                    sorted_pool_copy_.emplace_back(pool_data[idx]);
+                    sorted_pool_copy_.push_back(pool_data[idx]);
                     uint32_t eid = indices[idx];
                     uint32_t ver = base_.set_->sparse_version_at_public(eid);
-                    sorted_entities_.emplace_back(entity(eid, ver));
+                    sorted_entities_.push_back(entity(eid, ver));
                 }
 
                 last_version_ = base_.set_->get_pool_version();
@@ -421,11 +421,11 @@
                     group_keys_[i] = entries[i].key;
                 }
 
-                group_starts_.emplace_back(0);
+                group_starts_.push_back(0);
                 for (size_t i = 1; i < n; ++i)
                 {
                     if (group_keys_[i] != group_keys_[i - 1])
-                        group_starts_.emplace_back(i);
+                        group_starts_.push_back(i);
                 }
 
                 last_version_ = base_.set_->get_pool_version();
@@ -541,7 +541,7 @@
                 const size_t n = pool->size();
                 for (size_t i = 0; i < n; ++i)
                 {
-                    changed_indices_.emplace_back(i);
+                    changed_indices_.push_back(i);
                 }
 
                 needs_rebuild_ = false;
@@ -627,7 +627,7 @@
                 const size_t n = pool->size();
                 // 仅扩展，不覆盖已追踪的版本号
                 while (last_observed_versions_.size() < n)
-                    last_observed_versions_.emplace_back(0);
+                    last_observed_versions_.push_back(0);
 
                 for (size_t i = 0; i < n; ++i)
                 {
@@ -638,7 +638,7 @@
                             last_observed_versions_[i] = cur;
                         else
                             last_observed_versions_[i] = cur;
-                        changed_indices_.emplace_back(i);
+                        changed_indices_.push_back(i);
                     }
                 }
                 last_pool_version_ = base_.set_->get_pool_version();
@@ -719,7 +719,7 @@
 
                 const size_t n = pool->size();
                 while (last_observed_added_.size() < n)
-                    last_observed_added_.emplace_back(0);
+                    last_observed_added_.push_back(0);
 
                 for (size_t i = 0; i < n; ++i)
                 {
@@ -730,7 +730,7 @@
                             last_observed_added_[i] = cur;
                         else
                             last_observed_added_[i] = cur;
-                        added_indices_.emplace_back(i);
+                        added_indices_.push_back(i);
                     }
                 }
                 last_pool_version_ = base_.set_->get_pool_version();

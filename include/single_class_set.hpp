@@ -399,10 +399,10 @@ private:
 
             for (size_t i = 0; i < count; ++i)
             {
-                dense_.emplace_back_unchecked(entities[i].parts_.index_);
+                dense_.push_back_unchecked(entities[i].parts_.index_);
             }
             for (size_t i = 0; i < count; ++i)
-                versions_.emplace_back_unchecked(entities[i].parts_.version_);
+                versions_.push_back_unchecked(entities[i].parts_.version_);
 
             // 顺序追加检测: 若 entities 恰好为 [append_pos, append_pos+1, ..., append_pos+count-1]
             //   则用 emplace_back_dense_unchecked 替代 sparse_set_unchecked
@@ -471,7 +471,7 @@ private:
             entity_change_tracking_.increase_capacity(entity_change_tracking_.size() + count);
             for (size_t i = 0; i < count; ++i)
             {
-                entity_change_tracking_.emplace_back_unchecked(change_tracking_entry{++global_change_counter_, ++global_added_counter_});
+                entity_change_tracking_.push_back_unchecked(change_tracking_entry{++global_change_counter_, ++global_added_counter_});
             }
         }
         else
@@ -516,7 +516,7 @@ private:
                 }
                 dense_.append_bulk(new_entity_indices.data(), new_count);
                 for (size_t j = 0; j < new_count; ++j)
-                    versions_.emplace_back_unchecked(new_entity_versions[j]);
+                    versions_.push_back_unchecked(new_entity_versions[j]);
                 using component_return_t = decltype(get_component(0));
                 if constexpr (std::is_rvalue_reference_v<component_return_t>)
                     pool->append_bulk_move(new_components.data(), new_count);
@@ -533,7 +533,7 @@ private:
                 entity_change_tracking_.increase_capacity(entity_change_tracking_.size() + new_count);
                 for (size_t i = 0; i < new_count; ++i)
                 {
-                    entity_change_tracking_.emplace_back_unchecked(change_tracking_entry{++global_change_counter_, ++global_added_counter_});
+                    entity_change_tracking_.push_back_unchecked(change_tracking_entry{++global_change_counter_, ++global_added_counter_});
                 }
             }
 
@@ -625,12 +625,12 @@ public:
             //   (append 场景下 is_dense_/hole_count_ 不变, update_dense_status 为 no-op)
             sparse_table_.emplace_back_dense_unchecked(sparse_entry{dense_idx, e.parts_.version_});
             sparse_size_ = static_cast<size_t>(e.parts_.index_) + 1;
-            dense_.emplace_back_unchecked(e.parts_.index_);
-            versions_.emplace_back_unchecked(e.parts_.version_);
-            pool->emplace_back_unchecked(std::forward<T>(object));
+            dense_.push_back_unchecked(e.parts_.index_);
+            versions_.push_back_unchecked(e.parts_.version_);
+            pool->push_back_unchecked(std::forward<T>(object));
             ++version_;
             if (track_changes_enabled_) [[likely]] {
-                entity_change_tracking_.emplace_back_unchecked(
+                entity_change_tracking_.push_back_unchecked(
                     change_tracking_entry{++global_change_counter_, ++global_added_counter_});
             }
             if (on_add_) [[unlikely]] on_add_(e, &(*pool)[dense_idx], on_add_data_);
@@ -651,7 +651,7 @@ public:
 
         bool is_new_add = (ver != e.parts_.version_);
 
-        if (ver == e.parts_.version_) [[likely]]
+        if (se != nullptr && ver == e.parts_.version_) [[likely]]
         {
             void* old_ptr = &(*pool)[dense_idx];
             if (on_modify_) [[unlikely]]
@@ -668,10 +668,10 @@ public:
         }
         else
         {
-            dense_.emplace_back(e.parts_.index_);
+            dense_.push_back(e.parts_.index_);
             dense_idx = static_cast<uint32_t>(dense_.size() - 1);
             ver = e.parts_.version_;
-            versions_.emplace_back(ver);
+            versions_.push_back(ver);
             // 优化: se != nullptr 表示 bitmap 已构造 (如 hard_remove 后复用 slot)
             //   直接赋值 sparse_entry (8B store), 替代 sparse_set_at -> sparse_emplace_at
             //   (sparse_emplace_at 会重复 bitmap_test/析构/重建, 此处 bitmap 已 set 无需操作)
@@ -686,7 +686,7 @@ public:
             {
                 sparse_set_at(e.parts_.index_, dense_idx, ver);
             }
-            pool->emplace_back(std::forward<T>(object));
+            pool->push_back(std::forward<T>(object));
             if (on_add_) [[unlikely]] on_add_(e, &(*pool)[dense_idx], on_add_data_);
         }
         ++version_;
@@ -701,7 +701,7 @@ public:
             }
             else
             {
-                entity_change_tracking_.emplace_back(
+                entity_change_tracking_.push_back(
                     change_tracking_entry{++global_change_counter_, new_added});
             }
         }
@@ -1413,14 +1413,14 @@ public:
         dense<uint32_t> new_dense;
         new_dense.increase_capacity(n);
         for (size_t i = 0; i < n; ++i)
-            new_dense.emplace_back(dense_[sorted_indices[i]]);
+            new_dense.push_back(dense_[sorted_indices[i]]);
 
         dense<uint32_t> new_versions;
         if (versions_.size() >= n)
         {
             new_versions.increase_capacity(n);
             for (size_t i = 0; i < n; ++i)
-                new_versions.emplace_back(versions_[sorted_indices[i]]);
+                new_versions.push_back(versions_[sorted_indices[i]]);
         }
 
         dense<T>* typed_pool = get_typed_pool_ptr<T>();
@@ -1429,7 +1429,7 @@ public:
             dense<T> new_pool;
             new_pool.increase_capacity(n);
             for (size_t i = 0; i < n; ++i)
-                new_pool.emplace_back(std::move((*typed_pool)[sorted_indices[i]]));
+                new_pool.push_back(std::move((*typed_pool)[sorted_indices[i]]));
             *typed_pool = std::move(new_pool);
             if (ops_.get_pool_data) typed_pool_data_ = ops_.get_pool_data(typed_pool_);
         }
@@ -1440,7 +1440,7 @@ public:
             new_tracking.increase_capacity(n);
             for (size_t i = 0; i < n; ++i)
             {
-                new_tracking.emplace_back(entity_change_tracking_[sorted_indices[i]]);
+                new_tracking.push_back(entity_change_tracking_[sorted_indices[i]]);
             }
             entity_change_tracking_ = std::move(new_tracking);
         }

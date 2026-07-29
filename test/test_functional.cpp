@@ -363,6 +363,34 @@ int main()
         cp.emplace_back(99);
         print_item("emplace_back()", (cp.size() == 2 && cp.back() == 99));
 
+        // push_back 拷贝
+        dense<int> cp_pb;
+        int v1 = 10, v2 = 20;
+        cp_pb.push_back(v1);
+        cp_pb.push_back(v2);
+        print_item("push_back(const T&)", (cp_pb.size() == 2 && cp_pb[0] == 10 && cp_pb[1] == 20));
+
+        // push_back 移动
+        dense<int> cp_mv;
+        cp_mv.push_back(std::move(v1));
+        cp_mv.push_back(std::move(v2));
+        print_item("push_back(T&&)", (cp_mv.size() == 2 && cp_mv[0] == 10 && cp_mv[1] == 20));
+
+        // push_back 自动扩容
+        dense<int> cp_grow_pb;
+        for (int i = 0; i < 100; ++i) { cp_grow_pb.push_back(i); }
+        print_item("push_back 自动扩容", (cp_grow_pb.size() == 100 && cp_grow_pb[99] == 99));
+
+        // push_back_unchecked 移动
+        dense<int> cp_unc;
+        cp_unc.increase_capacity(4);
+        cp_unc.push_back_unchecked(1);
+        cp_unc.push_back_unchecked(2);
+        int tmp1 = 3, tmp2 = 4;
+        cp_unc.push_back_unchecked(std::move(tmp1));
+        cp_unc.push_back_unchecked(std::move(tmp2));
+        print_item("push_back_unchecked(move)", (cp_unc.size() == 4 && cp_unc[2] == 3 && cp_unc[3] == 4));
+
         cp.clear();
         print_item("clear()", (cp.size() == 0 && cp.empty()));
 
@@ -450,6 +478,51 @@ int main()
         // soft_sparse_delete 后 fill_the_hole 可填回
         cp12.fill_the_hole(99);
         print_item("soft_sparse_delete 后 fill_the_hole", (cp12.is_constructed_at(1) && cp12[1] == 99 && cp12.is_dense()));
+
+        // push_back 拷贝
+        class_pool<int> cpb_pb;
+        int pv1 = 10, pv2 = 20;
+        cpb_pb.push_back(pv1);
+        cpb_pb.push_back(pv2);
+        print_item("class_pool push_back(const T&)", (cpb_pb.size() == 2 && cpb_pb[0] == 10 && cpb_pb[1] == 20 && cpb_pb.count() == 2));
+
+        // push_back 移动
+        class_pool<int> cpb_mv;
+        int mv1 = 30, mv2 = 40;
+        cpb_mv.push_back(std::move(mv1));
+        cpb_mv.push_back(std::move(mv2));
+        print_item("class_pool push_back(T&&)", (cpb_mv.size() == 2 && cpb_mv[0] == 30 && cpb_mv[1] == 40 && cpb_mv.count() == 2));
+
+        // push_back 自动扩容
+        class_pool<int> cpb_grow;
+        for (int i = 0; i < 100; ++i) { cpb_grow.push_back(i); }
+        print_item("class_pool push_back 自动扩容", (cpb_grow.size() == 100 && cpb_grow[99] == 99 && cpb_grow.count() == 100));
+
+        // push_back 保持 dense 模式
+        print_item("class_pool push_back 保持 dense", cpb_grow.is_dense());
+
+        // push_back_unchecked(T&&) 移动追加
+        class_pool<int> cpb_unc_mv;
+        cpb_unc_mv.increase_capacity(4);
+        cpb_unc_mv.push_back_unchecked(1);
+        cpb_unc_mv.push_back_unchecked(2);
+        int utmp1 = 3, utmp2 = 4;
+        cpb_unc_mv.push_back_unchecked(std::move(utmp1));
+        cpb_unc_mv.push_back_unchecked(std::move(utmp2));
+        print_item("class_pool push_back_unchecked(T&&)", (cpb_unc_mv.size() == 4 && cpb_unc_mv[2] == 3 && cpb_unc_mv[3] == 4));
+
+        // 非平凡类型 push_back 测试
+        class_pool<std::string> cpb_str;
+        cpb_str.push_back(std::string("hello"));
+        cpb_str.push_back(std::string("world"));
+        print_item("class_pool push_back 非平凡类型", (cpb_str.size() == 2 && cpb_str[0] == "hello" && cpb_str[1] == "world" && cpb_str.count() == 2));
+
+        // 非平凡类型 push_back_unchecked(T&&)
+        class_pool<std::string> cpb_str_unc;
+        cpb_str_unc.increase_capacity(2);
+        cpb_str_unc.push_back_unchecked(std::string("abc"));
+        cpb_str_unc.push_back_unchecked(std::string("xyz"));
+        print_item("class_pool push_back_unchecked 非平凡类型", (cpb_str_unc.size() == 2 && cpb_str_unc[0] == "abc" && cpb_str_unc[1] == "xyz"));
     }
 
     // --- 稀疏/位图 ---
@@ -555,58 +628,58 @@ int main()
 
         // A. 子范围视图 (与 dense::subspan 命名一致)
         {
-            auto sp = cpv::subspan(p, 10, 20);
+            auto sp = subspan(p, 10, 20);
             print_item("subspan(off, cnt) size", sp.size() == 20);
             print_item("subspan(off, cnt) data", (sp[0] == 10 && sp[19] == 29));
 
-            auto sp2 = cpv::subspan(p, 50);
+            auto sp2 = subspan(p, 50);
             print_item("subspan(off) 末段", (sp2.size() == 50 && sp2[0] == 50));
 
-            auto f = cpv::first(p, 5);
+            auto f = first(p, 5);
             print_item("first(n)", (f.size() == 5 && f[0] == 0 && f[4] == 4));
 
-            auto l = cpv::last(p, 5);
+            auto l = last(p, 5);
             print_item("last(n)", (l.size() == 5 && l[0] == 95 && l[4] == 99));
 
-            auto ff = cpv::first_fixed<int, 4>(p);
+            auto ff = first_fixed<int, 4>(p);
             print_item("first_fixed<4>", (ff.size() == 4 && ff[0] == 0 && ff[3] == 3));
 
-            auto lf = cpv::last_fixed<int, 4>(p);
+            auto lf = last_fixed<int, 4>(p);
             print_item("last_fixed<4>", (lf.size() == 4 && lf[0] == 96 && lf[3] == 99));
 
             // 越界处理
-            auto sp3 = cpv::subspan(p, 200, 10);
+            auto sp3 = subspan(p, 200, 10);
             print_item("subspan 越界返回空", sp3.size() == 0);
         }
 
         // B. 反向视图
         {
             int sum = 0;
-            cpv::reverse_for_each(p, [&](int& v) { sum += v; });
+            reverse_for_each(p, [&](int& v) { sum += v; });
             print_item("reverse_for_each 求和", sum == 4950);
 
             const class_pool<int>& cp = p;
             int sum2 = 0;
-            cpv::reverse_for_each(cp, [&](const int& v) { sum2 += v; });
+            reverse_for_each(cp, [&](const int& v) { sum2 += v; });
             print_item("reverse_for_each const", sum2 == 4950);
         }
 
         // C. 步进视图
         {
             int sum = 0;
-            cpv::strided_for_each(p, 0, 4, [&](int& v) { sum += v; });
+            strided_for_each(p, 0, 4, [&](int& v) { sum += v; });
             // 0, 4, 8, ..., 96 (25 个)
             print_item("strided_for_each (rt step)", sum == (0 + 96) * 25 / 2);
 
             int sum2 = 0;
-            cpv::strided_for_each<int, 4>(p, [&](int& v) { sum2 += v; });
+            strided_for_each<int, 4>(p, [&](int& v) { sum2 += v; });
             print_item("strided_for_each<4> (ct step)", sum2 == sum);
 
             int sum3 = 0;
-            cpv::strided_for_each<int, 1>(p, [&](int& v) { sum3 += v; });
+            strided_for_each<int, 1>(p, [&](int& v) { sum3 += v; });
             print_item("strided_for_each<1> fast path", sum3 == 4950);
 
-            auto sv = cpv::strided_span_view(p, 0, 5, 10);
+            auto sv = strided_span_view(p, 0, 5, 10);
             print_item("strided_span_view size", sv.size() == 10);
             print_item("strided_span_view [0]", sv[0] == 0);
             print_item("strided_span_view [9]", sv[9] == 45);
@@ -615,93 +688,93 @@ int main()
         // D. 变换视图
         {
             int sum = 0;
-            cpv::transform_for_each(
+            transform_for_each(
                 p,
                 [](int& v) -> int { return v * 2; },
                 [&](int v) { sum += v; });
             print_item("transform_for_each (x2)", sum == 9900);
 
             int dst[100];
-            cpv::transform_to<int, int>(p, dst, 100, [](const int& v) -> int { return v + 1; });
+            transform_to<int, int>(p, dst, 100, [](const int& v) -> int { return v + 1; });
             print_item("transform_to (+1)", (dst[0] == 1 && dst[99] == 100));
         }
 
         // E. 过滤与查找
         {
-            int* r = cpv::find(p, 50);
+            int* r = find(p, 50);
             print_item("find (mid hit)", (r && *r == 50));
 
-            int* miss = cpv::find(p, 999);
+            int* miss = find(p, 999);
             print_item("find (miss)", (miss == nullptr));
 
-            print_item("contains (true)", cpv::contains(p, 50));
-            print_item("contains (false)", !cpv::contains(p, 999));
+            print_item("contains (true)", contains(p, 50));
+            print_item("contains (false)", !contains(p, 999));
 
-            int* ri = cpv::find_if(p, [](const int& v) { return v == 30; });
+            int* ri = find_if(p, [](const int& v) { return v == 30; });
             print_item("find_if (mid hit)", (ri && *ri == 30));
 
-            int* rin = cpv::find_if_not(p, [](const int& v) { return v != 60; });
+            int* rin = find_if_not(p, [](const int& v) { return v != 60; });
             print_item("find_if_not", (rin && *rin == 60));
 
-            size_t c = cpv::count_if(p, [](const int& v) { return v % 2 == 0; });
+            size_t c = count_if(p, [](const int& v) { return v % 2 == 0; });
             print_item("count_if (偶数)", c == 50);
 
             int sum_all = 0;
-            cpv::filter_for_each(p, [](const int&) { return true; }, [&](int& v) { sum_all += v; });
+            filter_for_each(p, [](const int&) { return true; }, [&](int& v) { sum_all += v; });
             print_item("filter_for_each (all)", sum_all == 4950);
 
             int sum_even = 0;
-            cpv::filter_for_each(p, [](const int& v) { return v % 2 == 0; }, [&](int& v) { sum_even += v; });
+            filter_for_each(p, [](const int& v) { return v % 2 == 0; }, [&](int& v) { sum_even += v; });
             // 0 + 2 + ... + 98 = 2450
             print_item("filter_for_each (偶数)", sum_even == 2450);
 
             class_pool<size_t> idx;
-            cpv::filter_indices_to(p, idx, [](const int& v) { return v >= 90; });
+            filter_indices_to(p, idx, [](const int& v) { return v >= 90; });
             print_item("filter_indices_to (>=90)", (idx.size() == 10 && idx[0] == 90 && idx[9] == 99));
         }
 
         // F. 规约与极值
         {
-            int s = cpv::reduce(p, [](int acc, const int& v) -> int { return acc + v; }, 0);
+            int s = reduce(p, [](int acc, const int& v) -> int { return acc + v; }, 0);
             print_item("reduce (sum)", s == 4950);
 
-            int s2 = cpv::reduce_pairwise(p, [](int acc, const int& v) -> int { return acc + v; }, 0);
+            int s2 = reduce_pairwise(p, [](int acc, const int& v) -> int { return acc + v; }, 0);
             print_item("reduce_pairwise (sum)", s2 == 4950);
 
-            int* mn = cpv::min_element(p);
+            int* mn = min_element(p);
             print_item("min_element", (mn && *mn == 0));
 
-            int* mx = cpv::max_element(p);
+            int* mx = max_element(p);
             print_item("max_element", (mx && *mx == 99));
 
-            auto mm = cpv::minmax_element(p);
+            auto mm = minmax_element(p);
             print_item("minmax_element", (mm.first && mm.second && *mm.first == 0 && *mm.second == 99));
 
-            int sum = cpv::sum(p);
-            print_item("sum", sum == 4950);
+            int sum_val = sum(p);
+            print_item("sum", sum_val == 4950);
 
             int other[100];
             for (int i = 0; i < 100; ++i) { other[i] = 2; }
-            int dp = cpv::dot_product(p, other, 100);
+            int dp = dot_product(p, other, 100);
             print_item("dot_product", dp == 9900);
         }
 
         // G. 窗口与分块
         {
             int sum_w = 0;
-            cpv::for_each_window<int, 4>(p, [&](std::span<int, 4> w) { sum_w += w[0]; });
+            for_each_window<int, 4>(p, [&](std::span<int, 4> w) { sum_w += w[0]; });
             // 窗口起点: 0..96, 97 个窗口
             print_item("for_each_window<4>", sum_w == (0 + 96) * 97 / 2);
 
             int sum_c = 0;
-            cpv::for_each_chunk<int, 4>(p, [&](std::span<int, 4> c) { sum_c += c[0]; });
+            for_each_chunk<int, 4>(p, [&](std::span<int, 4> c) { sum_c += c[0]; });
             // 25 块, 起点 0,4,8,...,96
             print_item("for_each_chunk<4>", sum_c == (0 + 96) * 25 / 2);
 
-            auto ws = cpv::window_span<int, 4>(p, 50);
+            auto ws = window_span<int, 4>(p, 50);
             print_item("window_span<4>(50)", (ws.size() == 4 && ws[0] == 50));
 
-            auto cs = cpv::chunk_span<int, 4>(p, 10);
+            auto cs = chunk_span<int, 4>(p, 10);
             print_item("chunk_span<4>(10)", (cs.size() == 4 && cs[0] == 40));
         }
 
@@ -709,7 +782,7 @@ int main()
         {
             size_t last_idx = 0;
             int last_val = 0;
-            cpv::for_each_enumerated(p, [&](size_t i, int& v) {
+            for_each_enumerated(p, [&](size_t i, int& v) {
                 last_idx = i;
                 last_val = v;
             });
@@ -717,7 +790,7 @@ int main()
 
             const class_pool<int>& cp = p;
             size_t cnt = 0;
-            cpv::for_each_enumerated(cp, [&](size_t i, const int&) { cnt = i + 1; });
+            for_each_enumerated(cp, [&](size_t i, const int&) { cnt = i + 1; });
             print_item("for_each_enumerated const", cnt == 100);
         }
 
@@ -727,69 +800,69 @@ int main()
             for (int i = 0; i < 100; ++i) { q.emplace_back(i * 2); }
 
             int sum_zip = 0;
-            cpv::for_each_zip(p, q, [&](int& a, int& b) { sum_zip += a + b; });
+            for_each_zip(p, q, [&](int& a, int& b) { sum_zip += a + b; });
             // sum_p + sum_q = 4950 + 9900 = 14850
             print_item("for_each_zip (pool&)", sum_zip == 14850);
 
             int sum_zip2 = 0;
             int* qp = q.data();
-            cpv::for_each_zip(p, qp, 100, [&](int& a, int& b) { sum_zip2 += a + b; });
+            for_each_zip(p, qp, 100, [&](int& a, int& b) { sum_zip2 += a + b; });
             print_item("for_each_zip (ptr)", sum_zip2 == 14850);
 
             int dst[100];
-            cpv::zip_with_to<int, int, int>(p, q.data(), dst, 100,
+            zip_with_to<int, int, int>(p, q.data(), dst, 100,
                 [](const int& a, const int& b) -> int { return a + b; });
             print_item("zip_with_to", (dst[0] == 0 && dst[99] == 99 + 198));
 
             class_pool<int> p_copy = p;
-            print_item("equal (true)", cpv::equal(p, p_copy));
-            print_item("equal (false)", !cpv::equal(p, q));
+            print_item("equal (true)", equal(p, p_copy));
+            print_item("equal (false)", !equal(p, q));
 
             // equal(ptr, count): 与 dense::equal 命名一致
             int eq_buf[100];
             for (int i = 0; i < 100; ++i) { eq_buf[i] = i; }
-            print_item("equal(ptr, count) true", cpv::equal(p, eq_buf, 100));
+            print_item("equal(ptr, count) true", equal(p, eq_buf, 100));
             eq_buf[50] = 999;
-            print_item("equal(ptr, count) false", !cpv::equal(p, eq_buf, 100));
+            print_item("equal(ptr, count) false", !equal(p, eq_buf, 100));
 
             // equal(span) 委托到 equal(ptr, count)
-            print_item("equal(span) true", cpv::equal(p, std::span<const int>(p.data(), 100)));
+            print_item("equal(span) true", equal(p, std::span<const int>(p.data(), 100)));
         }
 
         // J. SIMD/对齐视图
         {
-            int* aligned = cpv::aligned_data(p);
+            int* aligned = aligned_data(p);
             print_item("aligned_data", aligned == p.data());
 
-            auto sp = cpv::aligned_span(p);
+            auto sp = aligned_span(p);
             print_item("aligned_span", sp.size() == 100);
 
             int sum = 0;
-            cpv::simd_for_each(p, [&](int& v) { sum += v; });
+            simd_for_each(p, [&](int& v) { sum += v; });
             print_item("simd_for_each", sum == 4950);
 
-            size_t tail = cpv::unaligned_tail_offset(p);
+            size_t tail = unaligned_tail_offset(p);
             print_item("unaligned_tail_offset (>=0)", tail <= p.size());
         }
 
         // K. 拷贝/移动视图
         {
             int dst[100];
-            cpv::copy_to(p, dst, 100);
+            copy_to(p, dst, 100);
             print_item("copy_to (ptr)", (dst[0] == 0 && dst[99] == 99));
 
             std::span<int> sp(dst, 100);
-            cpv::copy_to(p, sp);
+            copy_to(p, sp);
             print_item("copy_to (span)", (dst[0] == 0 && dst[99] == 99));
 
             class_pool<int> src;
             for (int i = 0; i < 100; ++i) { src.emplace_back(i); }
             int mdst[100];
-            cpv::move_to(src, mdst, 100);
+            move_to(src, mdst, 100);
             print_item("move_to", (mdst[0] == 0 && mdst[99] == 99));
 
             int rdst[100];
-            cpv::reverse_copy_to(p, rdst, 100);
+            reverse_copy_to(p, rdst, 100);
             print_item("reverse_copy_to", (rdst[0] == 99 && rdst[99] == 0));
         }
 
@@ -801,12 +874,12 @@ int main()
             sp.sparse_erase_at(20);
             sp.sparse_erase_at(30);
 
-            print_item("holes_count", cpv::holes_count(sp) == 3);
-            print_item("live_count", cpv::live_count(sp) == 97);
+            print_item("holes_count", holes_count(sp) == 3);
+            print_item("live_count", live_count(sp) == 97);
 
             // compact_to 压缩为密集数组
             int dst[100];
-            size_t n = cpv::compact_to(sp, dst, 100);
+            size_t n = compact_to(sp, dst, 100);
             print_item("compact_to 元素数", n == 97);
             // 索引 10 删除后: dst[10] 跳过槽 10 = 值 11
             // 索引 20 删除后: dst[19] 跳过槽 20 = 值 21 (槽 20 原为 20, 已删, 跳到槽 21=值 21)
@@ -814,24 +887,24 @@ int main()
             print_item("compact_to 跳过空洞", (dst[0] == 0 && dst[10] == 11 && dst[19] == 21 && dst[28] == 31));
 
             // 稀疏模式 find
-            int* r = cpv::find(sp, 50);
+            int* r = find(sp, 50);
             print_item("稀疏 find (mid hit)", (r && *r == 50));
 
-            int* miss = cpv::find(sp, 10);
+            int* miss = find(sp, 10);
             print_item("稀疏 find (已删除)", (miss == nullptr));
 
             // 稀疏模式 filter_for_each
             int sum = 0;
-            cpv::filter_for_each(sp, [](const int&) { return true; }, [&](int& v) { sum += v; });
+            filter_for_each(sp, [](const int&) { return true; }, [&](int& v) { sum += v; });
             // 总和 4950 - 10 - 20 - 30 = 4890
             print_item("稀疏 filter_for_each", sum == 4890);
 
             // 稀疏 count_if
-            size_t c = cpv::count_if(sp, [](const int&) { return true; });
+            size_t c = count_if(sp, [](const int&) { return true; });
             print_item("稀疏 count_if", c == 97);
 
             // 稀疏 reduce
-            int rs = cpv::reduce(sp, [](int acc, const int& v) -> int { return acc + v; }, 0);
+            int rs = reduce(sp, [](int acc, const int& v) -> int { return acc + v; }, 0);
             print_item("稀疏 reduce", rs == 4890);
         }
     }

@@ -127,7 +127,7 @@ private:
         if (!change_log_enabled_) [[unlikely]] return;
         if (!change_log_.push(change_record{entity_idx, type_id, static_cast<uint8_t>(op), 0, current_frame_, dense_index})) [[unlikely]]
         {
-            change_log_overflow_.emplace_back(change_record{entity_idx, type_id, static_cast<uint8_t>(op), 0, current_frame_, dense_index});
+            change_log_overflow_.push_back(change_record{entity_idx, type_id, static_cast<uint8_t>(op), 0, current_frame_, dense_index});
         }
     }
 
@@ -137,7 +137,7 @@ private:
         if (!comp_signal_buf_.push(component_signal_event{type, entity_idx, component_id})) [[unlikely]]
         {
             ++comp_signal_overflow_count_;
-            comp_signal_overflow_chain_.emplace_back(component_signal_event{type, entity_idx, component_id});
+            comp_signal_overflow_chain_.push_back(component_signal_event{type, entity_idx, component_id});
         }
     }
 
@@ -687,7 +687,7 @@ public:
         const size_t n = set->size();
         dense<size_t> indices;
         indices.increase_capacity(n);
-        for (size_t i = 0; i < n; ++i) indices.emplace_back(i);
+        for (size_t i = 0; i < n; ++i) indices.push_back(i);
 
         T* pool_data = pool->data();
         size_t* idx_data = indices.data();
@@ -721,7 +721,7 @@ public:
         dense<size_t> indices;
         indices.increase_capacity(n);
         for (size_t i = 0; i < n; ++i)
-            indices.emplace_back(i);
+            indices.push_back(i);
 
         auto& t_indices = set_t->get_entity_indices();
         const size_t other_sparse_size = set_other->get_sparse_size();
@@ -737,7 +737,7 @@ public:
             {
                 uint32_t eid = t_indices[i];
                 uint32_t od = (eid < other_sparse_size) ? set_other->sparse_dense_at_public(eid) : UINT32_MAX;
-                other_values.emplace_back(od != UINT32_MAX ? other_pool_data[od] : default_other);
+                other_values.push_back(od != UINT32_MAX ? other_pool_data[od] : default_other);
             }
             Other* ov_data = other_values.data();
             // MinGW+AVX2 下 std::sort+lambda 会崩溃, 使用 pdqsort 替代
@@ -1057,7 +1057,7 @@ public:
     // 系统上下文池 — 注册与调度
     void register_system(const system_context& ctx) noexcept
     {
-        system_contexts_.emplace_back(ctx);
+        system_contexts_.push_back(ctx);
     }
 
     [[nodiscard]] const dense<system_context>& get_system_contexts() const noexcept

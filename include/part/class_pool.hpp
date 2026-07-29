@@ -432,7 +432,10 @@ public:
 
 	template <typename... Args>
 	void emplace_back(Args&&... args) noexcept;
+	void push_back(const T& value) noexcept;
+	void push_back(T&& value) noexcept;
 	void push_back_unchecked(const T& value) noexcept;
+	void push_back_unchecked(T&& value) noexcept;
 	template <typename... Args>
 	void emplace_back_unchecked(Args&&... args) noexcept;
 	template <typename... Args>

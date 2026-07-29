@@ -61,7 +61,7 @@
 #define LCF_PREFETCH_NTA(ptr) ((void)0)
 #endif
 
-// 历史别名: 各模块原用名 (PREFETCH_R / DENSE_* / CPV_*) 统一映射到 LCF_ 前缀,
+// 历史别名: 各模块原用名 (PREFETCH_R / DENSE_*) 统一映射到 LCF_ 前缀,
 // 避免大量使用点改动. 新代码应直接用 LCF_ 前缀宏.
 #ifndef PREFETCH_R
 #define PREFETCH_R(ptr) LCF_PREFETCH_R(ptr)
@@ -80,16 +80,4 @@
 #endif
 #ifndef DENSE_RESTRICT
 #define DENSE_RESTRICT LCF_RESTRICT
-#endif
-#ifndef CPV_PREFETCH_R
-#define CPV_PREFETCH_R(ptr) LCF_PREFETCH_R(ptr)
-#endif
-#ifndef CPV_ALWAYS_INLINE
-#define CPV_ALWAYS_INLINE FORCE_INLINE
-#endif
-#ifndef CPV_FLATTEN
-#define CPV_FLATTEN LCF_FLATTEN
-#endif
-#ifndef CPV_RESTRICT
-#define CPV_RESTRICT LCF_RESTRICT
 #endif

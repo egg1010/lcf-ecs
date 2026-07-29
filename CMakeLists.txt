@@ -133,12 +133,14 @@ option(BUILD_FUNCTIONAL_TESTS "构建功能测试 (test_functional) / Build func
 option(BUILD_PERF_TESTS       "构建性能测试 (test_perf) / Build performance test (full)"    ON)
 option(BUILD_SCS_PERF_TESTS   "构建 single_class_set 性能测试 / Build scs perf test"        ON)
 option(BUILD_MODULE_PERF_TESTS "构建各模块独立性能测试 / Build per-module perf tests"        ON)
+option(BUILD_REFLECTION_TESTS "构建反射测试 / Build reflection tests"                       ON)
 
 message(STATUS "Build targets:")
 message(STATUS "  test_functional              : ${BUILD_FUNCTIONAL_TESTS}")
 message(STATUS "  test_perf                    : ${BUILD_PERF_TESTS}")
 message(STATUS "  test_single_class_set_perf   : ${BUILD_SCS_PERF_TESTS}")
 message(STATUS "  module perf tests            : ${BUILD_MODULE_PERF_TESTS}")
+message(STATUS "  reflection tests             : ${BUILD_REFLECTION_TESTS}")
 
 # 统一配置: include 目录, UTF-8 (MSVC), Windows 进程清理
 function(lcf_add_executable target_name source_file)
@@ -160,6 +162,7 @@ endfunction()
 
 if(BUILD_FUNCTIONAL_TESTS)
     lcf_add_executable(test_functional test/test_functional.cpp)
+    lcf_add_executable(test_multi_view test/test_multi_view.cpp)
 endif()
 
 if(BUILD_PERF_TESTS)
@@ -196,4 +199,22 @@ if(BUILD_MODULE_PERF_TESTS)
     lcf_add_executable(test_group_perf               test/test_group_perf.cpp)
     lcf_add_executable(test_runtime_view_perf        test/test_runtime_view_perf.cpp)
     lcf_add_executable(test_reorder_perf              test/test_reorder_perf.cpp)
+endif()
+
+if(BUILD_REFLECTION_TESTS)
+    lcf_add_executable(test_reflection                 test/test_reflection.cpp)
+    lcf_add_executable(test_reflection_perf            test/test_reflection_perf.cpp)
+
+    # 反射底层 part 模块测试
+    lcf_add_executable(test_aggregate_reflect          test/test_aggregate_reflect.cpp)
+    lcf_add_executable(test_aggregate_reflect_perf     test/test_aggregate_reflect_perf.cpp)
+    lcf_add_executable(test_type_erasure               test/test_type_erasure.cpp)
+    lcf_add_executable(test_type_erasure_perf          test/test_type_erasure_perf.cpp)
+    lcf_add_executable(test_member_offset              test/test_member_offset.cpp)
+    lcf_add_executable(test_member_offset_perf         test/test_member_offset_perf.cpp)
+
+    # t_fun 测试
+    lcf_add_executable(test_t_fun                      test/test_t_fun.cpp)
+    lcf_add_executable(test_t_fun_perf                 test/test_t_fun_perf.cpp)
+    lcf_add_executable(test_t_fun_as_component         test/test_t_fun_as_component.cpp)
 endif()
