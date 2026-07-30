@@ -56,6 +56,11 @@ public:
 // 未注册类型 (测试软失败)
 struct UnregisteredType { int x; };
 
+// 数组字段测试类型 (C 数组字段被 aggregate_reflect 跳过, 需手动注册)
+struct Path { float points[16]; };
+struct Grid { float cells[8][8]; };
+struct Inventory { int slots[8]; };
+
 // === 注册 ===
 REGISTER(Vec3);
 REGISTER(Vec2);
@@ -64,23 +69,23 @@ REGISTER(Pod8);
 REGISTER(Pod16);
 REGISTER(Account);
 REGISTER(Calculator);
-REGISTER_NAMED(Color, "r", "g", "b", "a");
 REGISTER(BigCalculator);
+
+// Color: 聚合类型用自定义字段名 (REGISTER_MEMBERS 批量注册, 自动 register_type_only)
+REGISTER_MEMBERS(Color, r, g, b, a);
 
 // 注册私有成员 (侵入式自动推导, 偏移量和类型由成员指针计算)
 REFLECT_PRIVATE(Account, name_, balance_);
 
-// 注册方法
-REGISTER_METHOD(Calculator, add);
-REGISTER_METHOD(Calculator, sum5);
-REGISTER_METHOD(Calculator, is_positive);
-REGISTER_METHOD(Calculator, no_return);
-REGISTER_STATIC_METHOD(Calculator, multiply);
+// 注册方法 (REGISTER_FNS 批量注册, if constexpr 自动判断成员/静态)
+REGISTER_FNS(Calculator, add, sum5, is_positive, no_return, multiply);
+REGISTER_FNS(Account, deposit, get_balance, version);
+REGISTER_FNS(BigCalculator, get_big);
 
-REGISTER_METHOD(Account, deposit);
-REGISTER_METHOD(Account, get_balance);
-REGISTER_STATIC_METHOD(Account, version);
-REGISTER_METHOD(BigCalculator, get_big);
+// 注册数组成员 (REGISTER_MEMBERS 自动判断标量/数组, 自动推导 rank/extents/element_type)
+REGISTER_MEMBERS(Path, points);
+REGISTER_MEMBERS(Grid, cells);
+REGISTER_MEMBERS(Inventory, slots);
 
 int main()
 {
@@ -286,7 +291,7 @@ int main()
     }
 
     // === 13. 自定义字段名 ===
-    print_section(13, "自定义字段名 (REGISTER_NAMED)");
+    print_section(13, "自定义字段名 (REGISTER_FIELD)");
     {
         auto c = reflect::get<Color>();
         print_item("Color 字段数 == 4", c.field_count() == 4);
@@ -370,6 +375,155 @@ int main()
 
         auto col = reflect::get<Color>();
         print_item("多线程注册 Color 字段 'r' 仍存在", col.field_by_name("r") != nullptr);
+    }
+
+    // === 17. 数组字段 ===
+    print_section(17, "数组字段");
+    {
+        using reflect::field_meta;
+
+        // 一维数组 Path { float points[16]; }
+        auto path_view = reflect::get<Path>();
+        print_item("Path 字段数 == 1 (数组)", path_view.field_count() == 1);
+        const field_meta* pf = path_view.field_by_name("points");
+        print_item("Path points 字段找到", pf != nullptr);
+        print_item("Path points is_array", pf && pf->array_rank == 1);
+        print_item("Path points rank == 1", pf && path_view.array_rank(0) == 1);
+        print_item("Path points total == 16", pf && pf->total_elements == 16);
+        print_item("Path points extent[0] == 16", pf && pf->extents[0] == 16);
+        print_item("Path points stride == 4", pf && pf->element_stride == 4);
+        print_item("Path points type_id == float", pf && pf->type_id == type_id::get_type_id<float>());
+
+        Path p{};
+        for (int i = 0; i < 16; ++i) p.points[i] = static_cast<float>(i);
+        print_item("Path is_array(0) == true", path_view.is_array(0) == true);
+        print_item("Path is_array_by_name(points) == true", path_view.is_array_by_name("points") == true);
+
+        // 数组元素访问
+        float* elem = static_cast<float*>(path_view.array_element_ptr(&p, 0, 5));
+        print_item("Path array_element_ptr(5) == 5.0", elem && *elem == 5.0f);
+        float* elem_by_name = static_cast<float*>(path_view.array_element_ptr_by_name(&p, "points", 10));
+        print_item("Path array_element_ptr_by_name(10) == 10.0", elem_by_name && *elem_by_name == 10.0f);
+
+        // 遍历数组元素
+        float sum = 0;
+        path_view.for_each_array_element(&p, 0, [&](void* ptr, uint32_t idx, int tid) {
+            sum += *static_cast<float*>(ptr);
+            (void)idx; (void)tid;
+        });
+        print_item("Path for_each_array_element sum == 120", sum == 120.0f);
+
+        // 修改数组元素
+        path_view.for_each_array_element(&p, 0, [&](void* ptr, uint32_t idx, int tid) {
+            *static_cast<float*>(ptr) = static_cast<float>(idx) * 2;
+            (void)tid;
+        });
+        print_item("Path 修改后 points[7] == 14", p.points[7] == 14.0f);
+
+        // 二维数组 Grid { float cells[8][8]; }
+        auto grid_view = reflect::get<Grid>();
+        const field_meta* gf = grid_view.field_by_name("cells");
+        print_item("Grid cells is_array", gf && gf->array_rank == 2);
+        print_item("Grid cells total == 64", gf && gf->total_elements == 64);
+        print_item("Grid cells extent[0] == 8", gf && gf->extents[0] == 8);
+        print_item("Grid cells extent[1] == 8", gf && gf->extents[1] == 8);
+        print_item("Grid cells stride == 4", gf && gf->element_stride == 4);
+
+        Grid g{};
+        for (int i = 0; i < 8; ++i)
+            for (int j = 0; j < 8; ++j)
+                g.cells[i][j] = static_cast<float>(i * 8 + j);
+        float gsum = 0;
+        grid_view.for_each_array_element(&g, 0, [&](void* ptr, uint32_t idx, int tid) {
+            gsum += *static_cast<float*>(ptr);
+            (void)idx; (void)tid;
+        });
+        print_item("Grid for_each_array_element sum == 2016", gsum == 2016.0f);
+
+        // int 数组 Inventory { int slots[8]; }
+        auto inv_view = reflect::get<Inventory>();
+        const field_meta* ifld = inv_view.field_by_name("slots");
+        print_item("Inventory slots type_id == int", ifld && ifld->type_id == type_id::get_type_id<int>());
+        print_item("Inventory slots stride == 4", ifld && ifld->element_stride == 4);
+        print_item("Inventory slots total == 8", ifld && ifld->total_elements == 8);
+
+        Inventory inv{};
+        for (int i = 0; i < 8; ++i) inv.slots[i] = i + 1;
+        int isum = 0;
+        inv_view.for_each_array_element(&inv, 0, [&](void* ptr, uint32_t idx, int tid) {
+            isum += *static_cast<int*>(ptr);
+            (void)idx; (void)tid;
+        });
+        print_item("Inventory for_each_array_element sum == 36", isum == 36);
+    }
+
+    // === 18. 数组便捷接口 (array_info/array_get/array_set) ===
+    print_section(18, "数组便捷接口");
+    {
+        using reflect::field_meta;
+        auto path_view = reflect::get<Path>();
+        Path p{};
+        for (int i = 0; i < 16; ++i) p.points[i] = static_cast<float>(i);
+
+        // array_info 聚合查询
+        const field_meta* info = path_view.array_info(0);
+        print_item("array_info 返回非空", info != nullptr);
+        print_item("array_info rank == 1", info && info->array_rank == 1);
+        print_item("array_info total == 16", info && info->total_elements == 16);
+        print_item("array_info stride == 4", info && info->element_stride == 4);
+        print_item("array_info extent[0] == 16", info && info->extents[0] == 16);
+
+        // array_info_by_name 按名聚合查询
+        const field_meta* info_n = path_view.array_info_by_name("points");
+        print_item("array_info_by_name 返回非空", info_n != nullptr);
+        print_item("array_info_by_name rank == 1", info_n && info_n->array_rank == 1);
+
+        // array_info 对非数组字段返回 nullptr
+        auto vec_view = reflect::get<Vec3>();
+        print_item("array_info 标量字段返回 nullptr", vec_view.array_info(0) == nullptr);
+
+        // array_get 类型安全访问
+        float val5 = path_view.array_get<float>(&p, 0, 5);
+        print_item("array_get<float> 值 == 5.0", val5 == 5.0f);
+
+        // array_get const 版本
+        const Path& cp = p;
+        float val10 = path_view.array_get<float>(&cp, 0, 10);
+        print_item("array_get<float> const 值 == 10.0", val10 == 10.0f);
+
+        // array_get_by_name 类型安全访问
+        float val3 = path_view.array_get_by_name<float>(&p, "points", 3);
+        print_item("array_get_by_name<float> 值 == 3.0", val3 == 3.0f);
+
+        // array_set 类型安全写入
+        path_view.array_set<float>(&p, 0, 7, 42.0f);
+        print_item("array_set<float> 写入成功", p.points[7] == 42.0f);
+        print_item("array_get<float> 读回 == 42.0", path_view.array_get<float>(&p, 0, 7) == 42.0f);
+
+        // array_set_by_name 类型安全写入
+        path_view.array_set_by_name<float>(&p, "points", 8, 99.0f);
+        print_item("array_set_by_name<float> 写入成功", p.points[8] == 99.0f);
+
+        // 2D 数组 array_info + array_get
+        auto grid_view = reflect::get<Grid>();
+        Grid g{};
+        for (int i = 0; i < 8; ++i)
+            for (int j = 0; j < 8; ++j)
+                g.cells[i][j] = static_cast<float>(i * 8 + j);
+
+        const field_meta* ginfo = grid_view.array_info(0);
+        print_item("Grid array_info rank == 2", ginfo && ginfo->array_rank == 2);
+        print_item("Grid array_info total == 64", ginfo && ginfo->total_elements == 64);
+        print_item("Grid array_info extent[0] == 8", ginfo && ginfo->extents[0] == 8);
+        print_item("Grid array_info extent[1] == 8", ginfo && ginfo->extents[1] == 8);
+
+        // 2D 数组按线性索引访问 (row-major)
+        float gval = grid_view.array_get<float>(&g, 0, 3 * 8 + 2);  // cells[3][2]
+        print_item("Grid array_get 2D 线性索引 == 26.0", gval == 26.0f);
+
+        // array_set 2D
+        grid_view.array_set<float>(&g, 0, 5 * 8 + 4, 77.0f);  // cells[5][4]
+        print_item("Grid array_set 2D 写入成功", g.cells[5][4] == 77.0f);
     }
 
     print_summary("功能测试");

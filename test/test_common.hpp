@@ -19,6 +19,7 @@
 #include <functional>
 #include <vector>
 #include <array>
+#include <span>
 #include <cstring>
 #ifdef _WIN32
 #ifndef NOMINMAX

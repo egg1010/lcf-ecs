@@ -8,6 +8,8 @@ using namespace std;
 struct Vec3 { float x, y, z; };
 struct Vec8 { float a, b, c, d, e, f, g, h; };
 struct Pod16 { int a, b, c, d; };
+struct Path { float points[16]; };
+struct Grid { float cells[8][8]; };
 
 class Account
 {
@@ -41,15 +43,11 @@ REGISTER(Calculator);
 
 REFLECT_PRIVATE(Account, name_, balance_);
 
-REGISTER_METHOD(Calculator, add);
-REGISTER_METHOD(Calculator, sum5);
-REGISTER_METHOD(Calculator, is_positive);
-REGISTER_METHOD(Calculator, no_return);
-REGISTER_STATIC_METHOD(Calculator, multiply);
+REGISTER_MEMBERS(Path, points);
+REGISTER_MEMBERS(Grid, cells);
 
-REGISTER_METHOD(Account, deposit);
-REGISTER_METHOD(Account, get_balance);
-REGISTER_STATIC_METHOD(Account, version);
+REGISTER_FNS(Calculator, add, sum5, is_positive, no_return, multiply);
+REGISTER_FNS(Account, deposit, get_balance, version);
 
 // === Section 1: 查询入口 ===
 static void test_query_entry()
@@ -461,6 +459,120 @@ static void test_register_cost()
     print_footer();
 }
 
+// === Section 7: 数组字段 ===
+static void test_array_field()
+{
+    print_header("Section 7: array field");
+    constexpr int REPEAT = 5;
+    constexpr size_t OPS = 1000000;
+
+    auto path_view = reflect::get<Path>();
+    auto grid_view = reflect::get<Grid>();
+
+    Path p{};
+    for (int i = 0; i < 16; ++i) p.points[i] = static_cast<float>(i);
+    Grid g{};
+    for (int i = 0; i < 8; ++i)
+        for (int j = 0; j < 8; ++j)
+            g.cells[i][j] = static_cast<float>(i * 8 + j);
+
+    // 7.1 is_array 查询
+    {
+        double ns = best_ns(REPEAT, [&]() {
+            volatile bool s = false;
+            for (size_t i = 0; i < OPS; ++i)
+            {
+                s = path_view.is_array(0);
+                s = path_view.is_array_by_name("points");
+            }
+            (void)s;
+        });
+        print_ns("is_array", OPS * 2, ns / static_cast<double>(OPS * 2));
+    }
+
+    // 7.2 array_total_elements / array_element_stride
+    {
+        double ns = best_ns(REPEAT, [&]() {
+            volatile size_t s = 0;
+            for (size_t i = 0; i < OPS; ++i)
+            {
+                s += path_view.array_total_elements(0);
+                s += path_view.array_element_stride(0);
+                s += path_view.array_rank(0);
+                s += path_view.array_extent(0, 0);
+            }
+            (void)s;
+        });
+        print_ns("array_meta_query", OPS * 4, ns / static_cast<double>(OPS * 4));
+    }
+
+    // 7.3 array_element_ptr (一维)
+    {
+        double ns = best_ns(REPEAT, [&]() {
+            volatile float s = 0;
+            for (size_t i = 0; i < OPS; ++i)
+            {
+                auto* ptr = static_cast<float*>(path_view.array_element_ptr(&p, 0, opaque(i & 15)));
+                s += *ptr;
+            }
+            (void)s;
+        });
+        print_ns("array_element_ptr (1D)", OPS, ns / static_cast<double>(OPS));
+    }
+
+    // 7.4 array_element_ptr (二维)
+    {
+        double ns = best_ns(REPEAT, [&]() {
+            volatile float s = 0;
+            for (size_t i = 0; i < OPS; ++i)
+            {
+                auto* ptr = static_cast<float*>(grid_view.array_element_ptr(&g, 0, opaque(i & 63)));
+                s += *ptr;
+            }
+            (void)s;
+        });
+        print_ns("array_element_ptr (2D)", OPS, ns / static_cast<double>(OPS));
+    }
+
+    // 7.5 for_each_array_element (一维 16 元素)
+    {
+        double ns = best_ns(REPEAT, [&]() {
+            volatile float s = 0;
+            for (size_t i = 0; i < OPS / 16; ++i)
+            {
+                float sum = 0;
+                path_view.for_each_array_element(&p, 0, [&](void* ptr, uint32_t idx, int tid) {
+                    sum += *static_cast<float*>(ptr);
+                    (void)idx; (void)tid;
+                });
+                s = sum;
+            }
+            (void)s;
+        });
+        print_ns("for_each_array_element (1D, 16)", OPS / 16, ns / static_cast<double>(OPS / 16));
+    }
+
+    // 7.6 for_each_array_element (二维 64 元素)
+    {
+        double ns = best_ns(REPEAT, [&]() {
+            volatile float s = 0;
+            for (size_t i = 0; i < OPS / 64; ++i)
+            {
+                float sum = 0;
+                grid_view.for_each_array_element(&g, 0, [&](void* ptr, uint32_t idx, int tid) {
+                    sum += *static_cast<float*>(ptr);
+                    (void)idx; (void)tid;
+                });
+                s = sum;
+            }
+            (void)s;
+        });
+        print_ns("for_each_array_element (2D, 64)", OPS / 64, ns / static_cast<double>(OPS / 64));
+    }
+
+    print_footer();
+}
+
 // === 主函数 ===
 int main()
 {
@@ -474,6 +586,7 @@ int main()
     test_method_invoke();
     test_method_meta_query();
     test_register_cost();
+    test_array_field();
 
     cout << "\n============================================================\n";
     cout << "  反射模块性能测试完成\n";

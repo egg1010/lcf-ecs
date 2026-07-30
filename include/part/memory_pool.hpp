@@ -251,6 +251,7 @@ private:
     std::array<uint32_t, FL_MAX> sl_bitmaps_;
     size_t total_allocated_;
     size_t total_used_;
+    size_t free_block_count_;   // 增量维护: free_lists + small_cache + wilderness 的空闲块总数
     size_t chunk_size_;
     chunk_pool chunk_pool_;
 
@@ -275,8 +276,9 @@ private:
         {
             size_t w_fl, w_sl;
             size_to_index(block_size(wilderness_), w_fl, w_sl);
-            add_to_free_list(wilderness_, w_fl, w_sl);
-            wilderness_ = nullptr;
+            add_to_free_list(wilderness_, w_fl, w_sl); // ++free_block_count_
+            wilderness_ = nullptr;                      // wilderness_ 块转入 free_list, 净不变
+            --free_block_count_;
         }
 
         for (size_t idx = 0; idx < SMALL_CLASS_COUNT; ++idx)
@@ -286,11 +288,12 @@ private:
                 void* ptr = small_heads_[idx];
                 small_heads_[idx] = *static_cast<void**>(ptr);
                 --small_counts_[idx];
+                --free_block_count_; // small_cache 块被取出, 将通过 merge 进入 free_list
 
                 uint8_t* bp = static_cast<uint8_t*>(ptr) - HEADER_SIZE;
                 block_header* block = reinterpret_cast<block_header*>(bp);
                 set_in_use(block, false);
-                merge_adjacent_blocks(block);
+                merge_adjacent_blocks(block); // 内部 add_to_free_list 会 ++
             }
         }
     }
@@ -323,6 +326,7 @@ private:
                 fl_bitmap_ &= ~(1U << fl);
             }
         }
+        --free_block_count_;
     }
 
     FORCE_INLINE
@@ -342,6 +346,7 @@ private:
 
         sl_bitmaps_[fl] |= (1U << sl);
         fl_bitmap_ |= (1U << fl);
+        ++free_block_count_;
     }
 
     // 合并相邻空闲块
@@ -355,6 +360,7 @@ private:
             if (next_block == wilderness_)
             {
                 wilderness_ = nullptr;
+                --free_block_count_; // wilderness_ 被合并
             }
             else
             {
@@ -378,6 +384,7 @@ private:
                 if (prev_block == wilderness_)
                 {
                     wilderness_ = nullptr;
+                    --free_block_count_; // wilderness_ 被合并
                 }
                 else
                 {
@@ -425,6 +432,7 @@ private:
         else
         {
             wilderness_ = header;
+            ++free_block_count_; // 新 chunk 的 wilderness_
         }
 
         // 二分查找插入位置, 保持按地址排序
@@ -480,6 +488,7 @@ public:
         , sl_bitmaps_{}
         , total_allocated_(0)
         , total_used_(0)
+        , free_block_count_(0)
         , chunk_size_(chunk_size)
     {}
 
@@ -510,6 +519,7 @@ public:
                 small_heads_[idx] = *static_cast<void**>(p);
                 --small_counts_[idx];
                 total_used_ += size + HEADER_SIZE;
+                --free_block_count_; // small_cache 块被取出
                 return p;
             }
         }
@@ -532,19 +542,22 @@ public:
                     wilderness_ = new_block;
                     block->size_ = size | IN_USE_FLAG;
                     total_used_ += size + HEADER_SIZE;
+                    // wilderness_ 块数不变: 原 wilderness_→in_use, 新 wilderness_ 替代
                 }
                 else
                 {
                     wilderness_ = nullptr;
                     set_in_use(block, true);
                     total_used_ += wsize + HEADER_SIZE;
+                    --free_block_count_; // wilderness_ 被使用
                 }
                 return reinterpret_cast<uint8_t*>(block) + HEADER_SIZE;
             }
             size_t w_fl, w_sl;
             size_to_index(wsize, w_fl, w_sl);
-            add_to_free_list(wilderness_, w_fl, w_sl);
-            wilderness_ = nullptr;
+            add_to_free_list(wilderness_, w_fl, w_sl); // ++free_block_count_
+            wilderness_ = nullptr;                      // --free_block_count_ (净不变)
+            --free_block_count_;
         }
 
         // TLSF 路径
@@ -627,6 +640,7 @@ public:
                 small_heads_[idx] = ptr;
                 ++small_counts_[idx];
                 total_used_ -= bsize + HEADER_SIZE;
+                ++free_block_count_; // small_cache 块放入
                 return;
             }
         }
@@ -667,6 +681,7 @@ public:
             small_heads_[idx] = ptr;
             ++small_counts_[idx];
             total_used_ -= aligned + HEADER_SIZE;
+            ++free_block_count_; // small_cache 块放入
             return;
         }
 
@@ -790,9 +805,10 @@ public:
         s.total_allocated = total_allocated_;
         s.total_used = total_used_;
         s.total_free = (total_allocated_ >= total_used_) ? (total_allocated_ - total_used_) : 0;
-        s.free_block_count = 0;
+        s.free_block_count = free_block_count_; // O(1) 增量维护
         s.max_contiguous_free = 0;
 
+        // 仅遍历求 max_contiguous_free (用于 fragmentation)
         for (size_t fl = 0; fl < FL_MAX; ++fl)
         {
             if (!(fl_bitmap_ & (1U << fl)))
@@ -809,7 +825,6 @@ public:
                 while (b)
                 {
                     size_t bs = block_size(b);
-                    ++s.free_block_count;
                     if (bs > s.max_contiguous_free)
                     {
                         s.max_contiguous_free = bs;
@@ -819,16 +834,9 @@ public:
             }
         }
 
-        // 统计小块缓存
-        for (size_t idx = 0; idx < SMALL_CLASS_COUNT; ++idx)
-        {
-            s.free_block_count += small_counts_[idx];
-        }
-
-        // 统计 wilderness
+        // wilderness 可能是最大连续空闲块
         if (wilderness_)
         {
-            ++s.free_block_count;
             size_t ws = block_size(wilderness_);
             if (ws > s.max_contiguous_free)
             {
@@ -959,6 +967,7 @@ public:
         wilderness_ = nullptr;
         total_allocated_ = 0;
         total_used_ = 0;
+        free_block_count_ = 0;
     }
 };
 

@@ -1,0 +1,117 @@
+{
+    // === 用户配置文件 (test_sample.json) ===
+    // 用于测试 json_reader 的解析能力, 包含标准 JSON 和用户手写偏差
+
+    "meta": {
+        "version": +1,
+        "name": "测试存档",
+        "author": "lcf-ecs",
+        "created": "2026-07-30",
+    },
+
+    // 玩家信息 (使用 to_json/from_json 路径)
+    "player": {
+        "name": "Alice",
+        "level": +99,
+        "hp": {
+            "current": +80,
+            "max": +100,
+        },
+        "inventory": [
+            { "id": +1, "count": +5, "name": "药水" },
+            { "id": +2, "count": +1, "name": "剑" },
+            { "id": +3, "count": +10, "name": "箭矢" },
+        ],
+        "position": { "x": 1.5, "y": 2.5, "z": -3.14 },
+    },
+
+    // 实体列表 (trivially copyable 组件, base64 路径)
+    "entities": [],
+
+    // 组件数据 (ECS 序列化格式)
+    "components": {
+        "Vec3": [
+            { "i": +0, "v": +1, "d": "AACAPwAAAEAAAEBA" },
+            { "i": +1, "v": +1, "d": "AACAPwAAAEAAAEBAAACAQA==" },
+            { "i": +2, "v": +1, "d": "AABAQAAAQEAAAEBAAACAQA==" },
+        ],
+        "PlayerInfo": [
+            {
+                "i": +0,
+                "v": +1,
+                "d": {
+                    "name": "Hero",
+                    "level": +50,
+                },
+            },
+        ],
+    },
+
+    // 嵌套数组测试
+    "matrix": [
+        [1, 2, 3],
+        [4, 5, 6],
+        [7, 8, 9],
+    ],
+
+    // 各种数字类型
+    "numbers": {
+        "int32_min": -2147483648,
+        "int32_max": +2147483647,
+        "uint32_max": 4294967295,
+        "int64_big": -9007199254740992,
+        "float_pi": 3.14159265358979,
+        "float_sci": 1.5e10,
+        "float_neg": -0.5,
+        "zero": 0,
+    },
+
+    // 字符串转义测试
+    "strings": {
+        "path": "C:\\test\\file.txt",
+        "newline": "line1\nline2",
+        "tab": "a\tb",
+        "quote": "She said \"Hello\"",
+        "unicode": "\u4e2d\u6587\u6d4b\u8bd5",
+        "empty": "",
+        "chinese": "中文字符串测试",
+    },
+
+    // 布尔和 null
+    "flags": {
+        "true_val": true,
+        "false_val": false,
+        "null_val": null,
+    },
+
+    // 空容器
+    "empty": {
+        "object": {},
+        "array": [],
+    },
+
+    // 深嵌套对象 (5 层)
+    "nested": {
+        "l1": {
+            "l2": {
+                "l3": {
+                    "l4": {
+                        "l5": "deep value",
+                    },
+                },
+            },
+        },
+    },
+
+    // 混合引号 (单引号 key + 双引号 value)
+    'mixed_quotes': {
+        "single_key": 'single_value',
+        "double_key": "double_value",
+    },
+
+    // 尾随逗号测试
+    "trailing": {
+        "a": 1,
+        "b": 2,
+    },
+}

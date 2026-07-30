@@ -1,4 +1,4 @@
-﻿# lcf-ecs 库接口文档
+# lcf-ecs 库接口文档
 
 包含 `component.hpp` 即可使用。
 
@@ -18,31 +18,34 @@
     - [9. 生命周期信号](#9-生命周期信号)
     - [10. command_buffer — 延迟结构变更](#10-command_buffer--延迟结构变更)
     - [11. reflection — 反射模块使用](#11-reflection--反射模块使用)
+    - [12. serialization — 序列化/反序列化](#12-serialization--序列化反序列化)
   - [二、宏配置](#二宏配置)
-    - [12. 可选宏配置](#12-可选宏配置)
+    - [13. 可选宏配置](#13-可选宏配置)
   - [三、各种模块](#三各种模块)
-    - [13. operating_message — 操作消息](#13-operating_message--操作消息)
-    - [14. class_pool<T> — 核心容器](#14-class_poolt--核心容器)
-    - [14.5. class_pool 视图](#145-class_pool-视图)
-    - [15. void_any — 类型擦除存储](#15-void_any--类型擦除存储)
-    - [16. type_id — 类型ID](#16-type_id--类型id)
-    - [17. id_allocation<T> — ID分配器](#17-id_allocationt--id分配器)
-    - [18. memory_pool — 内存池](#18-memory_pool--内存池)
-    - [19. dense<T> — 通用密集容器](#19-denset--通用密集容器)
-    - [20. tiered_sort / pdqsort / sort_n — 分级排序](#20-tiered_sort--pdqsort--sort_n--分级排序)
-    - [21. radix_sort — 基数排序](#21-radix_sort--基数排序)
-    - [22. FORCE_INLINE / NOINLINE — 跨平台内联宏](#22-force_inline--noinline--跨平台内联宏)
-    - [23. arena_allocator — 线性 bump 分配器](#23-arena_allocator--线性-bump-分配器)
-    - [24. slab_allocator — 固定块分配器](#24-slab_allocator--固定块分配器)
-    - [25. layered_allocator — 分层分配器](#25-layered_allocator--分层分配器)
-    - [26. ring_buffer — 环形缓冲区](#26-ring_buffer--环形缓冲区)
-    - [27. time — 计时与基准测量](#27-time--计时与基准测量)
-    - [28. multi_block_bitmask — 多块位掩码存储](#28-multi_block_bitmask--多块位掩码存储)
-    - [29. reflection — 反射元数据与存储](#29-reflection--反射元数据与存储)
-    - [30. aggregate_reflect — 聚合类型字段遍历](#30-aggregate_reflect--聚合类型字段遍历)
-    - [31. type_erasure — 类型擦除方法调用器](#31-type_erasure--类型擦除方法调用器)
-    - [32. member_offset — 成员偏移量访问](#32-member_offset--成员偏移量访问)
-    - [33. t_fun — 函数类型延迟调用器](#33-t_fun--函数类型延迟调用器)
+    - [14. operating_message — 操作消息](#14-operating_message--操作消息)
+    - [15. class_pool<T> — 核心容器](#15-class_poolt--核心容器)
+    - [15.5. class_pool 视图](#155-class_pool-视图)
+    - [16. void_any — 类型擦除存储](#16-void_any--类型擦除存储)
+    - [17. type_id — 类型ID](#17-type_id--类型id)
+    - [18. id_allocation<T> — ID分配器](#18-id_allocationt--id分配器)
+    - [19. memory_pool — 内存池](#19-memory_pool--内存池)
+    - [20. dense<T> — 通用密集容器](#20-denset--通用密集容器)
+    - [21. tiered_sort / pdqsort / sort_n — 分级排序](#21-tiered_sort--pdqsort--sort_n--分级排序)
+    - [22. radix_sort — 基数排序](#22-radix_sort--基数排序)
+    - [23. FORCE_INLINE / NOINLINE — 跨平台内联宏](#23-force_inline--noinline--跨平台内联宏)
+    - [24. arena_allocator — 线性 bump 分配器](#24-arena_allocator--线性-bump-分配器)
+    - [25. slab_allocator — 固定块分配器](#25-slab_allocator--固定块分配器)
+    - [26. layered_allocator — 分层分配器](#26-layered_allocator--分层分配器)
+    - [27. ring_buffer — 环形缓冲区](#27-ring_buffer--环形缓冲区)
+    - [28. time — 计时与基准测量](#28-time--计时与基准测量)
+    - [29. multi_block_bitmask — 多块位掩码存储](#29-multi_block_bitmask--多块位掩码存储)
+    - [30. reflection — 反射元数据与存储](#30-reflection--反射元数据与存储)
+    - [31. aggregate_reflect — 聚合类型字段遍历](#31-aggregate_reflect--聚合类型字段遍历)
+    - [32. type_erasure — 类型擦除方法调用器](#32-type_erasure--类型擦除方法调用器)
+    - [33. member_offset — 成员偏移量访问](#33-member_offset--成员偏移量访问)
+    - [34. t_fun — 函数类型延迟调用器](#34-t_fun--函数类型延迟调用器)
+    - [35. utf8_codec / utf8pp — UTF-8 编解码与拥有型字符串](#35-utf8_codec--utf8pp--utf-8-编解码与拥有型字符串)
+    - [36. utf8_view — UTF-8 字符串视图](#36-utf8_view--utf-8-字符串视图)
 
 ---
 
@@ -689,7 +692,7 @@ if (meta && meta->mask_block == 0)
 mgr.reserve_mask_blocks(2);
 ```
 
-> 默认块数为 1（支持 64 种组件）。组件注册时 `register_component_meta` 自动扩容掩码块数，无需手动调用 `reserve_mask_blocks`。手动预分配可避免运行中扩容开销。多块掩码查询通过 `get_entity_block(e, block_idx)` 或 `get_entity_block_by_idx(idx, block_idx)` 访问任意块。详见 [§ 28. multi_block_bitmask](#28-multi_block_bitmask--多块位掩码存储)。
+> 默认块数为 1（支持 64 种组件）。组件注册时 `register_component_meta` 自动扩容掩码块数，无需手动调用 `reserve_mask_blocks`。手动预分配可避免运行中扩容开销。多块掩码查询通过 `get_entity_block(e, block_idx)` 或 `get_entity_block_by_idx(idx, block_idx)` 访问任意块。详见 [§ 29. multi_block_bitmask](#29-multi_block_bitmask--多块位掩码存储)。
 
 ### 不要做什么
 
@@ -1753,7 +1756,7 @@ auto rv = mgr.runtime_view_create_from_terms(std::move(terms));
 
 ## 8. 函数存储（回调作为组件）
 
-`t_fun` 可直接作为 ECS 组件，无需任何包装结构体。不同函数签名自动推导为不同组件类型，通过 `ecs::manager` 的标准组件接口存储与调用。详见 [§ 33. t_fun](#33-t_fun--函数类型延迟调用器)。
+`t_fun` 可直接作为 ECS 组件，无需任何包装结构体。不同函数签名自动推导为不同组件类型，通过 `ecs::manager` 的标准组件接口存储与调用。详见 [§ 34. t_fun](#34-t_fun--函数类型延迟调用器)。
 
 ### 使用
 
@@ -2205,15 +2208,14 @@ cb.flush();
 
 | 宏 | 说明 |
 |------|------|
-| `REGISTER(Cls)` | 注册聚合类型，自动遍历公有字段。注册线程安全 |
+| `REGISTER(Cls)` | 注册类型：聚合类型自动遍历公有字段；非聚合类型仅注册类型元信息（字段需 `REFLECT_PRIVATE` 或 `REGISTER_MEMBERS`） |
+| `REGISTER_MEMBERS(Cls, f1, f2, ...)` | 注册成员（标量/数组统一入口），自动判断字段类别；支持 1~20 个字段 |
+| `REGISTER_FNS(Cls, m1, m2, ...)` | 批量注册方法（自动判断成员/静态），支持 1~20 个方法 |
+| `REGISTER_FN_OVERLOAD(Cls, method, ptr)` | 注册重载方法，显式指定方法指针 |
 | `REFLECT(Cls)` | 类内标记宏，声明 friend 授权反射访问私有成员 |
-| `REFLECT_PRIVATE(Cls, ...)` | 类外注册私有成员，偏移量和类型由成员指针自动推导 |
-| `REGISTER_PRIVATE_OFFSETS(Cls, ...)` | 手填偏移量注册私有成员（逃生通道，用于无法修改的第三方类型） |
-| `PRIV_FIELD(name, offset, type_id)` | 私有成员描述辅助宏 |
-| `REGISTER_METHOD(Cls, method)` | 注册成员方法，方法名自动字符串化 |
-| `REGISTER_STATIC_METHOD(Cls, method)` | 注册静态方法，方法名自动字符串化 |
-| `REGISTER_METHOD_OVERLOAD(Cls, method, ptr)` | 注册重载成员方法，显式指定方法指针 |
-| `REGISTER_STATIC_METHOD_OVERLOAD(Cls, method, ptr)` | 注册重载静态方法，显式指定方法指针 |
+| `REFLECT_PRIVATE(Cls, ...)` | 类外注册私有成员，偏移量和类型由成员指针自动推导；自动注册类型元信息（无需先 `REGISTER`） |
+| `REGISTER_PRIVATE_OFFSETS(Cls, ...)` + `PRIV_FIELD(name, offset, Type)` | 手填偏移量注册私有成员，用于无法修改的第三方类型 |
+| `REGISTER_TYPE_ONLY(Cls)` | 只注册类型元信息，不自动遍历字段。用于无字段类型，或配合底层 `register_array_field` 手动注册 |
 
 ### 11.2 查询入口
 
@@ -2221,8 +2223,10 @@ cb.flush();
 
 | 接口 | 说明 |
 |------|------|
-| `reflect::get<T>()` | 按类型查询，返回 `query_view` |
-| `reflect::get_by_name(name)` | 按类型名查询，返回 `query_view` |
+| `reflect::get<T>()` | 按类型查询，未注册触发 `std::abort()`，返回 `query_view` |
+| `reflect::get_by_name(name)` | 按类型名查询，未注册触发 `std::abort()`，返回 `query_view` |
+| `reflect::try_get<T>()` | 软失败版本，未注册返回 `query_view::valid()==false`，不 abort |
+| `reflect::try_get_by_name(name)` | 软失败版本（按名），不 abort |
 | `reflect::global()` | 全局存储对象 |
 
 ### 11.3 query_view 接口
@@ -2230,6 +2234,7 @@ cb.flush();
 | 接口 | 说明 |
 |------|------|
 | `name()` | 类型名 |
+| `valid()` | 是否绑定有效元数据（`try_get` 后用于判断是否注册） |
 | `size()` | `sizeof(T)` |
 | `align()` | `alignof(T)` |
 | `field_count()` | 字段数 |
@@ -2245,11 +2250,31 @@ cb.flush();
 | `get_by_name<R>(obj, name)` (const) | const 对象版本 |
 | `get_ptr(obj, name)` | 按名取字段 `void*` |
 | `get_ptr(obj, name)` (const) | const 对象版本 |
-| `invoke<R>(obj, name, args...)` | 调用方法，返回 R |
+| `invoke<R>(obj, name, args...)` | 调用方法，返回 R。参数数量不匹配或未注册触发 `std::abort()` |
+| `try_invoke<R>(obj, name, args...)` | 软失败版本。`R=void` 返回 `bool`；非 void 返回 `std::optional<R>`。失败不 abort |
 | `for_each_field(obj, f)` | 遍历实例字段，`f(name, ptr, type_id)` |
 | `for_each_field(obj, f)` (const) | const 对象版本 |
 | `for_each_field_meta(f)` | 遍历字段元数据，`f(field_meta&)` |
 | `for_each_method(f)` | 遍历方法元数据，`f(method_meta&)` |
+| `is_array(i)` | 字段 i 是否为数组 |
+| `is_array_by_name(name)` | 按名判断字段是否为数组 |
+| `array_rank(i)` | 数组维度数（0=标量，1~4=数组） |
+| `array_total_elements(i)` | 数组总元素数（非数组为 0） |
+| `array_element_stride(i)` | 数组元素步长（字节） |
+| `array_extent(field_idx, dim)` | 第 `dim` 维元素数 |
+| `array_element_ptr(obj, field_idx, element_idx)` | 取数组元素指针，越界返回 nullptr |
+| `array_element_ptr(obj, field_idx, element_idx)` (const) | const 对象版本 |
+| `array_element_ptr_by_name(obj, name, element_idx)` | 按名取数组元素指针 |
+| `for_each_array_element(obj, field_idx, f)` | 遍历数组元素，`f(ptr, idx, type_id)` |
+| `for_each_array_element(obj, field_idx, f)` (const) | const 对象版本 |
+| **便捷接口** | |
+| `array_info(field_idx)` | 聚合查询，返回 `const field_meta*`，非数组返回 nullptr |
+| `array_info_by_name(name)` | 按名聚合查询 |
+| `array_get<T>(obj, field_idx, element_idx)` | 类型安全访问 |
+| `array_get<T>(obj, field_idx, element_idx)` (const) | const 对象版本 |
+| `array_get_by_name<T>(obj, name, element_idx)` | 按名类型安全访问 |
+| `array_set<T>(obj, field_idx, element_idx, value)` | 类型安全写入 |
+| `array_set_by_name<T>(obj, name, element_idx, value)` | 按名类型安全写入 |
 
 ### 使用
 
@@ -2281,9 +2306,7 @@ REGISTER(Account);
 // 类外: 只写字段名, 偏移量和类型自动推导
 REFLECT_PRIVATE(Account, name_, balance_);
 
-REGISTER_METHOD(Account, deposit);
-REGISTER_METHOD(Account, get_balance);
-REGISTER_STATIC_METHOD(Account, version);
+REGISTER_FNS(Account, deposit, get_balance, version);  // 成员 + 静态 (自动判断)
 
 // 重载方法示例 (显式指定方法指针)
 struct Calc {
@@ -2291,9 +2314,9 @@ struct Calc {
     int add(int a, int b, int c) { return a + b + c; }
 };
 REGISTER(Calc);
-REGISTER_METHOD_OVERLOAD(Calc, add,
+REGISTER_FN_OVERLOAD(Calc, add,
     static_cast<int(Calc::*)(int,int)>(&Calc::add));
-REGISTER_METHOD_OVERLOAD(Calc, add,
+REGISTER_FN_OVERLOAD(Calc, add,
     static_cast<int(Calc::*)(int,int,int)>(&Calc::add));
 
 // === 字段访问 ===
@@ -2331,6 +2354,70 @@ auto v2 = reflect::get_by_name("Vec3");
 struct Dynamic { int a, b; };
 reflect::global().register_type<Dynamic>("Dynamic");
 auto dv = reflect::get<Dynamic>();
+
+// === 注册成员 (REGISTER_MEMBERS 统一入口) ===
+struct Path { float points[16]; };
+struct Grid { float cells[8][8]; };
+
+REGISTER_MEMBERS(Path, points);    // 数组字段
+REGISTER_MEMBERS(Grid, cells);     // 二维数组字段
+
+// 多个成员: REGISTER_MEMBERS 批量注册
+struct Mesh { float vertices[8]; int indices[16]; float transform[16]; };
+REGISTER_MEMBERS(Mesh, vertices, indices, transform);  // 3 个字段
+
+// 混合类型 (标量 + 数组): REGISTER_MEMBERS 批量
+struct Mixed { int id; float pos[3]; };
+REGISTER_MEMBERS(Mixed, id, pos);  // id 标量, pos 数组
+
+// 聚合类型自定义字段名: REGISTER_MEMBERS 批量
+struct Color { float r, g, b, a; };
+REGISTER_MEMBERS(Color, r, g, b, a);  // 4 个字段
+
+// 方法注册: REGISTER_FNS 批量
+struct Calculator {
+    int add(int a, int b) { return a + b; }
+    static int multiply(int a, int b) { return a * b; }
+};
+REGISTER_FNS(Calculator, add, multiply);  // 成员 + 静态
+
+Path p{};
+auto pv = reflect::get<Path>();
+
+// 元数据查询
+pv.is_array(0);                       // true
+pv.array_rank(0);                     // 1
+pv.array_total_elements(0);           // 16
+pv.array_element_stride(0);           // 4
+pv.array_extent(0, 0);                // 16
+
+// 元素访问 (按索引/按名)
+float* e = static_cast<float*>(pv.array_element_ptr(&p, 0, 5));
+float* e2 = static_cast<float*>(pv.array_element_ptr_by_name(&p, "points", 10));
+
+// 便捷访问 (类型安全)
+float val = pv.array_get<float>(&p, 0, 5);           // 读
+pv.array_set<float>(&p, 0, 5, 42.0f);                // 写
+float val_n = pv.array_get_by_name<float>(&p, "points", 3);  // 按名读
+pv.array_set_by_name<float>(&p, "points", 8, 99.0f);         // 按名写
+
+// 聚合查询
+if (const auto* info = pv.array_info(0)) {
+    // info->array_rank / info->total_elements / info->element_stride / info->extents[0]
+}
+
+// 遍历数组元素
+pv.for_each_array_element(&p, 0, [](void* ptr, uint32_t idx, int tid) {
+    *static_cast<float*>(ptr) = static_cast<float>(idx);
+});
+
+// 二维数组
+Grid g{};
+auto gv = reflect::get<Grid>();
+gv.array_rank(0);                     // 2
+gv.array_total_elements(0);           // 64
+gv.array_extent(0, 0);                // 8
+gv.array_extent(0, 1);                // 8
 ```
 
 ### 注意事项
@@ -2347,6 +2434,9 @@ auto dv = reflect::get<Dynamic>();
 | 字段数超过 `MAX_FIELDS_PER_TYPE`（256） | `std::abort()` | 单类型字段数不超过上限 |
 | 方法数超过 `MAX_METHODS_PER_TYPE`（256） | `std::abort()` | 单类型方法数不超过上限 |
 | 类型 id 超过 `MAX_TYPE_ID`（65536） | 注册被忽略 | 类型总数不超过上限 |
+| 含 C 数组字段的类型直接用 `REGISTER` | 结构化绑定展开数组为多个标量字段，字段计数错误 | 改用 `REGISTER_MEMBERS`（自动判断标量/数组 + 推导数组元数据） |
+| `REGISTER_MEMBERS` 数组维度数超过 4 | 注册被忽略 | 维度数限制 1~4，更高维度需拆分为结构体嵌套 |
+| `array_element_ptr` 越界访问 | 返回 nullptr，解引用崩溃 | `element_idx` 必须 < `array_total_elements` |
 
 ### 私有成员注册方式选择
 
@@ -2359,11 +2449,740 @@ auto dv = reflect::get<Dynamic>();
 
 ---
 
+## 12. serialization — 序列化/反序列化
+
+`#include "serialization/serialization.hpp"`，命名空间 `ecs`。`noexcept`。
+
+序列化模块提供 ECS 组件持久化能力。`serialization` 主类支持 JSON 与原生二进制两种格式；编码器抽象层（`archive_codec` + `codec_registry`）提供 JSON / 二进制 / Protobuf / FlatBuffer 四种格式的统一接口，支持格式自动检测与切换。组件序列化优先级：用户手写 `to_json()`/`from_json()` > 反射注册字段 > base64。实体引用通过两阶段加载自动重映射，保证加载后实体身份关系正确。
+
+底层 JSON 读写器（`part/json_writer.hpp`、`part/json_reader.hpp`）为通用基础模块，可独立使用。
+
+模块文件结构（`include/serialization/` 目录）：
+
+| 文件 | 内容 |
+|------|------|
+| `serialization/archive_codec.hpp` | 编码器抽象接口（`archive_writer`/`archive_reader`/`archive_codec`） |
+| `serialization/codec_json.hpp` | JSON 编码器（`json_codec`） |
+| `serialization/codec_binary.hpp` | 原生二进制编码器（`binary_codec`，magic `LCE1`） |
+| `serialization/codec_protobuf.hpp` | Protobuf 风格编码器（`protobuf_codec`，magic `LCPB`） |
+| `serialization/codec_flatbuffer.hpp` | FlatBuffer 风格编码器（`flatbuffer_codec`，magic `LCFB`） |
+| `serialization/codec_registry.hpp` | 编码器注册表 + 格式自动检测 |
+| `serialization/archive_types.hpp` | 归档公共类型（`archive_header`/`entity_remap`/`metadata_entry`） |
+| `serialization/archive_logic.hpp` | 公共逻辑层（与格式无关的实体收集/过滤/版本操作） |
+| `serialization/safety.hpp` | 安全限制 + 字节序处理 + Base64 编解码 + RLE 压缩工具 |
+| `serialization/type_name.hpp` | 稳定类型名注册 + 实体引用字段注册 + 枚举类型注册 |
+| `serialization/reflect_bridge.hpp` | 反射桥接概念 + 自动序列化/反序列化（含嵌套对象/数组/枚举） |
+| `serialization/filter.hpp` | 选择性序列化过滤器（按 layer/tag/group/flags/白名单） |
+| `serialization/migration.hpp` | 字段级迁移 + 组件版本控制 |
+| `serialization/stats.hpp` | 序列化统计信息 |
+| `serialization/binary_writer.hpp` | 原生二进制写入器（类型头含总字节数） |
+| `serialization/binary_reader.hpp` | 原生二进制读取器 |
+| `serialization/serializer.hpp` | 序列化器主类 |
+| `serialization/serialization.hpp` | 统一入口（包含上述全部子文件） |
+
+### 12.1 组件序列化约定
+
+| 组件类型 | 序列化方式 | 要求 |
+|---------|-----------|------|
+| trivially copyable | base64 编码二进制数据 | 无额外要求 |
+| 非 trivial | JSON 对象（`to_json()` 返回值） | 提供 `std::string to_json() const` 和 `void from_json(std::string_view)` |
+| 已注册反射 | 遍历字段自动生成 JSON 对象 | 字段类型为基本类型、`std::string`、嵌套对象、数组或已注册枚举 |
+
+未满足上述要求的类型在编译期触发 `static_assert`。
+
+### 12.2 serialization 接口
+
+| 接口 | 说明 |
+|------|------|
+| `serialization(manager& m)` | 构造，绑定 manager |
+| `save_to_file<Ts...>(path, fmt)` | 保存指定类型组件到文件，`fmt` 可选 `format::json`（默认）/ `binary` / `protobuf` / `flatbuffer` |
+| `save_to_string<Ts...>(out, fmt)` | 保存指定类型组件到字符串 |
+| `save_changed<Ts...>(out, fmt)` | 增量保存，仅输出版本变化的组件类型（无变化返回 `"{}"`） |
+| `save_entity<Ts...>(e, out)` | 单实体序列化，只保存指定实体的组件 |
+| `load_from_file<Ts...>(path)` | 从文件加载，自动检测格式（JSON/Binary/Protobuf/FlatBuffer） |
+| `load_from_string<Ts...>(data)` | 从字符串加载，自动检测格式（四格式），支持压缩/变换 |
+| `validate_file(path)` | 仅校验文件格式，不加载组件 |
+| `validate_string(data)` | 仅校验字符串格式，不加载组件 |
+| `limits()` | 获取安全限制配置引用 |
+| `archive_version()` / `set_archive_version(v)` | 存档版本读写 |
+| `engine_version()` / `set_engine_version(v)` | 引擎版本读写 |
+| `set_filter(f)` / `filter()` | 设置/获取选择性序列化过滤器 |
+| `set_load_mode(m)` / `get_load_mode()` | 设置/获取加载模式（`replace`/`append`/`merge`） |
+| `set_metadata(key, value)` / `get_metadata(key)` | 设置/查询存档元数据 |
+| `all_metadata()` | 获取全部元数据 |
+| `last_stats()` | 获取上一次保存/加载的统计信息 |
+| `set_progress_callback(cb)` | 设置进度回调（`void(*)(size_t, size_t)`） |
+| `on_save(cb)` / `on_load(cb)` | 设置保存/加载变换钩子（`void(*)(std::string&)`） |
+| `set_compression(c, d)` | 注册压缩/解压函数对 |
+| `serialization::save<Ts...>(m, path, fmt)` | 静态便捷保存接口 |
+| `serialization::load<Ts...>(m, path)` | 静态便捷加载接口 |
+
+### 12.3 安全限制
+
+`safety_limits` 结构体控制加载时的各项上限，防止恶意输入。通过 `serialization::limits()` 访问与修改。
+
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `max_file_size` | 256 MB | 单文件最大字节数 |
+| `max_string_length` | 16 MB | 单字符串最大长度 |
+| `max_array_elements` | 10,000,000 | 数组最大元素数 |
+| `max_object_fields` | 65536 | 对象最大字段数 |
+| `max_depth` | 64 | JSON 最大嵌套深度 |
+| `max_entity_count` | 10,000,000 | 最大实体数 |
+
+### 12.4 类型名注册
+
+跨编译器加载存档时，`typeid(T).name()` 返回值不同会导致类型名不匹配。`register_type_name` 注册稳定类型名保证可移植性。
+
+| 接口 | 说明 |
+|------|------|
+| `register_type_name<T>(stable_name)` | 注册类型 T 的稳定名 |
+| `lookup_type_name(type_id)` | 按 type_id 查稳定名 |
+| `lookup_type_id(name)` | 按稳定名查 type_id |
+| `register_entity_field<T>(field_name)` | 注册 entity 引用字段（加载时自动重映射） |
+
+### 12.5 JSON 格式
+
+```json
+{
+  "version": 1,
+  "engine": 0,
+  "meta": {"author": "alice", "desc": "测试存档"},
+  "cv": {"Hp": 2},
+  "entities": [
+    {"i": 索引, "v": 版本, "f": flags, "t": tag, "l": layer, "g": group_id}
+  ],
+  "components": {
+    "类型名": [
+      {"i": 索引, "v": 版本, "d": 组件数据}
+    ]
+  }
+}
+```
+
+- `version` / `engine`：存档版本 / 引擎版本（加载时高版本会被拒绝）
+- `meta`：存档元数据（可选，由 `set_metadata` 设置）
+- `cv`：组件版本表（可选，键为类型名，值为版本号，用于迁移）
+- `i`：实体索引
+- `v`：实体版本号
+- `f`/`t`/`l`/`g`：实体状态（flags/tag/layer/group_id）
+- `d`：组件数据（trivially copyable 类型为 base64 字符串，非 trivial 类型为 JSON 对象）
+
+### 12.6 json_writer 接口
+
+`#include "part/json_writer.hpp"`，全局命名空间。
+
+| 接口 | 说明 |
+|------|------|
+| `json_writer(reserve, pretty)` | 构造，预分配缓冲区，可选美化输出 |
+| `begin_object()` / `end_object()` | 对象 |
+| `begin_array()` / `end_array()` | 数组 |
+| `key(k)` | 键 |
+| `value(v)` | 值（string/int/uint/float/double/bool） |
+| `null()` | null 值 |
+| `raw_value(json)` | 原始 JSON 片段（嵌入已格式化的 JSON） |
+| `string()` | 获取结果字符串 |
+| `take()` | 取走结果字符串 |
+
+### 12.7 json_reader 接口
+
+`#include "part/json_reader.hpp"`，全局命名空间。
+
+| 接口 | 说明 |
+|------|------|
+| `json_reader(src)` | 构造，传入 JSON 字符串 |
+| `enter_object()` / `exit_object()` | 进入/退出对象 |
+| `enter_array()` / `exit_array()` | 进入/退出数组 |
+| `next_key()` | 读取下一个键（空 view 表示结束） |
+| `next_element()` | 数组是否有下一元素（自动处理逗号） |
+| `end_element()` | 显式结束当前元素（跳过逗号） |
+| `read_bool()` / `is_null()` | 读取 bool / 判断 null |
+| `read_int32()` / `read_uint32()` / `read_int64()` / `read_uint64()` | 读取整数 |
+| `read_float()` / `read_double()` | 读取浮点 |
+| `read_string()` | 读取字符串 |
+| `read_raw_value()` | 读取原始 JSON 片段 |
+| `skip_value()` | 跳过当前值 |
+| `has_error()` / `last_error()` | 错误状态 |
+
+### 12.8 用户手写 JSON 偏差容忍
+
+json_reader 兼容用户手写 JSON 的常见偏差（非标准但常见）：
+
+| 偏差类型 | 示例 | 支持 |
+|---------|------|------|
+| 多空格/换行/tab | `{ "a" : 1 }` | ✓ |
+| 尾随逗号 | `{"a":1,}` / `[1,2,]` | ✓ |
+| 单引号字符串 | `{'a':'x'}` | ✓ |
+| 块注释 `/* */` | `{"a":1/* c */}` | ✓ |
+| 行注释 `//` | `{"a":1}\n// c` | ✓ |
+| 数字前导 `+` 号 | `{"a":+1}` | ✓ |
+
+```cpp
+// 用户手写的非标准 JSON 也能正确解析
+std::string user_json = R"({
+    // 用户配置
+    'name' : 'Alice',
+    'age' : +30,
+    'scores' : [ +90, +85, +95, ],
+    /* 元数据 */
+    'meta' : { 'active' : true, },
+})";
+
+json_reader r(user_json);
+r.enter_object();
+std::string_view k;
+while (!(k = r.next_key()).empty()) {
+    // ... 正常解析
+}
+```
+
+### 使用
+
+```cpp
+#include "serialization/serialization.hpp"
+
+// === trivially copyable 组件 (自动 base64) ===
+struct Vec3 { float x, y, z; };
+static_assert(std::is_trivially_copyable_v<Vec3>);
+
+manager mgr;
+entity e1 = mgr.create_entity();
+entity e2 = mgr.create_entity();
+mgr.add<Vec3>(e1, Vec3{1.0f, 2.0f, 3.0f});
+mgr.add<Vec3>(e2, Vec3{4.0f, 5.0f, 6.0f});
+
+// 保存
+serialization(mgr).save_to_file<Vec3>("save.json");
+
+// 加载到新 manager
+manager mgr2;
+serialization(mgr2).load_from_file<Vec3>("save.json");
+
+// === 非 trivial 组件 (to_json/from_json) ===
+struct PlayerInfo {
+    std::string name;
+    int level;
+    std::string to_json() const {
+        json_writer w;
+        w.begin_object();
+        w.key("name").value(name);
+        w.key("level").value(level);
+        w.end_object();
+        return w.take();
+    }
+    void from_json(std::string_view s) {
+        json_reader r(s);
+        r.enter_object();
+        std::string_view k;
+        while (!(k = r.next_key()).empty()) {
+            if (k == "name") name = r.read_string();
+            else if (k == "level") level = r.read_int32();
+            else r.skip_value();
+        }
+    }
+};
+
+// 多类型混合保存/加载
+manager mgr3;
+entity e = mgr3.create_entity();
+mgr3.add<Vec3>(e, Vec3{1, 0, 0});
+mgr3.add<PlayerInfo>(e, PlayerInfo{"Alice", 99});
+
+serialization(mgr3).save_to_file<Vec3, PlayerInfo>("save2.json");
+
+manager mgr4;
+serialization(mgr4).load_from_file<Vec3, PlayerInfo>("save2.json");
+
+// === 保存到字符串 ===
+std::string json;
+serialization(mgr).save_to_string<Vec3>(json);
+
+// === 从字符串加载 ===
+manager mgr5;
+serialization(mgr5).load_from_string<Vec3>(json);
+
+// === 二进制格式 (trivial 类型直存, 体积更小) ===
+serialization(mgr).save_to_file<Vec3>("save.bin", serialization::format::binary);
+
+// 二进制加载 (同一个 load_from_file 接口, 自动检测格式)
+manager mgr6;
+serialization(mgr6).load_from_file<Vec3>("save.bin");
+
+// === Protobuf 格式 (紧凑 wire format, 适合网络传输) ===
+serialization(mgr).save_to_file<Vec3>("save.pb", serialization::format::protobuf);
+
+// === FlatBuffer 格式 (零拷贝读取, O(1) 字段访问) ===
+serialization(mgr).save_to_file<Vec3>("save.fb", serialization::format::flatbuffer);
+
+// === 格式自动检测 ===
+// load_from_string / load_from_file 根据前 4 字节 magic 自动判断:
+// "{"    → JSON
+// "LCE1" → Binary
+// "LCPB" → Protobuf
+// "LCFB" → FlatBuffer
+std::string pb_data;
+serialization(mgr).save_to_string<Vec3>(pb_data, serialization::format::protobuf);
+manager mgr7;
+serialization(mgr7).load_from_string<Vec3>(pb_data);  // 自动走 Protobuf 路径
+
+// === 仅校验格式 (不加载组件) ===
+auto check = serialization(mgr).validate_string(json);
+if (!check) { /* 格式错误 */ }
+
+// === 跨编译器稳定类型名 ===
+register_type_name<Vec3>("Vec3");
+register_type_name<PlayerInfo>("PlayerInfo");
+
+// === 安全限制配置 ===
+serialization s(mgr);
+s.limits().max_file_size = 64 * 1024 * 1024;  // 限制 64MB
+s.limits().max_entity_count = 10000;          // 限制 1 万实体
+s.save_to_file<Vec3>("save.json");
+
+// === 版本控制 ===
+serialization s2(mgr);
+s2.set_archive_version(2);
+s2.set_engine_version(100);
+s2.save_to_file<Vec3>("save_v2.json");
+
+// 加载时高版本存档会被拒绝
+manager mgr8;
+serialization(mgr8).set_archive_version(1);
+auto r = serialization(mgr8).load_from_file<Vec3>("save_v2.json");
+if (!r) { /* r.read_message() 包含版本不匹配信息 */ }
+
+// === 选择性序列化 (filter) ===
+manager mgr_f;
+entity e_a = mgr_f.create_entity();
+entity e_b = mgr_f.create_entity();
+mgr_f.get_entity_state(e_a.parts_.index_).layer = 1;
+mgr_f.get_entity_state(e_b.parts_.index_).layer = 2;
+mgr_f.add<Hp>(e_a, Hp(10, 100));
+mgr_f.add<Hp>(e_b, Hp(20, 100));
+
+serialize_filter filter;
+filter.by_layer(1);  // 仅保存 layer==1 的实体
+serialization sf(mgr_f);
+sf.set_filter(&filter);
+std::string fjson;
+sf.save_to_string<Hp>(fjson);  // 只含 e_a 的 Hp
+
+// === 单实体序列化 ===
+std::string ejson;
+serialization(mgr_f).save_entity<Hp>(e_b, ejson);  // 只含 e_b 的 Hp
+
+// === 存档元数据 ===
+serialization sm(mgr_f);
+sm.set_metadata("author", "alice");
+sm.set_metadata("level", "boss-fight");
+std::string mjson;
+sm.save_to_string<Hp>(mjson);  // JSON 含 "meta" 字段
+manager mgr_m;
+serialization sm2(mgr_m);
+sm2.load_from_string<Hp>(mjson);
+const std::string* author = sm2.get_metadata("author");  // "alice"
+
+// === 加载模式 ===
+manager mgr_dst;
+entity e_old = mgr_dst.create_entity();
+mgr_dst.add<Hp>(e_old, Hp(999, 999));
+
+// replace: 清空旧数据后加载
+serialization(mgr_dst).set_load_mode(load_mode::replace).load_from_string<Hp>(mjson);
+// append/merge: 保留旧数据追加加载
+serialization(mgr_dst).set_load_mode(load_mode::append).load_from_string<Hp>(mjson);
+
+// === 字段级迁移 ===
+// 1. 先存 v1 存档 (未注册版本, cv 字段不写入)
+std::string v1_json;
+serialization(mgr_f).save_to_string<Hp>(v1_json);
+
+// 2. 升级到 v2 并注册迁移函数
+register_component_version<Hp>(2);
+register_migration<Hp>(1, 2, [](json_reader& old, json_writer& neu) {
+    if (!old.enter_object()) { neu.raw_value("{}"); return; }
+    neu.begin_object();
+    std::string_view k;
+    while (!(k = old.next_key()).empty()) {
+        if (k == "m") neu.key("m").value(old.read_int32() + 100);  // max + 100
+        else neu.key(k).raw_value(old.read_raw_value());
+    }
+    neu.end_object();
+});
+
+// 3. 加载 v1 存档触发迁移 (saved_cv=1 默认, current_cv=2)
+manager mgr_mig;
+serialization(mgr_mig).load_from_string<Hp>(v1_json);  // Hp.max 被 +100
+
+// === 增量序列化 ===
+serialization si(mgr_f);
+std::string inc1;
+si.save_changed<Hp, Vec3>(inc1);  // 首次全量
+std::string inc2;
+si.save_changed<Hp, Vec3>(inc2);  // 无变化, 输出 "{}"
+
+// === 压缩与变换钩子 ===
+serialization sc(mgr_f);
+sc.set_compression(rle_compress, rle_decompress);
+sc.on_save([](std::string& data) { data += "//SIG"; });      // 加签
+sc.on_load([](std::string& data) {                             // 验签
+    auto pos = data.rfind("//SIG");
+    if (pos != std::string::npos) data.erase(pos);
+});
+std::string cjson;
+sc.save_to_string<Hp>(cjson);  // 压缩 + 加签
+manager mgr_c;
+serialization sc2(mgr_c);
+sc2.set_compression(rle_compress, rle_decompress);
+sc2.on_load([](std::string& data) {
+    auto pos = data.rfind("//SIG");
+    if (pos != std::string::npos) data.erase(pos);
+});
+sc2.load_from_string<Hp>(cjson);  // 验签 + 解压
+
+// === 统计信息 ===
+serialization ss(mgr_f);
+std::string sj;
+ss.save_to_string<Hp, Vec3>(sj);
+const auto& stats = ss.last_stats();
+// stats.total_bytes / stats.per_type[i].component_count / .bytes
+
+// === 便捷静态接口 ===
+serialization::save<Hp>(mgr_f, "quick.json");
+manager mgr_q;
+serialization::load<Hp>(mgr_q, "quick.json");
+```
+
+### 12.9 二进制格式布局
+
+```
+偏移  内容
+0     magic "LCE1" (4 字节)
+4     endianness (1, = LE)
+5     format version (1)
+6     reserved (2 字节)
+8     archive_version (uint32 LE)
+12    engine_version (uint32 LE)
+16    meta_len (uint32 LE) + meta_json (元数据 JSON 子串)
+     entities_json_len (uint32 LE) + entities_json (实体状态, JSON 子串)
+     type_count (uint32 LE)
+     [每个类型: 类型名(string) + 组件版本(uint32) + 类型数据长度(uint32) + 类型数据]
+```
+
+类型数据布局：`元素数(uint32) + [entity_index(uint32) + version(uint32) + 组件数据]*`。trivially copyable 类型组件数据为原始字节(LE)，非 trivial 类型为 JSON 子串。类型头含总字节数，加载时遇未知类型可按长度跳过，避免读取错位。
+
+### 12.10 选择性序列化过滤器
+
+`serialize_filter` 结构体按实体状态过滤，只序列化符合条件的实体及其组件。
+
+```cpp
+struct serialize_filter {
+    bool use_layer = false;    uint32_t layer = 0;
+    bool use_tag = false;      uint32_t tag = 0;
+    bool use_group = false;    uint32_t group_id = 0;
+    bool use_flags = false;    uint32_t flags_mask = 0;  uint32_t flags_value = 0;
+    bool use_whitelist = false;  dense<uint32_t> entity_whitelist;
+    // 链式构造
+    serialize_filter& by_layer(uint32_t l);
+    serialize_filter& by_tag(uint32_t t);
+    serialize_filter& by_group(uint32_t g);
+    serialize_filter& by_flags(uint32_t mask, uint32_t value);
+    serialize_filter& by_entities(dense<uint32_t>&& ids);
+};
+```
+
+| 字段 | 含义 |
+|------|------|
+| `use_layer` / `layer` | 仅保留指定 layer 的实体 |
+| `use_tag` / `tag` | 仅保留指定 tag 的实体 |
+| `use_group` / `group_id` | 仅保留指定 group 的实体 |
+| `use_flags` / `flags_mask` / `flags_value` | `(state.flags & mask) == value` 的实体 |
+| `use_whitelist` / `entity_whitelist` | 仅保留索引在白名单内的实体 |
+
+多条件组合为 AND 关系。`matches_entity` 同时检查白名单与状态条件。
+
+### 12.11 单实体序列化
+
+`save_entity<Ts...>(e, out)` 利用过滤器只序列化指定实体的组件，用于实体快照、网络同步等场景。
+
+### 12.12 加载模式（load_mode）
+
+| 模式 | 行为 |
+|------|------|
+| `load_mode::replace` | 加载前调用 `manager::clear()` 清空所有实体与组件，再创建新实体 |
+| `load_mode::append` | 保留现有实体，直接追加加载的实体（默认） |
+| `load_mode::merge` | 保留现有实体，追加加载（与 append 行为一致，预留语义扩展） |
+
+### 12.13 存档元数据
+
+通过 `set_metadata(key, value)` 存入自定义键值对，保存时写入 `meta` 字段，加载时回填。用于记录保存时间、作者、关卡名等信息。
+
+```json
+{
+  "version": 1,
+  "meta": {"author": "test_user", "desc": "测试存档"},
+  "entities": [...],
+  "components": {...}
+}
+```
+
+### 12.14 字段级迁移 + 组件版本控制
+
+`register_component_version<T>(version)` 注册组件当前版本，保存时写入 `cv` 字段。`register_migration<T>(from, to, fn)` 注册迁移函数，加载时按 `from → from+1 → ... → to` 链式调用。
+
+| 接口 | 说明 |
+|------|------|
+| `register_component_version<T>(version)` | 注册组件当前版本 |
+| `register_migration<T>(from, to, migrate_fn)` | 注册单步迁移函数 |
+| `lookup_component_version<T>()` | 查询组件当前版本 |
+| `migrate_component(tid, from, to, old_data, w)` | 执行迁移链 |
+
+迁移函数签名 `void(*)(json_reader& old, json_writer& neu)`：从 `old` 读取旧 JSON，写入 `neu` 新 JSON。需自行调用 `old.enter_object()`。
+
+```json
+{
+  "version": 1,
+  "cv": {"Hp": 2},
+  "entities": [...],
+  "components": {"Hp": [{"i":1, "v":1, "d":{"c":42,"m":100}}]}
+}
+```
+
+未注册版本的组件加载时按 `saved_ver` 处理（不迁移）。存档无 `cv` 字段时 `saved_ver` 默认为 1。
+
+### 12.15 增量序列化（save_changed）
+
+`save_changed<Ts...>(out, fmt)` 跟踪各组件池版本号，仅当某类型池版本变化时输出该类型。首次调用全量输出；无变化时返回 `"{}"`。适用于频繁自动保存场景，减少 IO。
+
+### 12.16 压缩与变换钩子
+
+| 接口 | 说明 |
+|------|------|
+| `set_compression(compress_fn, decompress_fn)` | 注册压缩/解压函数对，保存后压缩、加载前解压（仅对 JSON 路径生效，二进制不压缩） |
+| `on_save(cb)` | 保存后变换数据（如加密、签名） |
+| `on_load(cb)` | 加载前变换数据（如解密、校验） |
+
+`safety.hpp` 提供 `rle_compress` / `rle_decompress` 工具函数（RLE1 格式，针对重复字节序列）。变换顺序：save → compress → on_save；on_load → decompress → load。
+
+### 12.17 进度回调与统计
+
+| 接口 | 说明 |
+|------|------|
+| `set_progress_callback(cb)` | 设置 `void(*)(size_t current, size_t total)` 回调 |
+| `last_stats()` | 获取 `serialize_stats`，含 `entity_count`、`total_bytes`、`archive_version`、`per_type`（每类型组件数与字节数） |
+
+### 12.18 反射桥接扩展
+
+`reflect_bridge` 支持嵌套对象、数组字段、枚举类型的自动序列化：
+
+| 字段类型 | 处理方式 |
+|---------|---------|
+| 基本类型（int/float/bool/string） | 直接读写 |
+| 嵌套对象（字段为已注册反射类型） | 递归调用 `to_json`/`from_json` |
+| 数组字段（`array_rank > 0`） | 遍历元素逐个序列化，按 `element_stride` 步进 |
+| 已注册枚举 | `register_enum<T>()` 注册底层类型，序列化为整数 |
+
+### 12.19 编码器抽象接口
+
+`archive_writer` / `archive_reader` / `archive_codec` 提供与具体格式无关的读写接口，各格式编码器（JSON / 二进制 / Protobuf / FlatBuffer）实现该接口。`#include "serialization/archive_codec.hpp"`，命名空间 `ecs`。
+
+`archive_type` 枚举标识字段类型：`null_t` / `bool_t` / `int32_t` / `uint32_t` / `int64_t` / `uint64_t` / `float32_t` / `float64_t` / `string_t` / `bytes_t` / `object_t` / `array_t`。
+
+`archive_writer` 接口：
+
+| 接口 | 说明 |
+|------|------|
+| `begin_object()` / `end_object()` | 写入对象起止 |
+| `begin_array(count=0)` / `end_array()` | 写入数组起止，`count=0` 表示元素数未知 |
+| `key(k)` | 写入字段键 |
+| `write_bool(v)` / `write_i32(v)` / `write_u32(v)` | 写入标量 |
+| `write_i64(v)` / `write_u64(v)` | 写入 64 位整数 |
+| `write_f32(v)` / `write_f64(v)` | 写入浮点 |
+| `write_string(v)` | 写入字符串 |
+| `write_bytes(data, len)` | 写入原始字节（trivially copyable 组件） |
+| `write_raw(fragment)` | 嵌入已格式化片段（用户 `to_json` 输出） |
+| `take()` | 取走结果字符串 |
+| `size()` | 当前缓冲区大小 |
+
+`archive_reader` 接口（`read_string_view` 返回 `string_view` 指向原缓冲区，零拷贝）：
+
+| 接口 | 说明 |
+|------|------|
+| `enter_object()` / `leave_object()` | 进入/退出对象 |
+| `enter_array()` / `leave_array()` | 进入/退出数组 |
+| `next_element()` / `end_element()` | 数组迭代 |
+| `next_key()` | 读取下一字段键，空视图表示对象结束 |
+| `read_bool()` / `read_i32()` / `read_u32()` | 读取标量 |
+| `read_i64()` / `read_u64()` | 读取 64 位整数 |
+| `read_f32()` / `read_f64()` | 读取浮点 |
+| `read_string_view()` / `read_string()` | 读取字符串（前者零拷贝） |
+| `read_bytes_view(len)` | 读取字节视图 |
+| `skip_value()` | 跳过当前值（未知字段） |
+| `has_error()` / `last_error()` | 错误状态 |
+| `peek_type()` | 当前值类型 |
+
+`archive_codec` 工厂接口：
+
+| 接口 | 说明 |
+|------|------|
+| `magic[4]` | 格式标识（4 字节，用于自动检测） |
+| `create_writer()` | 创建写入器 |
+| `create_reader(data)` | 创建读取器，绑定数据视图 |
+| `destroy_writer(w)` / `destroy_reader(r)` | 销毁实例 |
+| `matches(data)` | 检测数据是否匹配本格式 |
+
+### 12.20 编码器注册表
+
+`codec_registry` 单例管理所有内置格式编码器，按 magic 头自动检测格式。`#include "serialization/codec_registry.hpp"`。
+
+| 接口 | 说明 |
+|------|------|
+| `codec_registry::instance()` | 获取单例 |
+| `register_codec(c)` | 注册自定义编码器 |
+| `detect(data)` | 按 magic 头检测格式，返回 `archive_codec*` |
+| `get(idx)` | 按索引获取编码器 |
+| `count()` | 已注册编码器数 |
+
+`codec_index` 命名空间提供索引常量：`json=0` / `binary=1` / `protobuf=2` / `flatbuffer=3`。
+
+自由函数：
+
+| 接口 | 说明 |
+|------|------|
+| `get_codec(fmt_idx)` | 按索引获取编码器 |
+| `detect_codec(data)` | 自动检测并返回编码器 |
+
+### 12.21 四种内置编码器
+
+| 编码器 | magic | 头文件 | 字段标识方式 |
+|--------|-------|--------|------------|
+| `json_codec` | `{`（首字符） | `codec_json.hpp` | 字段名（字符串键） |
+| `binary_codec` | `LCE1` | `codec_binary.hpp` | 字段名（字符串键） |
+| `protobuf_codec` | `LCPB` | `codec_protobuf.hpp` | 字段编号（`f1`/`f2`/...） |
+| `flatbuffer_codec` | `LCFB` | `codec_flatbuffer.hpp` | 字段编号（`f1`/`f2`/...） |
+
+各编码器均实现 `archive_codec` 工厂接口。`create_writer()` 返回 `archive_writer*`，`create_reader(data)` 返回 `archive_reader*`，用完需调用 `destroy_writer`/`destroy_reader` 释放。
+
+### 12.22 公共逻辑层
+
+`archive_logic` 提供与格式无关的实体收集、过滤、版本检查、组件序列化分发逻辑，通过 `archive_writer`/`archive_reader` 接口操作编码器。`#include "serialization/archive_logic.hpp"`，命名空间 `ecs`。
+
+| 接口 | 说明 |
+|------|------|
+| `archive_logic(manager& m)` | 构造，绑定 manager |
+| `set_filter(f)` / `filter()` | 设置/获取选择性过滤器 |
+| `stats()` / `reset_stats()` | 统计信息 / 重置 |
+| `save_header(w, archive_ver, engine_ver, metadata)` | 保存存档头（版本 + 元数据） |
+| `save_component_versions<Ts...>(w)` | 保存组件版本表 |
+| `save_entities<Ts...>(w)` | 保存实体状态（含去重） |
+| `save_components<Ts...>(w)` | 保存组件数据 |
+| `load_header(r, max_ver, metadata, err)` | 加载存档头，返回 `{archive_ver, engine_ver}` |
+| `scan_entities(r, remap, max_count)` | 扫描实体并建立重映射 |
+
+### 12.23 多格式编码使用
+
+```cpp
+#include "serialization/serialization.hpp"
+
+// === 直接使用编码器 ===
+protobuf_codec pc;
+archive_writer* w = pc.create_writer();
+w->begin_object();
+w->key("version"); w->write_u32(42);
+w->key("name");    w->write_string("hello");
+w->end_object();
+std::string data = w->take();
+pc.destroy_writer(w);
+
+// 读取（零拷贝：string_view 指向原缓冲区）
+archive_reader* r = pc.create_reader(data);
+if (r->enter_object()) {
+    std::string_view k;
+    while (!(k = r->next_key()).empty()) {
+        if (k == "f1") {
+            uint32_t ver = r->read_u32();
+        } else if (k == "f2") {
+            std::string_view name = r->read_string_view();  // 零拷贝
+        } else {
+            r->skip_value();
+        }
+    }
+}
+pc.destroy_reader(r);
+
+// === 格式自动检测 ===
+const archive_codec* codec = detect_codec(data);
+if (codec) {
+    archive_reader* auto_r = codec->create_reader(data);
+    // ... 按 archive_reader 接口读取
+    codec->destroy_reader(auto_r);
+}
+
+// === 通过 serialization 主类统一使用四格式 (推荐) ===
+manager mgr;
+entity e1 = mgr.create_entity();
+mgr.add<Vec3>(e1, Vec3{1.0f, 2.0f, 3.0f});
+
+serialization saver(mgr);
+saver.set_archive_version(2);
+saver.set_metadata("author", "dev");
+
+// 四种格式用同一个接口, 仅切换 format 枚举
+std::string json_data, bin_data, pb_data, fb_data;
+saver.save_to_string<Vec3>(json_data, serialization::format::json);
+saver.save_to_string<Vec3>(bin_data, serialization::format::binary);
+saver.save_to_string<Vec3>(pb_data, serialization::format::protobuf);
+saver.save_to_string<Vec3>(fb_data, serialization::format::flatbuffer);
+
+// 加载时自动检测格式 (无需指定)
+manager mgr2;
+serialization loader(mgr2);
+loader.load_from_string<Vec3>(pb_data);   // 自动识别 LCPB
+loader.load_from_string<Vec3>(fb_data);   // 自动识别 LCFB
+
+// === 直接使用编码器 (高级场景, 需要手动管理生命周期) ===
+protobuf_codec pc;
+archive_writer* w = pc.create_writer();
+w->begin_object();
+w->key("version"); w->write_u32(42);
+w->end_object();
+std::string data = w->take();
+pc.destroy_writer(w);
+
+// === 注册自定义编码器 ===
+class my_codec final : public archive_codec {
+    // 实现 create_writer / create_reader / destroy_* / matches
+};
+codec_registry::instance().register_codec(&my_codec_instance);
+```
+
+### 注意事项
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 未提供 `to_json`/`from_json` 且非 trivially copyable | 编译错误 | 提供 `to_json`/`from_json` 或确保类型 trivially copyable |
+| `to_json` 与 `from_json` 字段不一致 | 反序列化数据丢失 | 两端字段保持一致 |
+| 加载类型与保存时不一致 | 类型名不匹配，组件被跳过 | 加载时显式指定所有需要的类型 |
+| 跨编译器加载未注册类型名 | 类型名（`typeid(T).name()`）不同 | 使用 `register_type_name` 注册稳定名 |
+| 加载超限文件 | 触发安全限制失败 | 调整 `limits()` 上限或检查文件来源 |
+| 组件含 entity 引用未注册字段 | 引用指向旧索引 | 使用 `register_entity_field<T>(field_name)` 注册 |
+| 加载高于当前版本的存档 | 版本检查失败被拒绝 | 升级 `set_archive_version` 或降级存档 |
+| 迁移函数未调用 `old.enter_object()` | 读取不到字段，迁移失败 | 在迁移 lambda 开头调用 `old.enter_object()` |
+| 先注册版本再保存再加载 | saved_cv == current_cv，不触发迁移 | 模拟真实场景：先存 v1 存档，再升级版本注册迁移，后加载 |
+| 对二进制格式调用 `set_compression` | 不生效（仅 JSON 路径压缩） | 改用外部压缩或在 save 后手动压缩 |
+| `replace` 模式加载到含信号 manager | 旧实体被销毁触发信号 | 信号触发属预期行为，注意信号槽清理 |
+| `create_writer`/`create_reader` 后未调用 `destroy_*` | 内存泄漏 | 用完立即调用对应 destroy 方法 |
+| Protobuf/FlatBuffer 字段按写入顺序编号 | 按字段名读取失败 | 用 `f1`/`f2`/... 等编号键迭代 |
+| Protobuf/FlatBuffer save/load 用不同 `Ts...` 顺序 | 字段编号错位，数据错乱 | save 和 load 必须用相同的 `Ts...` 类型和顺序 |
+| `read_string_view` 返回的视图在原缓冲区释放后失效 | 悬空指针 | 视图生命周期绑定到原 `string`，需保留原数据 |
+
+---
+
 # 二、宏配置
 
-## 12. 可选宏配置
+## 13. 可选宏配置
 
-### 12.1 栈内存控制（`config/ecs_config.hpp`）
+### 13.1 栈内存控制（`config/ecs_config.hpp`）
 
 嵌入式 / RTOS 环境通过 `LCF_MINIMAL_STACK` 关闭栈分配，将基数排序的大数组从栈分配切换到堆分配。桌面环境默认 `0`，保留栈分配。
 
@@ -2383,7 +3202,7 @@ target_compile_definitions(my_target PRIVATE LCF_MINIMAL_STACK=1)
 | `radix_sort_entries_with_cfg` count_stack | 16KB（2048 个 size_t） | `::operator new` 堆分配 |
 | `radix_sort_indices_with_cfg` count_stack | 16KB（2048 个 size_t） | `::operator new` 堆分配 |
 
-### 12.2 void_any 存储策略（`config/void_any_config.hpp`）
+### 13.2 void_any 存储策略（`config/void_any_config.hpp`）
 
 影响 `void_any` 的存储策略与内存分配方式。
 
@@ -2397,7 +3216,7 @@ target_compile_definitions(my_target PRIVATE LCF_MINIMAL_STACK=1)
 | `VOID_ANY_MEMORY_POOL_NOT_ENABLED` | 禁用内存池（与 `VOID_ANY_ENABLE_MEMORY_POOL` 互斥） |
 | `VOID_ANY_SSO_NOT_ENABLED` | 禁用 SSO（与 `VOID_ANY_ENABLE_SSO` 互斥） |
 
-### 12.3 反射模块配置（`config/reflect_config.hpp`）
+### 13.3 反射模块配置（`config/reflect_config.hpp`）
 
 影响反射模块的类型注册上限与单类型字段/方法数组大小。
 
@@ -2416,7 +3235,24 @@ target_compile_definitions(my_target PRIVATE LCF_MINIMAL_STACK=1)
 #define MAX_TYPE_ID 65536
 ```
 
-### 13.4 配置示例
+### 13.4 utf8pp 内存分配器配置（`config/utf8pp_config.hpp`）
+
+`utf8pp` 已实现完整内存分配架构（SSO + 3 级增长 + 堆管理）。默认关闭，堆路径使用 `std::malloc/std::free`；启用后堆路径接入自研分配器。
+
+| 宏 | 默认值 | 说明 |
+|------|--------|------|
+| `UTF8PP_ENABLE_ALLOCATOR` | `0` | `1` 启用自研分配器接入 utf8pp 堆路径 |
+| `UTF8PP_ALLOCATOR_TYPE` | `UTF8PP_ALLOC_MEMORY_POOL` | 启用时的分配器类型：`UTF8PP_ALLOC_MEMORY_POOL`（TLSF 内存池）/ `UTF8PP_ALLOC_LAYERED`（分层分配器：小对象 slab + 大对象 TLSF） |
+
+```cmake
+# 启用 utf8pp 自研内存池
+target_compile_definitions(my_target PRIVATE UTF8PP_ENABLE_ALLOCATOR=1)
+
+# 启用分层分配器
+target_compile_definitions(my_target PRIVATE UTF8PP_ENABLE_ALLOCATOR=1 UTF8PP_ALLOCATOR_TYPE=UTF8PP_ALLOC_LAYERED)
+```
+
+### 14.4 配置示例
 
 ```cpp
 // config/void_any_config.hpp
@@ -2437,7 +3273,7 @@ target_compile_definitions(my_target PRIVATE LCF_MINIMAL_STACK=1)
 #define VOID_ANY_SSO_ALIGNMENT 8
 ```
 
-### 12.5 不要做什么
+### 13.5 不要做什么
 
 | 错误做法 | 问题 | 正确做法 |
 |---------|------|---------|
@@ -2450,7 +3286,7 @@ target_compile_definitions(my_target PRIVATE LCF_MINIMAL_STACK=1)
 
 # 三、各种模块
 
-## 13. operating_message — 操作消息
+## 14. operating_message — 操作消息
 
 记录操作结果（成功/失败）和调试信息。核心特性：
 
@@ -2570,7 +3406,7 @@ for (int i = 0; i < 1000; ++i) {
 
 ---
 
-## 14. class_pool\<T> — 核心容器
+## 15. class_pool\<T> — 核心容器
 
 支持密集与稀疏两种存储模式的容器，替代 `std::vector`。
 
@@ -2862,7 +3698,7 @@ size_t idx = pool2.fill_the_hole_at(99);  // 填洞 at 0, 返回 0
 
 ---
 
-## 14.5 class_pool 视图
+## 15.5 class_pool 视图
 
 `class_pool<T>` 视图接口位于独立头文件 `include/part/class_pool_views.hpp`，全局命名空间（与 `dense` / `class_pool` 保持一致）。设计原则：
 - **不修改原容器**：仅依赖 `class_pool<T>` 公开 API
@@ -2964,7 +3800,7 @@ size_t live = compact_to(pool, compact, pool.size());
 
 ---
 
-## 15. void_any — 类型擦除存储
+## 16. void_any — 类型擦除存储
 
 类型擦除容器，保持 `void*` 设计理念，通过位编码将元信息打包到单个 64 位字中，减少内存访问。支持 SSO 和内存池（通过宏配置）。
 
@@ -3064,7 +3900,7 @@ x.type_id() == y.type_id();    // true, 同类型返回相同值
 
 ---
 
-## 16. type_id — 类型ID
+## 17. type_id — 类型ID
 
 为每种类型分配唯一整数 ID（编译时确定，线程安全）。
 
@@ -3087,7 +3923,7 @@ int max_id = type_id::current_max_id();  // 已分配的最大 ID
 
 ---
 
-## 17. id_allocation\<T> — ID分配器
+## 18. id_allocation\<T> — ID分配器
 
 管理可回收的 ID 池，避免 ID 无限增长。默认模板参数为 `size_t`。
 
@@ -3112,7 +3948,7 @@ uint32_t id3 = alloc.get_id();  // 1（复用）
 
 ---
 
-## 18. memory_pool — 内存池
+## 19. memory_pool — 内存池
 
 基于 TLSF（Two-Level Segregated Fit）算法的分桶式内存池，减少频繁 malloc/free 开销。内部维护 chunk 预分配池，`reset()` 和 `reduce_capacity()` 释放的 chunk 优先归还预分配池，后续 `allocate` 优先从池中取用，减少系统调用。预分配池容量有限，超限的 chunk 归还系统。
 
@@ -3405,7 +4241,7 @@ bool in_la = la.owns(small);
 
 ---
 
-## 19. dense\<T> — 通用密集容器
+## 20. dense\<T> — 通用密集容器
 
 `#include "part/dense.hpp"`，无命名空间。所有接口 `noexcept`。彻底替代 `std::vector` 的通用密集容器，是 `class_pool` 密集模式的独立容器形式。
 
@@ -3723,7 +4559,7 @@ d.reverse_copy_to(dst2.span());
 
 ---
 
-## 20. tiered_sort / pdqsort / sort_n — 分级排序
+## 21. tiered_sort / pdqsort / sort_n — 分级排序
 
 `#include "part/tiered_sort.hpp"`，全局命名空间。所有函数 `noexcept`。
 
@@ -3800,7 +4636,7 @@ pdqsort(data, 5, std::less<int>{});
 
 ---
 
-## 21. radix_sort — 基数排序
+## 22. radix_sort — 基数排序
 
 `#include "part/radix_sort_helper.hpp"`，全局命名空间。所有函数 `noexcept`。
 
@@ -3857,7 +4693,7 @@ radix_sort_indices<float>(indices, values, 5, temp);
 
 ---
 
-## 22. FORCE_INLINE / NOINLINE — 跨平台内联宏
+## 23. FORCE_INLINE / NOINLINE — 跨平台内联宏
 
 `#include "part/force_inline.hpp"`
 
@@ -3899,7 +4735,7 @@ NOINLINE void heavy_function() noexcept
 
 ---
 
-## 23. arena_allocator — 线性 bump 分配器
+## 24. arena_allocator — 线性 bump 分配器
 
 `#include "part/arena_allocator.hpp"`，全局命名空间。`noexcept`。
 
@@ -3958,7 +4794,7 @@ void* p3 = borrowed.allocate(100);
 
 ---
 
-## 24. slab_allocator — 固定块分配器
+## 25. slab_allocator — 固定块分配器
 
 `#include "part/slab_allocator.hpp"`，全局命名空间。`noexcept`。
 
@@ -4013,7 +4849,7 @@ bool mine = slab.owns(p2);  // true
 
 ---
 
-## 25. layered_allocator — 分层分配器
+## 26. layered_allocator — 分层分配器
 
 `#include "part/layered_allocator.hpp"`，全局命名空间。`noexcept`。
 
@@ -4066,7 +4902,7 @@ alloc.deallocate(small, 64);  // 直接路由到 slab
 
 ---
 
-## 26. ring_buffer — 环形缓冲区
+## 27. ring_buffer — 环形缓冲区
 
 `#include "part/ring_buffer.hpp"`，全局命名空间。`noexcept`。
 
@@ -4138,13 +4974,13 @@ ring_buffer<event, 1024>::shrink_static_pool();          // 释放缓存
 
 ---
 
-## 27. time — 计时与基准测量
+## 28. time — 计时与基准测量
 
 `#include "part/time.hpp"`，全局命名空间。`noexcept`。
 
 计时与基准测量工具：墙钟计时、CPU 周期计数、缓存屏障、统计分布、在线分位数、缓存延迟测量。x86/x64 提供 `rdtsc`/`rdtscp` / `clflush` / `mfence` / `lfence`，其他平台返回 0 或空操作。
 
-### 28.1 timer — 墙钟计时器
+### 29.1 timer — 墙钟计时器
 
 | 接口 | 说明 |
 |------|------|
@@ -4161,7 +4997,7 @@ timer t;
 double ns = t.elapsed_ns();
 ```
 
-### 28.2 cycle_timer — CPU 周期计时器
+### 29.2 cycle_timer — CPU 周期计时器
 
 | 接口 | 说明 |
 |------|------|
@@ -4183,7 +5019,7 @@ uint64_t tsc = rdtsc();
 uint64_t tsc_serialized = rdtscp();
 ```
 
-### 28.3 stats — 统计分布
+### 29.3 stats — 统计分布
 
 | 字段/接口 | 说明 |
 |------|------|
@@ -4204,7 +5040,7 @@ stats s = compute_stats(std::move(samples));
 
 > 内部使用 `tiered_sort` 分级排序：n≤16 排序网络，n<1024 pdqsort，n≥1024 radix sort（O(n)）。
 
-### 28.4 benchmark — 基准测量
+### 29.4 benchmark — 基准测量
 
 | 接口 | 说明 |
 |------|------|
@@ -4225,7 +5061,7 @@ p2_benchmark_result r = benchmark_p2(1000000, 100, []() {
 // r.p50, r.p90, r.p95, r.p99
 ```
 
-### 28.5 缓存命中测量
+### 29.5 缓存命中测量
 
 | 接口 | 说明 |
 |------|------|
@@ -4264,7 +5100,7 @@ cache_report r_l1 = measure_cache_hits(addrs, th_l1);
 
 > 不同 CPU 缓存层级不同（嵌入式可能仅 1-2 级），默认 `cache_levels=3`。可通过 `detect_cache_latency_thresholds()` 自动检测实际层级，或手动设置 `cache_levels`。
 
-### 28.6 x86 缓存屏障
+### 29.6 x86 缓存屏障
 
 | 接口 | 说明 |
 |------|------|
@@ -4282,7 +5118,7 @@ cache_flush_range(&data, sizeof(data));
 
 > 非 x86 平台以上均为空操作。
 
-### 28.7 P² 在线分位数
+### 29.7 P² 在线分位数
 
 | 接口 | 说明 |
 |------|------|
@@ -4302,7 +5138,7 @@ double p99 = est.estimate();
 // 无需存储 100 万个样本，内存 O(1)
 ```
 
-### 28.8 CPU 频率
+### 29.8 CPU 频率
 
 | 接口 | 说明 |
 |------|------|
@@ -4319,7 +5155,7 @@ double ghz = cpu_ghz_cached();
 
 > 若需精确墙钟时间，优先使用 `timer`（`high_resolution_clock`），而非 `cycle_timer` + 频率估算。
 
-### 28.9 延迟异常检测
+### 29.9 延迟异常检测
 
 | 接口 | 说明 |
 |------|------|
@@ -4357,7 +5193,7 @@ for (auto& e : entities)
 
 ---
 
-## 28. multi_block_bitmask — 多块位掩码存储
+## 29. multi_block_bitmask — 多块位掩码存储
 
 `include/part/multi_block_bitmask.hpp`，无命名空间。每槽 1+ 个 64 位块的多块位掩码容器，块 0 内嵌，块 1+ 按需分配。通用位掩码场景（布隆过滤、稀疏集合、组件标签、哈希位图等）均适用。
 
@@ -4633,7 +5469,7 @@ for (uint32_t i = 0; i < N; ++i)
 
 ---
 
-## 29. reflection — 反射元数据与存储
+## 30. reflection — 反射元数据与存储
 
 `#include "reflection/reflection.hpp"`，命名空间 `reflect`。`noexcept`。
 
@@ -4643,20 +5479,26 @@ for (uint32_t i = 0; i < N; ++i)
 
 | 结构 | 字段 |
 |------|------|
-| `field_meta` | `name`, `offset`, `type_id`, `is_const`, `is_private` |
+| `field_meta` | `name`, `offset`, `type_id`, `is_const`, `is_private`, `array_rank`, `reserved`, `total_elements`, `extents[4]`, `element_stride` |
 | `method_meta` | `name`, `arg_count`, `return_type_id`, `invoker`, `is_const`, `is_static` |
 | `type_meta` | `name`, `registered`, `field_count`, `method_count`, `size`, `align`, `type_id`, `fields`, `methods` |
 | `MAX_TYPE_ID` | 类型槽位上限（65536） |
 | `MAX_FIELDS_PER_TYPE` | 单类型字段上限（256） |
 | `MAX_METHODS_PER_TYPE` | 单类型方法上限（256） |
 
+`field_meta` 数组字段：`array_rank=1~4`、`extents[0..rank-1]` 为各维元素数、`total_elements` 为总元素数、`element_stride` 为元素步长（字节）。标量字段 `array_rank=0`。
+
 ### 30.2 storage 接口
 
 | 接口 | 说明 |
 |------|------|
 | `storage::register_type<T>(name)` | 注册类型，聚合类型自动遍历公有字段 |
+| `storage::register_type_only<T>(name)` | 只注册类型元信息，不自动遍历字段。用于无字段类型或配合底层 `register_array_field` 手动注册 |
 | `storage::register_private_offsets<T>(descs, count)` | 手填偏移量注册私有成员 |
-| `storage::register_field<T, M, Ptr>(name)` | 成员指针注册字段，偏移量和类型自动推导 |
+| `storage::register_field<T, M, Ptr>(name)` | 成员指针注册字段，需先 `register_type_only` |
+| `storage::register_member_auto<T, M, Ptr>(type_name, field_name)` | 注册成员（标量/数组统一入口），自动判断字段类别 |
+| `storage::register_array_field<T, M, Ptr>(name, rank, extents, element_type_id)` | 注册数组字段（C 数组/std::array） |
+| `storage::register_array_field_auto<T, M, Ptr>(name)` | 注册数组字段，自动推导 rank/extents/element_type |
 | `storage::register_method<Fn>(name)` | 注册成员方法 |
 | `storage::register_static_method<C, Fn>(name)` | 注册静态方法 |
 | `storage::get_type(tid)` | 按类型 id 查询 `type_meta*` |
@@ -4665,7 +5507,7 @@ for (uint32_t i = 0; i < N; ++i)
 
 ---
 
-## 30. aggregate_reflect — 聚合类型字段遍历
+## 31. aggregate_reflect — 聚合类型字段遍历
 
 `#include "part/aggregate_reflect.hpp"`，全局命名空间。`noexcept`。编译期常量。
 
@@ -4742,7 +5584,7 @@ size_t off_y = member_offset(&Vec3::y);  // 4
 
 ---
 
-## 31. type_erasure — 类型擦除方法调用器
+## 32. type_erasure — 类型擦除方法调用器
 
 `#include "part/type_erasure.hpp"`，全局命名空间。`noexcept`。
 
@@ -4830,7 +5672,7 @@ int void_id = return_type_id<void>();    // -1
 
 ---
 
-## 32. member_offset — 成员偏移量访问
+## 33. member_offset — 成员偏移量访问
 
 `#include "part/member_offset.hpp"`，全局命名空间。`noexcept`。
 
@@ -4905,7 +5747,7 @@ offset_desc descs[] = {
 | 假设 `ub_access` 可移植 | 严格 UB，依赖编译器实现 | 仅在受控环境使用 |
 | 对齐错误的偏移量访问 | 未对齐访问崩溃 | 确保偏移量与类型对齐匹配 |
 
-## 33. t_fun — 函数类型延迟调用器
+## 34. t_fun — 函数类型延迟调用器
 
 `#include "part/t_fun.hpp"`，全局命名空间。`noexcept`。
 
@@ -5097,3 +5939,685 @@ std::cout << v13;            // [t_fun arity=2 target=null]
 | `bind_front` 参数数超过 arity | 编译期报错 | 参数数 <= arity |
 | `reset` 参数数与 arity 不符 | 编译期报错 | 参数数 == arity |
 | `then_call` 的 g 参数类型不匹配 | 编译期报错 | g 接受 R 类型参数 |
+
+## 35. utf8_codec / utf8pp — UTF-8 编解码与拥有型字符串
+
+`#include "part/utf8pp.hpp"`（自动包含 `utf8_codec.hpp` 与 `dense.hpp`），全局命名空间。核心接口 `noexcept`，少数修改操作（需扩容时调用 `std::realloc`，失败 `std::abort`）亦为 `noexcept`。
+
+模块分三层：
+
+- **`utf8_codec.hpp`**：底层编解码核心（`detail_utf8` 命名空间 + 对外导出函数），无状态纯函数，被 `utf8pp` 与 `utf8_view` 共享。
+- **`utf8pp` 类**：拥有内存的 UTF-8 字符串类，自管裸指针存储 + 码点偏移缓存（`uint32_t*`），码点级访问 O(1)。
+- **`utf8pp` 非成员接口**：`operator+` / 流操作符 / `swap` / 字面量 / `std::hash` 特化。
+
+仅支持 Unicode 编码（UTF-8 / UTF-32 码点），不支持其他编码（GBK / UTF-16 等）。非法序列替换为 U+FFFD 替换字符。支持完整 Unicode 字符处理：码点级 + 字形簇级 + East Asian Width 显示宽度 + NFC/NFKC 规范化（含 Hangul 算法） + Script 脚本判断。
+
+### 35.1 底层编解码接口（utf8_codec.hpp）
+
+| 接口 | 说明 |
+|------|------|
+| `to_char(uint32_t cp)` | 数值转 Unicode 字符（`char32_t`），constexpr |
+| `to_int(char32_t ch)` | Unicode 字符转数值（`uint32_t`），constexpr |
+| `utf8_to_codepoints(src, src_len, out, out_cap, out_has_err)` | UTF-8 字符串转码点数组（`uint32_t*`） |
+| `codepoints_to_char32(cps, cp_count, out, out_cap, out_has_err)` | 码点数组转 `char32_t` 字符串 |
+| `char32_to_utf8(src, src_len, out, out_cap, out_has_err)` | `char32_t` 字符串转 UTF-8 字节序列 |
+
+`out_has_err` 为可选输出参数（`bool*`），传入 `nullptr` 表示不接收错误标志。返回值为需要写入的总数：`<= out_cap` 表示已全部写入；`> out_cap` 表示所需容量（调用方扩容后重试）。
+
+`detail_utf8` 命名空间内部接口（通常不直接使用）：`k_utf8_seq_len[256]` 序列长度表、`is_valid_codepoint` / `is_shortest_form` 校验、`utf8_decode_one` / `utf8_encode_one` 单次编解码、`count_codepoints` / `advance_codepoint` / `retreat_codepoint` 游标推进。
+
+### 35.2 utf8pp 类接口
+
+#### 构造与赋值
+
+| 接口 | 说明 |
+|------|------|
+| `utf8pp()` | 默认构造，空字符串（SSO 模式） |
+| `utf8pp(const char* s)` / `utf8pp(const char* s, size_t byte_len)` | 从 UTF-8 C 字符串构造 |
+| `utf8pp(const char8_t* s)` / `utf8pp(const char8_t* s, size_t byte_len)` | 从 `char8_t` 字符串构造 |
+| `utf8pp(const char32_t* s, size_t cp_count)` | 从码点数组构造 |
+| `utf8pp(size_t n, char32_t cp)` | 用 n 个 cp 填充构造 |
+| `utf8pp(std::string_view sv)` | 从 string_view 构造 |
+| `utf8pp(const std::string& s)` / `utf8pp(const std::u8string& s)` / `utf8pp(const std::u32string& s)` | 从 std 字符串构造 |
+| `utf8pp(std::initializer_list<char32_t> il)` | 从码点初始化列表构造 |
+| `utf8pp(InputIt first, InputIt last)` | 从迭代器范围构造（SFINAE 排除整数类型） |
+| `explicit utf8pp(const std::array<utf8pp, N>& parts)` / `explicit utf8pp(const std::vector<utf8pp>& parts)` | 从范围拼接构造 |
+| `utf8pp(const utf8pp&)` / `utf8pp(utf8pp&&) noexcept` | 拷贝/移动构造 |
+| `utf8pp(std::nullptr_t) = delete` | 禁止从 nullptr 构造 |
+| `operator=(const utf8pp&)` / `operator=(utf8pp&&) noexcept` | 拷贝/移动赋值 |
+| `operator=(const char*)` / `operator=(std::string_view)` / `operator=(char32_t)` | 从常见类型赋值 |
+| `operator=(const char8_t*)` / `operator=(std::initializer_list<char32_t>)` | 从 char8_t/初始化列表赋值 |
+| `operator=(const std::string&)` / `operator=(const std::u8string&)` | 从 std 字符串赋值 |
+| `assign(const char* s, size_t byte_len)` / `assign(const char* s)` / `assign(const utf8pp&)` | 重新赋值 |
+| `assign(std::string_view)` / `assign(const std::string&)` / `assign(const char8_t*)` | 重新赋值 |
+| `assign(std::initializer_list<char32_t>)` / `assign(InputIt first, InputIt last)` | 从初始化列表/迭代器范围赋值 |
+| `assign(size_t n, char32_t cp)` | 重新赋值为 n 个 cp |
+| `assign(const std::u8string&)` / `assign(const std::u32string&)` | 从 u8/u32 字符串赋值 |
+| `assign(const utf8pp& other, size_t pos, size_t n = npos)` | 从 other 的子串 [pos, pos+n) 赋值 |
+| `assign(const std::array<utf8pp, N>&)` / `assign(const std::vector<utf8pp>&)` | 从范围重新赋值 |
+| `swap(utf8pp&) noexcept` / `swap(utf8pp&, utf8pp&) noexcept` | 交换 |
+
+#### 容量
+
+| 接口 | 说明 |
+|------|------|
+| `size()` / `length()` | 码点数（O(1)，偏移缓存） |
+| `byte_size()` | 字节数 |
+| `capacity()` | 当前字节容量 |
+| `cp_capacity()` | 当前码点容量（与字节容量解耦） |
+| `max_size()` | 理论最大字节数 |
+| `empty()` | 是否为空 |
+| `is_sso()` | 是否处于 SSO 模式（constexpr） |
+| `sso_capacity()` | SSO 容量（constexpr，= 22） |
+| `reserve(n)` | 预留字节容量（按增长策略放大） |
+| `reserve_exact(n)` | 精确预留字节容量（强制增长到 n） |
+| `reserve_cp(n)` | 预留码点容量（仅扩容码点偏移数组） |
+| `increase_capacity(new_cap)` | 同时扩容字节缓冲与码点偏移数组（项目规范用法） |
+| `shrink_to_fit()` | 释放多余容量（若可回退到 SSO 则回退） |
+| `clear() noexcept` | 清空内容（不释放内存） |
+
+#### 访问
+
+| 接口 | 说明 |
+|------|------|
+| `at(cp_idx)` / `operator[](cp_idx)` | 码点索引访问（O(1) via 偏移缓存，越界返回 U+FFFD） |
+| `front()` / `back()` | 首尾码点（空串返回 U+FFFD） |
+| `c_str()` / `data()` (const) | C 字符串（**空对象返回 `""`，非 nullptr**） |
+| `data()` (非 const) | 可写字节指针（修改后必须调用 `rebuild_cp_offsets` 重建偏移） |
+| `view()` / `binary_view()` | `std::string_view`（两者等价，`binary_view` 强调字节语义） |
+| `u8view()` | `std::u8string_view` |
+
+#### 迭代器
+
+| 接口 | 说明 |
+|------|------|
+| `begin()` / `end()` / `cbegin()` / `cend()` | 码点级前向迭代器（`random_access_iterator_tag`，解引用返回 `char32_t`） |
+| `rbegin()` / `rend()` / `crbegin()` / `crend()` | 码点级反向迭代器（`random_access_iterator_tag`） |
+| `byte_begin()` / `byte_end()` / `byte_cbegin()` / `byte_cend()` | 字节级前向迭代器（`contiguous_iterator_tag`，解引用返回 `char`） |
+| `rbyte_begin()` / `rbyte_end()` | 字节级反向迭代器（`contiguous_iterator_tag`） |
+| `const_iterator::ptr()` | 暴露底层 `const char*`（用于与 C API 交互） |
+| `const_byte_iterator::ptr()` | 暴露底层 `const char*` |
+
+#### 直接内存修改（逃生舱）
+
+| 接口 | 说明 |
+|------|------|
+| `data()` (非 const) | 获取可写字节指针，允许直接修改缓冲区内容 |
+| `rebuild_cp_offsets() noexcept` | 修改 `data()` 后重建码点偏移缓存（重新解码全串） |
+| `rebuild(new_byte_size) noexcept` | 重建偏移缓存并设置新的字节大小（修改后长度变化时使用） |
+
+#### 修改操作
+
+| 接口 | 说明 |
+|------|------|
+| `push_back(char32_t cp)` | 追加单个码点 |
+| `append(const char*)` / `append(const char*, size_t)` / `append(const char8_t*)` | 追加 UTF-8 字符串 |
+| `append(const char32_t*, size_t)` / `append(const utf8pp&)` / `append(std::string_view)` | 追加其他形式 |
+| `append(const std::string&)` / `append(std::initializer_list<char32_t>)` | 追加 std string / 初始化列表 |
+| `append(std::array<utf8pp, N>&)` / `append(std::vector<utf8pp>&)` / `append(const utf8pp*, size_t)` / `append(std::span<const utf8pp>)` | 批量追加 |
+| `operator+=(char32_t)` / `operator+=(const char*)` / `operator+=(const utf8pp&)` | 追加运算符 |
+| `operator+=(std::string_view)` / `operator+=(const char8_t*)` / `operator+=(std::initializer_list<char32_t>)` | 追加运算符扩展 |
+| `insert(cp_idx, char32_t)` | 按码点索引插入单码点 |
+| `insert(cp_idx, const utf8pp&)` / `insert(cp_idx, const char*)` / `insert(cp_idx, std::string_view)` | 按码点索引插入字符串 |
+| `insert(cp_idx, const char* s, size_t n)` / `insert(cp_idx, size_t n, char32_t cp)` / `insert(cp_idx, std::initializer_list<char32_t>)` | 按码点索引插入（指定长度/填充/初始化列表） |
+| `insert(const_iterator pos, char32_t)` / `insert(pos, size_t n, char32_t cp)` | 迭代器版插入 |
+| `insert(const_iterator pos, InputIt first, InputIt last)` | 迭代器版插入（模板迭代器范围） |
+| `insert(const_iterator pos, const utf8pp&)` / `insert(pos, const char*)` / `insert(pos, std::string_view)` / `insert(pos, std::initializer_list<char32_t>)` | 迭代器版插入字符串 |
+| `erase(cp_idx, n=1)` | 按码点索引删除 n 个码点 |
+| `erase(const_iterator pos)` / `erase(first, last)` | 迭代器版删除 |
+| `pop_back()` | 删除末尾码点 |
+| `substr(pos, cp_count=npos)` | 按码点索引取子串（返回 utf8pp） |
+| `append_cp(n, cp)` | 追加 n 个相同码点 |
+| `assign_cp(n, cp)` | 清空后赋 n 个相同码点 |
+| `resize_cp(n, cp=U'\0')` / `resize(n)` / `resize(n, cp)` | 调整码点数（小于则截断，大于则补 cp；`resize` 为 `std::string` 别名） |
+| `replace(pos, n, const utf8pp&)` / `replace(pos, n, const char*)` / `replace(pos, n, std::string_view)` | 替换 [pos, pos+n) |
+| `replace(pos, n, const char* s, size_t n2)` / `replace(pos, n, size_t n2, char32_t cp)` | 替换（指定长度/填充） |
+| `replace(pos1, n1, const utf8pp& other, pos2, n2)` / `replace(pos1, n1, const char* s, pos2, n2)` | 双区间替换（本串 [pos1,pos1+n1) ← other [pos2,pos2+n2)） |
+| `replace(const_iterator first, last, const utf8pp&)` / `replace(first, last, const char*)` / `replace(first, last, std::string_view)` | 迭代器范围替换 |
+| `replace(const_iterator first, last, const char* s, size_t n2)` / `replace(first, last, size_t n2, char32_t cp)` | 迭代器范围替换（指定长度/填充） |
+| `replace(const_iterator first, last, InputIt ifirst, InputIt ilast)` | 迭代器范围替换（模板迭代器范围） |
+| `replace_all(const utf8pp& old, const utf8pp& new)` / `replace_all(const char*, const char*)` / `replace_all(std::string_view, std::string_view)` | 全局替换子串 |
+| `replace_all(const char* old, const utf8pp& new)` / `replace_all(const utf8pp& old, const char* new)` | 全局替换子串（混合重载） |
+| `replace_all(char32_t old_cp, char32_t new_cp)` | 全局替换单码点 |
+| `trim_left()` / `trim_right()` / `trim()` | 去除首/尾/两端空白（Unicode 空白） |
+| `trim_left(Pred pred)` / `trim_right(Pred pred)` / `trim(Pred pred)` | 谓词版去除（Pred: `bool(char32_t)`，SFINAE 约束） |
+| `trim(const utf8pp& chars)` / `trim_left(const utf8pp& chars)` / `trim_right(const utf8pp& chars)` | 字符集版去除 |
+| `trim(const char* chars)` / `trim_left(const char* chars)` / `trim_right(const char* chars)` | 字符集版去除（C 字符串） |
+| `trimmed()` / `trimmed_left()` / `trimmed_right()` | 返回去除后的副本（含谓词/字符集重载） |
+| `to_lower()` / `to_upper()` | 大小写转换（完整 Unicode，原地修改） |
+| `to_title()` / `swapcase()` | 首字母大写 / 大小写互换（完整 Unicode，原地修改） |
+| `lowered()` / `uppered()` / `titled()` / `swapcased()` | 返回转换后的副本 |
+| `reverse()` | 码点级反转（原地修改） |
+| `reversed()` | 返回反转后的副本 |
+| `strip_bom()` | 剥离 UTF-8 BOM |
+| `copy(char* buf, size_t n, pos=0)` | 拷贝到外部缓冲区（返回拷贝字节数） |
+| `pad_left(width, fill=U' ')` / `pad_right(width, fill=U' ')` / `center(width, fill=U' ')` | 显示宽度对齐填充（East Asian Width 感知，全角=2，原地修改） |
+| `padded_left(width, fill=U' ')` / `padded_right(width, fill=U' ')` / `centered(width, fill=U' ')` | 返回对齐填充后的副本 |
+| `display_width()` | 计算显示宽度（East Asian Width: 全角=2, 零宽=0, ASCII=1） |
+| `to_nfc()` / `to_nfd()` | NFC 规范化 / NFD 分解（原地修改，含 Hangul 算法分解） |
+| `to_nfkc()` / `to_nfkd()` | NFKC 规范化 / NFKD 分解（原地修改，含兼容性字符分解：全角→半角、连字、上标、罗马数字等） |
+| `nfc()` / `nfd()` / `nfkc()` / `nfkd()` | 返回规范化后的副本 |
+
+#### 字节级访问
+
+| 接口 | 说明 |
+|------|------|
+| `byte_at(byte_idx)` | 字节索引访问（越界返回 `'\0'`） |
+| `at_byte(byte_idx)` | 字节索引访问（越界 `std::abort`） |
+| `byte_substr(byte_pos, byte_len=npos)` | 字节级子串（返回 utf8pp，不校验 UTF-8 边界） |
+| `byte_to_cp_idx(byte_idx)` | 字节索引 → 码点索引（非码点起点返回 `npos`） |
+| `cp_to_byte_idx(cp_idx)` | 码点索引 → 字节索引（越界返回 `byte_size()`） |
+
+#### 字符分类 API（静态方法 + 串级判断）
+
+| 接口 | 说明 |
+|------|------|
+| `static is_alpha(cp)` / `static is_digit(cp)` / `static is_alnum(cp)` | 字母 / 数字 / 字母数字（完整 Unicode） |
+| `static is_space(cp)` / `static is_punct(cp)` | 空白 / 标点（Unicode） |
+| `static is_lower(cp)` / `static is_upper(cp)` | 小写 / 大写（完整 Unicode） |
+| `static is_xdigit(cp)` / `static is_cntrl(cp)` / `static is_printable(cp)` | 十六进制 / 控制字符 / 可打印 |
+| `static is_combining(cp)` / `static is_wide(cp)` / `static is_zero_width(cp)` / `static is_emoji(cp)` | 组合标记 / 宽字符 / 零宽 / Emoji |
+| `static cp_width(cp)` | 单码点显示宽度（0/1/2） |
+| `static to_lower_cp(cp)` / `static to_upper_cp(cp)` / `static to_title_cp(cp)` | 单码点大小写转换（完整 Unicode） |
+| `static script_of(cp)` | 单码点所属脚本（`utf8pp::script` 枚举：Latin/Han/Hiragana/Arabic/Emoji 等） |
+| `static is_script(cp, s)` | 单码点是否属于指定脚本 |
+| `static script_name(s)` | 脚本枚举 → 名称字符串 |
+| `is_all_alpha()` / `is_all_digit()` / `is_all_alnum()` | 整串是否全为字母/数字/字母数字 |
+| `is_all_space()` / `is_all_xdigit()` / `is_all_printable()` | 整串是否全为空白/十六进制/可打印 |
+| `script_of()` | 整串首字符所属脚本（空串返回 `script::unknown`） |
+| `is_all_script(s)` | 整串是否全属指定脚本（空串返回 false） |
+| `contains_script(s)` | 是否包含至少一个指定脚本的码点 |
+
+#### 数字转换
+
+| 接口 | 说明 |
+|------|------|
+| `to_int(pos*, base=10)` / `to_long(pos*, base=10)` / `to_ll(pos*, base=10)` | 字符串 → int/long/long long（失败返回 0） |
+| `to_ulong(pos*, base=10)` / `to_ull(pos*, base=10)` | 字符串 → unsigned long/unsigned long long |
+| `to_float(pos*)` / `to_double(pos*)` / `to_long_double(pos*)` | 字符串 → float/double/long double |
+| `stoi/stol/stoll/stoul/stoull/stof/stod/stold(...)` | std 风格别名（参数同上） |
+| `parse_int(out, base=10) noexcept` / `parse_long(out, base=10) noexcept` / `parse_ll(out, base=10) noexcept` | 严格解析为 int/long/long long（返回 bool，允许前导 +/- 与首尾空白） |
+| `parse_ulong(out, base=10) noexcept` / `parse_ull(out, base=10) noexcept` | 严格解析为 unsigned long/unsigned long long |
+| `parse_float(out) noexcept` / `parse_double(out) noexcept` / `parse_long_double(out) noexcept` | 严格解析为浮点（返回 bool） |
+| `is_integer(base=10) noexcept` / `is_float() noexcept` / `is_number() noexcept` | 内容判断：整数 / 浮点 / 数字 |
+| `is_hex() noexcept` / `is_binary() noexcept` / `is_octal() noexcept` | 进制判断便捷别名 |
+
+#### format / vformat
+
+| 接口 | 说明 |
+|------|------|
+| `static format(const char* fmt, ...)` | printf 风格格式化（返回 utf8pp，自动扩容） |
+| `static vformat(const char* fmt, std::va_list ap)` | va_list 版本 |
+
+#### 查找
+
+| 接口 | 说明 |
+|------|------|
+| `find(char32_t, pos=0)` / `find(const utf8pp&, pos=0)` | 正向查找码点/子串 |
+| `find(const char* s, pos=0)` / `find(std::string_view sv, pos=0)` | 正向查找 C 字符串/string_view |
+| `find(const char* s, pos, n)` | 正向查找 C 字符串前 n 字节（三参，与 `std::string` 对齐） |
+| `rfind(char32_t, pos=npos)` / `rfind(const utf8pp&, pos=npos)` | 逆向查找 |
+| `rfind(const char* s, pos=npos)` / `rfind(std::string_view sv, pos=npos)` | 逆向查找 C 字符串/string_view |
+| `rfind(const char* s, pos, n)` | 逆向查找 C 字符串前 n 字节（三参） |
+| `find_first_of(char32_t, pos=0)` / `find_first_of(const utf8pp&, pos=0)` | 首个匹配 |
+| `find_first_of(const char* s, pos=0)` / `find_first_of(std::string_view sv, pos=0)` | 首个匹配（C 字符串/string_view） |
+| `find_first_of(const char* s, pos, n)` | 首个匹配（三参） |
+| `find_last_of(char32_t, pos=npos)` / `find_last_of(const utf8pp&, pos=npos)` | 末个匹配 |
+| `find_last_of(const char* s, pos=npos)` / `find_last_of(std::string_view sv, pos=npos)` | 末个匹配（C 字符串/string_view） |
+| `find_last_of(const char* s, pos, n)` | 末个匹配（三参） |
+| `find_first_not_of(char32_t, pos=0)` / `find_first_not_of(const utf8pp&, pos=0)` | 首个不匹配 |
+| `find_first_not_of(const char* s, pos=0)` / `find_first_not_of(std::string_view sv, pos=0)` | 首个不匹配（C 字符串/string_view） |
+| `find_first_not_of(const char* s, pos, n)` | 首个不匹配（三参） |
+| `find_last_not_of(char32_t, pos=npos)` / `find_last_not_of(const utf8pp&, pos=npos)` | 末个不匹配 |
+| `find_last_not_of(const char* s, pos=npos)` / `find_last_not_of(std::string_view sv, pos=npos)` | 末个不匹配（C 字符串/string_view） |
+| `find_last_not_of(const char* s, pos, n)` | 末个不匹配（三参） |
+| `count(char32_t)` / `count(const utf8pp&)` / `count(const char*)` / `count(std::string_view)` | 统计出现次数 |
+| `contains(char32_t)` / `contains(const utf8pp&)` / `contains(const char*)` / `contains(std::string_view)` | 包含判断 |
+| `starts_with(char32_t)` / `starts_with(const utf8pp&)` / `starts_with(const char*)` / `starts_with(std::string_view)` | 前缀判断 |
+| `ends_with(char32_t)` / `ends_with(const utf8pp&)` / `ends_with(const char*)` / `ends_with(std::string_view)` | 后缀判断 |
+
+#### 比较与转换
+
+| 接口 | 说明 |
+|------|------|
+| `compare(const utf8pp&)` / `compare(const char*)` / `compare(std::string_view)` | 三态比较（字节序 = 码点序） |
+| `compare(const std::string&)` / `compare(const std::u8string&)` / `compare(const std::u32string&)` / `compare(char32_t cp)` | 与 std 字符串/单码点比较 |
+| `compare(pos, n, const utf8pp&)` / `compare(pos, n, const char*)` / `compare(pos, n, std::string_view)` | 子串比较（本串 [pos, pos+n)） |
+| `compare(pos1, n1, const utf8pp& s, pos2, n2)` / `compare(pos1, n1, const char* s, n2)` | 双区间比较 |
+| `operator==/!=/</>/<=/>=` | 与 `utf8pp` / `const char*` / `std::string_view` / `std::string` / `std::u8string` / `std::u32string` / `char32_t` 比较 |
+| `operator<=>(const utf8pp&)` / `operator<=>(const char*)` / `operator<=>(std::string_view)` | C++20 三路比较 |
+| `operator<=>(const std::string&)` / `operator<=>(const std::u8string&)` / `operator<=>(const std::u32string&)` / `operator<=>(char32_t)` | C++20 三路比较扩展 |
+| `to_std_string()` | 转 `std::string` |
+| `to_u32string()` | 转 `std::u32string` |
+| `to_u8string()` | 转 `std::u8string` |
+
+#### BOM / 校验
+
+| 接口 | 说明 |
+|------|------|
+| `has_bom()` | 是否以 UTF-8 BOM 开头 |
+| `strip_bom()` | 剥离 UTF-8 BOM |
+| `valid()` | 整串是否为合法 UTF-8 |
+| `validate()` | 返回首个非法码点索引（全部合法返回 `npos`） |
+
+#### split / join / split_view
+
+| 接口 | 说明 |
+|------|------|
+| `split(char32_t delim)` | 按单码点分割，返回 `dense<utf8pp>` |
+| `split(const utf8pp& delim)` / `split(const char*)` / `split(std::string_view)` | 按子串分割 |
+| `split_view(char32_t delim)` / `split_view(const utf8pp& delim)` | 零拷贝分割，返回 `dense<utf8_view>`（复用原字符串内存，原串生命周期需覆盖视图使用） |
+| `split_view(const char*)` / `split_view(std::string_view)` | 零拷贝分割（C 字符串/string_view） |
+| `split_to(char32_t, std::vector<utf8pp>&)` / `split_to(const utf8pp&, std::vector<utf8pp>&)` | 分割到 std 容器 |
+| `split_to(const char*, std::vector<utf8pp>&)` / `split_to(std::string_view, std::vector<utf8pp>&)` | 分割到 std 容器（C 字符串/string_view） |
+| `split_to(const utf8pp&, utf8pp* out, size_t cap)` / `split_to(const char*, utf8pp* out, size_t cap)` / `split_to(std::string_view, utf8pp* out, size_t cap)` | 分割到裸指针缓冲 |
+| `static join(const dense<utf8pp>&, const utf8pp&)` / `static join(..., char32_t)` | 拼接 |
+| `static join(const std::array<utf8pp, N>&, const utf8pp&)` / `static join(const std::vector<utf8pp>&, ...)` | 拼接 std 容器 |
+| `static join(const utf8pp* parts, size_t count, const utf8pp&)` | 拼接裸指针 |
+
+### 35.3 utf8pp 非成员接口
+
+| 接口 | 说明 |
+|------|------|
+| `operator+(const utf8pp&, const utf8pp&)` / `operator+(const utf8pp&, char32_t)` / `operator+(char32_t, const utf8pp&)` | 拼接 |
+| `operator+(const utf8pp&, const char*)` / `operator+(const char*, const utf8pp&)` | 与 C 字符串拼接 |
+| `operator+(const utf8pp&, std::string_view)` / `operator+(std::string_view, const utf8pp&)` | 与 string_view 拼接 |
+| `operator+(const utf8pp&, const char8_t*)` / `operator+(const char8_t*, const utf8pp&)` | 与 char8_t 字符串拼接 |
+| `operator+(const utf8pp&, const std::string&)` / `operator+(const std::string&, const utf8pp&)` | 与 std::string 拼接 |
+| `operator+(const utf8pp&, const std::u8string&)` / `operator+(const std::u8string&, const utf8pp&)` | 与 std::u8string 拼接 |
+| `operator+(const utf8pp&, const std::u32string&)` / `operator+(const std::u32string&, const utf8pp&)` | 与 std::u32string 拼接 |
+| `operator<<(std::ostream&, const utf8pp&)` | 流输出（写字节内容） |
+| `operator>>(std::istream&, utf8pp&)` | 流输入（追加读取） |
+| `getline(std::istream&, utf8pp&, char delim='\n')` | 按分隔符读取一行（自由函数） |
+| `swap(utf8pp&, utf8pp&) noexcept` | 非成员 swap |
+| `to_utf8pp(int/long/long long/unsigned/unsigned long/unsigned long long)` | 数字 → utf8pp（类似 `std::to_string`） |
+| `to_utf8pp(float/double/long double)` | 浮点 → utf8pp |
+| `utf8pp_format(const char* fmt, ...)` / `utf8pp_vformat(const char* fmt, std::va_list ap)` | 自由函数版格式化（与静态成员 `format`/`vformat` 并存） |
+| `"..."_u8` (const char*) / `"..."_u8` (const char8_t*) | 字面量运算符（返回 utf8pp，两个重载） |
+| `std::hash<utf8pp>` | hash 特化（**FNV-1a 字节哈希**，分布更均匀） |
+| `erase(utf8pp&, char32_t cp)` / `erase_if(utf8pp&, Pred pred)` | 全局删除所有匹配码点（C++20 风格，返回移除数量） |
+| `std::formatter<utf8pp>` | C++20 `std::format` 特化（受 `__cpp_lib_format >= 201907L` 保护，委托 `std::formatter<std::string_view>`） |
+
+### 使用
+
+```cpp
+#include "part/utf8pp.hpp"
+
+// === 底层编解码函数 ===
+char32_t ch = to_char(0x4E2D);       // '中'
+uint32_t cps[16];
+size_t n = utf8_to_codepoints("你好", 6, cps, 16);  // n = 2
+
+// === utf8pp 字符串类 ===
+utf8pp s("Hello你好");     // 从 UTF-8 C 字符串构造
+s.size();                  // 7 (码点数)
+s.byte_size();             // 11 (字节数: 5 + 6)
+s.at(0);                   // 'H' (O(1) via 偏移缓存)
+s.at(5);                   // '你' (U+4F60)
+
+// 码点级迭代
+for (char32_t cp : s) { /* 遍历每个码点 */ }
+
+// 反向迭代
+for (auto it = s.rbegin(); it != s.rend(); ++it) { /* 反向遍历 */ }
+
+// 追加/插入/删除
+s.push_back(char32_t(0x1F600));   // 追加 emoji
+s.insert(0, char32_t('X'));       // 在首位插入
+s.erase(0, 1);                    // 删除首位码点
+s.pop_back();                     // 删除末尾
+s.append_cp(3, U'-');             // 追加 3 个 '-'
+s.resize_cp(10, U'.');            // 调整到 10 码点，补 '.'
+
+// 子串/查找/比较
+utf8pp sub = s.substr(0, 3);      // 取前 3 个码点
+s.find(char32_t('H'));            // 码点级查找
+s.rfind(U'好');                   // 逆向查找
+s.contains("Hello");              // 包含判断
+s.starts_with(U'H');              // 前缀判断
+s.ends_with(U'好');               // 后缀判断
+s.count(U'l');                    // 统计出现次数
+s == utf8pp("Hello你好");
+
+// 查找系列
+s.find_first_of(utf8pp("aeiou"));
+s.find_last_not_of(U' ');
+
+// 字符串修改
+utf8pp t("  Hello  World  ");
+t.trim();                         // "Hello  World"
+t.to_lower();                     // "hello  world"  (完整 Unicode)
+t.to_title();                     // 首字母大写
+t.swapcase();                     // 大小写互换
+t.replace(0, 5, utf8pp("Hi"));    // "Hi   World"
+t.replace_all(U'l', U'L');        // 全局替换单码点
+t.reverse();                      // 码点级反转
+
+// trim 谓词版 / 字符集版
+utf8pp csv(",,abc,,");
+csv.trim(U',');                   // "abc"  (字符集版)
+csv.trim([](char32_t c){ return c == U',' || c == U' '; });  // 谓词版
+
+// 对齐填充
+utf8pp num("42");
+num.pad_left(6, U'0');            // "000042"
+utf8pp centered = utf8pp("Hi").centered(10, U'-');  // "----Hi----"
+
+// NFC / NFD / NFKC / NFKD 规范化
+utf8pp e_acute = utf8pp(U"\u00E9");           // é (预组合)
+e_acute.to_nfd();                  // → e + U+0301 (分解, size==2)
+utf8pp e_acute2("e");
+e_acute2.push_back(U'\u0301');
+e_acute2.to_nfc();                 // → é (组合, size==1)
+
+utf8pp hangul(U"\uAC00");          // 가 (Hangul 音节)
+hangul.to_nfd();                   // → ㄱ + ㅏ (Hangul 算法分解)
+
+utf8pp fullwidth(u8"\uFF21\uFF22\uFF23");  // ＡＢＣ
+fullwidth.to_nfkd();               // → ABC (兼容性分解: 全角→半角)
+
+utf8pp lig(u8"\uFB01");            // ﬁ (连字)
+lig.to_nfkd();                     // → fi (连字分解)
+
+// 字节级访问
+utf8pp cn(u8"Hi中");              // 5 字节: H i 中(3)
+cn.byte_at(0);                    // 'H'
+cn.byte_substr(2, 3);             // "中" (字节切片)
+cn.byte_to_cp_idx(2);             // 2 (字节索引→码点索引)
+cn.cp_to_byte_idx(2);             // 2 (码点索引→字节索引)
+
+// 字符分类
+utf8pp::is_alpha(U'A');           // true
+utf8pp::is_digit(U'5');           // true
+utf8pp("12345").is_all_digit();   // true
+utf8pp("Hello").is_all_alpha();   // true
+
+// 数字转换
+utf8pp num_str("3.14");
+num_str.to_double();              // 3.14
+num_str.parse_double(d);          // true, d=3.14 (严格解析)
+utf8pp("ff").to_int(nullptr, 16); // 255 (十六进制)
+utf8pp("42").is_integer();        // true
+
+// format 静态方法
+utf8pp fmt = utf8pp::format("x=%d, y=%.2f", 10, 3.14);
+
+// 直接内存修改（逃生舱）
+utf8pp mem("Hello");
+char* p = mem.data();
+p[0] = 'h';                       // 直接改字节
+mem.rebuild_cp_offsets();         // 重建码点偏移缓存（长度未变）
+// 若长度变化: mem.rebuild(new_byte_size);
+
+// split / join
+dense<utf8pp> parts = utf8pp("a,b,c,d").split(U',');
+utf8pp joined = utf8pp::join(parts, utf8pp("-"));  // "a-b-c-d"
+
+// split_view 零拷贝（视图复用原串内存，原串生命周期需覆盖视图使用）
+utf8pp src("a,b,c");
+dense<utf8_view> views = src.split_view(U',');  // 3 个 utf8_view
+
+// 兼容 std::vector / 裸指针输出
+std::vector<utf8pp> vparts;
+utf8pp("x/y/z").split_to(U'/', vparts);
+
+utf8pp arr[8];
+utf8pp("1 2 3").split_to(utf8pp(" "), arr, 8);
+
+// 拼接运算符
+utf8pp full = utf8pp("Hello") + U',' + utf8pp(" World");
+utf8pp cat = utf8pp("a") + std::string("b") + std::u8string(u8"c");
+
+// 字面量
+auto u = "Hello"_u8;              // 返回 utf8pp (const char* 重载)
+auto u2 = u8"你好"_u8;            // 返回 utf8pp (const char8_t* 重载)
+
+// 数字 → utf8pp
+utf8pp n1 = to_utf8pp(42);
+utf8pp n2 = to_utf8pp(3.14);
+
+// 全局 erase / erase_if
+utf8pp e("Hello");
+erase(e, U'l');                   // "Heo" (移除所有 'l')
+erase_if(e, [](char32_t c){ return c == U'H'; });  // "eo"
+
+// C++20 std::format
+std::string s = std::format("{}", utf8pp("测试"));
+
+// 空对象 c_str() 返回 ""（非 nullptr）
+utf8pp empty;
+empty.c_str();                    // ""
+empty.data();                     // ""
+empty.empty();                    // true
+empty.is_sso();                   // true (空串走 SSO)
+
+// BOM 处理
+utf8pp bom(u8"\uFEFFHello");
+bom.has_bom();                    // true
+bom.strip_bom();                  // 剥离后内容为 "Hello"
+
+// 校验
+utf8pp bad("abc\xff\xfe");
+bad.valid();                      // false
+bad.validate();                   // 返回首个非法码点索引
+
+// 流 I/O
+std::ostringstream os;
+os << utf8pp("测试");
+std::istringstream is("line1\nline2");
+utf8pp line;
+getline(is, line);                // 读取一行
+```
+
+### 注意事项
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 输入非 UTF-8 编码（如 GBK） | 解码出非法码点，被替换为 U+FFFD | 输入必须是合法 UTF-8 |
+| 假设 `size()` 等于 `byte_size()` | 多字节字符两者不等 | 用 `size()` 取码点数，`byte_size()` 取字节数 |
+| 越界访问 `at()` 不检查返回值 | 越界返回 U+FFFD，非崩溃 | 检查索引或用 `operator[]`（同样返回 U+FFFD） |
+| 越界访问 `at_byte()` | 越界 `std::abort`（与 `byte_at` 返回 `'\0'` 不同） | 用 `byte_at` 容错或确保索引合法 |
+| 频繁 `insert`/`erase` 中间位置 | 每次需移动后续字节和偏移数组 | 高频中间修改考虑用其他数据结构 |
+| 修改操作后偏移缓存失效 | `insert`/`erase` 已自动维护偏移 | 无需手动更新，但操作有 O(n) 代价 |
+| 直接 `data()` 写入后不重建偏移 | 码点偏移缓存与实际内容不一致，`at`/`size` 错乱 | 写入后调用 `rebuild_cp_offsets()` 或 `rebuild(new_size)` |
+| `byte_substr` 切断多字节字符 | 不校验 UTF-8 边界，可能产生非法序列 | 仅用于已知边界的场景，或用码点级 `substr` |
+| 对 `to_lower()` / `to_upper()` 期望 Unicode 大小写 | 已支持完整 Unicode | 覆盖 Latin/Greek/Cyrillic/Armenian/CJK 等主要脚本 |
+| 期望 emoji ZWJ 序列作为单字符 | 码点级 `reverse`/`split` 会拆散 | 用 `grapheme_begin`/`grapheme_end` 按字形簇迭代 |
+| 用 `capacity()` 判断码点容量 | `capacity()` 是字节容量，非码点容量 | 用 `cp_capacity()` 取码点容量，`reserve_cp()` 预留 |
+| `split_view` 返回的视图悬垂 | 视图复用原串内存，原串析构后视图失效 | 确保原 `utf8pp` 生命周期覆盖所有 `utf8_view` 使用 |
+| `to_int` 失败返回 0 无法区分 | 0 可能是合法值 | 严格场景用 `parse_int(out, base)` 返回 bool |
+| 误用 `to_nfc()` 处理兼容性字符 | NFC 不分解兼容性字符（如全角、连字） | 兼容性场景用 `to_nfkc()`/`to_nfkd()` |
+| 误用 `to_nfd()` 分解 Hangul 音节 | NFD 已支持 Hangul 算法分解（가→ㄱ+ㅏ） | Hangul 分解直接用 `to_nfd()`/`to_nfkd()` |
+| 期望 NFKC 保持 A+组合标记不组合 | NFKC 包含 NFC 全部组合规则，A+U+0301→Á | 仅需兼容性分解不需组合时用 `to_nfkd()` |
+| `script_of` 对组合标记返回 `inherited` | 组合标记继承前字符脚本 | 需上下文脚本时由调用者跟踪前一个 starter |
+
+---
+
+## 36. utf8_view — UTF-8 字符串视图
+
+`#include "part/utf8_view.hpp"`（自动包含 `utf8_codec.hpp`），全局命名空间。所有接口 `noexcept`。
+
+非拥有型轻量级 UTF-8 字符串视图，类似 `std::string_view`，但提供码点级接口。内部仅存储 `const char*` 与字节数两个字段（16 字节），不分配内存。
+
+**复杂度分层**：
+
+- 字节级操作 O(1)：`byte_size()` / `data()` / `substr_bytes()` / `find_byte()` / `remove_prefix()` / `remove_suffix()` / `copy()` 等。
+- 码点级操作 O(n)：`size()` / `at()` / `substr()` / `find()` / `find_first_of()` 等（无偏移缓存，需遍历）。
+- 与 `utf8pp` 互转：`utf8pp` 可经 `std::string_view` 中转构造自 `utf8_view`（`utf8_view` 隐式转 `std::string_view`，`utf8pp` 接收 `std::string_view`）；`utf8_view` 可由 `utf8pp` 的 `data()` + `byte_size()` 显式构造。
+
+### 36.1 构造与赋值
+
+| 接口 | 说明 |
+|------|------|
+| `utf8_view()` | 默认构造，空视图 |
+| `utf8_view(const char* s)` / `utf8_view(const char* s, size_t byte_len)` | 从 C 字符串构造 |
+| `utf8_view(const char8_t* s)` / `utf8_view(const char8_t* s, size_t byte_len)` | 从 `char8_t` 构造 |
+| `utf8_view(std::string_view sv)` | 从 `string_view` 构造 |
+| `utf8_view(std::u8string_view sv)` | 从 `u8string_view` 构造 |
+| `utf8_view(const std::string& s)` / `utf8_view(const std::u8string& s)` | 从 std 字符串构造 |
+| `operator=(const char*)` / `operator=(std::string_view)` | 赋值 |
+
+### 36.2 容量
+
+| 接口 | 说明 |
+|------|------|
+| `byte_size()` / `size_bytes()` / `length_bytes()` | 字节数（O(1)） |
+| `size()` / `length()` | 码点数（O(n)） |
+| `empty()` | 是否为空 |
+| `max_size()` | 理论最大值 |
+
+### 36.3 数据访问
+
+| 接口 | 说明 |
+|------|------|
+| `data()` / `c_str()` | 原始字节指针（`data()` 空视图返回 `nullptr`，`c_str()` 返回 `""`） |
+| `byte_view()` / `operator std::string_view()` | 转 `std::string_view`（隐式转换） |
+| `byte_at(i)` | 字节级访问（O(1)，越界返回 `'\0'`） |
+| `at(cp_idx)` / `operator[](cp_idx)` | 码点级访问（O(n)，越界返回 U+FFFD） |
+| `front()` / `back()` | 首/尾码点（空视图返回 U+FFFD） |
+
+### 36.4 迭代器
+
+| 接口 | 说明 |
+|------|------|
+| `begin()` / `end()` / `cbegin()` / `cend()` | 码点级前向迭代器（`forward_iterator_tag`，仅支持 `++`） |
+| `rbegin()` / `rend()` / `crbegin()` / `crend()` | 码点级反向迭代器（`bidirectional_iterator_tag`，支持 `++`/`--`） |
+| `iterator` / `reverse_iterator` | 类型别名（等价 `const_iterator` / `const_reverse_iterator`） |
+| `const_iterator::ptr()` | 暴露底层 `const char*`（用于与 C API 交互） |
+
+> 注：正向迭代器为 forward（不支持 `--`），反向迭代器为 bidirectional（支持 `--`）。两者解引用均按值返回 `char32_t`（无 `->` 运算符）。
+
+### 36.5 子串与修改
+
+| 接口 | 说明 |
+|------|------|
+| `substr_bytes(byte_pos, byte_len=npos)` | 字节级子串（O(1)） |
+| `substr(cp_pos, cp_count=npos)` | 码点级子串（O(n)） |
+| `remove_prefix(byte_n)` | 移除前缀（STL 语义，字节级） |
+| `remove_suffix(byte_n)` | 移除后缀（字节级） |
+| `copy(char* buf, size_t byte_n, byte_pos=0)` | 拷贝到外部缓冲区 |
+| `swap(utf8_view&)` / `swap(utf8_view&, utf8_view&)` | 交换 |
+
+### 36.6 查找
+
+| 接口 | 说明 |
+|------|------|
+| `find_byte(char c, byte_pos=0)` | 字节正向查找（memchr 优化） |
+| `rfind_byte(char c, byte_pos=npos)` | 字节逆向查找 |
+| `find_bytes(std::string_view str, byte_pos=0)` | 字节子串正向查找 |
+| `rfind_bytes(std::string_view str, byte_pos=npos)` | 字节子串逆向查找 |
+| `find(char32_t cp, cp_pos=0)` / `find(const utf8_view&, cp_pos=0)` | 码点级正向查找 |
+| `rfind(char32_t cp, cp_pos=npos)` / `rfind(const utf8_view&, cp_pos=npos)` | 码点级逆向查找 |
+| `find_first_of(char32_t, cp_pos=0)` / `find_first_of(const utf8_view&, cp_pos=0)` | 首个匹配 |
+| `find_last_of(char32_t, cp_pos=npos)` / `find_last_of(const utf8_view&, cp_pos=npos)` | 末个匹配 |
+| `find_first_not_of(char32_t, cp_pos=0)` / `find_first_not_of(const utf8_view&, cp_pos=0)` | 首个不匹配 |
+| `find_last_not_of(char32_t, cp_pos=npos)` / `find_last_not_of(const utf8_view&, cp_pos=npos)` | 末个不匹配 |
+| `contains(char32_t)` / `contains(const utf8_view&)` | 包含判断 |
+| `starts_with(char32_t)` | 码点级前缀判断（O(n)） |
+| `starts_with(const utf8_view&)` | 字节级前缀判断（O(1) memcmp） |
+| `ends_with(char32_t)` | 码点级后缀判断（O(n)） |
+| `ends_with(const utf8_view&)` | 字节级后缀判断（O(1) memcmp） |
+
+### 36.7 比较
+
+| 接口 | 说明 |
+|------|------|
+| `compare(const utf8_view&)` / `compare(std::string_view)` / `compare(const char*)` | 三态比较（memcmp） |
+| `operator==` / `!=` / `<` / `>` / `<=` / `>=` | 与 `utf8_view` / `std::string_view` / `const char*` 比较 |
+| `operator<=>(const utf8_view&)` / `operator<=>(std::string_view)` / `operator<=>(const char*)` | 三态比较运算符 |
+
+### 36.8 非成员接口
+
+| 接口 | 说明 |
+|------|------|
+| `operator<<(std::ostream&, const utf8_view&)` | 流输出 |
+| `std::hash<utf8_view>` | hash 特化（按字节 hash） |
+
+### 使用
+
+```cpp
+#include "part/utf8_view.hpp"
+
+// === 构造 ===
+utf8_view v1("Hello你好");          // C 字符串
+utf8_view v2("Hello你好", 11);      // 显式字节长度
+utf8_view v3(std::string_view("abc"));
+utf8_view v4(u8"中文");
+
+// === 容量 ===
+v1.byte_size();                  // 11 (O(1))
+v1.size();                       // 7   (O(n), 码点数)
+v1.empty();                      // false
+
+// === 访问 ===
+v1.byte_at(0);                   // 'H' (O(1))
+v1.at(0);                        // 'H' (O(n))
+v1.at(5);                        // '你' (U+4F60)
+v1.front();                      // 'H'
+v1.back();                       // '好'
+
+// === 迭代器 ===
+for (char32_t cp : v1) { /* 码点级遍历 */ }
+for (auto it = v1.rbegin(); it != v1.rend(); ++it) { /* 反向 */ }
+
+// === 子串 ===
+utf8_view b1 = v1.substr_bytes(0, 5);   // "Hello" (O(1))
+utf8_view b2 = v1.substr(0, 5);         // "Hello你" (O(n), 取 5 个码点)
+v1.remove_prefix(6);                    // 移除前 6 字节 → "你好"
+v1.remove_suffix(3);                    // 移除后 3 字节
+
+// === 查找 ===
+v1.find_byte('l');                      // 2 (O(1) memchr)
+v1.rfind_byte('l');                     // 3
+v1.find_bytes("ll");                    // 字节子串查找
+v1.find(U'好');                         // 码点级查找 (O(n))
+v1.rfind(U'好');
+v1.find_first_of(utf8_view("aeiou"));
+v1.find_last_not_of(U' ');
+v1.contains(U'好');
+v1.starts_with(U'H');
+v1.ends_with(U'好');
+
+// === 比较 ===
+v1 == utf8_view("Hello你好");
+v1 < utf8_view("World");
+auto cmp = v1 <=> utf8_view("Hello");
+
+// === 拷贝 ===
+char buf[32];
+size_t n = v1.copy(buf, sizeof(buf));
+
+// === 与 utf8pp 互转 ===
+utf8pp owned(v1.byte_view());          // 经 string_view 中转构造 utf8pp
+utf8_view from_owned = utf8_view(owned.data(), owned.byte_size());
+
+// === 流输出 ===
+std::cout << v1;
+
+// === 注意: 视图不持有内存, 源生命周期需保证 ===
+utf8_view dangling;
+{
+    std::string temp = "hello";
+    dangling = utf8_view(temp);    // temp 析构后 dangling 失效
+}
+// dangling.data() 已是悬垂指针
+```
+
+### 注意事项
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 视图持有内存的假设 | `utf8_view` 不拥有内存，源对象析构后视图悬垂 | 确保源对象生命周期覆盖视图使用范围 |
+| 用 `size()` 做字节操作 | `size()` 是码点数（O(n)），非字节数 | 用 `byte_size()` 取字节数 |
+| 高频调用 `size()` / `at()` | 每次 O(n) 遍历 | 高频场景转 `utf8pp` 用偏移缓存 |
+| `remove_prefix(n)` 传码点数 | `remove_prefix` 是字节级 | 码点级用 `substr(cp_pos, cp_count)` |
+| 对视图调用 `to_lower()` / `split()` | 视图只读，无修改方法 | 用 `utf8pp` 或自行转换 |
+| 字节级 `find_byte` 与码点级 `find` 混用 | 字节查找返回字节位置，码点查找返回码点索引 | 阅读接口前缀区分（`find_byte` vs `find`） |
+| `starts_with(char32_t)` 与 `starts_with(utf8_view)` 混用 | 前者 O(n) 码点级，后者 O(1) 字节级 memcmp | 按场景选择，注意参数类型 |
+| 正向迭代器 `--it` | 正向迭代器为 `forward_iterator_tag`，不支持 `--` | 用反向迭代器 `rbegin()`/`rend()` |
+| 越界 `at()` / `front()` / `back()` | 返回 U+FFFD，非崩溃 | 检查索引或用 `operator[]` |
+| 越界 `byte_at()` | 返回 `'\0'`，非崩溃 | 检查索引 |
+| `data()` 与 `c_str()` 空视图返回值不同 | `data()` 返回 `nullptr`，`c_str()` 返回 `""` | 需要 C 字符串语义时用 `c_str()` |
+| 期望 BOM / 校验接口 | `utf8_view` 不提供 BOM / 校验 | 用 `utf8pp::has_bom()` / `utf8pp::valid()` |
+| 期望 `operator>>` / 字面量 / `to_string` | `utf8_view` 不提供这些接口 | 用 `utf8pp` 或经 `std::string_view` 中转 |
+| 比较运算期望码点序 | 比较基于 `memcmp` 字节序（与 `std::string_view` 一致） | 字节序 = 码点序（UTF-8 特性），但需注意 |

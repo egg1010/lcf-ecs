@@ -785,3 +785,35 @@
 #define REFLECT_R1_254(M, data) REFLECT_R1_253(M, data) M(254, data)
 #define REFLECT_R1_255(M, data) REFLECT_R1_254(M, data) M(255, data)
 #define REFLECT_R1_256(M, data) REFLECT_R1_255(M, data) M(256, data)
+
+// === REFLECT_NARG: 可变参数计数 (1~20) ===
+#define REFLECT_NARG(...) \
+    REFLECT_NARG_(__VA_ARGS__, 20,19,18,17,16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1)
+#define REFLECT_NARG_(a1,a2,a3,a4,a5,a6,a7,a8,a9,a10,a11,a12,a13,a14,a15,a16,a17,a18,a19,a20,N,...) N
+
+// === REFLECT_FOR_EACH_DATA: 对每个可变参数 arg 调用 M(data, arg) ===
+// 用法: REFLECT_FOR_EACH_DATA(MACRO, data, a, b, c) → MACRO(data, a) MACRO(data, b) MACRO(data, c)
+// 支持 1~20 个参数
+#define REFLECT_FOR_EACH_DATA(M, data, ...) \
+    REFLECT_CAT(REFLECT_FED_, REFLECT_NARG(__VA_ARGS__))(M, data, __VA_ARGS__)
+
+#define REFLECT_FED_1(M, data, x1) M(data, x1)
+#define REFLECT_FED_2(M, data, x1, x2) M(data, x1) M(data, x2)
+#define REFLECT_FED_3(M, data, x1, x2, x3) M(data, x1) M(data, x2) M(data, x3)
+#define REFLECT_FED_4(M, data, x1, x2, x3, x4) M(data, x1) M(data, x2) M(data, x3) M(data, x4)
+#define REFLECT_FED_5(M, data, x1, x2, x3, x4, x5) M(data, x1) M(data, x2) M(data, x3) M(data, x4) M(data, x5)
+#define REFLECT_FED_6(M, data, x1, x2, x3, x4, x5, x6) M(data, x1) M(data, x2) M(data, x3) M(data, x4) M(data, x5) M(data, x6)
+#define REFLECT_FED_7(M, data, x1, x2, x3, x4, x5, x6, x7) M(data, x1) M(data, x2) M(data, x3) M(data, x4) M(data, x5) M(data, x6) M(data, x7)
+#define REFLECT_FED_8(M, data, x1, x2, x3, x4, x5, x6, x7, x8) M(data, x1) M(data, x2) M(data, x3) M(data, x4) M(data, x5) M(data, x6) M(data, x7) M(data, x8)
+#define REFLECT_FED_9(M, data, x1, x2, x3, x4, x5, x6, x7, x8, x9) M(data, x1) M(data, x2) M(data, x3) M(data, x4) M(data, x5) M(data, x6) M(data, x7) M(data, x8) M(data, x9)
+#define REFLECT_FED_10(M, data, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10) M(data, x1) M(data, x2) M(data, x3) M(data, x4) M(data, x5) M(data, x6) M(data, x7) M(data, x8) M(data, x9) M(data, x10)
+#define REFLECT_FED_11(M, data, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11) M(data, x1) M(data, x2) M(data, x3) M(data, x4) M(data, x5) M(data, x6) M(data, x7) M(data, x8) M(data, x9) M(data, x10) M(data, x11)
+#define REFLECT_FED_12(M, data, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12) M(data, x1) M(data, x2) M(data, x3) M(data, x4) M(data, x5) M(data, x6) M(data, x7) M(data, x8) M(data, x9) M(data, x10) M(data, x11) M(data, x12)
+#define REFLECT_FED_13(M, data, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13) M(data, x1) M(data, x2) M(data, x3) M(data, x4) M(data, x5) M(data, x6) M(data, x7) M(data, x8) M(data, x9) M(data, x10) M(data, x11) M(data, x12) M(data, x13)
+#define REFLECT_FED_14(M, data, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14) M(data, x1) M(data, x2) M(data, x3) M(data, x4) M(data, x5) M(data, x6) M(data, x7) M(data, x8) M(data, x9) M(data, x10) M(data, x11) M(data, x12) M(data, x13) M(data, x14)
+#define REFLECT_FED_15(M, data, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15) M(data, x1) M(data, x2) M(data, x3) M(data, x4) M(data, x5) M(data, x6) M(data, x7) M(data, x8) M(data, x9) M(data, x10) M(data, x11) M(data, x12) M(data, x13) M(data, x14) M(data, x15)
+#define REFLECT_FED_16(M, data, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15, x16) M(data, x1) M(data, x2) M(data, x3) M(data, x4) M(data, x5) M(data, x6) M(data, x7) M(data, x8) M(data, x9) M(data, x10) M(data, x11) M(data, x12) M(data, x13) M(data, x14) M(data, x15) M(data, x16)
+#define REFLECT_FED_17(M, data, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15, x16, x17) M(data, x1) M(data, x2) M(data, x3) M(data, x4) M(data, x5) M(data, x6) M(data, x7) M(data, x8) M(data, x9) M(data, x10) M(data, x11) M(data, x12) M(data, x13) M(data, x14) M(data, x15) M(data, x16) M(data, x17)
+#define REFLECT_FED_18(M, data, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15, x16, x17, x18) M(data, x1) M(data, x2) M(data, x3) M(data, x4) M(data, x5) M(data, x6) M(data, x7) M(data, x8) M(data, x9) M(data, x10) M(data, x11) M(data, x12) M(data, x13) M(data, x14) M(data, x15) M(data, x16) M(data, x17) M(data, x18)
+#define REFLECT_FED_19(M, data, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15, x16, x17, x18, x19) M(data, x1) M(data, x2) M(data, x3) M(data, x4) M(data, x5) M(data, x6) M(data, x7) M(data, x8) M(data, x9) M(data, x10) M(data, x11) M(data, x12) M(data, x13) M(data, x14) M(data, x15) M(data, x16) M(data, x17) M(data, x18) M(data, x19)
+#define REFLECT_FED_20(M, data, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15, x16, x17, x18, x19, x20) M(data, x1) M(data, x2) M(data, x3) M(data, x4) M(data, x5) M(data, x6) M(data, x7) M(data, x8) M(data, x9) M(data, x10) M(data, x11) M(data, x12) M(data, x13) M(data, x14) M(data, x15) M(data, x16) M(data, x17) M(data, x18) M(data, x19) M(data, x20)

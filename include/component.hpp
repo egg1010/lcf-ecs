@@ -676,6 +676,29 @@ public:
         entity_manager_.destroy_entity(entitys);
     }
 
+    // 清空所有组件数据 (用于 load_mode::replace)
+    // 注意: 不重置 entity_manager_ 的版本号, 旧 entity 句柄自动失效
+    void clear() noexcept
+    {
+        // 先销毁所有实体 (触发回调, 回收 id, 版本递增使旧句柄失效)
+        uint32_t max_idx = entity_manager_.entity_index_count();
+        for (uint32_t i = 0; i < max_idx; ++i)
+        {
+            entity e;
+            e.parts_.index_ = i;
+            e.parts_.version_ = entity_manager_.get_version_at(i);
+            if (e.is_valid() && entity_manager_.is_version_valid(e))
+            {
+                delete_entity(e);
+            }
+        }
+        // 兜底: 清空所有组件容器 (确保彻底)
+        for (size_t i = 0; i < components_c_.size(); ++i)
+        {
+            components_c_[i].clear();
+        }
+    }
+
     template <typename T, typename Compare>
     void sort_entities_by_component(Compare&& cmp) noexcept
     {

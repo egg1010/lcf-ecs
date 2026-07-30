@@ -15,11 +15,16 @@ namespace reflect {
 // 字段元数据
 struct field_meta
 {
-    const char* name;       // 字段名
-    uint32_t offset;        // 相对对象起始的偏移量
-    int type_id;            // 字段类型 id
-    bool is_const;          // 是否 const 成员
-    bool is_private;        // 是否私有成员
+    const char* name;           // 字段名
+    uint32_t offset;            // 相对对象起始的偏移量
+    int type_id;                // 字段类型 id (数组时为元素类型 id)
+    bool is_const;              // 是否 const 成员
+    bool is_private;            // 是否私有成员
+    uint8_t array_rank;         // 数组维度 (0=标量, 1~4=数组)
+    uint8_t reserved;           // 对齐填充
+    uint32_t total_elements;    // 数组总元素数 (0=非数组)
+    uint16_t extents[4];        // 每维元素数 (仅前 array_rank 个有效)
+    uint32_t element_stride;    // 元素步长 (字节)
 };
 
 // 方法元数据

@@ -139,14 +139,14 @@ static void test_memory_pool()
         print_ns("owns (miss)", OPS_Q, ns / static_cast<double>(OPS_Q));
     }
 
-    // 1.8 stats (遍历空闲链表)
+    // 1.8 stats (O(1) free_block_count + 增量维护)
     {
         memory_pool pool;
         for (size_t i = 0; i < 10000; ++i) { pool.allocate(32); }
         double ns = best_ns(REPEAT, [&]() {
             pool_stats s = pool.stats();
             compiler_barrier();
-            return s.total_allocated;
+            return s.free_block_count; // 读 free_block_count 防止编译器消除
         });
         print_ns("stats()", 1, ns);
     }

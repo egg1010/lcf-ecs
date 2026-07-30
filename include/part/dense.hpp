@@ -464,7 +464,9 @@ public:
 
 	void increase_capacity(size_t new_capacity) noexcept {
 		if (new_capacity > maximum_quantity_) [[unlikely]] {
-			grow_data(calculate_growth_for_reserve(new_capacity));
+			size_t new_cap = calculate_new_capacity(maximum_quantity_);
+			if (new_cap < new_capacity) { new_cap = new_capacity; }
+			grow_data(new_cap);
 		}
 	}
 
@@ -732,7 +734,9 @@ public:
 		if (count == 0) { return; }
 		size_t end = start + count;
 		if (end > maximum_quantity_) [[unlikely]] {
-			grow_data(calculate_growth_for_reserve(end));
+			size_t new_cap = calculate_new_capacity(maximum_quantity_);
+			if (new_cap < end) { new_cap = end; }
+			grow_data(new_cap);
 		}
 
 		const size_t old_index = index_;

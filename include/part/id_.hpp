@@ -1,13 +1,16 @@
 #pragma once
-#include <atomic>
 #include "dense.hpp"
 #include "force_inline.hpp"
 
+// 非原子 id 分配器: 单线程高性能
+// 反射模块通过 magic statics (static int id = ...) 保证 get_type_id<T>() 线程安全,
+// 每个 T 仅初始化一次, 无需原子操作.
+// 序列化模块实例非线程安全, 多线程使用同一实例需用户外部加锁.
 template <typename T = size_t>
 class id_allocation
 {
 private:
-    std::atomic<T> next_id_{0};
+    T next_id_{0};
     dense<T> recycled_ids_;
 public:
     id_allocation() noexcept
@@ -15,8 +18,12 @@ public:
         recycled_ids_.increase_capacity(256);
     }
 
-    // 新分配路径线程安全 (fetch_add), 回收路径非线程安全
-    // 语义等价于 ++next_id_ (返回自增后的新值, 从 1 开始, 0 保留给 "无效")
+    id_allocation(id_allocation&&) noexcept = default;
+    id_allocation& operator=(id_allocation&&) noexcept = default;
+
+    id_allocation(id_allocation const&) = delete;
+    id_allocation& operator=(id_allocation const&) = delete;
+
     [[nodiscard]] FORCE_INLINE
     T get_id() noexcept
     {
@@ -26,7 +33,7 @@ public:
             recycled_ids_.pop_back();
             return id;
         }
-        return next_id_.fetch_add(1, std::memory_order_relaxed) + T{1};
+        return next_id_++ + T{1};
     }
 
     FORCE_INLINE
@@ -44,6 +51,6 @@ public:
     [[nodiscard]] FORCE_INLINE
     T maximum_id() const noexcept
     {
-        return next_id_.load(std::memory_order_relaxed);
+        return next_id_;
     }
 };

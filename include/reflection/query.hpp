@@ -8,6 +8,7 @@
 #include <utility>
 #include <type_traits>
 #include <optional>
+#include <source_location>
 #include "../part/type_id.hpp"
 #include "storage.hpp"
 
@@ -118,13 +119,154 @@ public:
         return f ? static_cast<const char*>(obj) + f->offset : nullptr;
     }
 
+    // === 数组字段查询 ===
+    [[nodiscard]] bool is_array(size_t i) const noexcept
+    {
+        if (!meta_) { return false; }
+        return meta_->fields[i].array_rank > 0;
+    }
+
+    [[nodiscard]] bool is_array_by_name(const char* name) const noexcept
+    {
+        const field_meta* f = field_by_name(name);
+        return f ? f->array_rank > 0 : false;
+    }
+
+    [[nodiscard]] uint8_t array_rank(size_t i) const noexcept
+    {
+        return meta_ ? meta_->fields[i].array_rank : 0;
+    }
+
+    [[nodiscard]] uint32_t array_total_elements(size_t i) const noexcept
+    {
+        return meta_ ? meta_->fields[i].total_elements : 0;
+    }
+
+    [[nodiscard]] uint32_t array_element_stride(size_t i) const noexcept
+    {
+        return meta_ ? meta_->fields[i].element_stride : 0;
+    }
+
+    [[nodiscard]] uint16_t array_extent(size_t field_idx, uint8_t dim) const noexcept
+    {
+        if (!meta_ || dim >= 4) { return 0; }
+        return meta_->fields[field_idx].extents[dim];
+    }
+
+    // 取数组元素指针
+    [[nodiscard]] void* array_element_ptr(void* obj, size_t field_idx, uint32_t element_idx) const noexcept
+    {
+        if (!meta_) { return nullptr; }
+        const field_meta& fm = meta_->fields[field_idx];
+        if (element_idx >= fm.total_elements) { return nullptr; }
+        return static_cast<char*>(obj) + fm.offset + element_idx * fm.element_stride;
+    }
+
+    [[nodiscard]] const void* array_element_ptr(const void* obj, size_t field_idx, uint32_t element_idx) const noexcept
+    {
+        if (!meta_) { return nullptr; }
+        const field_meta& fm = meta_->fields[field_idx];
+        if (element_idx >= fm.total_elements) { return nullptr; }
+        return static_cast<const char*>(obj) + fm.offset + element_idx * fm.element_stride;
+    }
+
+    // 按名取数组元素指针
+    [[nodiscard]] void* array_element_ptr_by_name(void* obj, const char* name, uint32_t element_idx) const noexcept
+    {
+        const field_meta* f = field_by_name(name);
+        if (!f || element_idx >= f->total_elements) { return nullptr; }
+        return static_cast<char*>(obj) + f->offset + element_idx * f->element_stride;
+    }
+
+    // === 数组便捷接口 ===
+
+    // 聚合查询
+    [[nodiscard]] const field_meta* array_info(size_t i) const noexcept
+    {
+        if (!meta_) { return nullptr; }
+        if (i >= field_count()) { return nullptr; }
+        const field_meta& fm = meta_->fields[i];
+        return fm.array_rank > 0 ? &fm : nullptr;
+    }
+
+    // 聚合查询 (按名)
+    [[nodiscard]] const field_meta* array_info_by_name(const char* name) const noexcept
+    {
+        const field_meta* f = field_by_name(name);
+        if (!f || f->array_rank == 0) { return nullptr; }
+        return f;
+    }
+
+    // 类型安全访问
+    template<typename T>
+    [[nodiscard]] T& array_get(void* obj, size_t field_idx, uint32_t element_idx) const noexcept
+    {
+        return *static_cast<T*>(array_element_ptr(obj, field_idx, element_idx));
+    }
+
+    template<typename T>
+    [[nodiscard]] const T& array_get(const void* obj, size_t field_idx, uint32_t element_idx) const noexcept
+    {
+        return *static_cast<const T*>(array_element_ptr(obj, field_idx, element_idx));
+    }
+
+    // 类型安全访问 (按名)
+    template<typename T>
+    [[nodiscard]] T& array_get_by_name(void* obj, const char* name, uint32_t element_idx) const noexcept
+    {
+        return *static_cast<T*>(array_element_ptr_by_name(obj, name, element_idx));
+    }
+
+    // 类型安全写入
+    template<typename T>
+    void array_set(void* obj, size_t field_idx, uint32_t element_idx, const T& value) const noexcept
+    {
+        T* p = static_cast<T*>(array_element_ptr(obj, field_idx, element_idx));
+        if (p) { *p = value; }
+    }
+
+    // 类型安全写入 (按名)
+    template<typename T>
+    void array_set_by_name(void* obj, const char* name, uint32_t element_idx, const T& value) const noexcept
+    {
+        void* p = array_element_ptr_by_name(obj, name, element_idx);
+        if (p) { *static_cast<T*>(p) = value; }
+    }
+
+    // 遍历数组元素
+    template<typename F>
+    void for_each_array_element(void* obj, size_t field_idx, F&& f) const noexcept
+    {
+        if (!meta_) { return; }
+        const field_meta& fm = meta_->fields[field_idx];
+        if (fm.array_rank == 0) { return; }
+        char* base = static_cast<char*>(obj) + fm.offset;
+        for (uint32_t i = 0; i < fm.total_elements; ++i)
+        {
+            f(base + i * fm.element_stride, i, fm.type_id);
+        }
+    }
+
+    template<typename F>
+    void for_each_array_element(const void* obj, size_t field_idx, F&& f) const noexcept
+    {
+        if (!meta_) { return; }
+        const field_meta& fm = meta_->fields[field_idx];
+        if (fm.array_rank == 0) { return; }
+        const char* base = static_cast<const char*>(obj) + fm.offset;
+        for (uint32_t i = 0; i < fm.total_elements; ++i)
+        {
+            f(base + i * fm.element_stride, i, fm.type_id);
+        }
+    }
+
     // 方法调用 (失败 abort)
     template<typename R = void, typename... Args>
     R invoke(void* obj, const char* name, Args&&... args) const noexcept
     {
         const method_meta* m = method_by_name(name);
-        if (m == nullptr) { std::abort(); }
-        if (m->arg_count != sizeof...(Args)) { std::abort(); }
+        if (m == nullptr) { detail::abort_with_location("invoke: method not found"); }
+        if (m->arg_count != sizeof...(Args)) { detail::abort_with_location("invoke: arg count mismatch"); }
 
         const void* arg_ptrs[] = { static_cast<const void*>(&args)... };
 

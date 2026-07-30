@@ -46,7 +46,7 @@ int main()
         print_item("Pod8 字段数 == 8", aggregate_field_count_v<Pod8> == 8);
         print_item("Pod16 字段数 == 16", aggregate_field_count_v<Pod16> == 16);
         print_item("Nested 字段数 == 2", aggregate_field_count_v<Nested> == 2);
-        // WithArray { int arr[4]; float f; } 数组成员会被识别为多字段聚合
+        // C 数组字段会被 aggregate_reflect 展开为多个元素字段 (arr[4] 展开 4 个 + f)
         print_item("WithArray 字段数 > 0", aggregate_field_count_v<WithArray> > 0);
     }
 

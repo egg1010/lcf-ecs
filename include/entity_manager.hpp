@@ -155,6 +155,13 @@ public:
         return entitys.parts_.index_ < version_v_.size() && entitys.parts_.version_ == version_v_[entitys.parts_.index_];
     }
 
+    [[nodiscard]] size_t maximum_entity_index() const noexcept { return version_v_.size(); }
+
+    [[nodiscard]] uint32_t get_version(uint32_t idx) const noexcept
+    {
+        return idx < version_v_.size() ? version_v_[idx] : 0;
+    }
+
     void destroy_entity(entity &entitys) noexcept
     {
         if(!is_version_valid(entitys)) [[unlikely]] return;
@@ -197,6 +204,18 @@ public:
     [[nodiscard]] uint32_t num_mask_blocks() const noexcept
     {
         return masks_.num_blocks();
+    }
+
+    // 已分配的实体索引上限 (用于遍历)
+    [[nodiscard]] uint32_t entity_index_count() const noexcept
+    {
+        return static_cast<uint32_t>(version_v_.size());
+    }
+
+    // 取指定索引的当前版本号
+    [[nodiscard]] uint32_t get_version_at(uint32_t idx) const noexcept
+    {
+        return idx < version_v_.size() ? version_v_[idx] : 0;
     }
 
     // 遍历实体所有置位 bit — O(实体实际组件数) 而非 O(类型总数)

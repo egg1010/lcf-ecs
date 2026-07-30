@@ -108,6 +108,40 @@ FORCE_INLINE int return_type_id() noexcept {
     else { return type_id::get_type_id<std::decay_t<R>>(); }
 }
 
+// 参数类型 id 列表生成器
+template<typename MFnType>
+struct arg_ids_maker;
+
+template<typename C, typename R, typename... Args>
+struct arg_ids_maker<R(C::*)(Args...)> {
+    static dense<int> make() noexcept {
+        dense<int> ids;
+        ids.reserve_exact(sizeof...(Args));
+        (ids.push_back(type_id::get_type_id<Args>()), ...);
+        return ids;
+    }
+};
+
+template<typename C, typename R, typename... Args>
+struct arg_ids_maker<R(C::*)(Args...) const> {
+    static dense<int> make() noexcept {
+        dense<int> ids;
+        ids.reserve_exact(sizeof...(Args));
+        (ids.push_back(type_id::get_type_id<Args>()), ...);
+        return ids;
+    }
+};
+
+template<typename R, typename... Args>
+struct arg_ids_maker<R(*)(Args...)> {
+    static dense<int> make() noexcept {
+        dense<int> ids;
+        ids.reserve_exact(sizeof...(Args));
+        (ids.push_back(type_id::get_type_id<Args>()), ...);
+        return ids;
+    }
+};
+
 } // namespace detail_type_erasure
 
 // === 对外导出 (全局命名空间) ===
@@ -115,6 +149,7 @@ using detail_type_erasure::mfn_traits;
 using detail_type_erasure::mfn_invoker_t;
 using detail_type_erasure::sfn_invoker_t;
 using detail_type_erasure::return_type_id;
+using detail_type_erasure::arg_ids_maker;
 
 // invoker 函数指针类型 (统一签名)
 using invoker_func = void(*)(void* obj, const void* const* args, void* result);
