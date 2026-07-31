@@ -54,14 +54,13 @@
 
         [[nodiscard]] bool contains(entity e) const noexcept
         {
-            // sparse 直接路径: 1 次 sparse_entry load (dense+version 合并存储)
-            //   比 hot_set 路径更快: hot_set 需 4 字段比较, 此处仅 dense+version 比较
-            //   且 sparse_entry 8B 比 hot_entry 24B 更 cache-friendly
+            // 合并 dense+version 查找: 单次 sparse_entry 加载,
+            //   替代原 sparse_dense_at_public + sparse_version_at_public 两次独立查找
             if (!set_ || !e.is_valid()) [[unlikely]] return false;
-            if (e.parts_.index_ >= set_->get_sparse_size()) [[unlikely]] return false;
-            uint32_t dense = set_->sparse_dense_at_public(e.parts_.index_);
+            uint32_t ver = 0;
+            uint32_t dense = set_->sparse_dense_version_public(e.parts_.index_, ver);
             if (dense == single_class_set::dense_invalid) [[unlikely]] return false;
-            return set_->sparse_version_at_public(e.parts_.index_) == e.parts_.version_;
+            return ver == e.parts_.version_;
         }
 
         [[nodiscard]] T* get_component_for_entity(entity e) noexcept
@@ -94,8 +93,9 @@
         [[nodiscard]] T* get_component_at_index(size_t index) noexcept
         {
             if (!set_ || index >= set_->size()) [[unlikely]] return nullptr;
-            auto* pool = set_->template get_typed_pool_ptr<T>();
-            return pool ? &(*pool)[index] : nullptr;
+            // 用缓存的 typed_pool_data_ 直接寻址, 跳过 dense<T>::data() 间接读
+            T* data = set_->template get_typed_pool_data_ptr<T>();
+            return data ? data + index : nullptr;
         }
 
         template <typename Func>
@@ -295,15 +295,31 @@
                 }
 
                 auto& indices = base_.set_->get_entity_indices();
+                auto& versions = base_.set_->get_entity_versions();
                 sorted_pool_copy_.increase_capacity(n);
                 sorted_entities_.increase_capacity(n);
-                for (size_t i = 0; i < n; ++i)
+                // versions_ 已同步时走顺序读快速路径, 避免 sparse_entry 随机访问
+                if (versions.size() >= n) [[likely]]
                 {
-                    size_t idx = sorted_indices_[i];
-                    sorted_pool_copy_.push_back(pool_data[idx]);
-                    uint32_t eid = indices[idx];
-                    uint32_t ver = base_.set_->sparse_version_at_public(eid);
-                    sorted_entities_.push_back(entity(eid, ver));
+                    const uint32_t* idx_data = indices.data();
+                    const uint32_t* ver_data = versions.data();
+                    for (size_t i = 0; i < n; ++i)
+                    {
+                        size_t idx = sorted_indices_[i];
+                        sorted_pool_copy_.push_back(pool_data[idx]);
+                        sorted_entities_.push_back(entity(idx_data[idx], ver_data[idx]));
+                    }
+                }
+                else
+                {
+                    for (size_t i = 0; i < n; ++i)
+                    {
+                        size_t idx = sorted_indices_[i];
+                        sorted_pool_copy_.push_back(pool_data[idx]);
+                        uint32_t eid = indices[idx];
+                        uint32_t ver = base_.set_->sparse_version_at_public(eid);
+                        sorted_entities_.push_back(entity(eid, ver));
+                    }
                 }
 
                 last_version_ = base_.set_->get_pool_version();
@@ -455,33 +471,51 @@
                 ensure_fresh();
                 if (sorted_indices_.empty()) return;
 
-                auto* pool = base_.set_->template get_typed_pool_ptr<T>();
-                if (!pool) [[unlikely]] return;
+                T* data = base_.set_->template get_typed_pool_data_ptr<T>();
+                if (!data) [[unlikely]] return;
                 auto& indices = base_.set_->get_entity_indices();
+                auto& versions = base_.set_->get_entity_versions();
+                const size_t n = sorted_indices_.size();
 
                 if constexpr (std::is_invocable_v<Func, entity, T&>)
                 {
-                    for (size_t i = 0; i < sorted_indices_.size(); ++i)
+                    // versions_ 已同步时走顺序读, 避免 sparse_entry 随机访问
+                    if (versions.size() >= indices.size()) [[likely]]
                     {
-                        if (i + 32 < sorted_indices_.size()) [[likely]]
+                        const uint32_t* idx_data = indices.data();
+                        const uint32_t* ver_data = versions.data();
+                        const size_t* sorted = sorted_indices_.data();
+                        for (size_t i = 0; i < n; ++i)
                         {
-                            size_t next_idx = sorted_indices_[i + 32];
-                            PREFETCH_R(&(*pool)[next_idx]);
+                            if (i + 32 < n) [[likely]]
+                                PREFETCH_R(&data[sorted[i + 32]]);
+                            size_t idx = sorted[i];
+                            entity e(idx_data[idx], ver_data[idx]);
+                            func(e, data[idx]);
                         }
-                        size_t idx = sorted_indices_[i];
-                        uint32_t eid = indices[idx];
-                        uint32_t ver = base_.set_->sparse_version_at_public(eid);
-                        entity e(eid, ver);
-                        func(e, (*pool)[idx]);
+                    }
+                    else
+                    {
+                        for (size_t i = 0; i < n; ++i)
+                        {
+                            if (i + 32 < n) [[likely]]
+                                PREFETCH_R(&data[sorted_indices_[i + 32]]);
+                            size_t idx = sorted_indices_[i];
+                            uint32_t eid = indices[idx];
+                            uint32_t ver = base_.set_->sparse_version_at_public(eid);
+                            entity e(eid, ver);
+                            func(e, data[idx]);
+                        }
                     }
                 }
                 else
                 {
-                    for (size_t i = 0; i < sorted_indices_.size(); ++i)
+                    const size_t* sorted = sorted_indices_.data();
+                    for (size_t i = 0; i < n; ++i)
                     {
-                        if (i + 32 < sorted_indices_.size()) [[likely]]
-                            PREFETCH_R(&(*pool)[sorted_indices_[i + 32]]);
-                        func((*pool)[sorted_indices_[i]]);
+                        if (i + 32 < n) [[likely]]
+                            PREFETCH_R(&data[sorted[i + 32]]);
+                        func(data[sorted[i]]);
                     }
                 }
             }
@@ -539,6 +573,7 @@
                 auto* pool = base_.set_->template get_typed_pool_ptr<T>();
                 if (!pool) [[unlikely]] return;
                 const size_t n = pool->size();
+                changed_indices_.reserve_exact(n);
                 for (size_t i = 0; i < n; ++i)
                 {
                     changed_indices_.push_back(i);
@@ -576,26 +611,45 @@
                 needs_rebuild_ = true;
                 if (changed_indices_.empty()) return;
 
-                auto* pool = base_.set_->template get_typed_pool_ptr<T>();
-                if (!pool) [[unlikely]] return;
+                T* data = base_.set_->template get_typed_pool_data_ptr<T>();
+                if (!data) [[unlikely]] return;
                 auto& indices = base_.set_->get_entity_indices();
+                auto& versions = base_.set_->get_entity_versions();
+                const size_t n = changed_indices_.size();
 
                 if constexpr (std::is_invocable_v<Func, entity, T&>)
                 {
-                    for (size_t i = 0; i < changed_indices_.size(); ++i)
+                    // versions_ 已同步时走顺序读, 避免 sparse_entry 随机访问
+                    if (versions.size() >= indices.size()) [[likely]]
                     {
-                        size_t idx = changed_indices_[i];
-                        uint32_t eid = indices[idx];
-                        uint32_t ver = base_.set_->sparse_version_at_public(eid);
-                        entity e(eid, ver);
-                        func(e, (*pool)[idx]);
+                        const uint32_t* idx_data = indices.data();
+                        const uint32_t* ver_data = versions.data();
+                        const size_t* changed = changed_indices_.data();
+                        for (size_t i = 0; i < n; ++i)
+                        {
+                            size_t idx = changed[i];
+                            entity e(idx_data[idx], ver_data[idx]);
+                            func(e, data[idx]);
+                        }
+                    }
+                    else
+                    {
+                        for (size_t i = 0; i < n; ++i)
+                        {
+                            size_t idx = changed_indices_[i];
+                            uint32_t eid = indices[idx];
+                            uint32_t ver = base_.set_->sparse_version_at_public(eid);
+                            entity e(eid, ver);
+                            func(e, data[idx]);
+                        }
                     }
                 }
                 else
                 {
-                    for (size_t i = 0; i < changed_indices_.size(); ++i)
+                    const size_t* changed = changed_indices_.data();
+                    for (size_t i = 0; i < n; ++i)
                     {
-                        func((*pool)[changed_indices_[i]]);
+                        func(data[changed[i]]);
                     }
                 }
             }
@@ -625,6 +679,15 @@
                 if (!pool) [[unlikely]] { needs_rebuild_ = false; return; }
 
                 const size_t n = pool->size();
+                // 快速路径: pool_version 未变 + 已追踪所有实体 → 无变化
+                //   避免每次 for_each 都 O(n) 扫描 entity_change_tracking_
+                if (base_.set_->get_pool_version() == last_pool_version_
+                    && last_observed_versions_.size() >= n) [[likely]]
+                {
+                    needs_rebuild_ = false;
+                    return;
+                }
+
                 // 仅扩展，不覆盖已追踪的版本号
                 while (last_observed_versions_.size() < n)
                     last_observed_versions_.push_back(0);
@@ -632,12 +695,9 @@
                 for (size_t i = 0; i < n; ++i)
                 {
                     uint64_t cur = base_.set_->get_entity_change_version(i);
-                    if (i >= last_observed_versions_.size() || cur != last_observed_versions_[i])
+                    if (cur != last_observed_versions_[i])
                     {
-                        if (i < last_observed_versions_.size())
-                            last_observed_versions_[i] = cur;
-                        else
-                            last_observed_versions_[i] = cur;
+                        last_observed_versions_[i] = cur;
                         changed_indices_.push_back(i);
                     }
                 }
@@ -668,26 +728,45 @@
                 needs_rebuild_ = true;
                 if (changed_indices_.empty()) return;
 
-                auto* pool = base_.set_->template get_typed_pool_ptr<T>();
-                if (!pool) [[unlikely]] return;
+                T* data = base_.set_->template get_typed_pool_data_ptr<T>();
+                if (!data) [[unlikely]] return;
                 auto& indices = base_.set_->get_entity_indices();
+                auto& versions = base_.set_->get_entity_versions();
+                const size_t n = changed_indices_.size();
 
                 if constexpr (std::is_invocable_v<Func, entity, T&>)
                 {
-                    for (size_t i = 0; i < changed_indices_.size(); ++i)
+                    // versions_ 已同步时走顺序读, 避免 sparse_entry 随机访问
+                    if (versions.size() >= indices.size()) [[likely]]
                     {
-                        size_t idx = changed_indices_[i];
-                        uint32_t eid = indices[idx];
-                        uint32_t ver = base_.set_->sparse_version_at_public(eid);
-                        entity e(eid, ver);
-                        func(e, (*pool)[idx]);
+                        const uint32_t* idx_data = indices.data();
+                        const uint32_t* ver_data = versions.data();
+                        const size_t* changed = changed_indices_.data();
+                        for (size_t i = 0; i < n; ++i)
+                        {
+                            size_t idx = changed[i];
+                            entity e(idx_data[idx], ver_data[idx]);
+                            func(e, data[idx]);
+                        }
+                    }
+                    else
+                    {
+                        for (size_t i = 0; i < n; ++i)
+                        {
+                            size_t idx = changed_indices_[i];
+                            uint32_t eid = indices[idx];
+                            uint32_t ver = base_.set_->sparse_version_at_public(eid);
+                            entity e(eid, ver);
+                            func(e, data[idx]);
+                        }
                     }
                 }
                 else
                 {
-                    for (size_t i = 0; i < changed_indices_.size(); ++i)
+                    const size_t* changed = changed_indices_.data();
+                    for (size_t i = 0; i < n; ++i)
                     {
-                        func((*pool)[changed_indices_[i]]);
+                        func(data[changed[i]]);
                     }
                 }
             }
@@ -718,18 +797,23 @@
                 if (!pool) [[unlikely]] { needs_rebuild_ = false; return; }
 
                 const size_t n = pool->size();
+                // 快速路径: pool_version 未变 + 已追踪所有实体 → 无新增
+                if (base_.set_->get_pool_version() == last_pool_version_
+                    && last_observed_added_.size() >= n) [[likely]]
+                {
+                    needs_rebuild_ = false;
+                    return;
+                }
+
                 while (last_observed_added_.size() < n)
                     last_observed_added_.push_back(0);
 
                 for (size_t i = 0; i < n; ++i)
                 {
                     uint64_t cur = base_.set_->get_entity_added_version(i);
-                    if (cur > baseline_added_counter_ && (i >= last_observed_added_.size() || cur != last_observed_added_[i]))
+                    if (cur > baseline_added_counter_ && cur != last_observed_added_[i])
                     {
-                        if (i < last_observed_added_.size())
-                            last_observed_added_[i] = cur;
-                        else
-                            last_observed_added_[i] = cur;
+                        last_observed_added_[i] = cur;
                         added_indices_.push_back(i);
                     }
                 }
@@ -767,26 +851,44 @@
                 needs_rebuild_ = true;
                 if (added_indices_.empty()) return;
 
-                auto* pool = base_.set_->template get_typed_pool_ptr<T>();
-                if (!pool) [[unlikely]] return;
+                T* data = base_.set_->template get_typed_pool_data_ptr<T>();
+                if (!data) [[unlikely]] return;
                 auto& indices = base_.set_->get_entity_indices();
+                auto& versions = base_.set_->get_entity_versions();
+                const size_t n = added_indices_.size();
 
                 if constexpr (std::is_invocable_v<Func, entity, T&>)
                 {
-                    for (size_t i = 0; i < added_indices_.size(); ++i)
+                    if (versions.size() >= indices.size()) [[likely]]
                     {
-                        size_t idx = added_indices_[i];
-                        uint32_t eid = indices[idx];
-                        uint32_t ver = base_.set_->sparse_version_at_public(eid);
-                        entity e(eid, ver);
-                        func(e, (*pool)[idx]);
+                        const uint32_t* idx_data = indices.data();
+                        const uint32_t* ver_data = versions.data();
+                        const size_t* added = added_indices_.data();
+                        for (size_t i = 0; i < n; ++i)
+                        {
+                            size_t idx = added[i];
+                            entity e(idx_data[idx], ver_data[idx]);
+                            func(e, data[idx]);
+                        }
+                    }
+                    else
+                    {
+                        for (size_t i = 0; i < n; ++i)
+                        {
+                            size_t idx = added_indices_[i];
+                            uint32_t eid = indices[idx];
+                            uint32_t ver = base_.set_->sparse_version_at_public(eid);
+                            entity e(eid, ver);
+                            func(e, data[idx]);
+                        }
                     }
                 }
                 else
                 {
-                    for (size_t i = 0; i < added_indices_.size(); ++i)
+                    const size_t* added = added_indices_.data();
+                    for (size_t i = 0; i < n; ++i)
                     {
-                        func((*pool)[added_indices_[i]]);
+                        func(data[added[i]]);
                     }
                 }
             }

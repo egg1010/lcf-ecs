@@ -1208,6 +1208,22 @@ public:
         return static_cast<const dense<T>*>(typed_pool_);
     }
 
+    // 直接返回 typed_pool_data_ (缓存指针), 跳过 dense<T>::data() 间接寻址
+    //   用于按 dense 索引顺序访问的热路径 (如 get_component_at_index)
+    template <typename T>
+    [[nodiscard]] T* get_typed_pool_data_ptr() noexcept
+    {
+        if (type_id_ != type_id::get_type_id<T>()) [[unlikely]] return nullptr;
+        return static_cast<T*>(typed_pool_data_);
+    }
+
+    template <typename T>
+    [[nodiscard]] const T* get_typed_pool_data_ptr() const noexcept
+    {
+        if (type_id_ != type_id::get_type_id<T>()) [[unlikely]] return nullptr;
+        return static_cast<const T*>(typed_pool_data_);
+    }
+
     single_class_set(single_class_set&& other) noexcept
     : sparse_table_(std::move(other.sparse_table_))
     , sparse_size_(other.sparse_size_)
@@ -1462,6 +1478,25 @@ public:
     [[nodiscard]] uint32_t sparse_version_at_public(uint32_t idx) const noexcept
     {
         return sparse_version_at(idx);
+    }
+
+    // 合并 dense+version 查找: 单次 sparse_entry 加载, 替代两次独立调用
+    //   返回 dense_index; 若未构造或越界返回 dense_invalid, version 通过 out 参数输出
+    [[nodiscard]] uint32_t sparse_dense_version_public(uint32_t idx, uint32_t& out_version) const noexcept
+    {
+        if (idx >= sparse_size_) [[unlikely]]
+        {
+            out_version = 0;
+            return dense_invalid;
+        }
+        if (!sparse_table_.is_constructed_at(idx)) [[unlikely]]
+        {
+            out_version = 0;
+            return dense_invalid;
+        }
+        const auto& entry = sparse_table_[idx];
+        out_version = entry.version;
+        return entry.dense;
     }
 
     void prefetch_sparse_entry(uint32_t idx) const noexcept

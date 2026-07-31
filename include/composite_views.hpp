@@ -11,7 +11,8 @@
         uint32_t max_block_{0};
         bool use_mask_path_{false};
 
-        [[nodiscard]] bool is_excluded(uint32_t idx) const noexcept
+
+        [[nodiscard]] NOINLINE bool is_excluded(uint32_t idx) const noexcept
         {
             if (use_mask_path_) [[likely]]
             {
@@ -196,13 +197,12 @@
                 }
                 else
                 {
-                    auto get_ptrs = std::make_tuple(mgr_->template get_ptr_fast<GetTypes>(e)...);
-                    std::apply([&](auto*... pts) {
-                        if constexpr (std::is_invocable_v<Func, entity, T&, GetTypes*...>)
-                            func(e, comp, pts...);
-                        else
-                            func(comp, pts...);
-                    }, get_ptrs);
+                    // 直接传递指针到寄存器参数, 避免 std::make_tuple+std::apply 逐实体构造元组
+                    // (LTO 全内联后栈读写膨胀 i-cache, 复合视图遍历退化)
+                    if constexpr (std::is_invocable_v<Func, entity, T&, GetTypes*...>)
+                        func(e, comp, mgr_->template get_ptr_fast<GetTypes>(e)...);
+                    else
+                        func(comp, mgr_->template get_ptr_fast<GetTypes>(e)...);
                 }
             }
         }
@@ -379,19 +379,21 @@
 
                     entity e(idx, set->get_version_unchecked(idx));
 
-                    auto comp_ptrs = std::make_tuple(
-                        [&]() -> type_at<Is>* {
+                    // 直接传递指针到寄存器参数, 避免 std::make_tuple+std::apply 逐实体构造元组
+                    if constexpr (std::is_invocable_v<decltype(func), entity, type_at<Is>*...>)
+                    {
+                        func(e, [&]() -> type_at<Is>* {
                             if (Is == set_idx) return nullptr;
                             return sets_[Is] ? sets_[Is]->template get_ptr_fast<type_at<Is>>(e) : nullptr;
-                        }()...
-                    );
-
-                    std::apply([&](auto*... ptrs) {
-                        if constexpr (std::is_invocable_v<decltype(func), entity, type_at<Is>*...>)
-                            func(e, ptrs...);
-                        else
-                            func(ptrs...);
-                    }, comp_ptrs);
+                        }()...);
+                    }
+                    else
+                    {
+                        func([&]() -> type_at<Is>* {
+                            if (Is == set_idx) return nullptr;
+                            return sets_[Is] ? sets_[Is]->template get_ptr_fast<type_at<Is>>(e) : nullptr;
+                        }()...);
+                    }
                 }
             }
         }

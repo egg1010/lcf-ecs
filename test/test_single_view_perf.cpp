@@ -18,6 +18,9 @@ struct Name { char buf[32]; };
 template <typename T>
 static void build_manager(manager& mgr, size_t n, mt19937& rng)
 {
+    // 预分配实体, 确保 entity_manager 的 masks_ 有足够容量
+    for (size_t i = 0; i < n; ++i) mgr.create_entity();
+
     if constexpr (is_same_v<T, Pos>)
     {
         uniform_real_distribution<float> d(-1000, 1000);
@@ -277,7 +280,8 @@ static void test_nested_views(size_t n)
 
     {
         manager mgr2;
-        mgr2.add(T{}, entity(0, 1));
+        auto e2 = mgr2.create_entity();
+        mgr2.add(T{}, e2);
         auto sv2 = mgr2.view<T>();
         double ns = best_ns(REPEAT, [&]() {
             volatile const T& r = sv2.exactly_one();

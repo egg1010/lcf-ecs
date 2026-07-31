@@ -20,14 +20,27 @@ inline T* get_component_ptr_from_set(single_class_set* set,
                                      uint32_t idx, uint32_t ver) noexcept
 {
     if (!set) return nullptr;
-    if (idx >= set->get_sparse_size()) return nullptr;
-    const uint32_t dense = set->sparse_dense_at_public(idx);
+    // 合并 dense+version 查找: 单次 sparse_entry 加载,
+    //   替代原 sparse_dense_at_public + sparse_version_at_public 两次独立查找
+    uint32_t entry_ver = 0;
+    const uint32_t dense = set->sparse_dense_version_public(idx, entry_ver);
     if (dense == single_class_set::dense_invalid) return nullptr;
-    const uint32_t v = set->sparse_version_at_public(idx);
-    if (v != ver) return nullptr;
+    if (entry_ver != ver) return nullptr;
     auto* pool = set->template get_typed_pool_ptr<T>();
     if (!pool || dense >= pool->size()) return nullptr;
     return &(*pool)[dense];
+}
+
+// 使用缓存的 dense 索引直接访问组件, 跳过稀疏表查找
+// 调用方保证 dense_idx 来自 build_cached_hits 时缓存的 primary_dense
+template <typename T>
+inline T* get_component_ptr_cached(single_class_set* set,
+                                    uint32_t dense_idx) noexcept
+{
+    if (!set) return nullptr;
+    auto* pool = set->template get_typed_pool_ptr<T>();
+    if (!pool || dense_idx >= pool->size()) return nullptr;
+    return &(*pool)[dense_idx];
 }
 } // namespace detail
 
@@ -289,7 +302,8 @@ inline void runtime_view::build_cached_hits() noexcept
             if (query_.check_blocks(idx, mgr_))
             {
                 uint32_t ver = primary->sparse_version_at_public(idx);
-                cached_hits_.emplace_back(idx, ver);
+                // i 是 primary set 的 dense 索引 (indices 是 primary 的 dense_ 数组)
+                cached_hits_.emplace_back(entity{idx, ver}, static_cast<uint32_t>(i));
             }
         }
     }
@@ -301,7 +315,7 @@ inline void runtime_view::build_cached_hits() noexcept
             uint32_t ver = primary->get_version_unchecked(idx);
             if (is_entity_hit(idx, ver))
             {
-                cached_hits_.emplace_back(idx, ver);
+                cached_hits_.emplace_back(entity{idx, ver}, static_cast<uint32_t>(i));
             }
         }
     }
@@ -385,10 +399,18 @@ inline void runtime_view::for_each_hit_impl(Func&& func) noexcept
         // 4x 循环展开, 最大化 ILP
         // check_blocks 是纯位运算, 4 次独立调用可并行发射
         // sparse_version_at_public 是随机访问, 4 次并行发射隐藏 load latency
+        // 软件预取: 提前加载下一批 sparse_entry, 隐藏 sparse_table 随机访问延迟
         const size_t n4 = n & ~size_t{3};
         size_t i = 0;
         for (; i < n4; i += 4)
         {
+            if (i + 16 < n) [[likely]]
+            {
+                primary->prefetch_sparse_entry(indices[i + 16]);
+                primary->prefetch_sparse_entry(indices[i + 17]);
+                primary->prefetch_sparse_entry(indices[i + 18]);
+                primary->prefetch_sparse_entry(indices[i + 19]);
+            }
             uint32_t idx0 = indices[i];
             uint32_t idx1 = indices[i + 1];
             uint32_t idx2 = indices[i + 2];
@@ -501,69 +523,47 @@ inline void runtime_view::for_each_typed(Func&& func) noexcept
 template <typename... Ts, typename Func, size_t... Is>
 inline void runtime_view::for_each_typed_impl(Func&& func, std::index_sequence<Is...>) noexcept
 {
-    auto sets_tuple = std::make_tuple(mgr_->get_single_class_set<Ts>()...);
+    static_assert(sizeof...(Ts) > 0, "for_each_typed requires at least one type");
+    // C 数组替代 std::make_tuple, 避免 tuple 开销
+    single_class_set* sets_arr[] = { mgr_->get_single_class_set<Ts>()... };
+    single_class_set* primary = query_.primary_set_;
 
     // 用 cached_hits_ 遍历命中实体, 避免重复 check_blocks/is_entity_hit
     const size_t n = cached_hits_.size();
     auto* hits = cached_hits_.data();
 
+    // primary 组件用缓存的 dense 索引直接访问 (跳过稀疏表查找)
+    // 非 primary 组件走稀疏表查找 (已优化为单次 sparse_entry 加载)
+    auto call_one = [&](entity e, uint32_t primary_dense) {
+        void* ptrs[sizeof...(Ts)] = {
+            ((sets_arr[Is] == primary)
+                ? static_cast<void*>(detail::get_component_ptr_cached<Ts>(
+                    sets_arr[Is], primary_dense))
+                : static_cast<void*>(detail::get_component_ptr_from_set<Ts>(
+                    sets_arr[Is], e.parts_.index_, e.parts_.version_))
+            )...
+        };
+        // 折叠表达式替代运行时循环, 编译期展开 null 检查
+        bool ok = (... && (ptrs[Is] != nullptr));
+        if (!ok) return;
+        if constexpr (std::is_invocable_v<Func, entity, Ts&...>)
+            func(e, *static_cast<Ts*>(ptrs[Is])...);
+        else
+            func(*static_cast<Ts*>(ptrs[Is])...);
+    };
+
+    // 4x 循环展开, 最大化 ILP
     const size_t n4 = n & ~size_t{3};
     size_t i = 0;
     for (; i < n4; i += 4)
     {
-        entity e0 = hits[i];
-        entity e1 = hits[i + 1];
-        entity e2 = hits[i + 2];
-        entity e3 = hits[i + 3];
-
-        auto get_ptrs = [&](entity e) {
-            return std::make_tuple(
-                detail::get_component_ptr_from_set<Ts>(
-                    std::get<Is>(sets_tuple),
-                    e.parts_.index_, e.parts_.version_)...
-            );
-        };
-        auto ptrs0 = get_ptrs(e0);
-        auto ptrs1 = get_ptrs(e1);
-        auto ptrs2 = get_ptrs(e2);
-        auto ptrs3 = get_ptrs(e3);
-
-        auto call_one = [&](entity e, auto& ptrs) {
-            bool all_present = (std::get<Is>(ptrs) && ...);
-            if (!all_present) return;
-            if constexpr (std::is_invocable_v<Func, entity, Ts&...>)
-            {
-                func(e, *std::get<Is>(ptrs)...);
-            }
-            else
-            {
-                func(*std::get<Is>(ptrs)...);
-            }
-        };
-        call_one(e0, ptrs0);
-        call_one(e1, ptrs1);
-        call_one(e2, ptrs2);
-        call_one(e3, ptrs3);
+        call_one(hits[i].e, hits[i].primary_dense);
+        call_one(hits[i + 1].e, hits[i + 1].primary_dense);
+        call_one(hits[i + 2].e, hits[i + 2].primary_dense);
+        call_one(hits[i + 3].e, hits[i + 3].primary_dense);
     }
     for (; i < n; ++i)
-    {
-        entity e = hits[i];
-        auto ptrs = std::make_tuple(
-            detail::get_component_ptr_from_set<Ts>(
-                std::get<Is>(sets_tuple),
-                e.parts_.index_, e.parts_.version_)...
-        );
-        bool all_present = (std::get<Is>(ptrs) && ...);
-        if (!all_present) continue;
-        if constexpr (std::is_invocable_v<Func, entity, Ts&...>)
-        {
-            func(e, *std::get<Is>(ptrs)...);
-        }
-        else
-        {
-            func(*std::get<Is>(ptrs)...);
-        }
-    }
+        call_one(hits[i].e, hits[i].primary_dense);
 }
 
 template <typename Func>
@@ -658,7 +658,7 @@ inline void runtime_view::for_each_changed(Func&& func) noexcept
 template <typename T, typename Compare>
 inline void runtime_view::sort_by_component(Compare&& cmp) noexcept
 {
-    ensure_fresh();
+    ensure_hits_fresh();
     sorted_entities_.clear();
     sorted_valid_ = false;
 
@@ -667,20 +667,39 @@ inline void runtime_view::sort_by_component(Compare&& cmp) noexcept
     auto* sort_set = mgr_->get_single_class_set<T>();
     if (!sort_set) return;
 
-    const size_t sort_sparse_sz = sort_set->get_sparse_size();
     auto* sort_pool = sort_set->template get_typed_pool_ptr<T>();
 
     dense<T> components;
-    for_each_hit_impl([&](entity e, size_t) {
-        uint32_t idx = e.parts_.index_;
-        if (idx >= sort_sparse_sz) return;
-        uint32_t dense = sort_set->sparse_dense_at_public(idx);
-        uint32_t ver = sort_set->sparse_version_at_public(idx);
-        if (dense == 0xFFFFFFFFu || ver != e.parts_.version_) return;
-        if (!sort_pool || dense >= sort_pool->size()) return;
-        sorted_entities_.push_back(e);
-        components.push_back((*sort_pool)[dense]);
-    });
+
+    // 快速路径: sort_set == primary_set 时, 用 cached_hits_ 的 primary_dense
+    //   跳过 sparse_dense_at + sparse_version_at 两次稀疏表查找
+    if (sort_set == query_.primary_set_ && sort_pool) [[likely]]
+    {
+        const size_t n = cached_hits_.size();
+        components.increase_capacity(n);
+        sorted_entities_.increase_capacity(n);
+        const cached_hit* hits = cached_hits_.data();
+        for (size_t i = 0; i < n; ++i)
+        {
+            sorted_entities_.push_back(hits[i].e);
+            components.push_back((*sort_pool)[hits[i].primary_dense]);
+        }
+    }
+    else
+    {
+        // 回退: sort_set != primary, 走稀疏表查找
+        const size_t sort_sparse_sz = sort_set->get_sparse_size();
+        for_each_hit_impl([&](entity e, size_t) {
+            uint32_t idx = e.parts_.index_;
+            if (idx >= sort_sparse_sz) return;
+            uint32_t dense = sort_set->sparse_dense_at_public(idx);
+            uint32_t ver = sort_set->sparse_version_at_public(idx);
+            if (dense == 0xFFFFFFFFu || ver != e.parts_.version_) return;
+            if (!sort_pool || dense >= sort_pool->size()) return;
+            sorted_entities_.push_back(e);
+            components.push_back((*sort_pool)[dense]);
+        });
+    }
 
     const size_t n = sorted_entities_.size();
     if (n <= 1)
@@ -720,6 +739,19 @@ inline size_t runtime_view::count() noexcept
 
 inline void runtime_view::iterator::advance_to_valid() noexcept
 {
+    // cached_hits_ 快速路径: 已预过滤, 直接索引 O(1)
+    //   跳过 check_blocks + sparse_version_at_public 的逐实体计算
+    if (hits_) [[likely]]
+    {
+        if (index_ < hits_size_) [[likely]]
+        {
+            current_ = hits_[index_].e;
+            return;
+        }
+        current_ = entity{};
+        return;
+    }
+
     if (!mgr_ || !query_) return;
 
     auto* primary = query_->primary_set_;
@@ -728,6 +760,28 @@ inline void runtime_view::iterator::advance_to_valid() noexcept
     auto& indices = primary->get_entity_indices();
     const size_t n = indices.size();
 
+    // mask_path 快速路径: 纯位运算 check_blocks + sparse_entry 预取
+    if (query_->use_mask_path_ && !query_->has_or_) [[likely]]
+    {
+        while (index_ < n)
+        {
+            // 预取后续实体的 sparse_entry, 隐藏 sparse_table_ 随机访问延迟
+            if (index_ + 8 < n) [[likely]]
+                primary->prefetch_sparse_entry(indices[index_ + 8]);
+            uint32_t idx = indices[index_];
+            if (query_->check_blocks(idx, mgr_))
+            {
+                uint32_t ver = primary->sparse_version_at_public(idx);
+                current_ = entity(idx, ver);
+                return;
+            }
+            ++index_;
+        }
+        current_ = entity{};
+        return;
+    }
+
+    // 回退路径: OR/OPTIONAL term 查询走 sparse_contains_version
     while (index_ < n)
     {
         uint32_t idx = indices[index_];
@@ -777,15 +831,25 @@ inline void runtime_view::iterator::advance_to_valid() noexcept
 
 inline runtime_view::iterator runtime_view::begin() noexcept
 {
-    ensure_fresh();
+    // 优先用 cached_hits_ 快速路径 (O(1) per entity)
+    //   仅当未构建缓存或缓存为空时回退到 advance_to_valid 路径
+    ensure_hits_fresh();
+    if (!cached_hits_.empty()) [[likely]]
+    {
+        return iterator(cached_hits_, 0);
+    }
     return iterator(query_, mgr_, 0);
 }
 
 inline runtime_view::iterator runtime_view::end() noexcept
 {
-    ensure_fresh();
+    ensure_hits_fresh();
+    if (!cached_hits_.empty()) [[likely]]
+    {
+        return iterator(cached_hits_, cached_hits_.size());
+    }
     size_t n = query_.primary_set_ ? query_.primary_set_->get_entity_indices().size() : 0;
-    // end 迭代器: query_ 为 nullptr, advance_to_valid 直接返回
+    // end 迭代器: mgr_ 为 nullptr, advance_to_valid 直接返回
     return iterator(query_, nullptr, n);
 }
 

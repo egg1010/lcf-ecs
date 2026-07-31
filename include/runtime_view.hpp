@@ -25,6 +25,14 @@ struct runtime_term
     access_mode access{access_mode::read_write};
 };
 
+// 命中实体缓存条目: entity + primary set 的 dense 索引
+//   primary_dense 在 build_cached_hits 时确定, 用于 for_each_typed 跳过 primary 组件的稀疏查找
+struct cached_hit
+{
+    entity e;
+    uint32_t primary_dense;
+};
+
 class runtime_query
 {
 public:
@@ -72,7 +80,7 @@ private:
 
     // 命中实体缓存 (rebuild 时构建, for_each/count 复用)
     //   避免每次 for_each 都全量遍历 primary 的 indices
-    dense<entity> cached_hits_;
+    dense<cached_hit> cached_hits_;
     bool cached_hits_valid_{false};
 
     [[nodiscard]] bool all_sets_valid() const noexcept;
@@ -155,12 +163,23 @@ private:
     manager* mgr_{nullptr};
     size_t index_{0};
     entity current_{};
+    // cached_hits_ 快速路径: 已预过滤的命中实体数组
+    //   非空时 advance_to_valid 直接索引, 跳过 check_blocks + sparse_entry 查找
+    const cached_hit* hits_{nullptr};
+    size_t hits_size_{0};
     void advance_to_valid() noexcept;
 
 public:
     iterator() noexcept = default;
     iterator(const runtime_query& query, manager* mgr, size_t idx) noexcept
         : query_(&query), mgr_(mgr), index_(idx)
+    {
+        advance_to_valid();
+    }
+
+    // cached_hits 快速路径构造: 直接遍历预过滤的命中实体
+    iterator(const dense<cached_hit>& hits, size_t idx) noexcept
+        : index_(idx), hits_(hits.data()), hits_size_(hits.size())
     {
         advance_to_valid();
     }
