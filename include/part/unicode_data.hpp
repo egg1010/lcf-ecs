@@ -709,13 +709,13 @@ bool is_zero_width(uint32_t cp) noexcept
     if (cp >= 0x0951 && cp <= 0x0957) return true;
     if (cp >= 0x0962 && cp <= 0x0963) return true;
     if (cp >= 0x0981 && cp <= 0x0983) return true;
-    if (cp >= 0x09BC) return false;  // 简化: 后续组合标记省略, 实际完整表需 UCD
     // ZWJ / ZWNJ / BOM
     if (cp == 0x200B || cp == 0x200C || cp == 0x200D) return true;  // Zero Width Space/J/Joiner
     if (cp == 0xFEFF) return true;  // BOM
     // Variation Selectors
     if (cp >= 0xFE00 && cp <= 0xFE0F) return true;
     if (cp >= 0xE0100 && cp <= 0xE01EF) return true;
+    // 简化: 0x09BC 以上的其他组合标记 (Mn/Me) 范围省略, 实际完整表需 UCD
     return false;
 }
 
@@ -755,12 +755,12 @@ bool is_combining_mark(uint32_t cp) noexcept
     if (cp >= 0x09BE && cp <= 0x09C4) return true;
     if (cp >= 0x09C7 && cp <= 0x09C8) return true;
     if (cp >= 0x09CB && cp <= 0x09CD) return true;
-    if (cp >= 0x09D7) return false;  // 简化后续
     if (cp >= 0x20D0 && cp <= 0x20FF) return true;  // Combining Diacritical Marks for Symbols
     if (cp >= 0xFE20 && cp <= 0xFE2F) return true;  // Combining Half Marks
     // Variation Selectors
     if (cp >= 0xFE00 && cp <= 0xFE0F) return true;
     if (cp >= 0xE0100 && cp <= 0xE01EF) return true;
+    // 简化: 其他高位组合标记 (Mn/Me) 范围省略, 实际完整表需 UCD
     return false;
 }
 
@@ -785,30 +785,48 @@ bool is_extended_pictographic(uint32_t cp) noexcept
 [[nodiscard]] FORCE_INLINE
 bool is_alpha_cp(uint32_t cp) noexcept
 {
+    // ASCII 快速路径
+    if (cp < 0x80) [[likely]]
+    {
+        return (cp >= 0x41 && cp <= 0x5A) || (cp >= 0x61 && cp <= 0x7A);
+    }
     return range_lookup(k_alpha_ranges, k_alpha_range_count, cp);
 }
 
 [[nodiscard]] FORCE_INLINE
 bool is_digit_cp(uint32_t cp) noexcept
 {
+    // ASCII 快速路径
+    if (cp < 0x80) [[likely]] return cp >= 0x30 && cp <= 0x39;
     return range_lookup(k_digit_ranges, k_digit_range_count, cp);
 }
 
 [[nodiscard]] FORCE_INLINE
 bool is_lower_cp(uint32_t cp) noexcept
 {
+    // ASCII 快速路径
+    if (cp < 0x80) [[likely]] return cp >= 0x61 && cp <= 0x7A;
     return range_lookup(k_lower_ranges, k_lower_range_count, cp);
 }
 
 [[nodiscard]] FORCE_INLINE
 bool is_upper_cp(uint32_t cp) noexcept
 {
+    // ASCII 快速路径
+    if (cp < 0x80) [[likely]] return cp >= 0x41 && cp <= 0x5A;
     return range_lookup(k_upper_ranges, k_upper_range_count, cp);
 }
 
 [[nodiscard]] FORCE_INLINE
 bool is_alnum_cp(uint32_t cp) noexcept
 {
+    // ASCII 快速路径
+    if (cp < 0x80) [[likely]]
+    {
+        return (cp >= 0x30 && cp <= 0x39) ||
+               (cp >= 0x41 && cp <= 0x5A) ||
+               (cp >= 0x61 && cp <= 0x7A);
+    }
     return is_alpha_cp(cp) || is_digit_cp(cp);
 }
 
@@ -818,6 +836,12 @@ bool is_alnum_cp(uint32_t cp) noexcept
 [[nodiscard]] FORCE_INLINE
 uint32_t to_lower_cp(uint32_t cp) noexcept
 {
+    // ASCII 快速路径: A-Z → a-z
+    if (cp < 0x80) [[likely]]
+    {
+        if (cp >= 0x41 && cp <= 0x5A) return cp + 32;
+        return cp;
+    }
     // 1. 查不规则映射表
     if (const auto* e = case_map_lookup(k_case_special, k_case_special_count, cp))
         return e->lower;
@@ -838,6 +862,12 @@ uint32_t to_lower_cp(uint32_t cp) noexcept
 [[nodiscard]] FORCE_INLINE
 uint32_t to_upper_cp(uint32_t cp) noexcept
 {
+    // ASCII 快速路径: a-z → A-Z
+    if (cp < 0x80) [[likely]]
+    {
+        if (cp >= 0x61 && cp <= 0x7A) return cp - 32;
+        return cp;
+    }
     if (const auto* e = case_map_lookup(k_case_special, k_case_special_count, cp))
         return e->upper;
     if (const auto* r = case_range_lookup(k_case_range_maps, k_case_range_map_count, cp))
@@ -989,30 +1019,46 @@ inline constexpr nfc_compose_entry k_nfc_compose[] = {
 constexpr size_t k_nfc_compose_count = sizeof(k_nfc_compose) / sizeof(nfc_compose_entry);
 
 // 查询: 给定 base 和 combining, 返回预组合码点 (不存在返回 0)
+// 表已按 base 升序 (同 base 内 combining 升序), 两次二分: 先定位 base 区间, 再在区间内查 combining
 [[nodiscard]] FORCE_INLINE
 uint32_t nfc_compose_lookup(uint32_t base, uint32_t combining) noexcept
 {
-    // 顺序查找 (表项较少, ~170 项; 后续可改为按 base 排序后二分)
-    for (size_t i = 0; i < k_nfc_compose_count; ++i)
+    // 二分查找 base 的下界 (首个 >= base 的项)
+    size_t lo = 0, hi = k_nfc_compose_count;
+    while (lo < hi)
     {
-        if (k_nfc_compose[i].base == base && k_nfc_compose[i].combining == combining)
-            return k_nfc_compose[i].composed;
+        size_t mid = lo + (hi - lo) / 2;
+        if (k_nfc_compose[mid].base < base) lo = mid + 1;
+        else hi = mid;
+    }
+    // 在 base 区间内顺序查 combining (同 base 项很少, 通常 1-3 项)
+    while (lo < k_nfc_compose_count && k_nfc_compose[lo].base == base)
+    {
+        if (k_nfc_compose[lo].combining == combining)
+            return k_nfc_compose[lo].composed;
+        ++lo;
     }
     return 0;
 }
 
 // 查询: 给定预组合码点, 返回其 (base, combining) 分解 (不存在返回 false)
+// 表已按 composed 升序, 直接二分
 [[nodiscard]] FORCE_INLINE
 bool nfc_decompose_lookup(uint32_t composed, uint32_t& base, uint32_t& combining) noexcept
 {
-    for (size_t i = 0; i < k_nfc_compose_count; ++i)
+    size_t lo = 0, hi = k_nfc_compose_count;
+    while (lo < hi)
     {
-        if (k_nfc_compose[i].composed == composed)
+        size_t mid = lo + (hi - lo) / 2;
+        uint32_t c = k_nfc_compose[mid].composed;
+        if (c == composed)
         {
-            base = k_nfc_compose[i].base;
-            combining = k_nfc_compose[i].combining;
+            base = k_nfc_compose[mid].base;
+            combining = k_nfc_compose[mid].combining;
             return true;
         }
+        if (c < composed) lo = mid + 1;
+        else hi = mid;
     }
     return false;
 }
@@ -1372,12 +1418,19 @@ constexpr size_t k_script_range_count = sizeof(k_script_ranges) / sizeof(script_
 
 // 查询: 给定码点, 返回其 Script (未匹配返回 common, 因多数未列出码点为 common/符号)
 // 注意: 表项可能重叠 (inherited/common 与具体脚本范围), 故按"先具体后通用"顺序遍历匹配
-// 实现采用线性查找优先级 (表较小, ~120 项); 若需更快可改为按 start 排序+二分并去重
+// 表已按"具体脚本在前, common/inherited 在后"排列, 故线性返回首个命中即可
+// 优化: ASCII fast-path (覆盖最常见的 Latin/数字/标点), 非 ASCII 才查表
 [[nodiscard]] FORCE_INLINE
 script script_of(uint32_t cp) noexcept
 {
+    // ASCII fast-path: A-Z/a-z → latin, 数字/标点 → common, 控制字符 → unknown
+    if (cp < 0x80) [[likely]]
+    {
+        if ((cp >= 0x41 && cp <= 0x5A) || (cp >= 0x61 && cp <= 0x7A)) return script::latin;
+        if (cp >= 0x20) return script::common;
+        return script::unknown;
+    }
     // 优先匹配具体脚本 (跳过 common/inherited); 再回退 common/inherited
-    // 表已按"具体脚本在前, common/inherited 在后"排列, 故线性返回首个命中即可
     for (size_t i = 0; i < k_script_range_count; ++i)
     {
         if (cp >= k_script_ranges[i].start && cp <= k_script_ranges[i].end)

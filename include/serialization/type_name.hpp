@@ -39,8 +39,10 @@ template<typename T>
 void register_type_name(const char* stable_name) noexcept {
     int tid = type_id::get_type_id<T>();
     auto& reg = detail::type_name_registry();
-    for (size_t i = 0; i < reg.size(); ++i) {
-        if (reg[i].type_id == tid) {
+    for (size_t i = 0; i < reg.size(); ++i)
+    {
+        if (reg[i].type_id == tid)
+        {
             reg[i].name = stable_name;
             return;
         }
@@ -50,16 +52,24 @@ void register_type_name(const char* stable_name) noexcept {
 
 [[nodiscard]] inline const char* lookup_type_name(int tid) noexcept {
     auto& reg = detail::type_name_registry();
-    for (size_t i = 0; i < reg.size(); ++i) {
-        if (reg[i].type_id == tid) return reg[i].name;
+    for (size_t i = 0; i < reg.size(); ++i)
+    {
+        if (reg[i].type_id == tid)
+        {
+            return reg[i].name;
+        }
     }
     return nullptr;
 }
 
 [[nodiscard]] inline int lookup_type_id(const char* name) noexcept {
     auto& reg = detail::type_name_registry();
-    for (size_t i = 0; i < reg.size(); ++i) {
-        if (std::strcmp(reg[i].name, name) == 0) return reg[i].type_id;
+    for (size_t i = 0; i < reg.size(); ++i)
+    {
+        if (std::strcmp(reg[i].name, name) == 0)
+        {
+            return reg[i].type_id;
+        }
     }
     return -1;
 }
@@ -72,8 +82,10 @@ void register_enum() noexcept {
     using underlying = std::underlying_type_t<T>;
     int utid = type_id::get_type_id<underlying>();
     auto& reg = detail::enum_registry();
-    for (size_t i = 0; i < reg.size(); ++i) {
-        if (reg[i].type_id == tid) {
+    for (size_t i = 0; i < reg.size(); ++i)
+    {
+        if (reg[i].type_id == tid)
+        {
             reg[i].underlying_type_id = utid;
             return;
         }
@@ -83,8 +95,12 @@ void register_enum() noexcept {
 
 [[nodiscard]] inline int lookup_enum_underlying(int tid) noexcept {
     auto& reg = detail::enum_registry();
-    for (size_t i = 0; i < reg.size(); ++i) {
-        if (reg[i].type_id == tid) return reg[i].underlying_type_id;
+    for (size_t i = 0; i < reg.size(); ++i)
+    {
+        if (reg[i].type_id == tid)
+        {
+            return reg[i].underlying_type_id;
+        }
     }
     return -1;
 }
@@ -110,13 +126,21 @@ inline dense<entity_field_info>& entity_field_registry() noexcept {
 template<typename T>
 void register_entity_field(const char* field_name) noexcept {
     auto qv = reflect::try_get<T>();
-    if (!qv.valid()) return;
+    if (!qv.valid())
+    {
+        return;
+    }
     const auto* fm = qv.field_by_name(field_name);
-    if (!fm) return;
+    if (!fm)
+    {
+        return;
+    }
     int tid = type_id::get_type_id<T>();
     auto& reg = detail::entity_field_registry();
-    for (size_t i = 0; i < reg.size(); ++i) {
-        if (reg[i].type_id == tid && std::strcmp(reg[i].field_name, field_name) == 0) {
+    for (size_t i = 0; i < reg.size(); ++i)
+    {
+        if (reg[i].type_id == tid && std::strcmp(reg[i].field_name, field_name) == 0)
+        {
             reg[i].offset = fm->offset;
             return;
         }
@@ -131,7 +155,10 @@ void register_entity_field(const char* field_name) noexcept {
 template<typename T>
 [[nodiscard]] inline std::string_view get_type_name() noexcept {
     const char* stable = lookup_type_name(type_id::get_type_id<T>());
-    if (stable) return stable;
+    if (stable)
+    {
+        return stable;
+    }
     static std::string name = typeid(T).name();
     return name;
 }

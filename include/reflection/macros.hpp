@@ -8,12 +8,16 @@
 #include "../part/member_offset.hpp"
 #include "../part/aggregate_reflect_pp.hpp"
 
+namespace reflect {
+
 // 反射访问器主模板 (由 REFLECT_PRIVATE 宏特化)
 template<typename Cls>
 struct reflect_access;
 
+} // namespace reflect
+
 // === 宏辅助: 唯一变量名生成 ===
-// MSVC gotcha: _##__COUNTER__ 不展开 __COUNTER__, 需两层宏延迟展开
+// MSVC 注意: _##__COUNTER__ 不展开 __COUNTER__, 需两层宏延迟展开
 #define REFLECT_CONCAT_I(a, b) a##b
 #define REFLECT_CONCAT(a, b) REFLECT_CONCAT_I(a, b)
 #define REFLECT_UNIQUE(prefix) REFLECT_CONCAT(prefix, __COUNTER__)
@@ -59,9 +63,12 @@ struct reflect_access;
     }()
 
 #define REFLECT_FN_ONE(Cls, method) \
-    if constexpr (std::is_member_function_pointer_v<decltype(&Cls::method)>) { \
+    if constexpr (std::is_member_function_pointer_v<decltype(&Cls::method)>) \
+    { \
         ::reflect::global().register_method<&Cls::method>(#method); \
-    } else { \
+    } \
+    else \
+    { \
         ::reflect::global().register_static_method<Cls, &Cls::method>(#method); \
     }
 
@@ -92,7 +99,7 @@ struct reflect_access;
 //       REFLECT(Account);
 //   };
 #define REFLECT(Cls) \
-    template<typename> friend struct reflect_access
+    template<typename> friend struct ::reflect::reflect_access
 
 // 字段注册辅助宏 (单个字段)
 #define REFLECT_FIELD_ONE(Cls, field) \
@@ -103,14 +110,16 @@ struct reflect_access;
 //   REFLECT_PRIVATE(Account, name_, balance_);
 // 自动注册类型元信息 (register_type_only 内部去重, 重复调用安全)
 #define REFLECT_PRIVATE(Cls, ...) \
+    namespace reflect { \
     template<> struct reflect_access<Cls> { \
         static void reg(::reflect::storage& s) { \
             REFLECT_FOR_EACH_DATA(REFLECT_FIELD_ONE, Cls, __VA_ARGS__) \
         } \
     }; \
+    } \
     inline int REFLECT_UNIQUE(_reflect_priv_auto_) = []{ \
         ::reflect::global().register_type_only<Cls>(#Cls); \
-        reflect_access<Cls>::reg(::reflect::global()); \
+        ::reflect::reflect_access<Cls>::reg(::reflect::global()); \
         return 0; \
     }()
 
@@ -119,9 +128,12 @@ struct reflect_access;
 // 用法 (静态重载): REGISTER_FN_OVERLOAD(Calculator, multiply, static_cast<int(*)(int,int)>(&Calculator::multiply))
 #define REGISTER_FN_OVERLOAD(Cls, method, ptr) \
     inline int REFLECT_UNIQUE(_reflect_fn_ov_) = []{ \
-        if constexpr (std::is_member_function_pointer_v<ptr>) { \
+        if constexpr (std::is_member_function_pointer_v<ptr>) \
+        { \
             ::reflect::global().register_method<ptr>(#method); \
-        } else { \
+        } \
+        else \
+        { \
             ::reflect::global().register_static_method<Cls, ptr>(#method); \
         } \
         return 0; \

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "../part/dense.hpp"
+#include "../part/safety.hpp"
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -10,6 +11,11 @@
 namespace ecs {
 
 struct entity;
+
+// ECS 序列化安全限制 (扩展通用 safety_limits, 增加实体数量上限)
+struct serialize_limits : safety_limits {
+    size_t max_entity_count = 10 * 1000 * 1000;
+};
 
 namespace detail {
 
@@ -33,3 +39,4 @@ struct metadata_entry {
 
 } // namespace detail
 } // namespace ecs
+

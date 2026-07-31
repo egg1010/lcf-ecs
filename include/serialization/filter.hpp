@@ -27,10 +27,22 @@ struct serialize_filter
 
     [[nodiscard]] bool matches(const entity_state& state) const noexcept
     {
-        if (use_layer && state.layer != layer) return false;
-        if (use_tag && state.tag != tag) return false;
-        if (use_group && state.group_id != group_id) return false;
-        if (use_flags && (state.flags & flags_mask) != flags_value) return false;
+        if (use_layer && state.layer != layer)
+        {
+            return false;
+        }
+        if (use_tag && state.tag != tag)
+        {
+            return false;
+        }
+        if (use_group && state.group_id != group_id)
+        {
+            return false;
+        }
+        if (use_flags && (state.flags & flags_mask) != flags_value)
+        {
+            return false;
+        }
         return true;
     }
 
@@ -40,7 +52,10 @@ struct serialize_filter
         {
             for (size_t i = 0; i < entity_whitelist.size(); ++i)
             {
-                if (entity_whitelist[i] == idx) return matches(state);
+                if (entity_whitelist[i] == idx)
+                {
+                    return matches(state);
+                }
             }
             return false;
         }

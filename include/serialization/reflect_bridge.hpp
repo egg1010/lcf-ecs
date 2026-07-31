@@ -39,99 +39,173 @@ template<typename T>
 
 // 按底层整数类型写入
 inline void write_as_int(json_writer& w, const void* p, int int_tid) noexcept {
-    if (int_tid == type_id::get_type_id<int32_t>()) {
+    if (int_tid == type_id::get_type_id<int32_t>())
+    {
         w.value(*static_cast<const int32_t*>(p));
-    } else if (int_tid == type_id::get_type_id<uint32_t>()) {
+    }
+    else if (int_tid == type_id::get_type_id<uint32_t>())
+    {
         w.value(*static_cast<const uint32_t*>(p));
-    } else if (int_tid == type_id::get_type_id<int64_t>()) {
+    }
+    else if (int_tid == type_id::get_type_id<int64_t>())
+    {
         w.value(*static_cast<const int64_t*>(p));
-    } else if (int_tid == type_id::get_type_id<uint64_t>()) {
+    }
+    else if (int_tid == type_id::get_type_id<uint64_t>())
+    {
         w.value(*static_cast<const uint64_t*>(p));
-    } else if (int_tid == type_id::get_type_id<int16_t>()) {
+    }
+    else if (int_tid == type_id::get_type_id<int16_t>())
+    {
         w.value(static_cast<int32_t>(*static_cast<const int16_t*>(p)));
-    } else if (int_tid == type_id::get_type_id<uint16_t>()) {
+    }
+    else if (int_tid == type_id::get_type_id<uint16_t>())
+    {
         w.value(static_cast<uint32_t>(*static_cast<const uint16_t*>(p)));
-    } else if (int_tid == type_id::get_type_id<int8_t>()) {
+    }
+    else if (int_tid == type_id::get_type_id<int8_t>())
+    {
         w.value(static_cast<int32_t>(*static_cast<const int8_t*>(p)));
-    } else if (int_tid == type_id::get_type_id<uint8_t>()) {
+    }
+    else if (int_tid == type_id::get_type_id<uint8_t>())
+    {
         w.value(static_cast<uint32_t>(*static_cast<const uint8_t*>(p)));
-    } else {
+    }
+    else
+    {
         w.null();
     }
 }
 
 inline void read_as_int(json_reader& r, void* p, int int_tid) noexcept {
-    if (int_tid == type_id::get_type_id<int32_t>()) {
+    if (int_tid == type_id::get_type_id<int32_t>())
+    {
         *static_cast<int32_t*>(p) = r.read_int32();
-    } else if (int_tid == type_id::get_type_id<uint32_t>()) {
+    }
+    else if (int_tid == type_id::get_type_id<uint32_t>())
+    {
         *static_cast<uint32_t*>(p) = r.read_uint32();
-    } else if (int_tid == type_id::get_type_id<int64_t>()) {
+    }
+    else if (int_tid == type_id::get_type_id<int64_t>())
+    {
         *static_cast<int64_t*>(p) = r.read_int64();
-    } else if (int_tid == type_id::get_type_id<uint64_t>()) {
+    }
+    else if (int_tid == type_id::get_type_id<uint64_t>())
+    {
         *static_cast<uint64_t*>(p) = r.read_uint64();
-    } else if (int_tid == type_id::get_type_id<int16_t>()) {
+    }
+    else if (int_tid == type_id::get_type_id<int16_t>())
+    {
         *static_cast<int16_t*>(p) = static_cast<int16_t>(r.read_int32());
-    } else if (int_tid == type_id::get_type_id<uint16_t>()) {
+    }
+    else if (int_tid == type_id::get_type_id<uint16_t>())
+    {
         *static_cast<uint16_t*>(p) = static_cast<uint16_t>(r.read_uint32());
-    } else if (int_tid == type_id::get_type_id<int8_t>()) {
+    }
+    else if (int_tid == type_id::get_type_id<int8_t>())
+    {
         *static_cast<int8_t*>(p) = static_cast<int8_t>(r.read_int32());
-    } else if (int_tid == type_id::get_type_id<uint8_t>()) {
+    }
+    else if (int_tid == type_id::get_type_id<uint8_t>())
+    {
         *static_cast<uint8_t*>(p) = static_cast<uint8_t>(r.read_uint32());
-    } else {
+    }
+    else
+    {
         r.skip_value();
     }
 }
 
 // 基本类型写入
 inline void write_basic(json_writer& w, const void* p, int tid) noexcept {
-    if (tid == type_id::get_type_id<int32_t>()) {
+    if (tid == type_id::get_type_id<int32_t>())
+    {
         w.value(*static_cast<const int32_t*>(p));
-    } else if (tid == type_id::get_type_id<uint32_t>()) {
+    }
+    else if (tid == type_id::get_type_id<uint32_t>())
+    {
         w.value(*static_cast<const uint32_t*>(p));
-    } else if (tid == type_id::get_type_id<int64_t>()) {
+    }
+    else if (tid == type_id::get_type_id<int64_t>())
+    {
         w.value(*static_cast<const int64_t*>(p));
-    } else if (tid == type_id::get_type_id<uint64_t>()) {
+    }
+    else if (tid == type_id::get_type_id<uint64_t>())
+    {
         w.value(*static_cast<const uint64_t*>(p));
-    } else if (tid == type_id::get_type_id<float>()) {
+    }
+    else if (tid == type_id::get_type_id<float>())
+    {
         w.value(*static_cast<const float*>(p));
-    } else if (tid == type_id::get_type_id<double>()) {
+    }
+    else if (tid == type_id::get_type_id<double>())
+    {
         w.value(*static_cast<const double*>(p));
-    } else if (tid == type_id::get_type_id<bool>()) {
+    }
+    else if (tid == type_id::get_type_id<bool>())
+    {
         w.value(*static_cast<const bool*>(p));
-    } else if (tid == type_id::get_type_id<std::string>()) {
+    }
+    else if (tid == type_id::get_type_id<std::string>())
+    {
         w.value(*static_cast<const std::string*>(p));
-    } else {
+    }
+    else
+    {
         int enum_tid = lookup_enum_underlying(tid);
-        if (enum_tid >= 0) {
+        if (enum_tid >= 0)
+        {
             write_as_int(w, p, enum_tid);
-        } else {
+        }
+        else
+        {
             w.null();
         }
     }
 }
 
 inline void read_basic(json_reader& r, void* p, int tid) noexcept {
-    if (tid == type_id::get_type_id<int32_t>()) {
+    if (tid == type_id::get_type_id<int32_t>())
+    {
         *static_cast<int32_t*>(p) = r.read_int32();
-    } else if (tid == type_id::get_type_id<uint32_t>()) {
+    }
+    else if (tid == type_id::get_type_id<uint32_t>())
+    {
         *static_cast<uint32_t*>(p) = r.read_uint32();
-    } else if (tid == type_id::get_type_id<int64_t>()) {
+    }
+    else if (tid == type_id::get_type_id<int64_t>())
+    {
         *static_cast<int64_t*>(p) = r.read_int64();
-    } else if (tid == type_id::get_type_id<uint64_t>()) {
+    }
+    else if (tid == type_id::get_type_id<uint64_t>())
+    {
         *static_cast<uint64_t*>(p) = r.read_uint64();
-    } else if (tid == type_id::get_type_id<float>()) {
+    }
+    else if (tid == type_id::get_type_id<float>())
+    {
         *static_cast<float*>(p) = static_cast<float>(r.read_double());
-    } else if (tid == type_id::get_type_id<double>()) {
+    }
+    else if (tid == type_id::get_type_id<double>())
+    {
         *static_cast<double*>(p) = r.read_double();
-    } else if (tid == type_id::get_type_id<bool>()) {
+    }
+    else if (tid == type_id::get_type_id<bool>())
+    {
         *static_cast<bool*>(p) = r.read_bool();
-    } else if (tid == type_id::get_type_id<std::string>()) {
+    }
+    else if (tid == type_id::get_type_id<std::string>())
+    {
         *static_cast<std::string*>(p) = r.read_string();
-    } else {
+    }
+    else
+    {
         int enum_tid = lookup_enum_underlying(tid);
-        if (enum_tid >= 0) {
+        if (enum_tid >= 0)
+        {
             read_as_int(r, p, enum_tid);
-        } else {
+        }
+        else
+        {
             r.skip_value();
         }
     }
@@ -143,11 +217,13 @@ inline void write_field_meta(json_writer& w, const char* name,
     w.key(name);
     const char* field_ptr = base + fm.offset;
 
-    if (fm.array_rank > 0) {
+    if (fm.array_rank > 0)
+    {
         // 数组字段
         w.begin_array();
         uint32_t total = fm.total_elements;
-        for (uint32_t i = 0; i < total; ++i) {
+        for (uint32_t i = 0; i < total; ++i)
+        {
             const char* elem = field_ptr + i * fm.element_stride;
             write_basic(w, elem, fm.type_id);
         }
@@ -156,20 +232,24 @@ inline void write_field_meta(json_writer& w, const char* name,
     }
 
     int enum_tid = lookup_enum_underlying(fm.type_id);
-    if (enum_tid >= 0) {
+    if (enum_tid >= 0)
+    {
         write_as_int(w, field_ptr, enum_tid);
         return;
     }
 
-    if (is_type_reflected(fm.type_id)) {
+    if (is_type_reflected(fm.type_id))
+    {
         // 嵌套对象
         auto qv = reflect::query_view(reflect::global().get_type(fm.type_id));
-        if (qv.valid()) {
+        if (qv.valid())
+        {
             w.begin_object();
             size_t n = qv.field_count();
-    for (size_t i = 0; i < n; ++i) {
-        const reflect::field_meta& sub_fm = qv.field(i);
-        write_field_meta(w, sub_fm.name, field_ptr, sub_fm);
+            for (size_t i = 0; i < n; ++i)
+            {
+                const reflect::field_meta& sub_fm = qv.field(i);
+                write_field_meta(w, sub_fm.name, field_ptr, sub_fm);
             }
             w.end_object();
             return;
@@ -184,10 +264,15 @@ inline void read_field_meta(json_reader& r, char* base,
                              const reflect::field_meta& fm) noexcept {
     char* field_ptr = base + fm.offset;
 
-    if (fm.array_rank > 0) {
-        if (!r.enter_array()) return;
+    if (fm.array_rank > 0)
+    {
+        if (!r.enter_array())
+        {
+            return;
+        }
         uint32_t i = 0;
-        while (r.next_element() && i < fm.total_elements) {
+        while (r.next_element() && i < fm.total_elements)
+        {
             read_basic(r, field_ptr + i * fm.element_stride, fm.type_id);
             ++i;
             r.end_element();
@@ -196,21 +281,31 @@ inline void read_field_meta(json_reader& r, char* base,
     }
 
     int enum_tid = lookup_enum_underlying(fm.type_id);
-    if (enum_tid >= 0) {
+    if (enum_tid >= 0)
+    {
         read_as_int(r, field_ptr, enum_tid);
         return;
     }
 
-    if (is_type_reflected(fm.type_id)) {
+    if (is_type_reflected(fm.type_id))
+    {
         auto qv = reflect::query_view(reflect::global().get_type(fm.type_id));
-        if (qv.valid()) {
-            if (!r.enter_object()) return;
+        if (qv.valid())
+        {
+            if (!r.enter_object())
+            {
+                return;
+            }
             std::string_view key;
-            while (!(key = r.next_key()).empty()) {
+            while (!(key = r.next_key()).empty())
+            {
                 const auto* sub_fm = qv.field_by_name(std::string(key).c_str());
-                if (sub_fm) {
+                if (sub_fm)
+                {
                     read_field_meta(r, field_ptr, *sub_fm);
-                } else {
+                }
+                else
+                {
                     r.skip_value();
                 }
             }
@@ -225,11 +320,15 @@ inline void read_field_meta(json_reader& r, char* base,
 template<typename T>
 void to_json(json_writer& w, const T& obj) noexcept {
     auto qv = reflect::try_get<T>();
-    if (!qv.valid()) return;
+    if (!qv.valid())
+    {
+        return;
+    }
     w.begin_object();
     size_t n = qv.field_count();
     const char* base = static_cast<const char*>(static_cast<const void*>(&obj));
-    for (size_t i = 0; i < n; ++i) {
+    for (size_t i = 0; i < n; ++i)
+    {
         const reflect::field_meta& fm = qv.field(i);
         write_field_meta(w, fm.name, base, fm);
     }
@@ -240,15 +339,25 @@ void to_json(json_writer& w, const T& obj) noexcept {
 template<typename T>
 void from_json(json_reader& r, T& obj) noexcept {
     auto qv = reflect::try_get<T>();
-    if (!qv.valid()) return;
-    if (!r.enter_object()) return;
+    if (!qv.valid())
+    {
+        return;
+    }
+    if (!r.enter_object())
+    {
+        return;
+    }
     char* base = static_cast<char*>(static_cast<void*>(&obj));
     std::string_view key;
-    while (!(key = r.next_key()).empty()) {
+    while (!(key = r.next_key()).empty())
+    {
         const auto* fm = qv.field_by_name(std::string(key).c_str());
-        if (fm) {
+        if (fm)
+        {
             read_field_meta(r, base, *fm);
-        } else {
+        }
+        else
+        {
             r.skip_value();
         }
     }

@@ -1,0 +1,113 @@
+/* variables.css - 主题变量 / 配色 / 动画参数 */
+
+:root {
+  /* 背景层次 */
+  --bg-0: #07080f;
+  --bg-1: #0c0e1a;
+  --bg-2: #111424;
+  --bg-3: #161a2e;
+  --bg-glass: rgba(16, 20, 38, 0.65);
+  --bg-glass-hover: rgba(24, 30, 56, 0.75);
+  --bg-card: rgba(20, 24, 44, 0.55);
+
+  /* 主色调 - 青蓝紫渐变系 */
+  --c-cyan:   #00e5ff;
+  --c-blue:   #4d7cff;
+  --c-purple: #a855f7;
+  --c-pink:   #ec4899;
+  --c-green:  #22c55e;
+  --c-amber:  #f59e0b;
+  --c-red:    #ef4444;
+
+  /* 文字 */
+  --fg-0: #eef1ff;
+  --fg-1: #c5cce8;
+  --fg-2: #8b93b8;
+  --fg-3: #5a6188;
+  --fg-dim: #3d4260;
+
+  /* 边框 */
+  --border: rgba(120, 140, 220, 0.12);
+  --border-hover: rgba(0, 229, 255, 0.35);
+  --border-active: rgba(0, 229, 255, 0.6);
+
+  /* 渐变 */
+  --grad-primary: linear-gradient(135deg, #00e5ff 0%, #4d7cff 50%, #a855f7 100%);
+  --grad-accent: linear-gradient(135deg, #ec4899 0%, #a855f7 50%, #4d7cff 100%);
+  --grad-warm: linear-gradient(135deg, #f59e0b 0%, #ec4899 100%);
+  --grad-cool: linear-gradient(135deg, #22c55e 0%, #00e5ff 100%);
+  --grad-text: linear-gradient(90deg, #00e5ff, #4d7cff, #a855f7, #ec4899);
+
+  /* 光效 */
+  --glow-cyan:   0 0 20px rgba(0, 229, 255, 0.3), 0 0 40px rgba(0, 229, 255, 0.1);
+  --glow-purple: 0 0 20px rgba(168, 85, 247, 0.3), 0 0 40px rgba(168, 85, 247, 0.1);
+  --glow-blue:   0 0 20px rgba(77, 124, 255, 0.3), 0 0 40px rgba(77, 124, 255, 0.1);
+  --glow-soft:   0 4px 24px rgba(0, 229, 255, 0.08);
+
+  /* 间距 */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --sp-7: 48px;
+  --sp-8: 64px;
+
+  /* 圆角 */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 16px;
+  --r-xl: 24px;
+  --r-full: 9999px;
+
+  /* 字体 */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", "Consolas", "Cascadia Code", monospace;
+  --font-display: "Orbitron", "Segoe UI", sans-serif;
+
+  /* 动画 */
+  --dur-fast: 0.15s;
+  --dur-norm: 0.3s;
+  --dur-slow: 0.6s;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* 尺寸 */
+  --sidebar-w: 280px;
+  --sidebar-w-collapsed: 56px;
+  --topbar-h: 60px;
+  --max-content-w: 1100px;
+}
+
+/* 分类颜色映射 */
+.cat-core       { --cat-c: #00e5ff; --cat-g: var(--glow-cyan); }
+.cat-config     { --cat-c: #f59e0b; }
+.cat-containers { --cat-c: #4d7cff; --cat-g: var(--glow-blue); }
+.cat-allocators { --cat-c: #a855f7; --cat-g: var(--glow-purple); }
+.cat-algorithms { --cat-c: #22c55e; }
+.cat-tools      { --cat-c: #ec4899; }
+.cat-utf8       { --cat-c: #00e5ff; }
+
+/* 亮色主题 */
+[data-theme="light"] {
+  --bg-0: #f0f2f8;
+  --bg-1: #ffffff;
+  --bg-2: #f5f7fd;
+  --bg-3: #eef1fa;
+  --bg-glass: rgba(255, 255, 255, 0.75);
+  --bg-glass-hover: rgba(245, 247, 253, 0.85);
+  --bg-card: rgba(255, 255, 255, 0.6);
+
+  --fg-0: #1a1d2e;
+  --fg-1: #3d4260;
+  --fg-2: #6b7299;
+  --fg-3: #9499b8;
+  --fg-dim: #b8bcd8;
+
+  --border: rgba(60, 80, 160, 0.12);
+  --border-hover: rgba(0, 180, 220, 0.4);
+  --border-active: rgba(0, 180, 220, 0.6);
+
+  --glow-soft: 0 4px 24px rgba(60, 80, 160, 0.06);
+}

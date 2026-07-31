@@ -9,10 +9,10 @@ using ecs::entity;
 using ecs::manager;
 using ecs::serialize_filter;
 using ecs::load_mode;
-using ecs::register_component_version;
-using ecs::register_migration;
-using ecs::rle_compress;
-using ecs::rle_decompress;
+using ::register_component_version;
+using ::register_migration;
+using ::rle_compress;
+using ::rle_decompress;
 
 // === 测试用组件 ===
 

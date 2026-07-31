@@ -1,0 +1,917 @@
+window.DOCS_DATA = window.DOCS_DATA || {};
+
+window.DOCS_DATA['class_pool'] = {
+  id: 'class_pool',
+  title: "class_pool\\<T> — 核心容器",
+  category: 'containers',
+  icon: 'P',
+  order: 15,
+  content: `## 15. class_pool\\<T> — 核心容器
+
+支持密集与稀疏两种存储模式的容器，针对稀疏场景（带空洞的元素管理）。密集场景请使用 \`dense<T>\`。
+
+**两种模式：**
+
+| 模式 | 触发条件 | 迭代行为 |
+|------|---------|---------|
+| **dense（密集）** | 无空洞（所有槽位均已构造） | 线性扫描 \`[0, size())\` |
+| **sparse（稀疏）** | 存在空洞（有未构造的槽位） | 自动跳过未构造槽位，仅遍历已构造元素 |
+
+**模式切换：** 自动判断，无需手动干预。
+
+### 构造与赋值
+
+| 接口 | 说明 |
+|------|------|
+| \`class_pool()\` | 默认构造 |
+| \`class_pool(size_t capacity)\` | 预留容量构造 |
+| \`class_pool(size_t count, const T& value)\` | 构造 count 个 value 副本 |
+| \`class_pool(InputIt first, InputIt last)\` | 迭代器范围构造 |
+| \`class_pool(initializer_list<T>)\` | 初始化列表构造 |
+| \`class_pool(const class_pool&)\` | 拷贝构造 |
+| \`class_pool(class_pool&&)\` | 移动构造 |
+| \`operator=(const class_pool&)\` | 拷贝赋值 |
+| \`operator=(class_pool&&)\` | 移动赋值 |
+
+### 元素访问
+
+| 接口 | 说明 |
+|------|------|
+| \`operator[](size_t)\` | 下标访问（无边界检查） |
+| \`get(size_t)\` | 等价于 \`operator[]\`（无边界检查，保留为模板方法便于重载） |
+| \`get(size_t, size_t error_index)\` | 越界保护访问：\`index >= size()\` 时改访问 \`error_index\` 位置的元素 |
+| \`front()\` | 首元素引用 |
+| \`back()\` | 尾元素引用 |
+| \`data()\` | 原始数据指针 |
+| \`span()\` | 返回 \`std::span<T>\` |
+| \`span() const\` | 返回 \`std::span<const T>\` |
+
+### 容量
+
+| 接口 | 说明 |
+|------|------|
+| \`size()\` | 已使用大小 |
+| \`capacity()\` | 总容量 |
+| \`sparse_capacity()\` | 稀疏模式容量（同 capacity） |
+| \`empty()\` | 是否为空 |
+| \`count()\` | 已构造元素数 |
+| \`valid()\` | 是否已分配 |
+| \`size_bytes()\` | 已使用字节数 |
+| \`capacity_bytes()\` | 总容量字节数 |
+
+### 修改器
+
+| 接口 | 说明 |
+|------|------|
+| \`emplace_back(Args...)\` | 尾部构造元素 |
+| \`push_back(const T&)\` | 尾部拷贝追加（容量不足自动扩容，trivially copyable 走 memcpy） |
+| \`push_back(T&&)\` | 尾部移动追加（容量不足自动扩容，trivially copyable 走 memcpy） |
+| \`push_back_unchecked(const T&)\` | 尾部拷贝追加（调用方保证容量足够，trivially copyable 走 memcpy） |
+| \`push_back_unchecked(T&&)\` | 尾部移动追加（调用方保证容量足够，trivially copyable 走 memcpy） |
+| \`emplace_back_unchecked(Args...)\` | 尾部原地构造（仅 dense 模式可用，调用方保证容量足够） |
+| \`emplace_back_dense_unchecked(Args...)\` | 尾部原地构造（仅 dense 模式可用） |
+| \`append_n(n, const T&)\` | 批量追加 n 个 value 副本 |
+| \`emplace(pos, Args...)\` | 在指定位置插入（移动后续元素） |
+| \`emplace_at(index, Args...)\` | 任意位置构造（get-or-create：已存在则返回现有值，不覆盖） |
+| \`sparse_emplace_at(index, Args...)\` | 任意位置构造（insert-or-assign：已存在则覆盖） |
+| \`sparse_erase_at(index)\` | 稀疏删除（不移动元素，产生空洞） |
+| \`soft_sparse_delete(index)\` | 软删除单个（保留对象内存，可填洞复用） |
+| \`soft_dense_delete(start, end)\` | 软删除范围（保留对象内存） |
+| \`erase(pos)\` | 删除指定位置元素（移动后续元素填补） |
+| \`erase(first, last)\` | 删除范围元素 |
+| \`pop_back()\` | 删除尾部元素 |
+| \`clear()\` | 清空所有元素 |
+| \`increase_capacity(capacity)\` | 扩容（只扩容不缩容，不增加元素） |
+| \`increase_capacity(capacity, value)\` | 扩容并填充值到新槽位（只扩容不缩容，\`capacity <= size\` 时直接返回不销毁任何对象） |
+| \`reduce_capacity(capacity)\` | 缩容（截断超出元素） |
+| \`reduce_capacity(capacity, dst)\` | 缩容，超出元素移至 dst |
+| \`shrink_to_fit()\` | 缩容至 \`size()\` |
+| \`reserve_exact(capacity)\` | 精确扩容（分配到精确大小，不增加元素） |
+| \`fill_bulk(value, start, count)\` | 从 \`start\` 开始填充 \`count\` 个 \`value\`（自动扩容；非平凡类型会先析构已有对象再重新构造） |
+| \`prepare_dense(new_size)\` | 预备密集模式到 \`new_size\`（扩容 + 默认构造新槽位 + 标记为已分配，使容器进入密集模式） |
+| \`swap(other)\` | 交换两个容器 |
+
+### 状态查询
+
+| 接口 | 说明 |
+|------|------|
+| \`is_constructed_at(index)\` | 检查指定位置是否已构造 |
+| \`is_dense()\` | 是否处于密集模式（无空洞） |
+| \`invalidate_count_cache()\` | 使 count 缓存失效 |
+
+### 各操作对 contiguity 的影响
+
+| 操作 | 对 contiguity 的影响 |
+|------|---------------------|
+| \`emplace_back()\` / \`push_back()\` | 保持连续 |
+| \`emplace(pos)\` / \`insert(pos)\` | 保持连续（元素右移） |
+| \`erase(pos)\` / \`erase(first,last)\` | 保持连续（元素左移） |
+| \`pop_back()\` | 保持连续 |
+| \`clear()\` | 重置为连续 |
+| \`sparse_erase_at(index)\` | **产生空洞** → 变稀疏 |
+| \`emplace_at(index)\` | **可能填充空洞** → 可能变连续 |
+| \`sparse_emplace_at(index)\` | **可能填充空洞** → 可能变连续 |
+| \`reduce_capacity()\` 缩小 | **可能消除空洞** → 可能变连续 |
+
+### 插入/删除
+
+| 接口 | 说明 |
+|------|------|
+| \`emplace(const_iterator pos, args...)\` | 在指定位置原位构造，返回指向新元素的迭代器 |
+| \`insert(const_iterator pos, const T&)\` | 拷贝插入 |
+| \`insert(const_iterator pos, T&&)\` | 移动插入 |
+| \`erase(const_iterator pos)\` | 删除指定位置元素，返回下一个迭代器 |
+| \`erase(const_iterator first, const_iterator last)\` | 范围删除，返回下一个迭代器 |
+
+### 迭代器
+
+| 接口 | 说明 |
+|------|------|
+| \`begin()\` / \`end()\` | sparse-aware 正向迭代器（dense 模式直接指针遍历，sparse 模式自动跳过未构造槽位） |
+| \`cbegin()\` / \`cend()\` | const 版本 |
+| \`rbegin()\` / \`rend()\` | 反向迭代器（bidirectional，sparse 模式同样自动跳过未构造槽位） |
+| \`crbegin()\` / \`crend()\` | const 反向版本 |
+
+### 自由函数
+
+| 接口 | 说明 |
+|------|------|
+| \`swap(class_pool&, class_pool&)\` | 交换两个容器 |
+
+### 使用
+
+\`\`\`cpp
+class_pool<int> pool;
+pool.emplace_back(10);
+pool.emplace_back(20);
+
+// push_back 拷贝/移动追加 (trivially copyable 走 memcpy 快路径)
+int v = 30;
+pool.push_back(v);                  // 拷贝追加
+pool.push_back(std::move(v));       // 移动追加
+
+// 任意位置构造（get-or-create）
+pool.emplace_at(100, 999);      // 在索引 100 构造
+pool.emplace_at(100, 888);      // 已构造，返回现有值（不覆盖）
+
+// insert-or-assign 语义
+pool.sparse_emplace_at(100, 777);  // 覆盖
+
+// 稀疏删除
+pool.sparse_erase_at(100);
+pool.is_dense();                   // false（索引 100 处产生空洞）
+
+// 填满空洞后自动切回连续
+pool.emplace_at(100, 123);         // 填充空洞
+pool.is_dense();                   // true（空洞消失，自动切回）
+
+// unchecked 快速追加（仅 dense 模式，调用方保证容量足够）
+class_pool<int> dense_pool;
+dense_pool.emplace_back(1);
+dense_pool.emplace_back(2);
+dense_pool.push_back_unchecked(3);
+dense_pool.push_back_unchecked(std::move(v));  // 移动追加
+dense_pool.emplace_back_unchecked(4);
+dense_pool.emplace_back_dense_unchecked(5);
+
+// 批量插入：reserve + unchecked 组合
+class_pool<int> batch_pool;
+batch_pool.reserve_exact(1'000'000);
+for (int i = 0; i < 1'000'000; ++i) {
+    batch_pool.emplace_back_dense_unchecked(i);
+}
+
+// 批量插入：append_n 单次调用批量追加
+class_pool<int> fastest;
+fastest.append_n(1'000'000, 0);  // 直接追加 1M 个 0
+
+// 精确扩容（不增加元素，分配到精确大小）
+class_pool<int> reserved;
+reserved.reserve_exact(1000);        // capacity >= 1000，size 不变
+reserved.increase_capacity(10, 0);  // 扩容 size 到 10 并填充 0（只扩容不缩容）
+
+// 位置插入
+pool.emplace(std::next(pool.begin(), 1), 42);  // 在位置 1 插入
+
+// 迭代
+for (auto v : pool) { /* ... */ }
+
+// span
+std::span<int> s = pool.span();
+
+// get(): 等价 operator[], 无边界检查
+int& a = pool.get(0);
+
+// get(index, error_index): 越界保护访问
+// 若 index >= size() 则改访问 error_index 位置, 避免越界 UB
+int& b = pool.get(maybe_invalid_idx, 0);
+
+// 稀疏集查询
+pool.is_constructed_at(100);  // true
+pool.is_dense();              // 检查是否连续
+\`\`\`
+
+### 应该用什么操作？
+
+| 场景 | 推荐操作 | 原因 |
+|------|---------|------|
+| 尾部追加元素（已有值对象） | \`push_back(value)\` | O(1)，保持连续，trivially copyable 走 memcpy |
+| 尾部追加元素（直接构造） | \`emplace_back(args...)\` | O(1)，保持连续，原地构造避免临时对象 |
+| 任意位置插入/删除并保持连续 | \`emplace(pos)\` / \`erase(pos)\` | 移动后续元素，O(n)，保持连续 |
+| 稀疏数组（大索引跳跃） | \`emplace_at()\` / \`sparse_erase_at()\` | O(1)，不移动其他元素，但产生空洞 |
+| 批量填充已知索引 | \`emplace_at()\` | 填充空洞后自动切回连续 |
+| 删除整个容器 | \`clear()\` | 重置为连续 |
+
+### 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| \`sparse_erase_at()\` 后仍期望连续迭代 | 产生空洞，迭代变稀疏模式 | 用 \`emplace_at()\` 填充空洞，或用 \`erase()\` 替代 |
+| 频繁 \`sparse_erase_at()\` + \`emplace_at()\` 来回切换 | 每次切换触发模式扫描 | 批量操作，或统一使用 \`erase()\`/\`emplace()\` 保持连续 |
+| \`emplace_at()\` 在远超 \`size()\` 的索引上构造 | 中间留大量未初始化槽位，\`size()\` 暴增 | 用 \`increase_capacity(n, value)\` 预填充，或改用 \`sparse_emplace_at()\` |
+| 在 sparse 模式下使用 \`data()\` + \`span()\` 做线性遍历 | 未初始化槽位包含垃圾数据 | 始终通过迭代器遍历，或先确认 \`is_dense()\` 为 true |
+| \`increase_capacity(n)\` 期望精确分配到 n | 实际容量可能大于 n | 精确分配用 \`reserve_exact(n)\` |
+| \`emplace_at()\` 期望覆盖已有值 | \`emplace_at\` 是 get-or-create，不覆盖 | 使用 \`sparse_emplace_at()\` 实现 insert-or-assign |
+| 在 sparse 模式下使用 \`push_back_unchecked\` / \`emplace_back_unchecked\` | 不更新 \`count()\` 缓存 | 用 \`push_back()\` / \`emplace_back()\` 自动维护缓存，或手动 \`invalidate_count_cache()\` |
+| 软删除后对象仍占内存 | \`soft_sparse_delete\` / \`soft_dense_delete\` 保留对象不析构 | 用 \`sparse_erase_at()\` 真正析构，或 \`emplace_at()\` / \`fill_the_hole()\` 填洞复用 |
+
+### fill_the_hole — 填洞或追加
+
+\`fill_the_hole\` 优先填第一个空洞（最低索引），无洞则 \`emplace_back\` 末尾追加。
+
+#### 接口
+
+| 接口 | 说明 |
+|------|------|
+| \`fill_the_hole(args...)\` | 填第一个空洞或末尾追加，返回 \`T&\` |
+| \`fill_the_hole_at(args...)\` | 同 \`fill_the_hole\` 语义，但返回被填补位置的索引 \`size_t\`（填洞返回洞索引，追加返回末尾索引），调用方可通过 \`operator[](idx)\` 访问元素 |
+
+填洞依赖现有接口：\`sparse_erase_at\` 产生空洞、\`emplace_at\` 填洞、\`emplace_back\` 追加。
+
+#### 使用
+
+\`\`\`cpp
+class_pool<int> pool;
+pool.fill_the_hole(10);   // index 0
+pool.fill_the_hole(20);   // index 1
+pool.fill_the_hole(30);   // index 2
+
+pool.sparse_erase_at(1);  // 产生空洞
+pool.fill_the_hole(99);   // 填到 index 1 (最低空洞)
+
+// 多空洞: 填最低索引
+pool.sparse_erase_at(0);
+pool.sparse_erase_at(2);
+pool.fill_the_hole(7);    // 填到 index 0 (最低)
+pool.fill_the_hole(8);    // 填到 index 2
+
+// 迭代跳过空洞
+pool.sparse_erase_at(1);
+for (int& v : pool) { /* 跳过 index 1 */ }
+
+// fill_the_hole_at: 返回被填补位置的索引, 便于后续直接访问
+class_pool<int> pool2;
+pool2.fill_the_hole_at(10);  // 无洞 → 追加, 返回 0
+pool2.fill_the_hole_at(20);  // 无洞 → 追加, 返回 1
+pool2.sparse_erase_at(0);    // 产生空洞 at 0
+size_t idx = pool2.fill_the_hole_at(99);  // 填洞 at 0, 返回 0
+// idx == 0, pool2[idx] == 99
+\`\`\`
+
+#### 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 期望 \`fill_the_hole\` 填最近删除的空洞 | 最低索引优先，非 LIFO | 如需 LIFO 顺序，自行维护栈 |
+| 混用 compacting \`erase(iterator)\` | 索引前移导致空洞位置变化 | 填洞场景用 \`sparse_erase_at\` |
+| \`sparse_erase_at\` 后期望 \`is_dense()\` 为 true | 产生空洞变稀疏 | \`fill_the_hole\` 填满后自动恢复 |
+| 对已删除位置重复 \`sparse_erase_at\` | 已删除位置不重复计数 | 删除前可 \`is_constructed_at\` 检查 |
+
+---
+`
+};
+
+window.DOCS_DATA['class_pool_views'] = {
+  id: 'class_pool_views',
+  title: "class_pool 视图",
+  category: 'containers',
+  icon: 'P',
+  order: 16,
+  content: `## 15.5 class_pool 视图
+
+\`class_pool<T>\` 视图接口位于独立头文件 \`include/part/class_pool_views.hpp\`，全局命名空间（与 \`dense\` / \`class_pool\` 保持一致）。设计原则：
+- **不修改原容器**：仅依赖 \`class_pool<T>\` 公开 API
+- **双路径策略**：\`is_dense()\` 走连续内存路径，稀疏模式复用 \`basic_iterator\`
+- **零分配**：所有视图为 POD 结构或纯函数
+- **全 \`noexcept\`**：与原容器约束一致
+
+### 视图分类表
+
+| 分类 | 接口 | 说明 |
+|------|------|------|
+| **子范围** | \`subspan(p, off, cnt)\` / \`subspan(p, off)\` | 返回 \`std::span<T>\`，密集模式零开销切片（与 \`dense::subspan\` / \`std::span::subspan\` 命名一致） |
+|  | \`first(p, n)\` / \`last(p, n)\` | 前/后 n 个元素的 span |
+|  | \`first_fixed<T, N>(p)\` / \`last_fixed<T, N>(p)\` | 编译期固定长度 \`std::span<T, N>\` |
+| **反向** | \`reverse_for_each(p, f)\` | 反向遍历，复用 \`rbegin()/rend()\` |
+| **步进** | \`strided_span_view(p, start, step, cnt)\` | 返回 POD 视图结构 \`pool_strided_span<T>\`（持有 class_pool 指针 + 步进参数，与 \`dense::strided_span\` 区分） |
+|  | \`strided_for_each(p, start, step, f)\` | 运行时步长遍历 |
+|  | \`strided_for_each<T, Step>(p, f)\` | 编译期步长；\`Step=1\` 退化为 \`for_each\` 快路径 |
+| **变换** | \`transform_for_each(p, tr, con)\` | 融合 transform + consume，避免中间临时容器 |
+|  | \`transform_to<T, R>(p, dst, n, f)\` | 变换写入目标裸指针 |
+| **过滤** | \`find(p, v)\` / \`find_if(p, pred)\` / \`find_if_not(p, pred)\` | 线性查找，返回指针 |
+|  | \`contains(p, v)\` | 存在性检查 |
+|  | \`count_if(p, pred)\` | 条件计数 |
+|  | \`filter_for_each(p, pred, f)\` | 过滤遍历，零分配 |
+|  | \`filter_indices_to(p, dst, pred)\` | 输出满足条件的索引到 \`class_pool<size_t>\` |
+| **规约** | \`reduce(p, f, init)\` | 顺序规约 |
+|  | \`reduce_pairwise(p, f, init)\` | 密集模式遍历 |
+|  | \`min_element(p)\` / \`max_element(p)\` / \`minmax_element(p)\` | 极值查找 |
+|  | \`sum(p)\` | 算术求和（仅算术类型） |
+|  | \`dot_product(p, other, n)\` | 点积（密集模式） |
+| **窗口/分块** | \`for_each_window<T, N>(p, f)\` | 滑动窗口遍历（密集模式连续切片） |
+|  | \`for_each_chunk<T, N>(p, f)\` | 不重叠分块遍历 |
+|  | \`window_span<T, N>(p, off)\` / \`chunk_span<T, N>(p, idx)\` | 返回 \`std::span<T, N>\` |
+| **枚举** | \`for_each_enumerated(p, f)\` | \`(index, value)\` 同步遍历 |
+| **双容器** | \`for_each_zip(a, b, f)\` | 双 \`class_pool\` 同步遍历（按活跃元素） |
+|  | \`for_each_zip(a, ptr, n, f)\` | \`class_pool\` + 裸指针同步 |
+|  | \`zip_with_to<T, U, R>(a, b, dst, n, f)\` | 双容器变换写入目标 |
+|  | \`equal(a, b)\` / \`equal(a, ptr, n)\` / \`equal(a, span)\` | 相等性比较（与 \`dense::equal\` 命名一致；密集 + trivially copyable 走 \`memcmp\` 快路径） |
+| **对齐** | \`aligned_data(p)\` / \`aligned_span(p)\` | 返回对齐裸指针 / span |
+|  | \`simd_for_each(p, f)\` | 遍历（trivially copyable 且 \`sizeof(T)≤32\`），稀疏退化为 \`for_each\` |
+|  | \`unaligned_tail_offset(p)\` | 无法对齐处理的尾部偏移 |
+| **拷贝/移动** | \`copy_to(p, dst, n)\` / \`copy_to(p, span)\` | trivially copyable 走 \`memcpy\` |
+|  | \`move_to(p, dst, n)\` | 移动写入 |
+|  | \`reverse_copy_to(p, dst, n)\` | 反向拷贝 |
+| **class_pool 独有** | \`compact_to(p, dst, n)\` | 压缩稀疏池为密集数组（消除空洞），返回写入元素数 |
+|  | \`live_count(p)\` | 活跃元素数（语义等价 \`p.count()\`） |
+|  | \`holes_count(p)\` | 空洞数 = \`p.size() - p.count()\` |
+
+### 使用示例
+
+\`\`\`cpp
+#include "include/part/class_pool_views.hpp"
+// 视图接口位于全局命名空间, 无需 using namespace
+
+class_pool<POD32> pool;
+for (size_t i = 0; i < 1000; ++i) pool.push_back_unchecked({static_cast<float>(i)});
+
+// A. 子范围遍历
+auto sp = subspan(pool, 100, 50);
+for (auto& v : sp) { /* ... */ }
+
+// C. 步进遍历（步长 4）
+strided_for_each<POD32, 4>(pool, [](POD32& v) { /* ... */ });
+
+// E. 过滤查找
+POD32 target{42.0f};
+POD32* p = find(pool, target);
+size_t n = count_if(pool, [](const POD32& v) { return v.a[0] > 0; });
+
+// F. 规约
+POD32 sum = reduce(pool, [](POD32 acc, const POD32& v) -> POD32 { /* ... */ }, POD32{});
+
+// L. 压缩稀疏池为密集数组（ECS 视图重建）
+pool.sparse_erase_at(5);  // 制造空洞
+POD32* compact = /* ... 分配内存 ... */;
+size_t live = compact_to(pool, compact, pool.size());
+// compact[0..live) 为连续活跃元素
+\`\`\`
+
+### 稀疏模式行为
+
+稀疏模式（\`is_dense() == false\`）下视图行为：
+- **子范围/窗口/分块**：直接切片，**不跳过空洞**，调用方需自行 \`is_constructed_at(i)\` 检查
+- **步进遍历**：步进槽位（非活跃元素），越过空洞时自动跳过
+- **过滤/查找/规约/zip**：复用 \`basic_iterator\`，**自动跳过空洞**（仅遍历活跃元素）
+- 稀疏模式退化为 \`for_each\`（仍走位图扫描）
+- **compact_to**：按活跃顺序压缩写入（消除空洞）
+
+### 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 稀疏模式用 \`subspan\` 后直接遍历 | 包含未活跃槽 | 用 \`for_each\` / \`filter_for_each\` 走位图扫描 |
+| 期望 \`strided_for_each<1>\` 与 \`for_each\` 性能不同 | 已退化为 \`for_each\` | 两者性能等价 |
+| \`simd_for_each\` 用于稀疏模式 | 退化为 \`for_each\` | 仅密集模式适用 |
+| \`compact_to\` 后期望源池被清空 | 仅拷贝，源池不变 | 调用方自行 \`clear()\` |
+| 视图持有期间修改容器 | move/swap 后内联位图指针失效 | 视图生命周期 = 容器稳定期 |
+| 期望 \`last_fixed<N>\` 越界返回空 span | \`std::span<T, N>\` 无法默认构造 | 返回 \`count=0\` 的 span，调用方需检查 \`size()\` |
+
+---
+`
+};
+
+window.DOCS_DATA['void_any'] = {
+  id: 'void_any',
+  title: "void_any — 类型擦除存储",
+  category: 'containers',
+  icon: 'A',
+  order: 17,
+  content: `## 16. void_any — 类型擦除存储
+
+类型擦除容器，保持 \`void*\` 设计理念，通过位编码将元信息打包到单个 64 位字中，减少内存访问。支持 SSO 和内存池（通过宏配置）。
+
+### 存储模式
+
+64 位平台下，\`void_any\` 根据类型特征自动选择三种存储模式之一：
+
+| 模式 | 适用条件 | 特征 |
+|------|---------|------|
+| inline 编码 | SSO + trivially_copyable + trivially_destructible | 无 vtable 访问，type_id 通过编译期类型标签比较 |
+| SSO vtable | SSO 但非 trivially_copyable/destructible | 内联存储，通过 vtable 调用 copy/move/destroy |
+| heap vtable | 超出 SSO 容量 | 堆分配，通过 vtable 管理 |
+
+inline 编码模式将 \`element_size\`、\`trivially_destructible\`、\`trivially_copyable\` 等信息编码到 vtable 指针的空闲位中，对 trivial 类型完全跳过 vtable 访问，copy/move 操作仅执行分级内存复制。
+
+### 构造与赋值
+
+| 接口 | 说明 |
+|------|------|
+| \`void_any()\` | 默认构造，空值 |
+| \`void_any(T&&)\` | 从任意类型构造（排除 \`void_any\` 自身） |
+| \`void_any(const void_any&)\` | 拷贝构造 |
+| \`void_any(void_any&&)\` | 移动构造 |
+| \`operator=(const void_any&)\` | 拷贝赋值 |
+| \`operator=(void_any&&)\` | 移动赋值 |
+
+### 访问与操作
+
+| 接口 | 说明 |
+|------|------|
+| \`set(T&&)\` | 设置新值（先析构旧值再构造新值） |
+| \`type_id()\` | 获取类型 ID（空值返回 -1；inline 编码模式返回类型标签派生值，仅用于同类型一致性比较） |
+| \`get_ptr<T>()\` | 获取指针（带类型检查，不匹配返回 nullptr） |
+| \`get_ptr<T>() const\` | const 版本 |
+| \`fast_get_ptr<T>()\` | 快速获取（跳过 type_id 检查） |
+| \`fast_get_ptr<T>() const\` | const 版本 |
+| \`get_ptr_unchecked<T>()\` | 无检查获取（不验证 has_value 和 type_id） |
+| \`get_ptr_unchecked<T>() const\` | const 版本 |
+| \`get<T>()\` | 获取值副本（空值或类型不匹配返回默认构造） |
+| \`get_void()\` | 获取 \`void*\`（空值返回 nullptr） |
+| \`get_void() const\` | const 版本 |
+| \`copy_from<T>(const T&)\` | 编译期已知 T 的拷贝赋值 |
+| \`move_from<T>(T&&)\` | 编译期已知 T 的移动赋值 |
+| \`has_value()\` | 是否有值 |
+| \`reset()\` | 清空（析构并置空） |
+
+> 注：\`type_id()\` 在 inline 编码模式下返回类型标签指针派生值，不等于 \`type_id::get_type_id<T>()\`。需要类型匹配判断时使用 \`get_ptr<T>()\`。
+
+### 使用
+
+\`\`\`cpp
+void_any a(42);
+a.has_value();                 // true
+a.type_id();                   // 类型标识 (空值返回 -1)
+
+int* p = a.get_ptr<int>();     // 带类型检查
+int* pf = a.fast_get_ptr<int>();  // 无 type_id 检查
+int* pu = a.get_ptr_unchecked<int>();  // 无检查
+int val = a.get<int>();        // 获取值副本
+
+double* pd = a.get_ptr<double>();  // 类型不匹配返回 nullptr
+
+a.set(99);                     // 设置新值
+a.reset();                     // 清空
+
+// 拷贝与移动
+void_any b(std::string("world"));
+void_any b_copy(b);            // 拷贝构造
+void_any b_move(std::move(b)); // 移动构造
+void_any b_assign;
+b_assign = b_copy;             // 拷贝赋值
+void_any b_move_assign;
+b_move_assign = std::move(b_move);  // 移动赋值
+
+// void* 访问
+void* vp = a.get_void();       // 返回 void* (空值返回 nullptr)
+
+// 编译期已知 T 的高性能接口
+void_any c;
+c.copy_from(42);               // 编译期已知 int, 跳过 vtable 间接调用
+c.move_from(std::string("x")); // 编译期已知 string
+
+// 类型一致性比较 (inline 编码模式)
+void_any x(1), y(2);
+x.type_id() == y.type_id();    // true, 同类型返回相同值
+\`\`\`
+
+### 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 使用 \`get_ptr_unchecked\` 前不检查 \`has_value()\` 和类型 | 返回悬垂指针，未定义行为 | 仅在确定类型和值存在时使用，否则用 \`get_ptr<T>()\` |
+| 依赖 \`get<T>()\` 返回默认值来判断类型 | 默认构造值可能与实际值相同 | 先用 \`get_ptr<T>()\` 检查指针是否为空 |
+| 移动后继续使用 | 移动后源对象为空 | 移动后仅可调用 \`reset()\` 或重新赋值 |
+| 在 \`set()\` 之前访问 | \`has_value()\` 为 false，get_ptr 返回 nullptr | 先 \`set()\` 或构造时传值 |
+| 用 \`type_id() == type_id::get_type_id<T>()\` 判断类型 | inline 编码模式下两者不相等 | 用 \`get_ptr<T>() != nullptr\` 判断类型 |
+
+---
+`
+};
+
+window.DOCS_DATA['dense'] = {
+  id: 'dense',
+  title: "dense\\<T> — 通用密集容器",
+  category: 'containers',
+  icon: 'N',
+  order: 21,
+  content: `## 20. dense\\<T> — 通用密集容器
+
+\`#include "part/dense.hpp"\`，无命名空间。所有接口 \`noexcept\`。针对密集场景替代 \`std::vector\` 的通用容器，是 \`class_pool\` 密集模式的独立容器形式。
+
+### 构造与赋值
+
+| 接口 | 说明 |
+|------|------|
+| \`dense()\` | 默认构造（空） |
+| \`explicit dense(size_t capacity)\` | 预留容量（仅分配内存，\`size()\` 为 0） |
+| \`dense(size_t count, const T& value)\` | \`count\` 个 \`value\` 拷贝 |
+| \`dense(InputIt first, InputIt last)\` | 迭代器范围构造 |
+| \`dense(std::initializer_list<T> init)\` | 初始化列表构造 |
+| \`dense(const dense& other)\` | 拷贝构造（深拷贝） |
+| \`dense(dense&& other)\` | 移动构造 |
+| \`operator=(const dense&)\` | 拷贝赋值（深拷贝） |
+| \`operator=(dense&&)\` | 移动赋值 |
+
+### 元素访问
+
+| 接口 | 说明 |
+|------|------|
+| \`operator[](size_t index)\` | 下标访问（无边界检查） |
+| \`get(index)\` / \`get(index, error_index)\` | \`get\` 等价 \`operator[]\`；带 \`error_index\` 版本越界时回退访问 \`error_index\` |
+| \`front()\` / \`back()\` | 首尾元素 |
+| \`data()\` | 原始指针 |
+| \`span()\` / \`span() const\` | \`std::span<T>\` 视图 |
+
+### 容量与状态
+
+| 接口 | 说明 |
+|------|------|
+| \`size()\` / \`count()\` | 元素数（两者等价） |
+| \`capacity()\` | 容量 |
+| \`empty()\` | 是否为空 |
+| \`valid()\` | \`data() != nullptr\` |
+| \`size_bytes()\` / \`capacity_bytes()\` | 已用/容量字节数 |
+| \`max_size()\` | 理论最大元素数 |
+
+### 修改器
+
+| 接口 | 说明 |
+|------|------|
+| \`push_back(const T&)\` | 尾部拷贝追加（容量不足自动扩容，trivially copyable 走 memcpy） |
+| \`push_back(T&&)\` | 尾部移动追加（容量不足自动扩容，trivially copyable 走 memcpy） |
+| \`emplace_back(Args&&...)\` | 尾部原地构造（容量不足自动扩容） |
+| \`push_back_unchecked(const T&)\` | 尾部拷贝追加（调用方保证容量足够，trivially copyable 走 memcpy） |
+| \`push_back_unchecked(T&&)\` | 尾部移动追加（调用方保证容量足够，trivially copyable 走 memcpy） |
+| \`emplace_back_unchecked(Args&&...)\` | 尾部原地构造（调用方保证容量足够） |
+| \`emplace_back_dense_unchecked(Args&&...)\` | 等价 \`emplace_back_unchecked\`（dense 路径） |
+| \`append_n(size_t n, const T& value)\` | 批量追加 \`n\` 个 \`value\` |
+| \`append_bulk(const T* src, size_t count)\` | 批量拷贝追加 |
+| \`append_bulk_move(T* src, size_t count)\` | 批量移动追加 |
+| \`append_incrementing(count, counter)\` | 批量追加递增值（counter 起始） |
+| \`append_generated(count, F&& generator)\` | 批量追加生成器产生值 |
+| \`fill_bulk(value, start, count)\` | 从 \`start\` 开始填充 \`count\` 个 \`value\` |
+| \`emplace(pos, args...)\` / \`insert(pos, value)\` | 任意位置插入 |
+| \`erase(pos)\` / \`erase(first, last)\` | 任意位置删除 |
+| \`pop_back()\` | 尾部删除 |
+| \`clear()\` | 清空（\`size=0\`，capacity 保留） |
+| \`swap(dense&)\` / 自由函数 \`swap(a, b)\` | 交换 |
+
+### 容量控制
+
+| 接口 | 说明 |
+|------|------|
+| \`increase_capacity(new_capacity)\` | 扩容到 \`new_capacity\`（只扩容不缩容，不改变 \`size\`） |
+| \`increase_capacity(new_capacity, value)\` | 扩容并以 \`value\` 填充新增位置（只扩容不缩容，\`new_capacity <= size\` 时直接返回不销毁任何对象） |
+| \`reserve_exact(new_capacity)\` | 精确预留容量（强制增长） |
+| \`shrink_to_fit()\` | 缩容到 \`size\`（释放多余内存） |
+| \`reduce_capacity(new_capacity)\` | 缩容到 \`new_capacity\`（只减不增，超出部分截断） |
+| \`reduce_capacity(new_capacity, dense<T>& dst)\` | 缩容并将截断元素迁移到 \`dst\` |
+
+### 迭代器
+
+| 接口 | 说明 |
+|------|------|
+| \`begin()\` / \`end()\` | 正向迭代器（裸指针） |
+| \`cbegin()\` / \`cend()\` | const 正向迭代器 |
+| \`for_each(F&& f)\` / \`for_each(F&& f) const\` | 遍历所有元素，调用 \`f(v)\` |
+
+### 反向迭代
+
+| 接口 | 说明 |
+|------|------|
+| \`rbegin()\` / \`rend()\` | 反向迭代器 |
+| \`rbegin() const\` / \`rend() const\` | const 反向迭代器 |
+| \`crbegin()\` / \`crend()\` | const 反向迭代器（仅 const 重载） |
+| \`reverse_for_each(F&& f)\` / \`reverse_for_each(F&& f) const\` | 反向遍历，调用 \`f(v)\` |
+
+### 子范围视图
+
+零分配返回 \`std::span\`，仅切片不改数据。
+
+| 接口 | 说明 |
+|------|------|
+| \`subspan(offset, count)\` | 返回 \`[offset, offset+count)\` 的 span，自动截断到 \`size()\` |
+| \`subspan(offset)\` | 返回 \`[offset, size())\` 的 span |
+| \`first(n)\` | 前 \`n\` 个元素 |
+| \`last(n)\` | 后 \`n\` 个元素 |
+| \`first_fixed<N>()\` | 前 \`N\` 个元素，编译期固定长度 span（\`std::span<T, N>\`） |
+| \`last_fixed<N>()\` | 后 \`N\` 个元素，编译期固定长度 span |
+
+所有接口均提供 const 重载。模板方法调用需 \`template\` 关键字：\`d.template first_fixed<8>()\`。
+
+### 步进视图
+
+按固定步长跳跃遍历，零分配 POD 视图。
+
+| 接口 | 说明 |
+|------|------|
+| \`strided_span_view(start, step, count)\` | 返回 \`strided_span<T>\`，持有 \`{指针, 步长, 数量}\` |
+| \`strided_for_each(start, step, F&& f)\` | 运行时步长遍历，调用 \`f(v)\` |
+| \`strided_for_each<Step>(F&& f)\` | 编译期步长遍历，\`Step=1\` 回退到 \`for_each\` 快路径 |
+
+\`strided_span<T>\` 自身提供 \`begin()/end()\` 迭代器、\`for_each(F&&)\`、\`operator[]\`、\`size()\`、\`data()\` 等。
+
+### 变换视图
+
+融合变换与消费，避免中间临时数组。
+
+| 接口 | 说明 |
+|------|------|
+| \`transform_for_each(FTransform&& tr, FConsume&& con)\` | 对每个元素 \`v\` 调用 \`con(tr(v))\`，融合写入 |
+| \`transform_to(R* dst, count, F&& tr)\` | 将 \`tr(v)\` 写入 \`dst\`，要求 \`count <= size()\` |
+
+### 过滤与查找
+
+| 接口 | 说明 |
+|------|------|
+| \`find(const T& value)\` | 线性查找，返回首命指针，未命中返回 \`nullptr\` |
+| \`find_if(Pred pred)\` | 谓词查找 |
+| \`find_if_not(Pred pred)\` | 谓词反查找 |
+| \`contains(const T& value)\` | 是否包含 |
+| \`count_if(Pred pred)\` | 谓词计数 |
+| \`filter_for_each(Pred pred, F&& f)\` | 仅对满足 \`pred(v)\` 的元素调用 \`f(v)\` |
+| \`filter_indices_to(dense<size_t>& dst, Pred pred)\` | 将满足谓词的索引追加到 \`dst\` |
+
+### 规约与极值
+
+| 接口 | 说明 |
+|------|------|
+| \`reduce(F&& f, U init)\` | 顺序规约：\`acc = f(acc, v)\` |
+| \`reduce_pairwise(F&& f, U init)\` | 成对规约：相邻两两合并后递归，减少关键路径深度 |
+| \`min_element()\` / \`max_element()\` | 返回最小/最大元素指针 |
+| \`minmax_element()\` | 返回 \`{min_ptr, max_ptr}\` |
+| \`sum()\` | 算术求和（要求 \`is_arithmetic_v<T>\`） |
+| \`dot_product(const U* other, count)\` | 点积（要求 \`is_arithmetic_v<T>\`） |
+
+### 窗口与分块
+
+| 接口 | 说明 |
+|------|------|
+| \`for_each_window<N>(F&& f)\` | 滑动窗口遍历，对每个 \`[i, i+N)\` 调用 \`f(std::span<T, N>)\`，共 \`size()-N+1\` 次 |
+| \`for_each_chunk<N>(F&& f)\` | 不重叠分块遍历，对每个 \`[i*N, (i+1)*N)\` 调用 \`f(std::span<T, N>)\`，共 \`size()/N\` 次 |
+| \`window_span<N>(offset)\` | 取偏移 \`offset\` 处的滑动窗口 span |
+| \`chunk_span<N>(chunk_idx)\` | 取第 \`chunk_idx\` 个不重叠分块 span |
+
+### 枚举视图
+
+| 接口 | 说明 |
+|------|------|
+| \`for_each_enumerated(F&& f)\` | 带索引遍历，调用 \`f(index, value)\` |
+
+### 双容器同步
+
+| 接口 | 说明 |
+|------|------|
+| \`for_each_zip(U* other, count, F&& f)\` | 同步遍历 \`*this\` 与 \`other\`，调用 \`f(x, y)\` |
+| \`for_each_zip(dense<U>& other, F&& f)\` | dense 版本 |
+| \`for_each_zip(std::span<U> other, F&& f)\` | span 版本 |
+| \`zip_with_to<R>(R* dst, const U* other, count, F&& f)\` | 将 \`f(x, y)\` 写入 \`dst\`（SoA→AoS 转换） |
+| \`equal(const T* other, count)\` | 逐元素相等比较 |
+| \`equal(const dense<U>& other)\` | dense 版本 |
+| \`equal(std::span<const U> other)\` | span 版本 |
+
+### 对齐
+
+| 接口 | 说明 |
+|------|------|
+| \`aligned_data()\` | 返回对齐到缓存行（64B）的数据指针 |
+| \`aligned_span()\` | 返回对齐 span |
+| \`simd_for_each(F&& f)\` | 遍历（要求 \`is_trivially_copyable_v<T>\`，sizeof ≤ 32） |
+| \`unaligned_tail_offset()\` | 返回无法对齐处理的尾部起始偏移 |
+
+### 拷贝与移动
+
+| 接口 | 说明 |
+|------|------|
+| \`copy_to(T* dst, count)\` | 批量拷贝（trivially copyable 走 \`memcpy\`） |
+| \`copy_to(std::span<T> dst)\` | span 版本 |
+| \`move_to(T* dst, count)\` | 批量移动 |
+| \`move_to(std::span<T> dst)\` | span 版本 |
+| \`reverse_copy_to(T* dst, count)\` | 反向拷贝 |
+| \`reverse_copy_to(std::span<T> dst)\` | span 版本 |
+
+### 使用
+
+\`\`\`cpp
+#include "part/dense.hpp"
+
+dense<int> pool;                          // 默认构造
+dense<int> reserved(100);                 // 预留容量 100
+dense<int> filled(5, 42);                 // 5 个 42
+dense<int> init = {10, 20, 30};           // 初始化列表
+
+pool.emplace_back(1);
+pool.emplace_back(2);
+pool.emplace_back(3);
+
+// push_back 拷贝/移动 (trivially copyable 走 memcpy 快路径)
+int v = 42;
+pool.push_back(v);                        // 拷贝追加
+pool.push_back(std::move(v));             // 移动追加
+
+// 批量追加
+dense<int> bulk;
+bulk.append_n(100, 7);                    // 100 个 7
+bulk.append_bulk(init.data(), init.size());
+
+// 容量控制
+pool.increase_capacity(1000);
+pool.shrink_to_fit();
+pool.increase_capacity(10, 99);
+
+// 元素访问
+int v = pool[0];
+int* p = pool.data();
+std::span<int> s = pool.span();
+
+// 迭代
+for (int x : pool) { /* ... */ }
+pool.for_each([](int& x) { x *= 2; });
+
+// reduce_capacity 迁移元素
+dense<int> src = {1, 2, 3, 4, 5};
+dense<int> dst;
+src.reduce_capacity(2, dst);              // src: {1, 2}, dst: {3, 4, 5}
+\`\`\`
+
+### 视图使用示例
+
+\`\`\`cpp
+#include "part/dense.hpp"
+
+dense<float> d(1000);
+for (size_t i = 0; i < 1000; ++i) d[i] = static_cast<float>(i);
+
+// 子范围视图
+std::span<float> head = d.first(10);
+std::span<float> tail = d.last(10);
+std::span<float> mid = d.subspan(100, 50);
+std::span<float, 4> fixed_head = d.first_fixed<4>();   // 编译期固定长度
+
+// 反向迭代
+d.reverse_for_each([](float& v) { v = -v; });
+for (auto it = d.rbegin(); it != d.rend(); ++it) { /* ... */ }
+
+// 步进遍历
+d.strided_for_each(0, 4, [](float& v) { v *= 2.0f; });  // 每 4 个取一个
+auto sv = d.strided_span_view(0, 4, 250);              // strided_span<float>
+
+// 变换 + 消费融合
+d.transform_for_each(
+    [](float& v) -> float { return v * 2.0f; },
+    [](float x) { /* consume x */ });
+
+// 过滤
+float* p = d.find(42.0f);
+bool has = d.contains(42.0f);
+size_t cnt = d.count_if([](float v) { return v > 0; });
+d.filter_for_each([](float v) { return v > 0; }, [](float& v) { v = 0; });
+
+dense<size_t> indices;
+d.filter_indices_to(indices, [](float v) { return v > 100; });
+
+// 规约
+float sum = d.sum();
+float s = d.reduce([](float acc, const float& v) { return acc + v; }, 0.0f);
+float* mn = d.min_element();
+auto [mn_ptr, mx_ptr] = d.minmax_element();
+
+// 窗口/分块
+d.for_each_window<4>([](std::span<float, 4> w) { /* 滑动窗口 */ });
+d.for_each_chunk<4>([](std::span<float, 4> c) { /* 不重叠分块 */ });
+
+// 枚举
+d.for_each_enumerated([](size_t i, float& v) { v += static_cast<float>(i); });
+
+// 双容器同步
+dense<float> other(1000);
+d.for_each_zip(other, [](float& a, float& b) { a += b; });
+bool same = d.equal(other);
+
+// 遍历（要求 trivially copyable）
+d.simd_for_each([](float& v) { v *= 2.0f; });
+size_t tail_off = d.unaligned_tail_offset();
+
+// 拷贝/移动
+dense<float> dst2(1000);
+d.copy_to(dst2.data(), 1000);
+d.reverse_copy_to(dst2.span());
+\`\`\`
+
+### 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 使用 \`std::vector\` 代替 \`dense<T>\` | 性能与对齐不达标 | 始终使用 \`dense<T>\` |
+| 未确认容量就调用 \`push_back_unchecked\` / \`emplace_back_unchecked\` | 越界写崩 | 先 \`increase_capacity\` 或用 \`emplace_back\` |
+| \`reduce_capacity(n, dst)\` 后访问 \`src\` 被截断的元素 | 元素已迁移到 \`dst\` | 访问 \`dst\` 中对应元素 |
+| \`fill_bulk\` 范围超出 \`capacity()\` | 越界写崩 | 先 \`increase_capacity\` 或 \`reserve_exact\` |
+| 模板方法调用缺少 \`template\` 关键字 | 编译错误 | \`d.template first_fixed<N>()\` |
+| 对非 trivially copyable 类型调用 \`simd_for_each\` | 编译错误（concept 约束） | 使用 \`for_each\` 代替 |
+| \`subspan\` 的 \`offset\` 超过 \`size()\` | 返回空 span（已截断） | 调用前检查 \`offset < size()\` |
+
+---
+`
+};
+
+window.DOCS_DATA['ring_buffer'] = {
+  id: 'ring_buffer',
+  title: "ring_buffer — 环形缓冲区",
+  category: 'containers',
+  icon: 'Q',
+  order: 28,
+  content: `## 27. ring_buffer — 环形缓冲区
+
+\`#include "part/ring_buffer.hpp"\`，全局命名空间。\`noexcept\`。
+
+模板参数 \`N\`（默认 1024）作为编译期最小保证容量（实际无界）。\`push\` 永不失败（OOM 时 \`std::abort\`）。不可拷贝，可移动。
+
+### 接口
+
+| 接口 | 说明 |
+|------|------|
+| \`ring_buffer()\` | 默认构造 |
+| \`ring_buffer(ring_buffer&&)\` / \`operator=(ring_buffer&&)\` | 移动构造/赋值 |
+| \`push(const T&)\` / \`push(T&&)\` | 写入一个事件，恒返回 true |
+| \`emplace(args...)\` | 原位构造写入，恒返回 true |
+| \`drain(handler)\` | 读取并处理所有待处理事件，返回处理数 |
+| \`drain_with_budget(budget, handler)\` | 带预算的 drain，防止 handler 内追加导致无限循环 |
+| \`peek()\` | 仅读队首（不推进），空返回 nullptr |
+| \`pop()\` | 弹出队首，空返回 false |
+| \`empty()\` / \`has_pending()\` | 是否空 / 是否有待处理 |
+| \`pending_count()\` | 待处理数量 |
+| \`clear()\` | 清空所有事件 |
+| \`capacity()\` | 编译期最小保证容量 N（static） |
+| \`slots_per_chunk()\` | 单块槽位数（static） |
+| \`static_pool_size()\` | 静态池当前缓存块数（static） |
+| \`shrink_static_pool()\` | 释放静态池所有缓存块（static） |
+
+### 使用
+
+\`\`\`cpp
+#include "part/ring_buffer.hpp"
+
+struct event { int type; int data; };
+ring_buffer<event, 1024> buf;
+
+// 写入
+buf.push({1, 100});
+buf.emplace(2, 200);
+
+// 批量处理
+size_t n = buf.drain([](const event& e) {
+    std::cout << "type=" << e.type << " data=" << e.data << "\\n";
+});
+// n == 2
+
+// 带预算处理（防重入）
+buf.push({3, 300});
+buf.drain_with_budget(1, [](const event& e) {
+    // 只处理 1 个，即使 handler 内追加也不会无限循环
+});
+
+// 移动语义
+ring_buffer<event, 1024> buf2(std::move(buf));
+// buf 现在 empty
+
+// 静态接口
+size_t cap = ring_buffer<event, 1024>::capacity();       // 1024
+size_t spc = ring_buffer<event, 1024>::slots_per_chunk(); // 编译期常量
+size_t ps  = ring_buffer<event, 1024>::static_pool_size();
+ring_buffer<event, 1024>::shrink_static_pool();          // 释放缓存
+\`\`\`
+
+### 注意事项
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 依赖 \`push\` 返回 false 判断满 | \`push\` 恒返回 true | 用 \`pending_count()\` 监控积压 |
+| \`drain\` 的 handler 内 \`push\` 新事件 | 可能无限循环 | 用 \`drain_with_budget\` 限制处理数 |
+| 依赖 \`peek()\` 指针在 \`pop\` 后有效 | \`pop\` 推进读位置，指针失效 | \`peek\` 后立即处理或先拷贝 |
+| 拷贝构造 \`ring_buffer\` | 不可拷贝 | 用移动或重新填充 |
+
+---
+`
+};
+

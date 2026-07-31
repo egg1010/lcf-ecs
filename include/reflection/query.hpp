@@ -9,6 +9,7 @@
 #include <type_traits>
 #include <optional>
 #include <source_location>
+#include <array>
 #include "../part/type_id.hpp"
 #include "storage.hpp"
 
@@ -44,7 +45,10 @@ public:
 
     [[nodiscard]] const field_meta* field_by_name(const char* name) const noexcept
     {
-        if (!meta_) { return nullptr; }
+        if (!meta_)
+        {
+            return nullptr;
+        }
         size_t n = meta_->field_count.load(std::memory_order_acquire);
         for (size_t i = 0; i < n; ++i)
         {
@@ -64,7 +68,10 @@ public:
 
     [[nodiscard]] const method_meta* method_by_name(const char* name) const noexcept
     {
-        if (!meta_) { return nullptr; }
+        if (!meta_)
+        {
+            return nullptr;
+        }
         size_t n = meta_->method_count.load(std::memory_order_acquire);
         for (size_t i = 0; i < n; ++i)
         {
@@ -107,14 +114,20 @@ public:
 
     [[nodiscard]] void* get_ptr(void* obj, const char* name) const noexcept
     {
-        if (!meta_) { return nullptr; }
+        if (!meta_)
+        {
+            return nullptr;
+        }
         const field_meta* f = field_by_name(name);
         return f ? static_cast<char*>(obj) + f->offset : nullptr;
     }
 
     [[nodiscard]] const void* get_ptr(const void* obj, const char* name) const noexcept
     {
-        if (!meta_) { return nullptr; }
+        if (!meta_)
+        {
+            return nullptr;
+        }
         const field_meta* f = field_by_name(name);
         return f ? static_cast<const char*>(obj) + f->offset : nullptr;
     }
@@ -122,7 +135,10 @@ public:
     // === 数组字段查询 ===
     [[nodiscard]] bool is_array(size_t i) const noexcept
     {
-        if (!meta_) { return false; }
+        if (!meta_)
+        {
+            return false;
+        }
         return meta_->fields[i].array_rank > 0;
     }
 
@@ -149,24 +165,39 @@ public:
 
     [[nodiscard]] uint16_t array_extent(size_t field_idx, uint8_t dim) const noexcept
     {
-        if (!meta_ || dim >= 4) { return 0; }
+        if (!meta_ || dim >= 4)
+        {
+            return 0;
+        }
         return meta_->fields[field_idx].extents[dim];
     }
 
     // 取数组元素指针
     [[nodiscard]] void* array_element_ptr(void* obj, size_t field_idx, uint32_t element_idx) const noexcept
     {
-        if (!meta_) { return nullptr; }
+        if (!meta_)
+        {
+            return nullptr;
+        }
         const field_meta& fm = meta_->fields[field_idx];
-        if (element_idx >= fm.total_elements) { return nullptr; }
+        if (element_idx >= fm.total_elements)
+        {
+            return nullptr;
+        }
         return static_cast<char*>(obj) + fm.offset + element_idx * fm.element_stride;
     }
 
     [[nodiscard]] const void* array_element_ptr(const void* obj, size_t field_idx, uint32_t element_idx) const noexcept
     {
-        if (!meta_) { return nullptr; }
+        if (!meta_)
+        {
+            return nullptr;
+        }
         const field_meta& fm = meta_->fields[field_idx];
-        if (element_idx >= fm.total_elements) { return nullptr; }
+        if (element_idx >= fm.total_elements)
+        {
+            return nullptr;
+        }
         return static_cast<const char*>(obj) + fm.offset + element_idx * fm.element_stride;
     }
 
@@ -174,7 +205,10 @@ public:
     [[nodiscard]] void* array_element_ptr_by_name(void* obj, const char* name, uint32_t element_idx) const noexcept
     {
         const field_meta* f = field_by_name(name);
-        if (!f || element_idx >= f->total_elements) { return nullptr; }
+        if (!f || element_idx >= f->total_elements)
+        {
+            return nullptr;
+        }
         return static_cast<char*>(obj) + f->offset + element_idx * f->element_stride;
     }
 
@@ -183,8 +217,14 @@ public:
     // 聚合查询
     [[nodiscard]] const field_meta* array_info(size_t i) const noexcept
     {
-        if (!meta_) { return nullptr; }
-        if (i >= field_count()) { return nullptr; }
+        if (!meta_)
+        {
+            return nullptr;
+        }
+        if (i >= field_count())
+        {
+            return nullptr;
+        }
         const field_meta& fm = meta_->fields[i];
         return fm.array_rank > 0 ? &fm : nullptr;
     }
@@ -193,7 +233,10 @@ public:
     [[nodiscard]] const field_meta* array_info_by_name(const char* name) const noexcept
     {
         const field_meta* f = field_by_name(name);
-        if (!f || f->array_rank == 0) { return nullptr; }
+        if (!f || f->array_rank == 0)
+        {
+            return nullptr;
+        }
         return f;
     }
 
@@ -222,7 +265,10 @@ public:
     void array_set(void* obj, size_t field_idx, uint32_t element_idx, const T& value) const noexcept
     {
         T* p = static_cast<T*>(array_element_ptr(obj, field_idx, element_idx));
-        if (p) { *p = value; }
+        if (p)
+        {
+            *p = value;
+        }
     }
 
     // 类型安全写入 (按名)
@@ -230,16 +276,25 @@ public:
     void array_set_by_name(void* obj, const char* name, uint32_t element_idx, const T& value) const noexcept
     {
         void* p = array_element_ptr_by_name(obj, name, element_idx);
-        if (p) { *static_cast<T*>(p) = value; }
+        if (p)
+        {
+            *static_cast<T*>(p) = value;
+        }
     }
 
     // 遍历数组元素
     template<typename F>
     void for_each_array_element(void* obj, size_t field_idx, F&& f) const noexcept
     {
-        if (!meta_) { return; }
+        if (!meta_)
+        {
+            return;
+        }
         const field_meta& fm = meta_->fields[field_idx];
-        if (fm.array_rank == 0) { return; }
+        if (fm.array_rank == 0)
+        {
+            return;
+        }
         char* base = static_cast<char*>(obj) + fm.offset;
         for (uint32_t i = 0; i < fm.total_elements; ++i)
         {
@@ -250,9 +305,15 @@ public:
     template<typename F>
     void for_each_array_element(const void* obj, size_t field_idx, F&& f) const noexcept
     {
-        if (!meta_) { return; }
+        if (!meta_)
+        {
+            return;
+        }
         const field_meta& fm = meta_->fields[field_idx];
-        if (fm.array_rank == 0) { return; }
+        if (fm.array_rank == 0)
+        {
+            return;
+        }
         const char* base = static_cast<const char*>(obj) + fm.offset;
         for (uint32_t i = 0; i < fm.total_elements; ++i)
         {
@@ -265,20 +326,26 @@ public:
     R invoke(void* obj, const char* name, Args&&... args) const noexcept
     {
         const method_meta* m = method_by_name(name);
-        if (m == nullptr) { detail::abort_with_location("invoke: method not found"); }
-        if (m->arg_count != sizeof...(Args)) { detail::abort_with_location("invoke: arg count mismatch"); }
+        if (m == nullptr)
+        {
+            detail::abort_with_location("invoke: method not found");
+        }
+        if (m->arg_count != sizeof...(Args))
+        {
+            detail::abort_with_location("invoke: arg count mismatch");
+        }
 
-        const void* arg_ptrs[] = { static_cast<const void*>(&args)... };
+        std::array<const void*, sizeof...(Args)> arg_ptrs = { static_cast<const void*>(&args)... };
 
         if constexpr (std::is_void_v<R>)
         {
-            m->invoker(obj, arg_ptrs, nullptr);
+            m->invoker(obj, arg_ptrs.data(), nullptr);
         }
         else
         {
-            alignas(alignof(R)) char result_buf[sizeof(R)];
-            m->invoker(obj, arg_ptrs, result_buf);
-            R* result_ptr = reinterpret_cast<R*>(result_buf);
+            alignas(alignof(R)) std::array<char, sizeof(R)> result_buf{};
+            m->invoker(obj, arg_ptrs.data(), result_buf.data());
+            R* result_ptr = reinterpret_cast<R*>(result_buf.data());
             R ret = std::move(*result_ptr);
             result_ptr->~R();
             return ret;
@@ -291,22 +358,34 @@ public:
     {
         if constexpr (std::is_void_v<R>)
         {
-            if (!meta_) { return false; }
+            if (!meta_)
+            {
+                return false;
+            }
             const method_meta* m = method_by_name(name);
-            if (m == nullptr || m->arg_count != sizeof...(Args)) { return false; }
-            const void* arg_ptrs[] = { static_cast<const void*>(&args)... };
-            m->invoker(obj, arg_ptrs, nullptr);
+            if (m == nullptr || m->arg_count != sizeof...(Args))
+            {
+                return false;
+            }
+            std::array<const void*, sizeof...(Args)> arg_ptrs = { static_cast<const void*>(&args)... };
+            m->invoker(obj, arg_ptrs.data(), nullptr);
             return true;
         }
         else
         {
-            if (!meta_) { return std::optional<R>{}; }
+            if (!meta_)
+            {
+                return std::optional<R>{};
+            }
             const method_meta* m = method_by_name(name);
-            if (m == nullptr || m->arg_count != sizeof...(Args)) { return std::optional<R>{}; }
-            const void* arg_ptrs[] = { static_cast<const void*>(&args)... };
-            alignas(alignof(R)) char result_buf[sizeof(R)];
-            m->invoker(obj, arg_ptrs, result_buf);
-            R* result_ptr = reinterpret_cast<R*>(result_buf);
+            if (m == nullptr || m->arg_count != sizeof...(Args))
+            {
+                return std::optional<R>{};
+            }
+            std::array<const void*, sizeof...(Args)> arg_ptrs = { static_cast<const void*>(&args)... };
+            alignas(alignof(R)) std::array<char, sizeof(R)> result_buf{};
+            m->invoker(obj, arg_ptrs.data(), result_buf.data());
+            R* result_ptr = reinterpret_cast<R*>(result_buf.data());
             std::optional<R> ret(std::move(*result_ptr));
             result_ptr->~R();
             return ret;
@@ -316,7 +395,10 @@ public:
     template<typename F>
     void for_each_field(void* obj, F&& f) const noexcept
     {
-        if (!meta_) { return; }
+        if (!meta_)
+        {
+            return;
+        }
         size_t n = meta_->field_count.load(std::memory_order_acquire);
         for (size_t i = 0; i < n; ++i)
         {
@@ -330,7 +412,10 @@ public:
     template<typename F>
     void for_each_field(const void* obj, F&& f) const noexcept
     {
-        if (!meta_) { return; }
+        if (!meta_)
+        {
+            return;
+        }
         size_t n = meta_->field_count.load(std::memory_order_acquire);
         for (size_t i = 0; i < n; ++i)
         {
@@ -344,7 +429,10 @@ public:
     template<typename F>
     void for_each_field_meta(F&& f) const noexcept
     {
-        if (!meta_) { return; }
+        if (!meta_)
+        {
+            return;
+        }
         size_t n = meta_->field_count.load(std::memory_order_acquire);
         for (size_t i = 0; i < n; ++i)
         {
@@ -355,7 +443,10 @@ public:
     template<typename F>
     void for_each_method(F&& f) const noexcept
     {
-        if (!meta_) { return; }
+        if (!meta_)
+        {
+            return;
+        }
         size_t n = meta_->method_count.load(std::memory_order_acquire);
         for (size_t i = 0; i < n; ++i)
         {
@@ -369,7 +460,10 @@ template<typename T>
 [[nodiscard]] query_view get() noexcept
 {
     const type_meta* m = global().get_type(type_id::get_type_id<T>());
-    if (m == nullptr) { std::abort(); }
+    if (m == nullptr)
+    {
+        std::abort();
+    }
     return query_view(m);
 }
 
@@ -377,7 +471,10 @@ template<typename T>
 [[nodiscard]] inline query_view get_by_name(const char* name) noexcept
 {
     const type_meta* m = global().find_type(name);
-    if (m == nullptr) { std::abort(); }
+    if (m == nullptr)
+    {
+        std::abort();
+    }
     return query_view(m);
 }
 

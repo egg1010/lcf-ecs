@@ -193,11 +193,8 @@ if(BUILD_MODULE_PERF_TESTS)
     lcf_add_executable(test_void_any_perf            test/test_void_any_perf.cpp)
     lcf_add_executable(test_sort_perf                test/test_sort_perf.cpp)
     lcf_add_executable(test_command_buffer_perf      test/test_command_buffer_perf.cpp)
-    lcf_add_executable(test_utf8pp                   test/test_utf8pp.cpp)
-    lcf_add_executable(test_utf8pp_perf              test/test_utf8pp_perf.cpp)
-    lcf_add_executable(test_utf8_unicode             test/test_utf8_unicode.cpp)
-    lcf_add_executable(test_utf8_view                test/test_utf8_view.cpp)
-    lcf_add_executable(test_utf8_view_perf           test/test_utf8_view_perf.cpp)
+    lcf_add_executable(test_utf8                     test/test_utf8.cpp)
+    lcf_add_executable(test_utf8_perf                test/test_utf8_perf.cpp)
 
     # 视图与组件模块
     lcf_add_executable(test_component_perf           test/test_component_perf.cpp)

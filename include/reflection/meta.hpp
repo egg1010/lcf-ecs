@@ -23,7 +23,7 @@ struct field_meta
     uint8_t array_rank;         // 数组维度 (0=标量, 1~4=数组)
     uint8_t reserved;           // 对齐填充
     uint32_t total_elements;    // 数组总元素数 (0=非数组)
-    uint16_t extents[4];        // 每维元素数 (仅前 array_rank 个有效)
+    std::array<uint16_t, 4> extents{};  // 每维元素数 (仅前 array_rank 个有效)
     uint32_t element_stride;    // 元素步长 (字节)
 };
 

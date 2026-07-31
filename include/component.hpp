@@ -792,9 +792,9 @@ public:
         sort_entities_by_component<T>(std::forward<Compare>(cmp));
     }
 
-#include "single_view.inc.hpp"
-#include "multi_view.inc.hpp"
-#include "composite_views.inc.hpp"
+#include "single_view.hpp"
+#include "multi_view.hpp"
+#include "composite_views.hpp"
 
     template <typename T>
     [[nodiscard]] single_view<T> view() noexcept

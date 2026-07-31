@@ -26,7 +26,9 @@ struct spinlock_guard
     std::atomic_flag& flag_;
     explicit spinlock_guard(std::atomic_flag& f) noexcept : flag_(f)
     {
-        while (flag_.test_and_set(std::memory_order_acquire)) {}
+        while (flag_.test_and_set(std::memory_order_acquire))
+        {
+        }
     }
     ~spinlock_guard() noexcept { flag_.clear(std::memory_order_release); }
     spinlock_guard(const spinlock_guard&) = delete;
@@ -59,12 +61,12 @@ concept array_field_type =
     is_std_array_v<std::remove_cvref_t<M>>;
 
 // 成员对象指针约束
-template<typename PtrT>
-concept member_object_pointer = std::is_member_object_pointer_v<PtrT>;
+template<typename ptr_t>
+concept member_object_pointer = std::is_member_object_pointer_v<ptr_t>;
 
 // 成员函数指针约束
-template<typename PtrT>
-concept member_function_pointer = std::is_member_function_pointer_v<PtrT>;
+template<typename ptr_t>
+concept member_function_pointer = std::is_member_function_pointer_v<ptr_t>;
 
 // === 错误诊断 (替代裸 std::abort, 输出位置信息) ===
 [[noreturn]] inline void abort_with_location(
@@ -101,13 +103,22 @@ public:
     void register_type(const char* name) noexcept
     {
         int tid = type_id::get_type_id<T>();
-        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID)) { return; }
+        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID))
+        {
+            return;
+        }
 
         type_meta* existing = type_entries_[tid].load(std::memory_order_acquire);
-        if (existing != nullptr) { return; }
+        if (existing != nullptr)
+        {
+            return;
+        }
 
         type_meta* m = new (std::nothrow) type_meta{};
-        if (m == nullptr) { std::abort(); }
+        if (m == nullptr)
+        {
+            std::abort();
+        }
         m->name = name;
         m->size = static_cast<uint16_t>(sizeof(T));
         m->align = static_cast<uint16_t>(alignof(T));
@@ -119,7 +130,10 @@ public:
             for_each_aggregate_member(obj, [&](auto& member, size_t idx) {
                 using member_type = std::remove_reference_t<decltype(member)>;
                 uint16_t fidx = m->field_count.load(std::memory_order_relaxed);
-                if (fidx >= MAX_FIELDS_PER_TYPE) { return; }
+                if (fidx >= MAX_FIELDS_PER_TYPE)
+                {
+                    return;
+                }
                 m->fields[fidx] = field_meta{
                     make_field_name(idx),
                     static_cast<uint32_t>(
@@ -148,13 +162,22 @@ public:
     void register_type_only(const char* name) noexcept
     {
         int tid = type_id::get_type_id<T>();
-        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID)) { return; }
+        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID))
+        {
+            return;
+        }
 
         type_meta* existing = type_entries_[tid].load(std::memory_order_acquire);
-        if (existing != nullptr) { return; }
+        if (existing != nullptr)
+        {
+            return;
+        }
 
         type_meta* m = new (std::nothrow) type_meta{};
-        if (m == nullptr) { std::abort(); }
+        if (m == nullptr)
+        {
+            std::abort();
+        }
         m->name = name;
         m->size = static_cast<uint16_t>(sizeof(T));
         m->align = static_cast<uint16_t>(alignof(T));
@@ -174,16 +197,25 @@ public:
     void register_private_offsets(const offset_desc* descs, size_t count) noexcept
     {
         int tid = type_id::get_type_id<T>();
-        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID)) { return; }
+        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID))
+        {
+            return;
+        }
 
         type_meta* m = type_entries_[tid].load(std::memory_order_acquire);
-        if (m == nullptr || !m->registered.load(std::memory_order_acquire)) { return; }
+        if (m == nullptr || !m->registered.load(std::memory_order_acquire))
+        {
+            return;
+        }
 
         detail::spinlock_guard lock(reg_lock_);
         for (size_t i = 0; i < count; ++i)
         {
             uint16_t fidx = m->field_count.load(std::memory_order_relaxed);
-            if (fidx >= MAX_FIELDS_PER_TYPE) { break; }
+            if (fidx >= MAX_FIELDS_PER_TYPE)
+            {
+                break;
+            }
             m->fields[fidx] = field_meta{
                 descs[i].name,
                 static_cast<uint32_t>(descs[i].offset),
@@ -203,14 +235,23 @@ public:
         const std::source_location& loc = std::source_location::current()) noexcept
     {
         int tid = type_id::get_type_id<T>();
-        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID)) { return; }
+        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID))
+        {
+            return;
+        }
 
         type_meta* m = type_entries_[tid].load(std::memory_order_acquire);
-        if (m == nullptr || !m->registered.load(std::memory_order_acquire)) { return; }
+        if (m == nullptr || !m->registered.load(std::memory_order_acquire))
+        {
+            return;
+        }
 
         detail::spinlock_guard lock(reg_lock_);
         uint16_t fidx = m->field_count.load(std::memory_order_relaxed);
-        if (fidx >= MAX_FIELDS_PER_TYPE) { detail::abort_with_location("field limit exceeded", loc); }
+        if (fidx >= MAX_FIELDS_PER_TYPE)
+        {
+            detail::abort_with_location("field limit exceeded", loc);
+        }
 
         T* null_obj = nullptr;
         size_t offset = reinterpret_cast<size_t>(&(null_obj->*Ptr));
@@ -237,15 +278,27 @@ public:
         const std::source_location& loc = std::source_location::current()) noexcept
     {
         int tid = type_id::get_type_id<T>();
-        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID)) { return; }
+        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID))
+        {
+            return;
+        }
 
         type_meta* m = type_entries_[tid].load(std::memory_order_acquire);
-        if (m == nullptr || !m->registered.load(std::memory_order_acquire)) { return; }
-        if (rank == 0 || rank > 4) { return; }
+        if (m == nullptr || !m->registered.load(std::memory_order_acquire))
+        {
+            return;
+        }
+        if (rank == 0 || rank > 4)
+        {
+            return;
+        }
 
         detail::spinlock_guard lock(reg_lock_);
         uint16_t fidx = m->field_count.load(std::memory_order_relaxed);
-        if (fidx >= MAX_FIELDS_PER_TYPE) { detail::abort_with_location("field limit exceeded", loc); }
+        if (fidx >= MAX_FIELDS_PER_TYPE)
+        {
+            detail::abort_with_location("field limit exceeded", loc);
+        }
 
         T* null_obj = nullptr;
         size_t offset = reinterpret_cast<size_t>(&(null_obj->*Ptr));
@@ -259,7 +312,7 @@ public:
         using element_type = std::remove_all_extents_t<std::remove_cvref_t<M>>;
         uint32_t stride = static_cast<uint32_t>(sizeof(element_type));
 
-        uint16_t ext[4] = {0, 0, 0, 0};
+        std::array<uint16_t, 4> ext{0, 0, 0, 0};
         for (uint8_t i = 0; i < rank; ++i)
         {
             ext[i] = extents[i];
@@ -288,17 +341,29 @@ public:
         using raw_m = std::remove_cvref_t<M>;
 
         uint8_t rank = 0;
-        uint16_t ext[4] = {0, 0, 0, 0};
+        std::array<uint16_t, 4> ext{0, 0, 0, 0};
         int elem_tid = 0;
 
         if constexpr (std::is_bounded_array_v<raw_m>)
         {
             constexpr uint8_t c_rank = std::rank_v<raw_m>;
             rank = c_rank;
-            if constexpr (c_rank >= 1) { ext[0] = static_cast<uint16_t>(std::extent_v<raw_m, 0>); }
-            if constexpr (c_rank >= 2) { ext[1] = static_cast<uint16_t>(std::extent_v<raw_m, 1>); }
-            if constexpr (c_rank >= 3) { ext[2] = static_cast<uint16_t>(std::extent_v<raw_m, 2>); }
-            if constexpr (c_rank >= 4) { ext[3] = static_cast<uint16_t>(std::extent_v<raw_m, 3>); }
+            if constexpr (c_rank >= 1)
+            {
+                ext[0] = static_cast<uint16_t>(std::extent_v<raw_m, 0>);
+            }
+            if constexpr (c_rank >= 2)
+            {
+                ext[1] = static_cast<uint16_t>(std::extent_v<raw_m, 1>);
+            }
+            if constexpr (c_rank >= 3)
+            {
+                ext[2] = static_cast<uint16_t>(std::extent_v<raw_m, 2>);
+            }
+            if constexpr (c_rank >= 4)
+            {
+                ext[3] = static_cast<uint16_t>(std::extent_v<raw_m, 3>);
+            }
             using elem = std::remove_all_extents_t<raw_m>;
             elem_tid = type_id::get_type_id<elem>();
         }
@@ -310,7 +375,7 @@ public:
             elem_tid = type_id::get_type_id<elem>();
         }
 
-        register_array_field<T, M, Ptr>(name, rank, ext, elem_tid, loc);
+        register_array_field<T, M, Ptr>(name, rank, ext.data(), elem_tid, loc);
     }
 
     // 注册成员 (标量/数组统一入口)
@@ -320,7 +385,10 @@ public:
         const std::source_location& loc = std::source_location::current()) noexcept
     {
         int tid = type_id::get_type_id<T>();
-        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID)) { return; }
+        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID))
+        {
+            return;
+        }
         if (type_entries_[tid].load(std::memory_order_acquire) == nullptr)
         {
             register_type_only<T>(type_name);
@@ -341,26 +409,35 @@ public:
     void register_method(const char* name,
         const std::source_location& loc = std::source_location::current()) noexcept
     {
-        using MFnType = decltype(Fn);
-        using traits = mfn_traits<MFnType>;
+        using mfn_type = decltype(Fn);
+        using traits = mfn_traits<mfn_type>;
         using C = typename traits::class_type;
         using R = typename traits::return_type;
 
         int tid = type_id::get_type_id<C>();
-        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID)) { return; }
+        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID))
+        {
+            return;
+        }
 
         type_meta* m = type_entries_[tid].load(std::memory_order_acquire);
-        if (m == nullptr || !m->registered.load(std::memory_order_acquire)) { return; }
+        if (m == nullptr || !m->registered.load(std::memory_order_acquire))
+        {
+            return;
+        }
 
         detail::spinlock_guard lock(reg_lock_);
         uint16_t midx = m->method_count.load(std::memory_order_relaxed);
-        if (midx >= MAX_METHODS_PER_TYPE) { detail::abort_with_location("method limit exceeded", loc); }
+        if (midx >= MAX_METHODS_PER_TYPE)
+        {
+            detail::abort_with_location("method limit exceeded", loc);
+        }
 
         method_meta mm;
         mm.name = name;
         mm.arg_count = static_cast<uint8_t>(traits::arg_count);
         mm.return_type_id = return_type_id<R>();
-        mm.invoker = &mfn_invoker_t<Fn, MFnType>::invoke;
+        mm.invoker = &mfn_invoker_t<Fn, mfn_type>::invoke;
         mm.is_const = traits::is_const;
         mm.is_static = false;
         m->methods[midx] = mm;
@@ -372,26 +449,35 @@ public:
     void register_static_method(const char* name,
         const std::source_location& loc = std::source_location::current()) noexcept
     {
-        using MFnType = decltype(Fn);
-        using traits = mfn_traits<MFnType>;
+        using mfn_type = decltype(Fn);
+        using traits = mfn_traits<mfn_type>;
         using R = typename traits::return_type;
         static_assert(traits::is_static, "Fn must be a free/static function pointer");
 
         int tid = type_id::get_type_id<C>();
-        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID)) { return; }
+        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID))
+        {
+            return;
+        }
 
         type_meta* m = type_entries_[tid].load(std::memory_order_acquire);
-        if (m == nullptr || !m->registered.load(std::memory_order_acquire)) { return; }
+        if (m == nullptr || !m->registered.load(std::memory_order_acquire))
+        {
+            return;
+        }
 
         detail::spinlock_guard lock(reg_lock_);
         uint16_t midx = m->method_count.load(std::memory_order_relaxed);
-        if (midx >= MAX_METHODS_PER_TYPE) { detail::abort_with_location("method limit exceeded", loc); }
+        if (midx >= MAX_METHODS_PER_TYPE)
+        {
+            detail::abort_with_location("method limit exceeded", loc);
+        }
 
         method_meta mm;
         mm.name = name;
         mm.arg_count = static_cast<uint8_t>(traits::arg_count);
         mm.return_type_id = return_type_id<R>();
-        mm.invoker = &sfn_invoker_t<Fn, MFnType>::invoke;
+        mm.invoker = &sfn_invoker_t<Fn, mfn_type>::invoke;
         mm.is_const = false;
         mm.is_static = true;
         m->methods[midx] = mm;
@@ -401,10 +487,19 @@ public:
     // 按类型 id 查询 (无锁, acquire)
     [[nodiscard]] const type_meta* get_type(int tid) const noexcept
     {
-        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID)) { return nullptr; }
+        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID))
+        {
+            return nullptr;
+        }
         type_meta* m = type_entries_[tid].load(std::memory_order_acquire);
-        if (m == nullptr) { return nullptr; }
-        if (!m->registered.load(std::memory_order_acquire)) { return nullptr; }
+        if (m == nullptr)
+        {
+            return nullptr;
+        }
+        if (!m->registered.load(std::memory_order_acquire))
+        {
+            return nullptr;
+        }
         return m;
     }
 
@@ -414,8 +509,14 @@ public:
         for (size_t i = 0; i < MAX_TYPE_ID; ++i)
         {
             type_meta* m = type_entries_[i].load(std::memory_order_acquire);
-            if (m == nullptr) { continue; }
-            if (!m->registered.load(std::memory_order_acquire)) { continue; }
+            if (m == nullptr)
+            {
+                continue;
+            }
+            if (!m->registered.load(std::memory_order_acquire))
+            {
+                continue;
+            }
             if (m->name != nullptr && std::strcmp(m->name, name) == 0)
             {
                 return m;
@@ -429,23 +530,42 @@ private:
 
     static const char* make_field_name(size_t idx) noexcept
     {
-        static char names[MAX_FIELDS_PER_TYPE][16];
-        if (idx >= MAX_FIELDS_PER_TYPE) { return "field_?"; }
+        static std::array<std::array<char, 16>, MAX_FIELDS_PER_TYPE> names{};
+        if (idx >= MAX_FIELDS_PER_TYPE)
+        {
+            return "field_?";
+        }
 
         static std::atomic_flag name_lock{};
-        while (name_lock.test_and_set(std::memory_order_acquire)) {}
-        char* p = names[idx];
+        while (name_lock.test_and_set(std::memory_order_acquire))
+        {
+        }
+        char* p = names[idx].data();
         if (p[0] == '\0')
         {
             const char prefix[] = "field_";
             size_t i = 0;
-            while (prefix[i]) { p[i] = prefix[i]; ++i; }
+            while (prefix[i])
+            {
+                p[i] = prefix[i];
+                ++i;
+            }
             size_t val = idx;
-            char tmp[8];
+            std::array<char, 8> tmp{};
             size_t len = 0;
-            if (val == 0) { tmp[len++] = '0'; }
-            while (val > 0) { tmp[len++] = '0' + (val % 10); val /= 10; }
-            while (len > 0) { p[i++] = tmp[--len]; }
+            if (val == 0)
+            {
+                tmp[len++] = '0';
+            }
+            while (val > 0)
+            {
+                tmp[len++] = '0' + (val % 10);
+                val /= 10;
+            }
+            while (len > 0)
+            {
+                p[i++] = tmp[--len];
+            }
             p[i] = '\0';
         }
         name_lock.clear(std::memory_order_release);

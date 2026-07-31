@@ -191,7 +191,11 @@ public:
     [[nodiscard]] size_t length() const noexcept { return size(); }
 
     // === 数据访问 (字节级 O(1)) ===
+    // 注意: data() 返回的缓冲区不一定以 '\0' 结尾 (与 std::string_view 语义一致)
     [[nodiscard]] constexpr const char* data() const noexcept { return data_; }
+    // c_str(): 返回非 null 的 C 字符串指针 (空视图返回 "")
+    // 注意: 与 std::string::c_str() 不同, 缓冲区不一定以 '\0' 结尾
+    //       仅为保证非 null 契约, 传给 C API 前请确认来源是否 null 结尾
     [[nodiscard]] constexpr const char* c_str() const noexcept { return data_ ? data_ : ""; }
     [[nodiscard]] constexpr std::string_view byte_view() const noexcept { return std::string_view(data_, byte_size_); }
     [[nodiscard]] constexpr operator std::string_view() const noexcept { return byte_view(); }
@@ -377,9 +381,28 @@ public:
         return npos;
     }
 
-    // === 码点查找 (O(n)) ===
+    // === 码点查找 (O(n), ASCII 用 memchr 快速路径) ===
     [[nodiscard]] size_t find(char32_t cp, size_t cp_pos = 0) const noexcept
     {
+        // ASCII 快速路径: 直接 memchr
+        if (static_cast<uint32_t>(cp) < 0x80) [[likely]]
+        {
+            const uint8_t* p = reinterpret_cast<const uint8_t*>(data_);
+            const uint8_t* end = p + byte_size_;
+            for (size_t i = 0; i < cp_pos && p < end; ++i)
+            {
+                p = detail_utf8::advance_codepoint(p, end);
+            }
+            if (p >= end) return npos;
+            size_t byte_off = static_cast<size_t>(p - reinterpret_cast<const uint8_t*>(data_));
+            size_t found = find_byte(static_cast<char>(cp), byte_off);
+            if (found == npos) return npos;
+            // 字节位置 → 码点索引 (SIMD 计数)
+            return detail_utf8::count_codepoints(
+                reinterpret_cast<const uint8_t*>(data_),
+                reinterpret_cast<const uint8_t*>(data_) + found);
+        }
+        // 多字节: 逐码点解码比较
         const uint8_t* p = reinterpret_cast<const uint8_t*>(data_);
         const uint8_t* end = p + byte_size_;
         for (size_t i = 0; i < cp_pos && p < end; ++i)
@@ -419,14 +442,30 @@ public:
     }
     [[nodiscard]] size_t rfind(char32_t cp, size_t cp_pos = npos) const noexcept
     {
-        size_t total = size();
-        if (total == 0) return npos;
-        if (cp_pos >= total) cp_pos = total - 1;
-        size_t i = cp_pos + 1;
-        while (i > 0)
+        // 反向字节遍历, O(n) 而非 O(n²)
+        if (byte_size_ == 0) return npos;
+        const uint8_t* p = reinterpret_cast<const uint8_t*>(data_);
+        const uint8_t* end = p + byte_size_;
+        // 先正向遍历到 cp_pos, 记录位置; 再反向查找
+        size_t total = 0;
+        const uint8_t* it = p;
+        while (it < end)
         {
-            --i;
-            if (at(i) == cp) return i;
+            if (total == cp_pos) break;
+            it = detail_utf8::advance_codepoint(it, end);
+            ++total;
+        }
+        // 反向遍历 (从 it 回退到 p)
+        size_t idx = total;
+        const uint8_t* cur = it;
+        while (cur > p)
+        {
+            const uint8_t* prev = detail_utf8::retreat_codepoint(p, cur);
+            --idx;
+            uint32_t c = 0;
+            size_t len = 0;
+            if (detail_utf8::utf8_decode_one(prev, cur, &c, &len) && c == cp) return idx;
+            cur = prev;
         }
         return npos;
     }

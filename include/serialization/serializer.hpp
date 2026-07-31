@@ -4,22 +4,22 @@
 #pragma once
 
 #include "archive_types.hpp"
-#include "archive_codec.hpp"
-#include "codec_registry.hpp"
+#include "../part/archive_codec.hpp"
+#include "../part/codec_registry.hpp"
 #include "archive_logic.hpp"
 #include "../component.hpp"
 #include "../part/operating_message.hpp"
 #include "../part/json_writer.hpp"
 #include "../part/json_reader.hpp"
 #include "../part/dense.hpp"
-#include "safety.hpp"
+#include "../part/safety.hpp"
 #include "type_name.hpp"
 #include "reflect_bridge.hpp"
-#include "binary_writer.hpp"
-#include "binary_reader.hpp"
+#include "../part/binary_writer.hpp"
+#include "../part/binary_reader.hpp"
 #include "filter.hpp"
-#include "migration.hpp"
-#include "stats.hpp"
+#include "../part/migration.hpp"
+#include "../part/stats.hpp"
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -54,7 +54,7 @@ class serialization
 {
 private:
     manager& mgr_;
-    safety_limits limits_;
+    serialize_limits limits_;
     detail::archive_header header_;
     const serialize_filter* filter_ = nullptr;
     load_mode load_mode_ = load_mode::append;
@@ -72,8 +72,8 @@ public:
     explicit serialization(manager& m) noexcept
         : mgr_(m) {}
 
-    [[nodiscard]] safety_limits& limits() noexcept { return limits_; }
-    [[nodiscard]] const safety_limits& limits() const noexcept { return limits_; }
+    [[nodiscard]] serialize_limits& limits() noexcept { return limits_; }
+    [[nodiscard]] const serialize_limits& limits() const noexcept { return limits_; }
 
     [[nodiscard]] uint32_t archive_version() const noexcept { return header_.archive_version; }
     void set_archive_version(uint32_t v) noexcept { header_.archive_version = v; }
@@ -107,8 +107,10 @@ public:
 
     // === 元数据 ===
     serialization& set_metadata(const std::string& key, const std::string& value) noexcept {
-        for (size_t i = 0; i < metadata_.size(); ++i) {
-            if (metadata_[i].key == key) {
+        for (size_t i = 0; i < metadata_.size(); ++i)
+        {
+            if (metadata_[i].key == key)
+            {
                 metadata_[i].value = value;
                 return *this;
             }
@@ -117,8 +119,12 @@ public:
         return *this;
     }
     [[nodiscard]] const std::string* get_metadata(const std::string& key) const noexcept {
-        for (size_t i = 0; i < metadata_.size(); ++i) {
-            if (metadata_[i].key == key) return &metadata_[i].value;
+        for (size_t i = 0; i < metadata_.size(); ++i)
+        {
+            if (metadata_[i].key == key)
+            {
+                return &metadata_[i].value;
+            }
         }
         return nullptr;
     }
@@ -132,9 +138,16 @@ public:
                                     format fmt = format::json) noexcept {
         std::string data;
         operating_message r = save_to_string<Ts...>(data, fmt);
-        if (!r) return r;
+        if (!r)
+        {
+            return r;
+        }
         std::ofstream f(path, std::ios::binary | std::ios::trunc);
-        if (!f) { r.write_message(false, "无法打开文件: ", path); return r; }
+        if (!f)
+        {
+            r.write_message(false, "无法打开文件: ", path);
+            return r;
+        }
         f.write(data.data(), static_cast<std::streamsize>(data.size()));
         f.close();
         return r;
@@ -148,19 +161,28 @@ public:
                                      format fmt = format::json) noexcept {
         stats_.reset();
         operating_message r;
-        if (fmt == format::binary) {
+        if (fmt == format::binary)
+        {
             r = save_to_binary<Ts...>(out);
-        } else if (fmt == format::protobuf) {
+        }
+        else if (fmt == format::protobuf)
+        {
             r = save_via_codec<Ts...>(out, *get_codec(codec_index::protobuf));
-        } else if (fmt == format::flatbuffer) {
+        }
+        else if (fmt == format::flatbuffer)
+        {
             r = save_via_codec<Ts...>(out, *get_codec(codec_index::flatbuffer));
-        } else {
+        }
+        else
+        {
             r = save_to_json<Ts...>(out);
         }
-        if (r && compress_cb_) {
+        if (r && compress_cb_)
+        {
             out = compress_cb_(out);
         }
-        if (r && on_save_cb_) {
+        if (r && on_save_cb_)
+        {
             on_save_cb_(out);
         }
         stats_.total_bytes = out.size();
@@ -174,9 +196,15 @@ public:
     template<typename... Ts>
     operating_message load_from_file(const std::string& path) noexcept {
         std::ifstream f(path, std::ios::binary | std::ios::ate);
-        if (!f) { operating_message r; r.write_message(false, "无法打开文件: ", path); return r; }
+        if (!f)
+        {
+            operating_message r;
+            r.write_message(false, "无法打开文件: ", path);
+            return r;
+        }
         std::streamsize sz = f.tellg();
-        if (static_cast<size_t>(sz) > limits_.max_file_size) {
+        if (static_cast<size_t>(sz) > limits_.max_file_size)
+        {
             operating_message r;
             r.write_message(false, "文件过大: ", path);
             return r;
@@ -184,7 +212,8 @@ public:
         f.seekg(0, std::ios::beg);
         std::string content;
         content.resize(static_cast<size_t>(sz));
-        if (!f.read(content.data(), sz)) {
+        if (!f.read(content.data(), sz))
+        {
             operating_message r; r.write_message(false, "读取失败: ", path); return r;
         }
         return load_from_string<Ts...>(content);
@@ -193,15 +222,24 @@ public:
     // 仅校验
     operating_message validate_file(const std::string& path) const noexcept {
         std::ifstream f(path, std::ios::binary | std::ios::ate);
-        if (!f) { operating_message r; r.write_message(false, "无法打开文件: ", path); return r; }
+        if (!f)
+        {
+            operating_message r;
+            r.write_message(false, "无法打开文件: ", path);
+            return r;
+        }
         std::streamsize sz = f.tellg();
-        if (static_cast<size_t>(sz) > limits_.max_file_size) {
-            operating_message r; r.write_message(false, "文件过大: ", path); return r;
+        if (static_cast<size_t>(sz) > limits_.max_file_size)
+        {
+            operating_message r;
+            r.write_message(false, "文件过大: ", path);
+            return r;
         }
         f.seekg(0, std::ios::beg);
         std::string content;
         content.resize(static_cast<size_t>(sz));
-        if (!f.read(content.data(), sz)) {
+        if (!f.read(content.data(), sz))
+        {
             operating_message r; r.write_message(false, "读取失败: ", path); return r;
         }
         return validate_string(content);
@@ -216,28 +254,34 @@ public:
             "所有组件类型必须满足 json_serializable");
 
         std::string content(data);
-        if (on_load_cb_) {
+        if (on_load_cb_)
+        {
             on_load_cb_(content);
         }
-        if (decompress_cb_ && !is_binary_format(content)) {
+        if (decompress_cb_ && !is_binary_format(content))
+        {
             content = decompress_cb_(content);
         }
 
         stats_.reset();
 
-        if (load_mode_ == load_mode::replace) {
+        if (load_mode_ == load_mode::replace)
+        {
             clear_all_entities();
         }
 
         // 自动检测格式
         const archive_codec* codec = detect_codec(content);
-        if (codec) {
+        if (codec)
+        {
             // 判断格式
-            if (std::memcmp(codec->magic, "LCE1", 4) == 0) {
+            if (std::memcmp(codec->magic, "LCE1", 4) == 0)
+            {
                 return load_from_binary<Ts...>(content);
             }
             if (std::memcmp(codec->magic, "LCPB", 4) == 0 ||
-                std::memcmp(codec->magic, "LCFB", 4) == 0) {
+                std::memcmp(codec->magic, "LCFB", 4) == 0)
+            {
                 return load_via_codec<Ts...>(content, *codec);
             }
             // JSON (magic[0] == '{')
@@ -251,32 +295,36 @@ public:
     // 仅校验
     operating_message validate_string(std::string_view data) const noexcept {
         const archive_codec* codec = detect_codec(data);
-        if (!codec) {
+        if (!codec)
+        {
             operating_message res;
             res.write_message(false, "未知格式");
             return res;
         }
         // JSON 特殊处理 (按字段名校验)
-        if (std::memcmp(codec->magic, "{", 1) == 0) {
+        if (std::memcmp(codec->magic, "{", 1) == 0)
+        {
             json_reader r(data);
-            if (!r.enter_object()) return r.last_error();
-            std::string_view key;
-            while (!(key = r.next_key()).empty()) {
-                if (!r.skip_value()) return r.last_error();
+            if (!r.enter_object())
+            {
+                return r.last_error();
             }
-            if (r.has_error()) return r.last_error();
+            std::string_view key;
+            while (!(key = r.next_key()).empty())
+            {
+                if (!r.skip_value())
+                {
+                    return r.last_error();
+                }
+            }
+            if (r.has_error())
+            {
+                return r.last_error();
+            }
             return operating_message{};
         }
-        // 二进制/protobuf/flatbuffer: 创建 reader 检查无错误
-        archive_reader* r = codec->create_reader(data);
-        if (!r || r->has_error()) {
-            if (r) codec->destroy_reader(r);
-            operating_message res;
-            res.write_message(false, "格式校验失败");
-            return res;
-        }
-        codec->destroy_reader(r);
-        return operating_message{};
+        // 二进制/protobuf/flatbuffer: 调用各格式的深度校验
+        return codec->validate(data);
     }
 
     // ====================================================================
@@ -311,10 +359,12 @@ public:
     template<typename... Ts>
     operating_message save_changed(std::string& out,
                                     format fmt = format::json) noexcept {
-        if (last_type_versions_.size() == 0) {
+        if (last_type_versions_.size() == 0)
+        {
             // 首次保存,全量
             constexpr size_t n = sizeof...(Ts);
-            for (size_t i = 0; i < n; ++i) {
+            for (size_t i = 0; i < n; ++i)
+            {
                 last_type_versions_.push_back(0);
             }
         }
@@ -323,7 +373,8 @@ public:
         size_t idx = 0;
         ((check_type_changed<Ts>(idx, any_changed)), ...);
 
-        if (!any_changed) {
+        if (!any_changed)
+        {
             out = "{}";
             return operating_message{};
         }
@@ -349,6 +400,20 @@ private:
         return data.size() >= 4 && std::memcmp(data.data(), "LCE1", 4) == 0;
     }
 
+    // 校验下一个字段编号是否匹配预期 (protobuf/flatbuffer 用 "f<N>" 模拟字段名)
+    // 用于 load_via_codec 检测 save 端字段顺序错位, 避免静默错位加载
+    [[nodiscard]] static bool expect_field_number(archive_reader& r,
+                                                    uint32_t expected) noexcept {
+        std::string_view k = r.next_key();
+        if (k.empty())
+        {
+            return false;
+        }
+        char buf[16];
+        int n = std::snprintf(buf, sizeof(buf), "f%u", expected);
+        return k == std::string_view(buf, static_cast<size_t>(n));
+    }
+
     // 自动检测格式 (四种 magic)
     [[nodiscard]] static const archive_codec* detect_format(std::string_view data) noexcept {
         return detect_codec(data);
@@ -361,9 +426,11 @@ private:
     template<typename T>
     void check_type_changed(size_t& idx, bool& any_changed) noexcept {
         const single_class_set* set = mgr_.get_single_class_set<T>();
-        if (set) {
+        if (set)
+        {
             uint64_t cur = set->get_pool_version();
-            if (idx < last_type_versions_.size() && last_type_versions_[idx] != cur) {
+            if (idx < last_type_versions_.size() && last_type_versions_[idx] != cur)
+            {
                 any_changed = true;
                 last_type_versions_[idx] = cur;
             }
@@ -372,7 +439,10 @@ private:
     }
 
     void report_progress(size_t cur, size_t total) noexcept {
-        if (progress_cb_) progress_cb_(cur, total);
+        if (progress_cb_)
+        {
+            progress_cb_(cur, total);
+        }
     }
 
     // ====================================================================
@@ -386,9 +456,11 @@ private:
         w.key("version").value(header_.archive_version);
         w.key("engine").value(header_.engine_version);
 
-        if (metadata_.size() > 0) {
+        if (metadata_.size() > 0)
+        {
             w.key("meta").begin_object();
-            for (size_t i = 0; i < metadata_.size(); ++i) {
+            for (size_t i = 0; i < metadata_.size(); ++i)
+            {
                 w.key(metadata_[i].key).value(metadata_[i].value);
             }
             w.end_object();
@@ -397,7 +469,8 @@ private:
         // 保存组件版本 (用于加载时迁移)
         bool has_cv = false;
         ((has_cv = has_cv || (lookup_component_version<Ts>() > 0)), ...);
-        if (has_cv) {
+        if (has_cv)
+        {
             w.key("cv").begin_object();
             (save_component_version<Ts>(w), ...);
             w.end_object();
@@ -419,7 +492,8 @@ private:
     template<typename T>
     void save_component_version(json_writer& w) noexcept {
         uint32_t cv = lookup_component_version<T>();
-        if (cv > 0) {
+        if (cv > 0)
+        {
             w.key(std::string(type_name<T>())).value(cv);
         }
     }
@@ -429,11 +503,15 @@ private:
         uint32_t max_idx = 0;
         bool any = false;
         ((collect_max_entity_idx<Ts>(max_idx, any)), ...);
-        if (!any) return;
+        if (!any)
+        {
+            return;
+        }
 
         dense<uint64_t> seen;
         size_t blocks = static_cast<size_t>(max_idx) / 64 + 1;
-        for (size_t i = 0; i < blocks; ++i) {
+        for (size_t i = 0; i < blocks; ++i)
+        {
             seen.push_back(0);
         }
         (save_unique_entities<Ts>(w, seen), ...);
@@ -442,29 +520,46 @@ private:
     template<typename T>
     void collect_max_entity_idx(uint32_t& max_idx, bool& any) noexcept {
         const single_class_set* set = mgr_.get_single_class_set<T>();
-        if (!set || set->size() == 0) return;
+        if (!set || set->size() == 0)
+        {
+            return;
+        }
         any = true;
         const auto& indices = set->get_entity_indices();
         size_t count = indices.size();
-        for (size_t i = 0; i < count; ++i) {
-            if (indices[i] > max_idx) max_idx = indices[i];
+        for (size_t i = 0; i < count; ++i)
+        {
+            if (indices[i] > max_idx)
+            {
+                max_idx = indices[i];
+            }
         }
     }
 
     template<typename T>
     void save_unique_entities(json_writer& w, dense<uint64_t>& seen) noexcept {
         const single_class_set* set = mgr_.get_single_class_set<T>();
-        if (!set) return;
+        if (!set)
+        {
+            return;
+        }
         const auto& indices  = set->get_entity_indices();
         const auto& versions = set->get_entity_versions();
         size_t count = set->size();
-        for (size_t i = 0; i < count; ++i) {
+        for (size_t i = 0; i < count; ++i)
+        {
             uint32_t idx = indices[i];
             uint32_t ver = versions[i];
-            if (filter_ && !filter_->matches_entity(idx, mgr_.get_entity_state(idx))) continue;
+            if (filter_ && !filter_->matches_entity(idx, mgr_.get_entity_state(idx)))
+            {
+                continue;
+            }
             size_t block = static_cast<size_t>(idx) / 64;
             uint64_t bit = static_cast<uint64_t>(1) << (idx % 64);
-            if (seen[block] & bit) continue;
+            if (seen[block] & bit)
+            {
+                continue;
+            }
             seen[block] |= bit;
             const auto& state = mgr_.get_entity_state(idx);
             w.begin_object();
@@ -483,24 +578,35 @@ private:
         std::string name = std::string(type_name<T>());
         w.key(name).begin_array();
         const single_class_set* set = mgr_.get_single_class_set<T>();
-        if (!set) { w.end_array(); return; }
+        if (!set)
+        {
+            w.end_array();
+            return;
+        }
         const auto& indices  = set->get_entity_indices();
         const auto& versions = set->get_entity_versions();
         const auto* pool     = set->get_typed_pool_ptr<T>();
         size_t count = set->size();
         size_t comp_count = 0;
-        for (size_t i = 0; i < count; ++i) {
+        for (size_t i = 0; i < count; ++i)
+        {
             uint32_t idx = indices[i];
-            if (filter_ && !filter_->matches_entity(idx, mgr_.get_entity_state(idx))) continue;
+            if (filter_ && !filter_->matches_entity(idx, mgr_.get_entity_state(idx)))
+            {
+                continue;
+            }
             const T* comp = pool ? &(*pool)[i] : nullptr;
             w.begin_object();
             w.key("i").value(static_cast<uint32_t>(idx));
             w.key("v").value(static_cast<uint32_t>(versions[i]));
-            if (comp) {
+            if (comp)
+            {
                 w.key("d");
                 serialize_value<T>(w, *comp);
                 ++comp_count;
-            } else {
+            }
+            else
+            {
                 w.key("d").null();
             }
             w.end_object();
@@ -513,18 +619,29 @@ private:
 
     template<typename T>
     void serialize_value(json_writer& w, const T& comp) noexcept {
-        if constexpr (reflect_bridge::has_json_serialize<T>) {
+        if constexpr (reflect_bridge::has_json_serialize<T>)
+        {
             w.raw_value(comp.to_json());
-        } else if constexpr (std::is_trivially_copyable_v<T>) {
-            if (reflect_bridge::is_reflected<T>()) {
+        }
+        else if constexpr (std::is_trivially_copyable_v<T>)
+        {
+            if (reflect_bridge::is_reflected<T>())
+            {
                 reflect_bridge::to_json(w, comp);
-            } else {
-                w.value(detail::base64_encode(&comp, sizeof(T)));
             }
-        } else {
-            if (reflect_bridge::is_reflected<T>()) {
+            else
+            {
+                w.value(::detail::base64_encode(&comp, sizeof(T)));
+            }
+        }
+        else
+        {
+            if (reflect_bridge::is_reflected<T>())
+            {
                 reflect_bridge::to_json(w, comp);
-            } else {
+            }
+            else
+            {
                 w.null();
             }
         }
@@ -536,63 +653,103 @@ private:
     template<typename... Ts>
     operating_message load_from_json(std::string_view json) noexcept {
         json_reader r(json);
-        if (!r.enter_object()) return r.last_error();
+        if (!r.enter_object())
+        {
+            return r.last_error();
+        }
 
         detail::entity_remap remap;
         // 加载的组件版本映射 (类型名 → 版本)
         dense<detail::metadata_entry> saved_cv;
 
         std::string_view key;
-        while (!(key = r.next_key()).empty()) {
-            if (key == "version") {
+        while (!(key = r.next_key()).empty())
+        {
+            if (key == "version")
+            {
                 uint32_t v = r.read_uint32();
-                if (v > header_.archive_version) {
+                if (v > header_.archive_version)
+                {
                     operating_message res;
                     res.write_message(false, "存档版本 ", v, " 高于当前支持版本 ",
                                     std::to_string(header_.archive_version));
                     return res;
                 }
-            } else if (key == "engine") {
+            }
+            else if (key == "engine")
+            {
                 [[maybe_unused]] uint32_t v = r.read_uint32();
-            } else if (key == "meta") {
-                if (r.enter_object()) {
+            }
+            else if (key == "meta")
+            {
+                if (r.enter_object())
+                {
                     std::string_view mk;
-                    while (!(mk = r.next_key()).empty()) {
+                    while (!(mk = r.next_key()).empty())
+                    {
                         std::string val = r.read_string();
                         metadata_.push_back({std::string(mk), std::move(val)});
                     }
                 }
-            } else if (key == "cv") {
+            }
+            else if (key == "cv")
+            {
                 // 读取组件版本
-                if (r.enter_object()) {
+                if (r.enter_object())
+                {
                     std::string_view cvk;
-                    while (!(cvk = r.next_key()).empty()) {
+                    while (!(cvk = r.next_key()).empty())
+                    {
                         uint32_t v = r.read_uint32();
                         saved_cv.push_back({std::string(cvk), std::to_string(v)});
                     }
                 }
-            } else if (key == "entities") {
-                if (!scan_entities(r, remap)) {
-                    if (r.has_error()) return r.last_error();
+            }
+            else if (key == "entities")
+            {
+                if (!scan_entities(r, remap))
+                {
+                    if (r.has_error())
+                    {
+                        return r.last_error();
+                    }
                     operating_message res;
                     res.write_message(false, "实体扫描失败 (可能超过上限: ",
                                     std::to_string(limits_.max_entity_count), ")");
                     return res;
                 }
-            } else if (key == "components") {
-                if (!r.enter_object()) return r.last_error();
-                while (!(key = r.next_key()).empty()) {
+            }
+            else if (key == "components")
+            {
+                if (!r.enter_object())
+                {
+                    return r.last_error();
+                }
+                while (!(key = r.next_key()).empty())
+                {
                     bool matched = false;
                     ((load_match_type<Ts>(r, key, matched, remap, saved_cv)), ...);
-                    if (!matched) {
-                        if (!r.skip_value()) return r.last_error();
+                    if (!matched)
+                    {
+                        if (!r.skip_value())
+                        {
+                            return r.last_error();
+                        }
                     }
                 }
-            } else {
-                if (!r.skip_value()) return r.last_error();
+            }
+            else
+            {
+                if (!r.skip_value())
+                {
+                    return r.last_error();
+                }
             }
         }
-        if (r.has_error()) return r.last_error();
+        if (r.has_error())
+        {
+            return r.last_error();
+        }
 
         (remap_entity_fields<Ts>(remap), ...);
 
@@ -603,8 +760,10 @@ private:
     // 查找已保存的组件版本
     [[nodiscard]] uint32_t find_saved_cv(const dense<detail::metadata_entry>& saved_cv,
                                           std::string_view name) const noexcept {
-        for (size_t i = 0; i < saved_cv.size(); ++i) {
-            if (saved_cv[i].key == name) {
+        for (size_t i = 0; i < saved_cv.size(); ++i)
+        {
+            if (saved_cv[i].key == name)
+            {
                 return static_cast<uint32_t>(std::stoul(saved_cv[i].value));
             }
         }
@@ -612,26 +771,57 @@ private:
     }
 
     bool scan_entities(json_reader& r, detail::entity_remap& remap) noexcept {
-        if (!r.enter_array()) return false;
+        if (!r.enter_array())
+        {
+            return false;
+        }
         size_t count = 0;
-        while (r.next_element()) {
-            if (++count > limits_.max_entity_count) {
+        while (r.next_element())
+        {
+            if (++count > limits_.max_entity_count)
+            {
                 return false;
             }
-            if (!r.enter_object()) return false;
+            if (!r.enter_object())
+            {
+                return false;
+            }
             uint32_t idx = 0, ver = 0, flags = 0, tag = 0, layer = 0, group = 0;
             std::string_view key;
-            while (!(key = r.next_key()).empty()) {
-                if (key == "i") idx = r.read_uint32();
-                else if (key == "v") ver = r.read_uint32();
-                else if (key == "f") flags = r.read_uint32();
-                else if (key == "t") tag = r.read_uint32();
-                else if (key == "l") layer = r.read_uint32();
-                else if (key == "g") group = r.read_uint32();
-                else r.skip_value();
+            while (!(key = r.next_key()).empty())
+            {
+                if (key == "i")
+                {
+                    idx = r.read_uint32();
+                }
+                else if (key == "v")
+                {
+                    ver = r.read_uint32();
+                }
+                else if (key == "f")
+                {
+                    flags = r.read_uint32();
+                }
+                else if (key == "t")
+                {
+                    tag = r.read_uint32();
+                }
+                else if (key == "l")
+                {
+                    layer = r.read_uint32();
+                }
+                else if (key == "g")
+                {
+                    group = r.read_uint32();
+                }
+                else
+                {
+                    r.skip_value();
+                }
             }
             entity new_e = mgr_.create_entity();
-            while (remap.old_to_new.size() <= idx) {
+            while (remap.old_to_new.size() <= idx)
+            {
                 remap.old_to_new.push_back(entity{});
                 remap.old_versions.push_back(0);
             }
@@ -652,9 +842,13 @@ private:
     void load_match_type(json_reader& r, std::string_view saved_name,
                          bool& matched, const detail::entity_remap& remap,
                          const dense<detail::metadata_entry>& saved_cv) noexcept {
-        if (matched) return;
+        if (matched)
+        {
+            return;
+        }
         std::string_view name = type_name<T>();
-        if (saved_name == name) {
+        if (saved_name == name)
+        {
             matched = true;
             load_one_type_json<T>(r, remap, saved_cv);
         }
@@ -663,44 +857,69 @@ private:
     template<typename T>
     void load_one_type_json(json_reader& r, const detail::entity_remap& remap,
                              const dense<detail::metadata_entry>& saved_cv) noexcept {
-        if (!r.enter_array()) return;
+        if (!r.enter_array())
+        {
+            return;
+        }
         size_t comp_count = 0;
         // 查找存档中的组件版本和当前注册版本
         uint32_t saved_ver = find_saved_cv(saved_cv, std::string(type_name<T>()));
         uint32_t current_ver = lookup_component_version<T>();
-        if (current_ver == 0) current_ver = saved_ver; // 未注册则不迁移
+        if (current_ver == 0)
+        {
+            current_ver = saved_ver; // 未注册则不迁移
+        }
         int tid = type_id::get_type_id<T>();
 
-        while (r.next_element()) {
-            if (!r.enter_object()) return;
+        while (r.next_element())
+        {
+            if (!r.enter_object())
+            {
+                return;
+            }
             uint32_t idx = 0;
             [[maybe_unused]] uint32_t ver = 0;
             bool has_data = false;
             std::string data_str;
             std::string_view key;
-            while (!(key = r.next_key()).empty()) {
-                if (key == "i") idx = r.read_uint32();
-                else if (key == "v") ver = r.read_uint32();
-                else if (key == "d") {
+            while (!(key = r.next_key()).empty())
+            {
+                if (key == "i")
+                {
+                    idx = r.read_uint32();
+                }
+                else if (key == "v")
+                {
+                    ver = r.read_uint32();
+                }
+                else if (key == "d")
+                {
                     has_data = true;
                     data_str = read_component_data<T>(r);
                 }
-                else r.skip_value();
+                else
+                {
+                    r.skip_value();
+                }
             }
 
-            if (idx >= remap.old_to_new.size()) {
+            if (idx >= remap.old_to_new.size())
+            {
                 r.end_element();
                 continue;
             }
             entity e = remap.old_to_new[idx];
-            if (!e.is_valid()) {
+            if (!e.is_valid())
+            {
                 r.end_element();
                 continue;
             }
 
-            if (has_data && !data_str.empty() && data_str != "null") {
+            if (has_data && !data_str.empty() && data_str != "null")
+            {
                 // 应用迁移链
-                if (saved_ver < current_ver) {
+                if (saved_ver < current_ver)
+                {
                     std::string migrated = migrate_component_string(
                         tid, saved_ver, current_ver, data_str);
                     data_str = std::move(migrated);
@@ -712,8 +931,10 @@ private:
         }
 
         // 更新统计
-        for (size_t i = 0; i < stats_.per_type.size(); ++i) {
-            if (stats_.per_type[i].type_name == std::string(type_name<T>())) {
+        for (size_t i = 0; i < stats_.per_type.size(); ++i)
+        {
+            if (stats_.per_type[i].type_name == std::string(type_name<T>()))
+            {
                 stats_.per_type[i].component_count = comp_count;
                 break;
             }
@@ -722,15 +943,22 @@ private:
 
     template<typename T>
     std::string read_component_data(json_reader& r) noexcept {
-        if constexpr (reflect_bridge::has_json_deserialize<T>) {
+        if constexpr (reflect_bridge::has_json_deserialize<T>)
+        {
             return std::string(r.read_raw_value());
-        } else if constexpr (std::is_trivially_copyable_v<T>) {
-            if (reflect_bridge::is_reflected<T>()) {
+        }
+        else if constexpr (std::is_trivially_copyable_v<T>)
+        {
+            if (reflect_bridge::is_reflected<T>())
+            {
                 return std::string(r.read_raw_value());
             }
             return r.read_string();
-        } else {
-            if (reflect_bridge::is_reflected<T>()) {
+        }
+        else
+        {
+            if (reflect_bridge::is_reflected<T>())
+            {
                 return std::string(r.read_raw_value());
             }
             r.skip_value();
@@ -740,26 +968,36 @@ private:
 
     template<typename T>
     void construct_component(entity e, const std::string& data_str) noexcept {
-        if constexpr (reflect_bridge::has_json_deserialize<T>) {
+        if constexpr (reflect_bridge::has_json_deserialize<T>)
+        {
             T comp{};
             comp.from_json(data_str);
             mgr_.add<T>(e, std::move(comp));
-        } else if constexpr (std::is_trivially_copyable_v<T>) {
-            if (reflect_bridge::is_reflected<T>()) {
+        }
+        else if constexpr (std::is_trivially_copyable_v<T>)
+        {
+            if (reflect_bridge::is_reflected<T>())
+            {
                 T comp{};
                 json_reader sub(data_str);
                 reflect_bridge::from_json(sub, comp);
                 mgr_.add<T>(e, std::move(comp));
-            } else {
+            }
+            else
+            {
                 T comp{};
-                std::string decoded = detail::base64_decode(data_str);
-                if (decoded.size() == sizeof(T)) {
+                std::string decoded = ::detail::base64_decode(data_str);
+                if (decoded.size() == sizeof(T))
+                {
                     std::memcpy(&comp, decoded.data(), sizeof(T));
                 }
                 mgr_.add<T>(e, std::move(comp));
             }
-        } else {
-            if (reflect_bridge::is_reflected<T>()) {
+        }
+        else
+        {
+            if (reflect_bridge::is_reflected<T>())
+            {
                 T comp{};
                 json_reader sub(data_str);
                 reflect_bridge::from_json(sub, comp);
@@ -774,31 +1012,51 @@ private:
     template<typename T>
     void remap_entity_fields(const detail::entity_remap& remap) noexcept {
         single_class_set* set = mgr_.get_single_class_set<T>();
-        if (!set) return;
+        if (!set)
+        {
+            return;
+        }
         int tid = type_id::get_type_id<T>();
         auto& reg = detail::entity_field_registry();
         dense<uint32_t> offsets;
-        for (size_t i = 0; i < reg.size(); ++i) {
-            if (reg[i].type_id == tid) {
+        for (size_t i = 0; i < reg.size(); ++i)
+        {
+            if (reg[i].type_id == tid)
+            {
                 offsets.push_back(reg[i].offset);
             }
         }
-        if (offsets.size() == 0) return;
+        if (offsets.size() == 0)
+        {
+            return;
+        }
 
         auto* pool = set->get_typed_pool_ptr<T>();
-        if (!pool) return;
+        if (!pool)
+        {
+            return;
+        }
         size_t count = set->size();
         const auto& indices = set->get_entity_indices();
-        for (size_t i = 0; i < count; ++i) {
+        for (size_t i = 0; i < count; ++i)
+        {
             T& comp = (*pool)[i];
             uint32_t new_idx = indices[i];
-            if (new_idx >= remap.old_to_new.size()) continue;
+            if (new_idx >= remap.old_to_new.size())
+            {
+                continue;
+            }
             char* base = static_cast<char*>(static_cast<void*>(&comp));
-            for (size_t k = 0; k < offsets.size(); ++k) {
+            for (size_t k = 0; k < offsets.size(); ++k)
+            {
                 entity* ref = reinterpret_cast<entity*>(base + offsets[k]);
-                if (!ref->is_valid()) continue;
+                if (!ref->is_valid())
+                {
+                    continue;
+                }
                 uint32_t old_idx = ref->parts_.index_;
-                if (old_idx < remap.old_to_new.size()) {
+                if (old_idx < remap.old_to_new.size())
+                {
                     *ref = remap.old_to_new[old_idx];
                 }
             }
@@ -816,10 +1074,12 @@ private:
 
         // 元数据
         std::string meta_buf;
-        if (metadata_.size() > 0) {
+        if (metadata_.size() > 0)
+        {
             json_writer mw;
             mw.begin_object();
-            for (size_t i = 0; i < metadata_.size(); ++i) {
+            for (size_t i = 0; i < metadata_.size(); ++i)
+            {
                 mw.key(metadata_[i].key).value(metadata_[i].value);
             }
             mw.end_object();
@@ -862,11 +1122,16 @@ private:
 
         // 先计算过滤后的实际数量
         size_t actual = 0;
-        if (set) {
+        if (set)
+        {
             const auto& indices = set->get_entity_indices();
-            for (size_t i = 0; i < total; ++i) {
+            for (size_t i = 0; i < total; ++i)
+            {
                 uint32_t idx = indices[i];
-                if (filter_ && !filter_->matches_entity(idx, mgr_.get_entity_state(idx))) continue;
+                if (filter_ && !filter_->matches_entity(idx, mgr_.get_entity_state(idx)))
+                {
+                    continue;
+                }
                 ++actual;
             }
         }
@@ -874,23 +1139,34 @@ private:
         type_data.begin_array(actual);
 
         size_t comp_count = 0;
-        if (set) {
+        if (set)
+        {
             const auto& indices  = set->get_entity_indices();
             const auto& versions = set->get_entity_versions();
             const auto* pool     = set->get_typed_pool_ptr<T>();
-            for (size_t i = 0; i < total; ++i) {
+            for (size_t i = 0; i < total; ++i)
+            {
                 uint32_t idx = indices[i];
-                if (filter_ && !filter_->matches_entity(idx, mgr_.get_entity_state(idx))) continue;
+                if (filter_ && !filter_->matches_entity(idx, mgr_.get_entity_state(idx)))
+                {
+                    continue;
+                }
                 type_data.value(idx);
                 type_data.value(versions[i]);
-                if (pool) {
+                if (pool)
+                {
                     const T& comp = (*pool)[i];
-                    if constexpr (std::is_trivially_copyable_v<T>) {
+                    if constexpr (std::is_trivially_copyable_v<T>)
+                    {
                         type_data.value_trivial(comp);
-                    } else if constexpr (reflect_bridge::has_json_serialize<T>) {
+                    }
+                    else if constexpr (reflect_bridge::has_json_serialize<T>)
+                    {
                         std::string j = comp.to_json();
                         type_data.value(j);
-                    } else {
+                    }
+                    else
+                    {
                         json_writer w;
                         reflect_bridge::to_json(w, comp);
                         type_data.value(w.take());
@@ -917,7 +1193,8 @@ private:
     template<typename... Ts>
     operating_message save_via_codec(std::string& out, const archive_codec& codec) noexcept {
         archive_writer* w = codec.create_writer();
-        if (!w) {
+        if (!w)
+        {
             operating_message res;
             res.write_message(false, "编码器创建失败");
             return res;
@@ -938,7 +1215,8 @@ private:
         {
             json_writer mw;
             mw.begin_object();
-            for (size_t i = 0; i < metadata_.size(); ++i) {
+            for (size_t i = 0; i < metadata_.size(); ++i)
+            {
                 mw.key(metadata_[i].key).value(metadata_[i].value);
             }
             mw.end_object();
@@ -984,14 +1262,16 @@ private:
             "所有组件类型必须满足 json_serializable");
 
         binary_reader r(data);
-        if (r.has_error()) {
+        if (r.has_error())
+        {
             operating_message res;
             res.write_message(false, "二进制格式校验失败");
             return res;
         }
 
         uint32_t archive_ver = r.read_u32();
-        if (archive_ver > header_.archive_version) {
+        if (archive_ver > header_.archive_version)
+        {
             operating_message res;
             res.write_message(false, "存档版本 ", archive_ver, " 高于当前支持版本 ",
                             std::to_string(header_.archive_version));
@@ -1001,11 +1281,14 @@ private:
 
         // 元数据
         std::string meta_str = r.read_string();
-        if (!meta_str.empty()) {
+        if (!meta_str.empty())
+        {
             json_reader mr(meta_str);
-            if (mr.enter_object()) {
+            if (mr.enter_object())
+            {
                 std::string_view mk;
-                while (!(mk = mr.next_key()).empty()) {
+                while (!(mk = mr.next_key()).empty())
+                {
                     std::string val = mr.read_string();
                     metadata_.push_back({std::string(mk), std::move(val)});
                 }
@@ -1015,9 +1298,11 @@ private:
         // 实体状态
         std::string entities_json = r.read_string();
         detail::entity_remap remap;
-        if (!entities_json.empty()) {
+        if (!entities_json.empty())
+        {
             json_reader er(entities_json);
-            if (!scan_entities(er, remap)) {
+            if (!scan_entities(er, remap))
+            {
                 operating_message res;
                 res.write_message(false, "二进制存档实体扫描失败");
                 return res;
@@ -1025,17 +1310,20 @@ private:
         }
 
         uint32_t type_count = r.read_u32();
-        for (uint32_t t = 0; t < type_count; ++t) {
+        for (uint32_t t = 0; t < type_count; ++t)
+        {
             std::string saved_name = r.read_string();
             uint32_t saved_cv = r.read_u32(); // 组件版本
             uint32_t type_data_len = r.read_u32();
 
             bool matched = false;
             ((load_match_type_binary<Ts>(r, saved_name, saved_cv, matched, remap)), ...);
-            if (!matched) {
+            if (!matched)
+            {
                 r.skip(type_data_len);
             }
-            if (r.has_error()) {
+            if (r.has_error())
+            {
                 operating_message res;
                 res.write_message(false, "二进制加载读取错误");
                 return res;
@@ -1052,9 +1340,13 @@ private:
     void load_match_type_binary(binary_reader& r, const std::string& saved_name,
                                 uint32_t saved_cv,
                                 bool& matched, const detail::entity_remap& remap) noexcept {
-        if (matched) return;
+        if (matched)
+        {
+            return;
+        }
         std::string_view name = type_name<T>();
-        if (saved_name == name) {
+        if (saved_name == name)
+        {
             matched = true;
             load_one_type_binary<T>(r, remap, saved_cv);
         }
@@ -1064,45 +1356,61 @@ private:
     void load_one_type_binary(binary_reader& r, const detail::entity_remap& remap,
                                 uint32_t saved_cv) noexcept {
         uint32_t current_cv = lookup_component_version<T>();
-        if (current_cv == 0) current_cv = saved_cv; // 未注册则不迁移
+        if (current_cv == 0)
+        {
+            current_cv = saved_cv; // 未注册则不迁移
+        }
         int tid = type_id::get_type_id<T>();
 
         uint32_t count = r.read_u32();
-        for (uint32_t i = 0; i < count; ++i) {
+        for (uint32_t i = 0; i < count; ++i)
+        {
             uint32_t idx = r.read_u32();
             [[maybe_unused]] uint32_t ver = r.read_u32();
 
-            if (idx >= remap.old_to_new.size()) {
+            if (idx >= remap.old_to_new.size())
+            {
                 skip_binary_element<T>(r);
                 continue;
             }
             entity e = remap.old_to_new[idx];
-            if (!e.is_valid()) {
+            if (!e.is_valid())
+            {
                 skip_binary_element<T>(r);
                 continue;
             }
 
-            if constexpr (std::is_trivially_copyable_v<T>) {
+            if constexpr (std::is_trivially_copyable_v<T>)
+            {
                 T comp{};
                 r.read_trivial(comp);
-                if (!r.has_error()) {
+                if (!r.has_error())
+                {
                     mgr_.add<T>(e, std::move(comp));
                 }
-            } else if constexpr (reflect_bridge::has_json_deserialize<T>) {
+            }
+            else if constexpr (reflect_bridge::has_json_deserialize<T>)
+            {
                 std::string json_str = r.read_string();
-                if (!r.has_error() && !json_str.empty()) {
+                if (!r.has_error() && !json_str.empty())
+                {
                     // 应用迁移
-                    if (saved_cv < current_cv) {
+                    if (saved_cv < current_cv)
+                    {
                         json_str = migrate_component_string(tid, saved_cv, current_cv, json_str);
                     }
                     T comp{};
                     comp.from_json(json_str);
                     mgr_.add<T>(e, std::move(comp));
                 }
-            } else if constexpr (reflect_bridge::is_reflected<T>()) {
+            }
+            else if constexpr (reflect_bridge::is_reflected<T>())
+            {
                 std::string json_str = r.read_string();
-                if (!r.has_error() && !json_str.empty()) {
-                    if (saved_cv < current_cv) {
+                if (!r.has_error() && !json_str.empty())
+                {
+                    if (saved_cv < current_cv)
+                    {
                         json_str = migrate_component_string(tid, saved_cv, current_cv, json_str);
                     }
                     T comp{};
@@ -1110,7 +1418,9 @@ private:
                     reflect_bridge::from_json(sub, comp);
                     mgr_.add<T>(e, std::move(comp));
                 }
-            } else {
+            }
+            else
+            {
                 [[maybe_unused]] std::string json_str = r.read_string();
             }
         }
@@ -1118,9 +1428,12 @@ private:
 
     template<typename T>
     void skip_binary_element(binary_reader& r) noexcept {
-        if constexpr (std::is_trivially_copyable_v<T>) {
+        if constexpr (std::is_trivially_copyable_v<T>)
+        {
             r.skip(sizeof(T));
-        } else {
+        }
+        else
+        {
             [[maybe_unused]] auto s = r.read_string();
         }
     }
@@ -1132,16 +1445,22 @@ private:
     template<typename... Ts>
     operating_message load_via_codec(std::string_view data, const archive_codec& codec) noexcept {
         archive_reader* r = codec.create_reader(data);
-        if (!r || r->has_error()) {
-            if (r) codec.destroy_reader(r);
+        if (!r || r->has_error())
+        {
+            if (r)
+            {
+                codec.destroy_reader(r);
+            }
             operating_message res;
             res.write_message(false, "格式校验失败");
             return res;
         }
 
-        if (!r->enter_object()) {
+        if (!r->enter_object())
+        {
             operating_message res = r->has_error() ? r->last_error() : operating_message{};
-            if (!res) {
+            if (!res)
+            {
                 res.write_message(false, "enter_object 失败");
             }
             codec.destroy_reader(r);
@@ -1152,10 +1471,18 @@ private:
         dense<detail::metadata_entry> saved_cv;
 
         // 按固定顺序读 (与 save_via_codec 的写入顺序配对)
+        // 每个字段校验编号, 检测 save 端字段顺序错位
         // f1: version
-        r->next_key();
+        if (!expect_field_number(*r, 1))
+        {
+            codec.destroy_reader(r);
+            operating_message res;
+            res.write_message(false, "schema 校验失败: 期望字段 f1(version)");
+            return res;
+        }
         uint32_t archive_ver = r->read_u32();
-        if (archive_ver > header_.archive_version) {
+        if (archive_ver > header_.archive_version)
+        {
             codec.destroy_reader(r);
             operating_message res;
             res.write_message(false, "存档版本 ", archive_ver, " 高于当前支持版本 ",
@@ -1163,17 +1490,32 @@ private:
             return res;
         }
         // f2: engine
-        r->next_key();
+        if (!expect_field_number(*r, 2))
+        {
+            codec.destroy_reader(r);
+            operating_message res;
+            res.write_message(false, "schema 校验失败: 期望字段 f2(engine)");
+            return res;
+        }
         (void)r->read_u32();
         // f3: meta (JSON 字符串)
-        r->next_key();
+        if (!expect_field_number(*r, 3))
+        {
+            codec.destroy_reader(r);
+            operating_message res;
+            res.write_message(false, "schema 校验失败: 期望字段 f3(meta)");
+            return res;
+        }
         {
             std::string_view meta_json = r->read_string_view();
-            if (!meta_json.empty()) {
+            if (!meta_json.empty())
+            {
                 json_reader mr(meta_json);
-                if (mr.enter_object()) {
+                if (mr.enter_object())
+                {
                     std::string_view mk;
-                    while (!(mk = mr.next_key()).empty()) {
+                    while (!(mk = mr.next_key()).empty())
+                    {
                         std::string val = mr.read_string();
                         metadata_.push_back({std::string(mk), std::move(val)});
                     }
@@ -1181,14 +1523,23 @@ private:
             }
         }
         // f4: cv (JSON 字符串)
-        r->next_key();
+        if (!expect_field_number(*r, 4))
+        {
+            codec.destroy_reader(r);
+            operating_message res;
+            res.write_message(false, "schema 校验失败: 期望字段 f4(cv)");
+            return res;
+        }
         {
             std::string_view cv_json = r->read_string_view();
-            if (!cv_json.empty()) {
+            if (!cv_json.empty())
+            {
                 json_reader cr(cv_json);
-                if (cr.enter_object()) {
+                if (cr.enter_object())
+                {
                     std::string_view ck;
-                    while (!(ck = cr.next_key()).empty()) {
+                    while (!(ck = cr.next_key()).empty())
+                    {
                         uint32_t v = cr.read_uint32();
                         saved_cv.push_back({std::string(ck), std::to_string(v)});
                     }
@@ -1196,8 +1547,15 @@ private:
             }
         }
         // f5: entities
-        r->next_key();
-        if (!scan_entities_via_codec(*r, remap)) {
+        if (!expect_field_number(*r, 5))
+        {
+            codec.destroy_reader(r);
+            operating_message res;
+            res.write_message(false, "schema 校验失败: 期望字段 f5(entities)");
+            return res;
+        }
+        if (!scan_entities_via_codec(*r, remap))
+        {
             codec.destroy_reader(r);
             operating_message res;
             res.write_message(false, "实体扫描失败 (可能超过上限: ",
@@ -1205,8 +1563,15 @@ private:
             return res;
         }
         // f6: components
-        r->next_key();
-        if (r->enter_object()) {
+        if (!expect_field_number(*r, 6))
+        {
+            codec.destroy_reader(r);
+            operating_message res;
+            res.write_message(false, "schema 校验失败: 期望字段 f6(components)");
+            return res;
+        }
+        if (r->enter_object())
+        {
             // 按 Ts 顺序读取 (protobuf 字段编号 f1, f2, ... 对应 Ts... 顺序)
             (load_one_type_via_codec<Ts>(*r, remap, saved_cv), ...);
             r->leave_object();
@@ -1223,13 +1588,21 @@ private:
 
     // 按固定顺序读实体字段: i(f1), v(f2), f(f3), t(f4), l(f5), g(f6)
     bool scan_entities_via_codec(archive_reader& r, detail::entity_remap& remap) noexcept {
-        if (!r.enter_array()) return false;
+        if (!r.enter_array())
+        {
+            return false;
+        }
         size_t count = 0;
-        while (r.next_element()) {
-            if (++count > limits_.max_entity_count) {
+        while (r.next_element())
+        {
+            if (++count > limits_.max_entity_count)
+            {
                 return false;
             }
-            if (!r.enter_object()) return false;
+            if (!r.enter_object())
+            {
+                return false;
+            }
 
             // 按固定顺序读: i(f1), v(f2), f(f3), t(f4), l(f5), g(f6)
             uint32_t idx = 0, ver = 0, flags = 0, tag = 0, layer = 0, group = 0;
@@ -1243,7 +1616,8 @@ private:
             r.end_element();
 
             entity new_e = mgr_.create_entity();
-            while (remap.old_to_new.size() <= idx) {
+            while (remap.old_to_new.size() <= idx)
+            {
                 remap.old_to_new.push_back(entity{});
                 remap.old_versions.push_back(0);
             }
@@ -1266,16 +1640,26 @@ private:
                                   const dense<detail::metadata_entry>& saved_cv) noexcept {
         // 读取类型字段 key (protobuf 返回 "f1"/"f2"/..., JSON 返回类型名)
         r.next_key();
-        if (!r.enter_array()) return;
+        if (!r.enter_array())
+        {
+            return;
+        }
 
         uint32_t saved_ver = find_saved_cv(saved_cv, std::string(get_type_name<T>()));
         uint32_t current_ver = lookup_component_version<T>();
-        if (current_ver == 0) current_ver = saved_ver;
+        if (current_ver == 0)
+        {
+            current_ver = saved_ver;
+        }
         int tid = type_id::get_type_id<T>();
         size_t comp_count = 0;
 
-        while (r.next_element()) {
-            if (!r.enter_object()) break;
+        while (r.next_element())
+        {
+            if (!r.enter_object())
+            {
+                break;
+            }
 
             // 按固定顺序读: i(f1), v(f2), d(f3)
             r.next_key();
@@ -1284,64 +1668,84 @@ private:
             (void)r.read_u32();  // version
             r.next_key();  // d
 
-            if (idx >= remap.old_to_new.size()) {
+            if (idx >= remap.old_to_new.size())
+            {
                 r.leave_object();
                 r.end_element();
                 continue;
             }
             entity e = remap.old_to_new[idx];
-            if (!e.is_valid()) {
+            if (!e.is_valid())
+            {
                 r.leave_object();
                 r.end_element();
                 continue;
             }
 
             // 读取组件数据 (与 archive_logic.serialize_value 的写入方式配对)
-            if constexpr (reflect_bridge::has_json_serialize<T>) {
+            if constexpr (reflect_bridge::has_json_serialize<T>)
+            {
                 // to_json: write_raw 写入的 JSON 片段
                 std::string_view raw = r.read_bytes_view(0);
                 std::string data_str(raw);
-                if (!data_str.empty() && data_str != "null") {
-                    if (saved_ver < current_ver) {
+                if (!data_str.empty() && data_str != "null")
+                {
+                    if (saved_ver < current_ver)
+                    {
                         data_str = migrate_component_string(tid, saved_ver, current_ver, data_str);
                     }
                     construct_component<T>(e, data_str);
                     ++comp_count;
                 }
-            } else if constexpr (std::is_trivially_copyable_v<T>) {
-                if (reflect_bridge::is_reflected<T>()) {
+            }
+            else if constexpr (std::is_trivially_copyable_v<T>)
+            {
+                if (reflect_bridge::is_reflected<T>())
+                {
                     // 反射: write_raw 写入的 JSON 片段
                     std::string_view raw = r.read_bytes_view(0);
                     std::string data_str(raw);
-                    if (!data_str.empty()) {
-                        if (saved_ver < current_ver) {
+                    if (!data_str.empty())
+                    {
+                        if (saved_ver < current_ver)
+                        {
                             data_str = migrate_component_string(tid, saved_ver, current_ver, data_str);
                         }
                         construct_component<T>(e, data_str);
                         ++comp_count;
                     }
-                } else {
+                }
+                else
+                {
                     // trivially copyable: write_bytes 写入的原始字节
                     std::string_view bytes = r.read_bytes_view(sizeof(T));
-                    if (bytes.size() == sizeof(T)) {
+                    if (bytes.size() == sizeof(T))
+                    {
                         T comp{};
                         std::memcpy(&comp, bytes.data(), sizeof(T));
                         mgr_.add<T>(e, std::move(comp));
                         ++comp_count;
                     }
                 }
-            } else {
-                if (reflect_bridge::is_reflected<T>()) {
+            }
+            else
+            {
+                if (reflect_bridge::is_reflected<T>())
+                {
                     std::string_view raw = r.read_bytes_view(0);
                     std::string data_str(raw);
-                    if (!data_str.empty()) {
-                        if (saved_ver < current_ver) {
+                    if (!data_str.empty())
+                    {
+                        if (saved_ver < current_ver)
+                        {
                             data_str = migrate_component_string(tid, saved_ver, current_ver, data_str);
                         }
                         construct_component<T>(e, data_str);
                         ++comp_count;
                     }
-                } else {
+                }
+                else
+                {
                     r.skip_value();
                 }
             }
@@ -1360,7 +1764,10 @@ private:
     template<typename T>
     [[nodiscard]] static std::string_view type_name() noexcept {
         const char* stable = lookup_type_name(type_id::get_type_id<T>());
-        if (stable) return stable;
+        if (stable)
+        {
+            return stable;
+        }
         static std::string name = typeid(T).name();
         return name;
     }

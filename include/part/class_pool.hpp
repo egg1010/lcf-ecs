@@ -622,4 +622,4 @@ private:
 template <typename T>
 void swap(class_pool<T>& a, class_pool<T>& b) noexcept;
 
-#include "class_pool.inc.hpp"
+#include "class_pool_impl.hpp"
