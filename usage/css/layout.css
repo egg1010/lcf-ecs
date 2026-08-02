@@ -212,6 +212,12 @@
 
 .breadcrumb .sep { opacity: 0.5; }
 .breadcrumb .current { color: var(--fg-1); font-weight: 600; }
+.breadcrumb .home-btn {
+  margin-left: auto;
+  height: 28px;
+  font-size: 0.75rem;
+  flex-shrink: 0;
+}
 
 /* 响应式 */
 @media (max-width: 900px) {

@@ -144,6 +144,10 @@
     html += '<span>' + (cat ? cat.name : mod.category) + '</span>';
     html += '<span class="sep">/</span>';
     html += '<span class="current">' + escapeText(mod.title) + '</span>';
+    html += '<button class="btn home-btn" title="返回首页">';
+    html += '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>';
+    html += '<span>返回首页</span>';
+    html += '</button>';
     html += '</div>';
 
     html += '<div class="doc-content page-transition cat-' + mod.category + '">';
@@ -152,6 +156,14 @@
 
     DOM.content.innerHTML = html;
     DOM.main.scrollTop = 0;
+
+    // 返回首页按钮
+    var homeBtn = DOM.content.querySelector('.home-btn');
+    if (homeBtn) {
+      homeBtn.addEventListener('click', function () {
+        location.hash = '';
+      });
+    }
 
     // 更新侧边栏高亮
     updateSidebarActive();
