@@ -11,10 +11,14 @@
 #include <initializer_list>
 #include <concepts>
 #include <source_location>
+#include <utility>
 #include "../part/type_id.hpp"
 #include "../part/aggregate_reflect.hpp"
 #include "../part/member_offset.hpp"
 #include "../part/type_erasure.hpp"
+#include "../part/fnv1a.hpp"
+#include "../part/type_ops.hpp"
+#include "../part/container_traits.hpp"
 #include "meta.hpp"
 
 namespace reflect {
@@ -34,6 +38,23 @@ struct spinlock_guard
     spinlock_guard(const spinlock_guard&) = delete;
     spinlock_guard& operator=(const spinlock_guard&) = delete;
 };
+
+// #12 生成方法参数类型 id 静态数组, 返回指针 (生命周期: 程序结束)
+template<typename MFnType>
+struct static_arg_ids_holder
+{
+    static const int* get() noexcept
+    {
+        static const auto ids = arg_ids_maker<MFnType>::make();
+        return ids.data();
+    }
+};
+
+template<typename MFnType>
+inline const int* make_arg_type_ids() noexcept
+{
+    return static_arg_ids_holder<MFnType>::get();
+}
 
 // === C++20 concepts 与类型萃取 ===
 
@@ -120,9 +141,41 @@ public:
             std::abort();
         }
         m->name = name;
+        m->name_hash = fnv1a_runtime(name);
         m->size = static_cast<uint16_t>(sizeof(T));
         m->align = static_cast<uint16_t>(alignof(T));
         m->type_id = tid;
+
+        // #1 构造/销毁注册
+        if constexpr (std::is_default_constructible_v<T>)
+        {
+            m->default_construct_ = +[](void* buf) noexcept -> void*
+            {
+                if (buf)
+                {
+                    return new(buf) T{};
+                }
+                return new (std::nothrow) T{};
+            };
+            m->has_default_construct = true;
+        }
+        if constexpr (!std::is_trivially_destructible_v<T>)
+        {
+            m->destruct_ = +[](void* obj) noexcept
+            {
+                static_cast<T*>(obj)->~T();
+            };
+        }
+
+        // #8/#9 type_ops 注册
+        global_type_ops().register_type_ops<T>();
+
+        // #5 容器特征注册
+        if constexpr (sequential_container<T>)
+        {
+            global_container_ops().register_sequential<T>();
+            m->container_ops = global_container_ops().get(tid);
+        }
 
         if constexpr (std::is_aggregate_v<T> && aggregate_field_count_v<T> > 0)
         {
@@ -142,7 +195,9 @@ public:
                     type_id::get_type_id<member_type>(),
                     std::is_const_v<member_type>,
                     false,
-                    0, 0, 0, {0, 0, 0, 0}, 0
+                    0, 0, 0, {0, 0, 0, 0},
+                    static_cast<uint32_t>(sizeof(member_type)),
+                    {}
                 };
                 m->field_count.store(static_cast<uint16_t>(fidx + 1), std::memory_order_release);
             });
@@ -179,9 +234,42 @@ public:
             std::abort();
         }
         m->name = name;
+        m->name_hash = fnv1a_runtime(name);
         m->size = static_cast<uint16_t>(sizeof(T));
         m->align = static_cast<uint16_t>(alignof(T));
         m->type_id = tid;
+
+        // #1 构造/销毁注册
+        if constexpr (std::is_default_constructible_v<T>)
+        {
+            m->default_construct_ = +[](void* buf) noexcept -> void*
+            {
+                if (buf)
+                {
+                    return new(buf) T{};
+                }
+                return new (std::nothrow) T{};
+            };
+            m->has_default_construct = true;
+        }
+        if constexpr (!std::is_trivially_destructible_v<T>)
+        {
+            m->destruct_ = +[](void* obj) noexcept
+            {
+                static_cast<T*>(obj)->~T();
+            };
+        }
+
+        // #8/#9 type_ops 注册
+        global_type_ops().register_type_ops<T>();
+
+        // #5 容器特征注册
+        if constexpr (sequential_container<T>)
+        {
+            global_container_ops().register_sequential<T>();
+            m->container_ops = global_container_ops().get(tid);
+        }
+
         m->registered.store(true, std::memory_order_release);
 
         type_meta* expected = nullptr;
@@ -222,7 +310,9 @@ public:
                 descs[i].type_id,
                 false,
                 true,
-                0, 0, 0, {0, 0, 0, 0}, 0
+                0, 0, 0, {0, 0, 0, 0},
+                descs[i].size,
+                {}
             };
             m->field_count.store(static_cast<uint16_t>(fidx + 1), std::memory_order_release);
         }
@@ -261,7 +351,9 @@ public:
             type_id::get_type_id<M>(),
             std::is_const_v<M>,
             true,
-            0, 0, 0, {0, 0, 0, 0}, 0
+            0, 0, 0, {0, 0, 0, 0},
+            static_cast<uint32_t>(sizeof(M)),
+            {}
         };
         m->field_count.store(static_cast<uint16_t>(fidx + 1), std::memory_order_release);
     }
@@ -326,7 +418,8 @@ public:
             true,
             rank, 0, total,
             {ext[0], ext[1], ext[2], ext[3]},
-            stride
+            stride,
+            {}
         };
         m->field_count.store(static_cast<uint16_t>(fidx + 1), std::memory_order_release);
     }
@@ -440,6 +533,8 @@ public:
         mm.invoker = &mfn_invoker_t<Fn, mfn_type>::invoke;
         mm.is_const = traits::is_const;
         mm.is_static = false;
+        mm.arg_type_ids = detail::make_arg_type_ids<mfn_type>();
+        mm.vtable_offset = -1;
         m->methods[midx] = mm;
         m->method_count.store(static_cast<uint16_t>(midx + 1), std::memory_order_release);
     }
@@ -480,6 +575,8 @@ public:
         mm.invoker = &sfn_invoker_t<Fn, mfn_type>::invoke;
         mm.is_const = false;
         mm.is_static = true;
+        mm.arg_type_ids = detail::make_arg_type_ids<mfn_type>();
+        mm.vtable_offset = -1;
         m->methods[midx] = mm;
         m->method_count.store(static_cast<uint16_t>(midx + 1), std::memory_order_release);
     }
@@ -525,8 +622,170 @@ public:
         return nullptr;
     }
 
+    // #10 按 name_hash 查找类型 (稳定标识, 跨 DLL/编译器)
+    [[nodiscard]] const type_meta* find_type_by_hash(uint64_t hash) const noexcept
+    {
+        for (size_t i = 0; i < MAX_TYPE_ID; ++i)
+        {
+            type_meta* m = type_entries_[i].load(std::memory_order_acquire);
+            if (m == nullptr)
+            {
+                continue;
+            }
+            if (!m->registered.load(std::memory_order_acquire))
+            {
+                continue;
+            }
+            if (m->name_hash == hash)
+            {
+                return m;
+            }
+        }
+        return nullptr;
+    }
+
+    // #3 枚举注册
+    template<typename E>
+    void register_enum(const char* name,
+        std::initializer_list<std::pair<E, const char*>> values) noexcept
+    {
+        static_assert(std::is_enum_v<E>, "register_enum requires enum type");
+        int tid = type_id::get_type_id<E>();
+        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID))
+        {
+            return;
+        }
+
+        enum_meta* existing = enum_entries_[tid].load(std::memory_order_acquire);
+        if (existing != nullptr)
+        {
+            return;
+        }
+
+        enum_meta* em = new (std::nothrow) enum_meta{};
+        if (em == nullptr)
+        {
+            std::abort();
+        }
+        em->name = name;
+        em->type_id = tid;
+        using UT = std::underlying_type_t<E>;
+        em->underlying_type_id = type_id::get_type_id<UT>();
+        em->values.reserve_exact(values.size());
+        for (const auto& kv : values)
+        {
+            em->values.push_back(enum_value_entry{
+                static_cast<uint64_t>(static_cast<UT>(kv.first)),
+                kv.second,
+                fnv1a_runtime(kv.second)
+            });
+        }
+        em->registered = true;
+
+        enum_meta* expected = nullptr;
+        if (!enum_entries_[tid].compare_exchange_strong(
+                expected, em, std::memory_order_release, std::memory_order_acquire))
+        {
+            delete em;
+        }
+    }
+
+    // #3 获取枚举元数据
+    [[nodiscard]] const enum_meta* find_enum(int tid) const noexcept
+    {
+        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID))
+        {
+            return nullptr;
+        }
+        return enum_entries_[tid].load(std::memory_order_acquire);
+    }
+
+    template<typename E>
+    [[nodiscard]] const enum_meta* find_enum() const noexcept
+    {
+        return find_enum(type_id::get_type_id<E>());
+    }
+
+    // #2 继承关系注册
+    template<typename Derived, typename Base>
+    void register_base(ptrdiff_t offset = 0) noexcept
+    {
+        int did = type_id::get_type_id<Derived>();
+        int bid = type_id::get_type_id<Base>();
+        if (did < 0 || bid < 0)
+        {
+            return;
+        }
+        type_meta* dm = type_entries_[did].load(std::memory_order_acquire);
+        type_meta* bm = type_entries_[bid].load(std::memory_order_acquire);
+        if (!dm || !bm)
+        {
+            return;
+        }
+
+        detail::spinlock_guard lock(reg_lock_);
+        dm->base_offsets.push_back(base_offset_entry{bid, offset});
+        bm->derived_type_ids.push_back(did);
+    }
+
+    // #4 字段属性注册
+    template<typename T, typename M, M T::*Ptr, typename V>
+    void register_field_attr(const char* field_name,
+        const char* attr_key, V&& value) noexcept
+    {
+        int tid = type_id::get_type_id<T>();
+        if (tid < 0)
+        {
+            return;
+        }
+        type_meta* m = type_entries_[tid].load(std::memory_order_acquire);
+        if (!m)
+        {
+            return;
+        }
+
+        for (uint16_t i = 0; i < m->field_count.load(std::memory_order_acquire); ++i)
+        {
+            if (m->fields[i].name && std::strcmp(m->fields[i].name, field_name) == 0)
+            {
+                attr_entry e;
+                e.key_hash = fnv1a_runtime(attr_key);
+                e.value = void_any(std::forward<V>(value));
+                m->fields[i].attrs.push_back(std::move(e));
+                break;
+            }
+        }
+    }
+
+    // #7 类型转换注册
+    template<typename T, typename U>
+    void register_convert() noexcept
+    {
+        static_assert(std::is_convertible_v<T, U>, "T must be convertible to U");
+        int tid = type_id::get_type_id<T>();
+        if (tid < 0)
+        {
+            return;
+        }
+        type_meta* m = type_entries_[tid].load(std::memory_order_acquire);
+        if (!m)
+        {
+            return;
+        }
+
+        convert_entry e;
+        e.target_type_id = type_id::get_type_id<U>();
+        e.convert_fn = +[](const void* src, void* dst) noexcept
+        {
+            *static_cast<U*>(dst) = static_cast<U>(*static_cast<const T*>(src));
+        };
+        detail::spinlock_guard lock(reg_lock_);
+        m->converters.push_back(e);
+    }
+
 private:
     std::atomic_flag reg_lock_{};
+    std::array<std::atomic<enum_meta*>, MAX_TYPE_ID> enum_entries_{};
 
     static const char* make_field_name(size_t idx) noexcept
     {

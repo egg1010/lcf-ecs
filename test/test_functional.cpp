@@ -40,11 +40,11 @@ int main()
     // 2. operating_message 操作消息
     print_section(2, "operating_message 操作消息");
     {
-        bool& dbg = ecs_debug_messages();
+        bool& dbg = message_recording_enabled();
         bool old_dbg = dbg;
         dbg = true;
 
-        print_item("ecs_debug_messages() 返回引用", true);
+        print_item("message_recording_enabled() 返回引用", true);
 
         operating_message om;
         print_item("默认构造 operator bool()", (bool)om);
@@ -158,6 +158,151 @@ int main()
         operating_message om_moveassign_dst;
         om_moveassign_dst = std::move(om_moveassign_src);
         print_item("移动赋值", om_moveassign_dst.read_message() == saved_msg);
+
+        // === SSO 缓冲测试 ===
+        operating_message om_sso;
+        om_sso.write_message(true, "短消息");  // 48 字节内, SSO 模式
+        print_item("SSO 短消息写入", om_sso.read_message().find("短消息") != std::string_view::npos);
+        print_item("SSO 容量 == SSO_SIZE", om_sso.capacity() == 48);
+
+        // 溢出到 slab (48-256 字节)
+        operating_message om_slab;
+        om_slab.write_message(true, "这是一条超过SSO缓冲区大小的较长消息用于测试slab分配器溢出路径12345678901234567890");
+        print_item("slab 溢出消息写入", om_slab.read_message().size() > 48);
+        print_item("slab 溢出容量 >= 256", om_slab.capacity() >= 256);
+
+        // 溢出到 large (> 256 字节)
+        operating_message om_large;
+        om_large.reserve(4096);
+        print_item("large reserve(4096)", om_large.capacity() >= 4096);
+        for (int i = 0; i < 50; ++i)
+        {
+            om_large.write_message(true, "padding1234567890", i);
+        }
+        print_item("large 批量写入", om_large.message_size() > 256 && om_large.capacity() >= 4096);
+
+        // SSO → slab → large 扩容链
+        operating_message om_grow;
+        om_grow.write_message(true, "init");
+        size_t cap_sso = om_grow.capacity();
+        for (int i = 0; i < 20; ++i)
+        {
+            om_grow.write_message(true, "扩展消息内容测试", i, " ");
+        }
+        size_t cap_after = om_grow.capacity();
+        print_item("扩容链容量增长", cap_after > cap_sso);
+        print_item("扩容后内容保留", om_grow.read_message().find("init") != std::string_view::npos);
+
+        // === 错误码测试 ===
+        operating_message om_code;
+        print_item("默认 code == om_err_none", om_code.code() == om_err_none);
+        om_code.set_code(om_err_type_mismatch);
+        print_item("set_code(type_mismatch)", om_code.code() == om_err_type_mismatch);
+        print_item("is_code(type_mismatch)", om_code.is_code(om_err_type_mismatch));
+        print_item("is_code(invalid_entity) false", !om_code.is_code(om_err_invalid_entity));
+
+        operating_message om_code2;
+        om_code2.write_message_code(om_err_invalid_entity, false, "实体无效");
+        print_item("write_message_code 设置码", om_code2.code() == om_err_invalid_entity);
+        print_item("write_message_code switch false", !om_code2.get_switch_bool());
+
+        operating_message om_code3;
+        om_code3.write_message_code(om_err_out_of_range, true, "正常路径");
+        print_item("write_message_code sw=true 不设码", om_code3.code() == om_err_none);
+
+        // 错误码跨实例稳定
+        constexpr uint16_t test_code = static_cast<uint16_t>(fnv1a_consteval("test_error_code"));
+        om_code.set_code(test_code);
+        print_item("fnv1a 错误码稳定", om_code.code() == test_code);
+
+        // === source_location 测试 ===
+        operating_message om_loc;
+        om_loc.write_message_loc(true, std::source_location::current(), "位置测试");
+        std::string_view loc_msg = om_loc.read_message();
+        print_item("write_message_loc 含文件名", loc_msg.find("test_functional.cpp") != std::string_view::npos);
+        print_item("write_message_loc 含行号", loc_msg.find(":") != std::string_view::npos);
+        print_item("write_message_loc 含 ]", loc_msg.find("]") != std::string_view::npos);
+        print_item("write_message_loc 含消息", loc_msg.find("位置测试") != std::string_view::npos);
+
+        // 错误码 + 位置组合
+        operating_message om_cl;
+        om_cl.write_message_code_loc(om_err_null_pointer, false, std::source_location::current(), "空指针错误");
+        print_item("code_loc 设置码", om_cl.code() == om_err_null_pointer);
+        print_item("code_loc 含文件名", om_cl.read_message().find("test_functional.cpp") != std::string_view::npos);
+        print_item("code_loc switch false", !om_cl.get_switch_bool());
+
+        // === 运行时格式化测试 (fmt 为运行时 string_view) ===
+        operating_message om_ct;
+        om_ct.write_message_fmt_runtime(true, "值: {}", 42);
+        print_item("fmt_runtime 简单格式", om_ct.read_message().find("值: 42") != std::string_view::npos);
+
+        om_ct.reset();
+        om_ct.write_message_fmt_runtime(true, "{}+{}={}", 1, 2, 3);
+        print_item("fmt_runtime 多参数", om_ct.read_message().find("1+2=3") != std::string_view::npos);
+
+        om_ct.reset();
+        om_ct.write_message_fmt_runtime_level(msg_level::warn, true, "[{}] {}", "WARN", "告警消息");
+        print_item("fmt_runtime_level 含前缀", om_ct.read_message().find("[WARN]") != std::string_view::npos);
+        print_item("fmt_runtime_level 含消息", om_ct.read_message().find("告警消息") != std::string_view::npos);
+
+        // 运行时复杂格式 (完整 std::format 语法, slow path)
+        om_ct.reset();
+        om_ct.write_message_fmt_runtime(true, "hex={:08x}", 0xAB);
+        print_item("fmt_runtime 复杂格式", om_ct.read_message().find("hex=000000ab") != std::string_view::npos);
+
+        // 运行时拼接 fmt (运行时生成的格式串)
+        om_ct.reset();
+        std::string dyn_fmt = "v=" + std::string("{:>4}") + " end";
+        om_ct.write_message_fmt_runtime(true, dyn_fmt, 7);
+        print_item("fmt_runtime 动态fmt", om_ct.read_message().find("v=   7 end") != std::string_view::npos);
+
+        // runtime + code
+        om_ct.reset();
+        om_ct.write_message_fmt_runtime_code(om_err_out_of_range, false, "idx={} max={}", 9, 8);
+        print_item("fmt_runtime_code 设置码", om_ct.code() == om_err_out_of_range);
+        print_item("fmt_runtime_code switch false", !om_ct.get_switch_bool());
+        print_item("fmt_runtime_code 含消息", om_ct.read_message().find("idx=9 max=8") != std::string_view::npos);
+
+        // runtime + loc
+        om_ct.reset();
+        om_ct.write_message_fmt_runtime_loc(true, std::source_location::current(), "n={}", 5);
+        std::string_view rt_loc = om_ct.read_message();
+        print_item("fmt_runtime_loc 含文件名", rt_loc.find("test_functional.cpp") != std::string_view::npos);
+        print_item("fmt_runtime_loc 含消息", rt_loc.find("n=5") != std::string_view::npos);
+
+        // runtime + code + loc
+        om_ct.reset();
+        om_ct.write_message_fmt_runtime_code_loc(om_err_not_found, false,
+            std::source_location::current(), "missing {}", 1);
+        print_item("fmt_runtime_code_loc 设置码", om_ct.code() == om_err_not_found);
+        print_item("fmt_runtime_code_loc 含位置", om_ct.read_message().find("test_functional.cpp") != std::string_view::npos);
+
+        // validate_format: 占位符数量/语法校验
+        print_item("validate_format 合法", validate_format("a={} b={}", 2));
+        print_item("validate_format 数量错", !validate_format("a={} b={}", 1));
+        print_item("validate_format 未闭合", !validate_format("a={ ", 1));
+        print_item("validate_format 孤立}", !validate_format("a}", 0));
+        print_item("validate_format 转义合法", validate_format("{{}} val={}", 1));
+
+        // === 全局开关关闭时行为 ===
+        dbg = false;
+        operating_message om_off;
+        om_off.write_message(false, "不应写入");
+        print_item("开关关闭: switch 仍变 false", !om_off.get_switch_bool());
+        print_item("开关关闭: 消息为空", om_off.message_size() == 0);
+        om_off.write_message_code(om_err_not_found, false, "不应写入");
+        print_item("开关关闭: code 仍设置", om_off.code() == om_err_not_found);
+        dbg = true;
+
+        // === reset 清理 ===
+        operating_message om_reset;
+        om_reset.write_message_code(om_err_capacity_exceeded, false, "容量超限");
+        om_reset.reserve(512);
+        print_item("reset 前有堆缓冲", om_reset.capacity() > 48);
+        om_reset.reset();
+        print_item("reset 后容量回 SSO", om_reset.capacity() == 48);
+        print_item("reset 后 code 清零", om_reset.code() == om_err_none);
+        print_item("reset 后 switch 恢复", om_reset.get_switch_bool());
 
         dbg = old_dbg;
     }
@@ -4644,7 +4789,7 @@ int main()
             ring_buffer<event, 4> rb;
             for (size_t i = 0; i < 1000; ++i)
             {
-                rb.push({static_cast<int>(i), 0});
+                (void)rb.push({static_cast<int>(i), 0});
             }
             print_item("N=4 push 1000 个", rb.pending_count() == 1000);
 
@@ -4658,14 +4803,14 @@ int main()
         // pop 逐个出队
         {
             ring_buffer<event, 8> rb;
-            for (int i = 0; i < 5; ++i) rb.push({i, 0});
+            for (int i = 0; i < 5; ++i) (void)rb.push({i, 0});
 
             int expected = 0;
             while (rb.has_pending())
             {
                 const event* e = rb.peek();
                 if (e && e->type == expected) ++expected;
-                rb.pop();
+                (void)rb.pop();
             }
             print_item("pop 顺序 0..4", expected == 5);
             print_item("pop 完后 empty", rb.empty());
@@ -4674,7 +4819,7 @@ int main()
         // drain_with_budget 限制
         {
             ring_buffer<event, 8> rb;
-            for (int i = 0; i < 10; ++i) rb.push({i, 0});
+            for (int i = 0; i < 10; ++i) (void)rb.push({i, 0});
 
             size_t n = rb.drain_with_budget(3, [](const event&) {});
             print_item("drain_with_budget(3) 处理 3 个", n == 3);
@@ -4687,7 +4832,7 @@ int main()
         // clear 清空
         {
             ring_buffer<event, 8> rb;
-            for (int i = 0; i < 5; ++i) rb.push({i, 0});
+            for (int i = 0; i < 5; ++i) (void)rb.push({i, 0});
             rb.clear();
             print_item("clear 后 empty", rb.empty());
             print_item("clear 后 pending_count==0", rb.pending_count() == 0);
@@ -4696,7 +4841,7 @@ int main()
         // move 语义
         {
             ring_buffer<event, 8> rb1;
-            for (int i = 0; i < 3; ++i) rb1.push({i, 0});
+            for (int i = 0; i < 3; ++i) (void)rb1.push({i, 0});
 
             ring_buffer<event, 8> rb2(std::move(rb1));
             print_item("move 后 rb2 有 3 个", rb2.pending_count() == 3);
@@ -4723,7 +4868,7 @@ int main()
 
             {
                 ring_buffer<event, 8> rb;
-                for (int i = 0; i < 100; ++i) rb.push({i, 0});
+                for (int i = 0; i < 100; ++i) (void)rb.push({i, 0});
                 rb.clear();
             }
             print_item("使用后 static_pool_size > 0",
@@ -4757,7 +4902,7 @@ int main()
 
             {
                 ring_buffer<nontrivial, 4> rb;
-                for (int i = 0; i < 10; ++i) rb.push(nontrivial{});
+                for (int i = 0; i < 10; ++i) (void)rb.push(nontrivial{});
                 print_item("非平凡类型 push 10 个", rb.pending_count() == 10);
 
                 size_t n = rb.drain([](const nontrivial& e) {

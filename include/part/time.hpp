@@ -1,53 +1,23 @@
 #pragma once
 
-// 计时与基准测量工具
-// 墙钟计时 / CPU 周期计数 / 缓存屏障 / 统计分布 / 在线分位数 / 缓存延迟测量
+// 时间测量工具 (仅时间相关操作)
+// 墙钟 + CPU 周期 / 配对计时 / RAII 作用域计时 / 统计 / 基准测试
+// 设计原则: 精度第一, 性能第二; 不提供 CPU 频率/缓存/屏障/异常检测
 
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
-#include <memory>
+#include <cmath>
 #include <new>
 #include "tiered_sort.hpp"
-#include <cmath>
 #include "force_inline.hpp"
 #include "dense.hpp"
 
-class timer
-{
-    using clock = std::chrono::high_resolution_clock;
-    clock::time_point start_;
+// =============================================================================
+// L0: CPU 周期读取原语 (x86/x64 rdtsc)
+// =============================================================================
 
-public:
-    timer() noexcept : start_(clock::now()) {}
-
-    void reset() noexcept
-    {
-        start_ = clock::now();
-    }
-
-    [[nodiscard]] double elapsed_ns() const noexcept
-    {
-        return std::chrono::duration<double, std::nano>(clock::now() - start_).count();
-    }
-
-    [[nodiscard]] double elapsed_us() const noexcept
-    {
-        return std::chrono::duration<double, std::micro>(clock::now() - start_).count();
-    }
-
-    [[nodiscard]] double elapsed_ms() const noexcept
-    {
-        return std::chrono::duration<double, std::milli>(clock::now() - start_).count();
-    }
-
-    [[nodiscard]] double elapsed_s() const noexcept
-    {
-        return std::chrono::duration<double>(clock::now() - start_).count();
-    }
-};
-
-// CPU 周期计数 (x86/x64 rdtsc)
 #if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
     #define TIME_HAS_RDTSC 1
     #if defined(_MSC_VER)
@@ -77,98 +47,196 @@ public:
     #endif
 #else
     #define TIME_HAS_RDTSC 0
-    FORCE_INLINE uint64_t rdtsc() noexcept
-    {
-        return 0;
-    }
-    FORCE_INLINE uint64_t rdtscp() noexcept
-    {
-        return 0;
-    }
+    FORCE_INLINE uint64_t rdtsc() noexcept { return 0; }
+    FORCE_INLINE uint64_t rdtscp() noexcept { return 0; }
 #endif
 
-// x86 缓存行刷新 / 内存屏障 / 精确计时栅栏
-#if TIME_HAS_RDTSC
-    #if defined(_MSC_VER)
-        FORCE_INLINE void cache_flush(const void* p) noexcept { _mm_clflush(p); }
-        FORCE_INLINE void mfence() noexcept { _mm_mfence(); }
-        FORCE_INLINE void lfence() noexcept { _mm_lfence(); }
-        // Intel 推荐: lfence; rdtsc; lfence 全屏障周期测量
-        FORCE_INLINE uint64_t rdtsc_fenced() noexcept
-        {
-            _mm_lfence();
-            uint64_t t = __rdtsc();
-            _mm_lfence();
-            return t;
-        }
-    #else
-        FORCE_INLINE void cache_flush(const void* p) noexcept
-        {
-            __asm__ __volatile__("clflush %0" : : "m"(*(const volatile char*)p));
-        }
-        FORCE_INLINE void mfence() noexcept
-        {
-            __asm__ __volatile__("mfence" ::: "memory");
-        }
-        FORCE_INLINE void lfence() noexcept
-        {
-            __asm__ __volatile__("lfence" ::: "memory");
-        }
-        FORCE_INLINE uint64_t rdtsc_fenced() noexcept
-        {
-            __asm__ __volatile__("lfence" ::: "memory");
-            uint32_t lo, hi;
-            __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
-            __asm__ __volatile__("lfence" ::: "memory");
-            return (static_cast<uint64_t>(hi) << 32) | lo;
-        }
-    #endif
+// =============================================================================
+// L1: 统一计时器 stopwatch (同时记录墙钟 + 周期, 精度优先)
+// 构造时双 now(): 先 rdtscp (快, 序列化指令流, 干净起点), 后 steady_clock (慢, 单调)
+// 成员声明顺序决定初始化顺序: cstart_ 先, wstart_ 后
+// =============================================================================
 
-    FORCE_INLINE void cache_flush_range(const void* p, size_t bytes) noexcept
-    {
-        const char* cp = static_cast<const char*>(p);
-        const char* end = cp + bytes;
-        while (cp < end)
-        {
-            cache_flush(cp);
-            cp += 64;
-        }
-        mfence();
-    }
-#else
-    FORCE_INLINE void cache_flush(const void*) noexcept {}
-    FORCE_INLINE void cache_flush_range(const void*, size_t) noexcept {}
-    FORCE_INLINE void mfence() noexcept {}
-    FORCE_INLINE void lfence() noexcept {}
-    FORCE_INLINE uint64_t rdtsc_fenced() noexcept { return 0; }
-#endif
-
-class cycle_timer
+// 终点快照 (一次性返回墙钟 + 周期, 避免多次 now() 调用引入额外开销)
+struct time_snapshot
 {
-    uint64_t start_;
+    double ns_val;
+    uint64_t cycles;
+};
+
+class stopwatch
+{
+    using clock = std::chrono::steady_clock;
+    uint64_t cstart_;            // 先声明: rdtscp 序列化, 确保起点干净
+    clock::time_point wstart_;   // 后声明: steady_clock 单调, 绝对时间
 
 public:
-    cycle_timer() noexcept : start_(rdtscp()) {}
+    stopwatch() noexcept
+        : cstart_(rdtscp()), wstart_(clock::now()) {}
 
     void reset() noexcept
     {
-        start_ = rdtscp();
+        cstart_ = rdtscp();
+        wstart_ = clock::now();
     }
 
-    [[nodiscard]] uint64_t elapsed_cycles() const noexcept
+    // 墙钟 (绝对时间, 单调递增, 适合日志/阈值判断)
+    [[nodiscard]] double ns() const noexcept
     {
-        return rdtscp() - start_;
+        return std::chrono::duration<double, std::nano>(clock::now() - wstart_).count();
     }
 
-    [[nodiscard]] double elapsed_ns_estimated(double cpu_ghz) const noexcept
+    [[nodiscard]] double us() const noexcept
     {
-        if (cpu_ghz <= 0)
-        {
-            return 0;
-        }
-        return static_cast<double>(elapsed_cycles()) / cpu_ghz;
+        return std::chrono::duration<double, std::micro>(clock::now() - wstart_).count();
+    }
+
+    [[nodiscard]] double ms() const noexcept
+    {
+        return std::chrono::duration<double, std::milli>(clock::now() - wstart_).count();
+    }
+
+    [[nodiscard]] double s() const noexcept
+    {
+        return std::chrono::duration<double>(clock::now() - wstart_).count();
+    }
+
+    // CPU 周期 (相对比较, 精度最高, 适合基准测试)
+    [[nodiscard]] uint64_t cycles() const noexcept
+    {
+        return rdtscp() - cstart_;
+    }
+
+    // 一次性快照 (精度优先): 终点先 rdtscp (精确), 后 clock::now
+    // cycles 不含 clock::now 开销; ns 含 rdtscp 开销 (固定, 相对比较可抵消)
+    [[nodiscard]] time_snapshot snapshot() const noexcept
+    {
+        uint64_t cend = rdtscp();
+        double ns_val = std::chrono::duration<double, std::nano>(clock::now() - wstart_).count();
+        return {ns_val, cend - cstart_};
     }
 };
+
+// =============================================================================
+// L2: 配对计时 (零样板, 单次调用返回时长)
+// =============================================================================
+
+// 墙钟配对计时: 返回纳秒
+template<typename F>
+[[nodiscard]] double measure_ns(F&& fn) noexcept
+{
+    auto t0 = std::chrono::steady_clock::now();
+    fn();
+    auto t1 = std::chrono::steady_clock::now();
+    return std::chrono::duration<double, std::nano>(t1 - t0).count();
+}
+
+// 周期配对计时: 返回周期数 (非 x86 返回 0)
+template<typename F>
+[[nodiscard]] uint64_t measure_cycles(F&& fn) noexcept
+{
+#if TIME_HAS_RDTSC
+    uint64_t c0 = rdtscp();
+    fn();
+    uint64_t c1 = rdtscp();
+    return c1 - c0;
+#else
+    fn();
+    return 0;
+#endif
+}
+
+// =============================================================================
+// L3: 耗时自动格式化 (自动选单位: ns/us/ms/s)
+// =============================================================================
+
+// 将纳秒值格式化为可读字符串, 保留 2-3 位有效数字
+// 例: 123.4ns / 1.23us / 12.34ms / 1.50s
+inline void format_duration(double ns_val, char* buf, size_t cap) noexcept
+{
+    if (ns_val < 1000.0)
+    {
+        std::snprintf(buf, cap, "%.1fns", ns_val);
+    }
+    else if (ns_val < 1000000.0)
+    {
+        std::snprintf(buf, cap, "%.2fus", ns_val / 1000.0);
+    }
+    else if (ns_val < 1000000000.0)
+    {
+        std::snprintf(buf, cap, "%.2fms", ns_val / 1000000.0);
+    }
+    else
+    {
+        std::snprintf(buf, cap, "%.2fs", ns_val / 1000000000.0);
+    }
+}
+
+// =============================================================================
+// L4: RAII 作用域计时 (默认写入全局记录, 配合 scope_report 查看)
+// =============================================================================
+
+struct scope_record_entry
+{
+    const char* name;
+    double ns_val;
+    uint64_t cycles;
+};
+
+// 全局作用域计时记录表 (非线程安全, 项目排除多线程)
+[[nodiscard]] inline dense<scope_record_entry>& scope_records() noexcept
+{
+    static dense<scope_record_entry> r;
+    return r;
+}
+
+inline void scope_clear() noexcept
+{
+    scope_records().clear();
+}
+
+// RAII 作用域计时器: 析构时记录 name + 耗时到全局表
+struct scope_time
+{
+    const char* name_;
+    stopwatch sw_;
+
+    explicit scope_time(const char* name) noexcept
+        : name_(name), sw_() {}
+
+    ~scope_time() noexcept
+    {
+        time_snapshot snap = sw_.snapshot();
+        dense<scope_record_entry>& r = scope_records();
+        r.increase_capacity(r.size() + 1);
+        r.push_back({name_, snap.ns_val, snap.cycles});
+    }
+
+    scope_time(const scope_time&) = delete;
+    scope_time& operator=(const scope_time&) = delete;
+};
+
+// 打印所有作用域计时记录到 stdout (格式化对齐)
+inline void scope_report() noexcept
+{
+    const dense<scope_record_entry>& r = scope_records();
+    for (size_t i = 0; i < r.size(); ++i)
+    {
+        char buf[32];
+        format_duration(r[i].ns_val, buf, sizeof(buf));
+#if TIME_HAS_RDTSC
+        std::printf("  %-24s %10s  %llu cycles\n",
+                    r[i].name, buf,
+                    static_cast<unsigned long long>(r[i].cycles));
+#else
+        std::printf("  %-24s %10s\n", r[i].name, buf);
+#endif
+    }
+}
+
+// =============================================================================
+// L5: 统计分析
+// =============================================================================
 
 struct stats
 {
@@ -184,52 +252,105 @@ struct stats
     size_t count = 0;
 };
 
-// 从样本计算统计量 (会排序样本)
-inline stats compute_stats(dense<double> samples) noexcept
+namespace detail
 {
-    stats s;
-    s.count = samples.size();
-    if (s.count == 0)
+    // 内部统计计算核心 (已排序的裸指针样本)
+    inline stats compute_stats_sorted(double* p, size_t n) noexcept
     {
+        stats s;
+        s.count = n;
+        if (n == 0)
+        {
+            return s;
+        }
+        s.min = p[0];
+        s.max = p[n - 1];
+        double sum = 0;
+        for (size_t i = 0; i < n; ++i)
+        {
+            sum += p[i];
+        }
+        s.mean = sum / static_cast<double>(n);
+        auto pct = [&](double q) noexcept -> double
+        {
+            if (n == 1)
+            {
+                return p[0];
+            }
+            size_t idx = static_cast<size_t>(q * static_cast<double>(n - 1));
+            return p[idx];
+        };
+        s.median = s.p50 = pct(0.50);
+        s.p90 = pct(0.90);
+        s.p95 = pct(0.95);
+        s.p99 = pct(0.99);
+        double sq_sum = 0;
+        for (size_t i = 0; i < n; ++i)
+        {
+            double v = p[i];
+            sq_sum += (v - s.mean) * (v - s.mean);
+        }
+        s.stddev = std::sqrt(sq_sum / static_cast<double>(n));
         return s;
     }
-    // 用 data() 取连续裸指针排序 (emplace_back 填充保证密集)
-    double* p = samples.data();
-    sort(p, s.count);
-    s.min = p[0];
-    s.max = p[s.count - 1];
-    double sum = 0;
-    for (size_t i = 0; i < s.count; ++i)
+}  // namespace detail
+
+// const 引用重载: 内部拷贝排序, 不修改原样本
+[[nodiscard]] inline stats compute_stats(const dense<double>& samples) noexcept
+{
+    size_t n = samples.size();
+    if (n == 0)
     {
-        sum += p[i];
+        return {};
     }
-    s.mean = sum / static_cast<double>(s.count);
-    auto pct = [&](double q) noexcept -> double
+    dense<double> tmp;
+    tmp.reserve_exact(n);
+    for (size_t i = 0; i < n; ++i)
     {
-        if (s.count == 1)
-        {
-            return p[0];
-        }
-        size_t idx = static_cast<size_t>(q * static_cast<double>(s.count - 1));
-        return p[idx];
-    };
-    s.median = s.p50 = pct(0.50);
-    s.p90 = pct(0.90);
-    s.p95 = pct(0.95);
-    s.p99 = pct(0.99);
-    double sq_sum = 0;
-    for (size_t i = 0; i < s.count; ++i)
-    {
-        double v = p[i];
-        sq_sum += (v - s.mean) * (v - s.mean);
+        tmp.push_back(samples[i]);
     }
-    s.stddev = std::sqrt(sq_sum / static_cast<double>(s.count));
-    return s;
+    double* p = tmp.data();
+    sort(p, n);
+    return detail::compute_stats_sorted(p, n);
 }
 
-// P² 在线分位数估计器 (Jain & Chlamtac, 1985)
-// O(1) 空间, O(1) 每次观测, 无需存储全部样本
-// 适用: 流式基准 / 大样本 / 实时监控
+// 移动重载: 直接排序原样本, 避免拷贝
+[[nodiscard]] inline stats compute_stats(dense<double>&& samples) noexcept
+{
+    size_t n = samples.size();
+    if (n == 0)
+    {
+        return {};
+    }
+    double* p = samples.data();
+    sort(p, n);
+    return detail::compute_stats_sorted(p, n);
+}
+
+// 通用类型版 (支持 uint64_t 周期数 / int 计数等)
+template<typename T>
+[[nodiscard]] stats compute_stats_t(const dense<T>& samples) noexcept
+{
+    size_t n = samples.size();
+    if (n == 0)
+    {
+        return {};
+    }
+    dense<double> tmp;
+    tmp.reserve_exact(n);
+    for (size_t i = 0; i < n; ++i)
+    {
+        tmp.push_back(static_cast<double>(samples[i]));
+    }
+    double* p = tmp.data();
+    sort(p, n);
+    return detail::compute_stats_sorted(p, n);
+}
+
+// =============================================================================
+// L6: P² 在线分位数估计器 (O(1) 空间, 流式监控)
+// =============================================================================
+
 class p2_quantile
 {
     double q_[5] = {};
@@ -341,390 +462,11 @@ public:
     }
 };
 
-template <typename F>
-stats benchmark_ns(size_t iterations, size_t warmup, F&& fn) noexcept
-{
-    for (size_t i = 0; i < warmup; ++i)
-    {
-        fn();
-    }
-    dense<double> samples;
-    samples.increase_capacity(iterations);
-    for (size_t i = 0; i < iterations; ++i)
-    {
-        auto t0 = std::chrono::high_resolution_clock::now();
-        fn();
-        auto t1 = std::chrono::high_resolution_clock::now();
-        samples.push_back(std::chrono::duration<double, std::nano>(t1 - t0).count());
-    }
-    return compute_stats(std::move(samples));
-}
+// =============================================================================
+// L7: 基准测试 (自动模式选择 + 三级精度)
+// =============================================================================
 
-// 周期级基准: 精度更高
-template <typename F>
-stats benchmark_cycles(size_t iterations, size_t warmup, F&& fn) noexcept
-{
-#if TIME_HAS_RDTSC
-    for (size_t i = 0; i < warmup; ++i)
-    {
-        fn();
-    }
-    dense<double> samples;
-    samples.increase_capacity(iterations);
-    for (size_t i = 0; i < iterations; ++i)
-    {
-        uint64_t c0 = rdtscp();
-        fn();
-        uint64_t c1 = rdtscp();
-        samples.push_back(static_cast<double>(c1 - c0));
-    }
-    return compute_stats(std::move(samples));
-#else
-    return benchmark_ns(iterations, warmup, std::forward<F>(fn));
-#endif
-}
-
-// 缓存延迟分级 (基于访问周期估算命中层级)
-//   默认假设三级缓存: L1 ~4, L2 ~12, L3 ~40, DRAM ~200+
-//   不同 CPU 缓存层级不同 (嵌入式可能仅 1-2 级), 可通过 cache_levels 配置
-//   亦可调用 detect_cache_latency_thresholds() 自动检测
-struct latency_thresholds
-{
-    double l1_max = 4.0;
-    double l2_max = 15.0;   // cache_levels<2 时忽略
-    double l3_max = 50.0;   // cache_levels<3 时忽略
-    uint32_t cache_levels = 3;  // 1=仅L1, 2=L1+L2, 3=L1+L2+L3
-    // >= 最后一级阈值视为 DRAM 未命中
-};
-
-struct cache_report
-{
-    size_t total_accesses = 0;
-    size_t l1_hits = 0;
-    size_t l2_hits = 0;
-    size_t l3_hits = 0;
-    size_t misses = 0;
-    double l1_hit_rate = 0;
-    double l2_hit_rate = 0;
-    double l3_hit_rate = 0;
-    double miss_rate = 0;
-    double avg_cycles = 0;
-    double min_cycles = 0;
-    double max_cycles = 0;
-    double p50_cycles = 0;
-    double p95_cycles = 0;
-    double p99_cycles = 0;
-    latency_thresholds thresholds;
-    uint32_t active_levels = 3;  // 由 thresholds.cache_levels 决定
-};
-
-// 注: 单次 rdtscp 约 30 周期开销, 主要反映 L3 vs DRAM 差异
-inline cache_report measure_cache_hits(const dense<const void*>& addresses,
-                                       latency_thresholds th = {}) noexcept
-{
-    cache_report r;
-    r.thresholds = th;
-    r.active_levels = th.cache_levels;
-    r.total_accesses = addresses.size();
-    if (r.total_accesses == 0)
-    {
-        return r;
-    }
-
-#if TIME_HAS_RDTSC
-    dense<double> cycles;
-    cycles.increase_capacity(r.total_accesses);
-    size_t l1 = 0, l2 = 0, l3 = 0, miss = 0;
-    double sum = 0;
-    for (size_t i = 0; i < addresses.size(); ++i)
-    {
-        uint64_t c0 = rdtscp();
-        volatile uint8_t v = *static_cast<const volatile uint8_t*>(addresses[i]);
-        (void)v;
-        uint64_t c1 = rdtscp();
-        double cyc = static_cast<double>(c1 - c0);
-        cycles.push_back(cyc);
-        sum += cyc;
-        if (cyc < th.l1_max)
-        {
-            ++l1;
-        }
-        else if (th.cache_levels >= 2 && cyc < th.l2_max)
-        {
-            ++l2;
-        }
-        else if (th.cache_levels >= 3 && cyc < th.l3_max)
-        {
-            ++l3;
-        }
-        else
-        {
-            ++miss;
-        }
-    }
-    r.l1_hits = l1;
-    r.l2_hits = l2;
-    r.l3_hits = l3;
-    r.misses = miss;
-    r.avg_cycles = sum / static_cast<double>(r.total_accesses);
-    double* cp = cycles.data();
-    sort(cp, r.total_accesses);
-    r.min_cycles = cp[0];
-    r.max_cycles = cp[r.total_accesses - 1];
-    auto pct = [&](double q) noexcept -> double
-    {
-        return cp[static_cast<size_t>(q * static_cast<double>(r.total_accesses - 1))];
-    };
-    r.p50_cycles = pct(0.50);
-    r.p95_cycles = pct(0.95);
-    r.p99_cycles = pct(0.99);
-#else
-    r.l1_hits = r.total_accesses;
-#endif
-    double n = static_cast<double>(r.total_accesses);
-    r.l1_hit_rate = static_cast<double>(r.l1_hits) / n;
-    r.l2_hit_rate = static_cast<double>(r.l2_hits) / n;
-    r.l3_hit_rate = static_cast<double>(r.l3_hits) / n;
-    r.miss_rate = static_cast<double>(r.misses) / n;
-    return r;
-}
-
-inline dense<const void*> make_sequential_addresses(const void* base, size_t count, size_t stride) noexcept
-{
-    dense<const void*> v;
-    v.increase_capacity(count);
-    const uint8_t* p = static_cast<const uint8_t*>(base);
-    for (size_t i = 0; i < count; ++i)
-    {
-        v.push_back(p + i * stride);
-    }
-    return v;
-}
-
-// 随机访问地址序列 (缓存不友好, 确定性可复现)
-inline dense<const void*> make_random_addresses(const void* base, size_t count, size_t stride, uint64_t seed = 12345) noexcept
-{
-    dense<size_t> indices;
-    indices.increase_capacity(count);
-    for (size_t i = 0; i < count; ++i)
-    {
-        indices.push_back(i);
-    }
-    // LCG 洗牌
-    uint64_t x = seed;
-    for (size_t i = count; i > 1; --i)
-    {
-        x = x * 6364136223846793005ULL + 1442695040888963407ULL;
-        size_t j = static_cast<size_t>(x % i);
-        std::swap(indices[i - 1], indices[j]);
-    }
-    dense<const void*> v;
-    v.increase_capacity(count);
-    const uint8_t* p = static_cast<const uint8_t*>(base);
-    for (size_t i = 0; i < indices.size(); ++i)
-    {
-        v.push_back(p + indices[i] * stride);
-    }
-    return v;
-}
-
-struct batch_cache_result
-{
-    size_t total_accesses = 0;
-    double total_cycles = 0;
-    double avg_cycles_per_access = 0;
-    double baseline_cycles = 0;
-    double net_cycles_per_access = 0;
-};
-
-// 单次 rdtscp 包裹循环, 测量总周期
-template <typename F>
-double measure_loop_cycles(F&& access_fn) noexcept
-{
-#if TIME_HAS_RDTSC
-    uint64_t c0 = rdtscp();
-    access_fn();
-    uint64_t c1 = rdtscp();
-    return static_cast<double>(c1 - c0);
-#else
-    timer t;
-    access_fn();
-    return t.elapsed_ns();
-#endif
-}
-
-// 批量测量: 返回平均每次访问周期 (扣除基线)
-inline batch_cache_result measure_cache_batch(const dense<const void*>& addresses, size_t repeats = 10) noexcept
-{
-    batch_cache_result r;
-    r.total_accesses = addresses.size() * repeats;
-    if (addresses.empty())
-    {
-        return r;
-    }
-
-#if TIME_HAS_RDTSC
-    // 基线: 空循环 (相同迭代次数, 不访问目标内存)
-    double baseline = 0;
-    volatile size_t sink = 0;
-    for (size_t trial = 0; trial < 3; ++trial)
-    {
-        uint64_t c0 = rdtscp();
-        for (size_t rep = 0; rep < repeats; ++rep)
-        {
-            for (size_t i = 0; i < addresses.size(); ++i)
-            {
-                sink = i;
-            }
-        }
-        uint64_t c1 = rdtscp();
-        baseline = std::max(baseline, static_cast<double>(c1 - c0));
-    }
-    (void)sink;
-    r.baseline_cycles = baseline;
-
-    // 实际访问测量 (取 3 次最小值)
-    double best = 1e18;
-    for (size_t trial = 0; trial < 3; ++trial)
-    {
-        uint64_t c0 = rdtscp();
-        for (size_t rep = 0; rep < repeats; ++rep)
-        {
-            for (size_t i = 0; i < addresses.size(); ++i)
-            {
-                volatile uint8_t v = *static_cast<const volatile uint8_t*>(addresses[i]);
-                (void)v;
-            }
-        }
-        uint64_t c1 = rdtscp();
-        best = std::min(best, static_cast<double>(c1 - c0));
-    }
-    r.total_cycles = best;
-    r.avg_cycles_per_access = r.total_cycles / static_cast<double>(r.total_accesses);
-    double net = r.total_cycles - r.baseline_cycles;
-    if (net < 0)
-    {
-        net = 0;
-    }
-    r.net_cycles_per_access = net / static_cast<double>(r.total_accesses);
-#endif
-    return r;
-}
-
-// 通过步进扫描不同工作集大小 (1KB → 16MB), 检测延迟跳变推断缓存层级
-// 返回值: cache_levels 为实际检测到的层级数 (1/2/3)
-inline latency_thresholds detect_cache_latency_thresholds() noexcept
-{
-    latency_thresholds th;
-#if TIME_HAS_RDTSC
-    constexpr size_t buf_size = 16 * 1024 * 1024;  // 16MB 覆盖 L1/L2/L3
-    constexpr size_t cache_line = 64;
-    std::unique_ptr<uint8_t[]> buf(new (std::nothrow) uint8_t[buf_size]);
-    if (!buf) [[unlikely]] return th;
-
-    // 页故障预热
-    for (size_t i = 0; i < buf_size; i += cache_line) { buf[i] = 0; }
-
-    double prev_lat = 0;
-    uint32_t levels = 0;
-
-    for (size_t sz = 1024; sz <= buf_size; sz *= 2)
-    {
-        size_t count = sz / cache_line;
-        auto addrs = make_sequential_addresses(buf.get(), count, cache_line);
-        batch_cache_result bcr = measure_cache_batch(addrs, 3);
-        double cur = bcr.net_cycles_per_access;
-
-        if (levels == 0)
-        {
-            th.l1_max = cur * 1.5;
-            levels = 1;
-        }
-        else if (levels < 3 && cur > prev_lat * 1.3)
-        {
-            // 延迟跳变 → 新缓存层级边界
-            if (levels == 1)
-            {
-                th.l2_max = cur * 0.8;
-                levels = 2;
-            }
-            else if (levels == 2)
-            {
-                th.l3_max = cur * 0.8;
-                levels = 3;
-            }
-        }
-        prev_lat = cur;
-    }
-    th.cache_levels = levels;
-#endif
-    return th;
-}
-
-// 注: 测量的是 invariant TSC 频率 (恒定), 而非核心频率 (受 Turbo Boost/DVFS 影响)
-//     rdtsc 计数速率 = TSC 频率, 不随核心频率变化
-//     cycle_timer::elapsed_ns_estimated() 基于 TSC 频率, 适合相对比较
-//     若需精确墙钟时间, 优先使用 timer (high_resolution_clock)
-inline double estimate_cpu_ghz(size_t calibration_ms = 100) noexcept
-{
-#if TIME_HAS_RDTSC
-    timer t;
-    uint64_t c0 = rdtscp();
-    while (t.elapsed_ms() < static_cast<double>(calibration_ms))
-    {
-        // 忙等
-    }
-    uint64_t c1 = rdtscp();
-    double elapsed_s = t.elapsed_ms() / 1000.0;
-    if (elapsed_s <= 0)
-    {
-        return 0;
-    }
-    return static_cast<double>(c1 - c0) / elapsed_s / 1e9;
-#else
-    (void)calibration_ms;
-    return 0;
-#endif
-}
-
-// CPU 频率缓存 (首次调用校准, 后续零开销)
-// 缓存的是 TSC 频率, 非核心频率 (参见 estimate_cpu_ghz 注释)
-inline double cpu_ghz_cached() noexcept
-{
-    static double cached = estimate_cpu_ghz();
-    return cached;
-}
-
-// 延迟异常检测器: 基于 P² 分位数动态检测超标延迟
-// 用法: 持续 add() 建立基线, 然后 is_anomaly() 判断新样本是否异常
-struct latency_anomaly_detector
-{
-    p2_quantile p50{0.50};
-    p2_quantile p99{0.99};
-    double multiplier = 3.0;  // 超过 p99 * multiplier 视为异常
-    size_t warmup_count = 100;
-
-    void add(double latency_ns) noexcept
-    {
-        p50.add(latency_ns);
-        p99.add(latency_ns);
-    }
-
-    [[nodiscard]] bool is_anomaly(double latency_ns) const noexcept
-    {
-        if (p99.count() < warmup_count) [[unlikely]] return false;
-        double threshold = p99.estimate() * multiplier;
-        return latency_ns > threshold;
-    }
-
-    [[nodiscard]] double anomaly_threshold() const noexcept
-    {
-        return p99.estimate() * multiplier;
-    }
-};
-
-// 流式基准测试: 使用 P² 在线估计, 无需存储全部样本
-// 返回 p50/p90/p95/p99 估计值, 适合超大样本或内存受限场景
+// P² 流式基准结果
 struct p2_benchmark_result
 {
     double p50 = 0;
@@ -734,24 +476,253 @@ struct p2_benchmark_result
     size_t count = 0;
 };
 
-template <typename F>
-p2_benchmark_result benchmark_p2(size_t iterations, size_t warmup, F&& fn) noexcept
+// 统一基准结果 (墙钟 + 周期)
+struct benchmark_result
 {
-    for (size_t i = 0; i < warmup; ++i)
+    double ns_mean = 0;
+    double ns_p50 = 0;
+    double ns_p99 = 0;
+    uint64_t cycles_mean = 0;
+    size_t iterations = 0;
+};
+
+// 预热: 直到连续 3 次每百次迭代周期数偏差 <5% (精度优先)
+template<typename F>
+void warmup_until_stable(F&& fn, size_t max_iter = 10000) noexcept
+{
+#if TIME_HAS_RDTSC
+    uint64_t prev = 0;
+    size_t stable_count = 0;
+    for (size_t i = 0; i < max_iter; i += 100)
     {
-        fn();
+        uint64_t c0 = rdtscp();
+        for (size_t j = 0; j < 100; ++j) { fn(); }
+        uint64_t c1 = rdtscp();
+        uint64_t cur = (c1 - c0) / 100;
+        if (prev != 0 && cur >= prev * 0.95 && cur <= prev * 1.05)
+        {
+            if (++stable_count >= 3) { return; }
+        }
+        else
+        {
+            stable_count = 0;
+        }
+        prev = cur;
     }
-    p2_quantile est50(0.50), est90(0.90), est95(0.95), est99(0.99);
+#else
+    for (size_t i = 0; i < max_iter; ++i) { fn(); }
+#endif
+}
+
+// L1 batch 模式: 单次计时包裹整个循环 (最低开销, 高频小函数)
+// 返回 mean/min/max, 无分位数 (仅 1 个样本, 精度由大 iterations 补偿)
+template<typename F>
+[[nodiscard]] stats benchmark_batch(size_t iterations, size_t warmup, F&& fn) noexcept
+{
+    for (size_t i = 0; i < warmup; ++i) { fn(); }
+    auto t0 = std::chrono::steady_clock::now();
+    for (size_t i = 0; i < iterations; ++i) { fn(); }
+    auto t1 = std::chrono::steady_clock::now();
+    double total_ns = std::chrono::duration<double, std::nano>(t1 - t0).count();
+    double per_op = total_ns / static_cast<double>(iterations);
+    stats s;
+    s.count = iterations;
+    s.min = s.max = s.mean = s.median = s.p50 = s.p90 = s.p95 = s.p99 = per_op;
+    s.stddev = 0;
+    return s;
+}
+
+// L2 chunked 模式: 每 chunk_size 次迭代计时一次 (P² 分位数, 中频函数)
+template<typename F>
+[[nodiscard]] p2_benchmark_result benchmark_chunked(
+    size_t iterations, size_t chunk_size, size_t warmup, F&& fn) noexcept
+{
+    for (size_t i = 0; i < warmup; ++i) { fn(); }
+    p2_quantile p50(0.50), p90(0.90), p95(0.95), p99(0.99);
+    for (size_t i = 0; i < iterations; i += chunk_size)
+    {
+        size_t n = (chunk_size < iterations - i) ? chunk_size : (iterations - i);
+        auto t0 = std::chrono::steady_clock::now();
+        for (size_t j = 0; j < n; ++j) { fn(); }
+        auto t1 = std::chrono::steady_clock::now();
+        double per_op = std::chrono::duration<double, std::nano>(t1 - t0).count() /
+                        static_cast<double>(n);
+        p50.add(per_op); p90.add(per_op); p95.add(per_op); p99.add(per_op);
+    }
+    return {p50.estimate(), p90.estimate(), p95.estimate(), p99.estimate(), iterations};
+}
+
+// L3 precise 模式: 每次迭代单独计时 (全样本, 低频大函数, 精度最高)
+template<typename F>
+[[nodiscard]] stats benchmark_precise(size_t iterations, size_t warmup, F&& fn) noexcept
+{
+    for (size_t i = 0; i < warmup; ++i) { fn(); }
+    dense<double> samples;
+    samples.reserve_exact(iterations);
     for (size_t i = 0; i < iterations; ++i)
     {
-        auto t0 = std::chrono::high_resolution_clock::now();
+        auto t0 = std::chrono::steady_clock::now();
         fn();
-        auto t1 = std::chrono::high_resolution_clock::now();
-        double ns = std::chrono::duration<double, std::nano>(t1 - t0).count();
-        est50.add(ns);
-        est90.add(ns);
-        est95.add(ns);
-        est99.add(ns);
+        auto t1 = std::chrono::steady_clock::now();
+        samples.push_back(std::chrono::duration<double, std::nano>(t1 - t0).count());
     }
-    return {est50.estimate(), est90.estimate(), est95.estimate(), est99.estimate(), iterations};
+    return compute_stats(std::move(samples));
 }
+
+// L3 precise 周期版: 周期级精度 (仅 x86, 精度最高)
+template<typename F>
+[[nodiscard]] stats benchmark_precise_cycles(size_t iterations, size_t warmup, F&& fn) noexcept
+{
+#if TIME_HAS_RDTSC
+    for (size_t i = 0; i < warmup; ++i) { fn(); }
+    dense<double> samples;
+    samples.reserve_exact(iterations);
+    for (size_t i = 0; i < iterations; ++i)
+    {
+        uint64_t c0 = rdtscp();
+        fn();
+        uint64_t c1 = rdtscp();
+        samples.push_back(static_cast<double>(c1 - c0));
+    }
+    return compute_stats(std::move(samples));
+#else
+    return benchmark_precise(iterations, warmup, std::forward<F>(fn));
+#endif
+}
+
+// P² 流式基准 (墙钟, 适合超大样本/内存受限)
+template<typename F>
+[[nodiscard]] p2_benchmark_result benchmark_p2(size_t iterations, size_t warmup, F&& fn) noexcept
+{
+    for (size_t i = 0; i < warmup; ++i) { fn(); }
+    p2_quantile p50(0.50), p90(0.90), p95(0.95), p99(0.99);
+    for (size_t i = 0; i < iterations; ++i)
+    {
+        auto t0 = std::chrono::steady_clock::now();
+        fn();
+        auto t1 = std::chrono::steady_clock::now();
+        double ns_val = std::chrono::duration<double, std::nano>(t1 - t0).count();
+        p50.add(ns_val); p90.add(ns_val); p95.add(ns_val); p99.add(ns_val);
+    }
+    return {p50.estimate(), p90.estimate(), p95.estimate(), p99.estimate(), iterations};
+}
+
+// 自动模式基准测试: 基于单次耗时自动选择 batch/chunked/precise (精度优先)
+//   < 100ns   → batch (单次计时开销占比高, 用大循环摊薄)
+//   100ns~10us → chunked (P² 分位数, 平衡精度与开销)
+//   > 10us    → precise (全样本, 精度最高)
+template<typename F>
+[[nodiscard]] benchmark_result benchmark(F&& fn, size_t iterations = 10000) noexcept
+{
+    // 预热 + 探测单次耗时
+    warmup_until_stable(fn);
+    double probe1 = measure_ns(fn);
+    double probe2 = measure_ns(fn);
+    double single = (probe1 < probe2) ? probe1 : probe2;
+
+    benchmark_result result;
+    result.iterations = iterations;
+
+    if (single < 100.0)
+    {
+        // 高频小函数: batch 模式
+        stats s = benchmark_batch(iterations, 0, fn);
+        result.ns_mean = s.mean;
+        result.ns_p50 = s.p50;
+        result.ns_p99 = s.p99;
+    }
+    else if (single < 10000.0)
+    {
+        // 中频函数: chunked 模式
+        p2_benchmark_result r = benchmark_chunked(iterations, 100, 0, fn);
+        result.ns_mean = r.p50;
+        result.ns_p50 = r.p50;
+        result.ns_p99 = r.p99;
+    }
+    else
+    {
+        // 低频大函数: precise 模式 (限制迭代次数)
+        size_t n = (iterations > 1000) ? 1000 : iterations;
+        stats s = benchmark_precise(n, 0, fn);
+        result.ns_mean = s.mean;
+        result.ns_p50 = s.p50;
+        result.ns_p99 = s.p99;
+        result.iterations = n;
+    }
+
+    // 周期均值 (x86)
+#if TIME_HAS_RDTSC
+    uint64_t c0 = rdtscp();
+    size_t cyc_iter = (single < 10000.0) ? 1000 : 100;
+    for (size_t i = 0; i < cyc_iter; ++i) { fn(); }
+    uint64_t c1 = rdtscp();
+    result.cycles_mean = (c1 - c0) / cyc_iter;
+#endif
+
+    return result;
+}
+
+// =============================================================================
+// L8: 基准测试运行器 (多场景对比, 一键报告)
+// =============================================================================
+
+class benchmark_runner
+{
+    struct entry
+    {
+        const char* name;
+        benchmark_result result;
+    };
+    dense<entry> results_;
+
+public:
+    template<typename F>
+    void run(const char* name, F&& fn, size_t iterations = 10000) noexcept
+    {
+        results_.increase_capacity(results_.size() + 1);
+        results_.push_back({name, benchmark(std::forward<F>(fn), iterations)});
+    }
+
+    [[nodiscard]] size_t size() const noexcept { return results_.size(); }
+
+    void clear() noexcept { results_.clear(); }
+
+    // 打印对比表格到 stdout (对齐格式)
+    void report() const noexcept
+    {
+        std::printf("%-20s %12s %12s %12s %12s\n",
+                    "场景", "mean", "p50", "p99", "cycles");
+        std::printf("%-20s %12s %12s %12s %12s\n",
+                    "----", "----", "---", "---", "------");
+        for (size_t i = 0; i < results_.size(); ++i)
+        {
+            char mean_buf[32], p50_buf[32], p99_buf[32];
+            format_duration(results_[i].result.ns_mean, mean_buf, sizeof(mean_buf));
+            format_duration(results_[i].result.ns_p50, p50_buf, sizeof(p50_buf));
+            format_duration(results_[i].result.ns_p99, p99_buf, sizeof(p99_buf));
+#if TIME_HAS_RDTSC
+            std::printf("%-20s %12s %12s %12s %12llu\n",
+                        results_[i].name, mean_buf, p50_buf, p99_buf,
+                        static_cast<unsigned long long>(results_[i].result.cycles_mean));
+#else
+            std::printf("%-20s %12s %12s %12s\n",
+                        results_[i].name, mean_buf, p50_buf, p99_buf);
+#endif
+        }
+    }
+
+    // 可指定 sink 输出 (sink 接收格式化后的行)
+    template<typename Sink>
+    void report_to(Sink&& sink) const noexcept
+    {
+        for (size_t i = 0; i < results_.size(); ++i)
+        {
+            char mean_buf[32], p50_buf[32], p99_buf[32];
+            format_duration(results_[i].result.ns_mean, mean_buf, sizeof(mean_buf));
+            format_duration(results_[i].result.ns_p50, p50_buf, sizeof(p50_buf));
+            format_duration(results_[i].result.ns_p99, p99_buf, sizeof(p99_buf));
+            sink(results_[i].name, mean_buf, p50_buf, p99_buf,
+                 results_[i].result.cycles_mean, results_[i].result.iterations);
+        }
+    }
+};

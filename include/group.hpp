@@ -158,17 +158,68 @@ private:
         auto* primary = sets_[primary_idx_];
         auto& indices = primary->get_entity_indices();
 
-        // 4x 循环展开,最大化 ILP
-        const size_t n4 = n & ~size_t{3};
+        // 8x 循环展开,最大化 ILP (7+ 组件实测仍优于 4x, 寄存器压力未造成回退)
+        const size_t n8 = n & ~size_t{7};
         size_t i = 0;
-        for (; i < n4; i += 4)
+        for (; i < n8; i += 8)
         {
-            if (i + 12 < n) [[likely]]
+            if (i + 16 < n) [[likely]]
             {
-                auto& next = mappings[i + 12];
+                auto& next = mappings[i + 16];
                 ((void)PREFETCH_R(&std::get<Is>(data_ptrs)[next[Is]]), ...);
             }
 
+            auto& m0 = mappings[i];
+            auto& m1 = mappings[i + 1];
+            auto& m2 = mappings[i + 2];
+            auto& m3 = mappings[i + 3];
+            auto& m4 = mappings[i + 4];
+            auto& m5 = mappings[i + 5];
+            auto& m6 = mappings[i + 6];
+            auto& m7 = mappings[i + 7];
+
+            if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
+            {
+                uint32_t eid0 = indices[m0[primary_idx_]];
+                uint32_t eid1 = indices[m1[primary_idx_]];
+                uint32_t eid2 = indices[m2[primary_idx_]];
+                uint32_t eid3 = indices[m3[primary_idx_]];
+                uint32_t eid4 = indices[m4[primary_idx_]];
+                uint32_t eid5 = indices[m5[primary_idx_]];
+                uint32_t eid6 = indices[m6[primary_idx_]];
+                uint32_t eid7 = indices[m7[primary_idx_]];
+                entity e0(eid0, primary->sparse_version_at_public(eid0));
+                entity e1(eid1, primary->sparse_version_at_public(eid1));
+                entity e2(eid2, primary->sparse_version_at_public(eid2));
+                entity e3(eid3, primary->sparse_version_at_public(eid3));
+                entity e4(eid4, primary->sparse_version_at_public(eid4));
+                entity e5(eid5, primary->sparse_version_at_public(eid5));
+                entity e6(eid6, primary->sparse_version_at_public(eid6));
+                entity e7(eid7, primary->sparse_version_at_public(eid7));
+                func(e0, std::get<Is>(data_ptrs)[m0[Is]]...);
+                func(e1, std::get<Is>(data_ptrs)[m1[Is]]...);
+                func(e2, std::get<Is>(data_ptrs)[m2[Is]]...);
+                func(e3, std::get<Is>(data_ptrs)[m3[Is]]...);
+                func(e4, std::get<Is>(data_ptrs)[m4[Is]]...);
+                func(e5, std::get<Is>(data_ptrs)[m5[Is]]...);
+                func(e6, std::get<Is>(data_ptrs)[m6[Is]]...);
+                func(e7, std::get<Is>(data_ptrs)[m7[Is]]...);
+            }
+            else
+            {
+                func(std::get<Is>(data_ptrs)[m0[Is]]...);
+                func(std::get<Is>(data_ptrs)[m1[Is]]...);
+                func(std::get<Is>(data_ptrs)[m2[Is]]...);
+                func(std::get<Is>(data_ptrs)[m3[Is]]...);
+                func(std::get<Is>(data_ptrs)[m4[Is]]...);
+                func(std::get<Is>(data_ptrs)[m5[Is]]...);
+                func(std::get<Is>(data_ptrs)[m6[Is]]...);
+                func(std::get<Is>(data_ptrs)[m7[Is]]...);
+            }
+        }
+        const size_t n4 = n & ~size_t{3};
+        for (; i < n4; i += 4)
+        {
             auto& m0 = mappings[i];
             auto& m1 = mappings[i + 1];
             auto& m2 = mappings[i + 2];

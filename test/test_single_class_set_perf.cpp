@@ -1,5 +1,6 @@
 // test_single_class_set_perf.cpp - single_class_set 独立性能测试
 #include "test_common.hpp"
+#include "include/part/analysis.hpp"
 #include <bit>
 #include <span>
 #include <cstdio>
@@ -52,12 +53,34 @@ double best_ns(int repeat, F&& fn) noexcept
     double best = 1e18;
     for (int r = 0; r < repeat; ++r)
     {
-        timer t;
+        stopwatch sw;
         fn();
-        double ns = t.elapsed_ns();
+        double ns = sw.ns();
         if (ns < best) best = ns;
     }
     return best;
+}
+
+// CPU TSC 频率估算 (首次调用校准, 后续返回缓存值)
+// time.hpp 不提供 CPU 频率, 此处用 stopwatch (周期 + 墙钟) 自校准
+inline double cpu_ghz_cached() noexcept
+{
+    static const double ghz = []() noexcept -> double {
+        stopwatch sw;
+        volatile double sink = 0.0;
+        while (sw.ns() < 5'000'000.0)
+        {
+            sink += 1.0;
+        }
+        (void)sink;
+        time_snapshot snap = sw.snapshot();
+        if (snap.ns_val > 0.0)
+        {
+            return static_cast<double>(snap.cycles) / snap.ns_val;
+        }
+        return 0.0;
+    }();
+    return ghz;
 }
 
 // 格式化辅助 (避免与 test_common.hpp 的 print_stats 冲突, 重命名为 print_dist)
@@ -82,7 +105,7 @@ inline void print_ns(const char* label, size_t n, double ns) noexcept
 }
 
 // 统计分布输出 (min/p50/p95/p99/max + mean)
-// unit="ns" 显示纳秒, unit="cyc" 显示周期 (并附带 ns 换算)
+// unit="ns" 显示纳秒, unit="cyc" 显示周期
 inline void print_dist(const char* label, const stats& s, const char* unit = "ns") noexcept
 {
     std::cout << "  " << std::left << std::setw(36) << label
@@ -93,12 +116,6 @@ inline void print_dist(const char* label, const stats& s, const char* unit = "ns
               << " p99=" << std::setw(7) << s.p99
               << " max=" << std::setw(7) << s.max
               << " mean=" << std::setw(7) << s.mean << " " << unit;
-    if (unit[0] == 'c' && unit[1] == 'y' && unit[2] == 'c')
-    {
-        double ghz = cpu_ghz_cached();
-        if (ghz > 0)
-            std::cout << " (min=" << std::setprecision(3) << (s.min / ghz) << "ns)";
-    }
     std::cout << "\n";
 }
 
@@ -753,7 +770,7 @@ static void test_hot_set(size_t n) noexcept
                     T* p = set.template get_ptr_fast_inline<T>(entity(static_cast<uint32_t>(i), 1));
                     touch_ptr(p);
                 }
-            auto s = benchmark_cycles(1000, 100, [&]() {
+            auto s = benchmark_precise_cycles(1000, 100, [&]() {
                 for (size_t i = 0; i < ws; ++i)
                 {
                     T* p = set.template get_ptr_fast_inline<T>(entity(static_cast<uint32_t>(opaque(i)), 1));
@@ -775,6 +792,8 @@ static void test_hot_set(size_t n) noexcept
 template <typename T>
 static void test_cache_hierarchy(size_t n) noexcept
 {
+    // 缓存测量功能已迁移至 part/analysis.hpp
+#if 1
     print_header(("Section 7: cache hierarchy (T=" + std::to_string(sizeof(T)) + "B, N=" + std::to_string(n) + ")").c_str());
     std::mt19937 gen(42);
     auto set = build_set<T>(n, gen);
@@ -807,7 +826,8 @@ static void test_cache_hierarchy(size_t n) noexcept
         addrs.increase_capacity(n);
         for (size_t i = 0; i < n; ++i)
             addrs.emplace_back(&data[i]);
-        cache_report cr = measure_cache_hits(addrs, th);
+        address_view addrs_av{addrs.data(), addrs.size()};
+        cache_report cr = measure_cache_hits(addrs_av, th);
         std::cout << "    typed_pool 顺序访问 (size=" << n << "*" << sizeof(T) << "B="
                   << (n * sizeof(T) / 1024) << "KB):\n";
         std::cout << "      L1=" << (cr.l1_hit_rate * 100) << "%"
@@ -831,7 +851,8 @@ static void test_cache_hierarchy(size_t n) noexcept
         addrs.increase_capacity(n);
         for (size_t i = 0; i < n; ++i)
             addrs.emplace_back(&data[rnd_idx[i]]);
-        cache_report cr = measure_cache_hits(addrs, th);
+        address_view addrs_av{addrs.data(), addrs.size()};
+        cache_report cr = measure_cache_hits(addrs_av, th);
         std::cout << "    typed_pool 随机访问 (size=" << n << "*" << sizeof(T) << "B="
                   << (n * sizeof(T) / 1024) << "KB):\n";
         std::cout << "      L1=" << (cr.l1_hit_rate * 100) << "%"
@@ -877,6 +898,7 @@ static void test_cache_hierarchy(size_t n) noexcept
     }
 
     print_footer();
+#endif
 }
 
 // === Section 8: 容量管理接口性能 ===
@@ -1008,8 +1030,8 @@ static void test_change_tracking(size_t n) noexcept
     print_footer();
 }
 
-// === Section 10: 统计分布基准 (使用 benchmark_cycles 周期级精度) ===
-// 修复: benchmark_ns → benchmark_cycles (chrono ~15ns 分辨率无法测亚 ns 操作)
+// === Section 10: 统计分布基准 (使用 benchmark_precise_cycles 周期级精度) ===
+// 修复: benchmark_ns → benchmark_precise_cycles (chrono ~15ns 分辨率无法测亚 ns 操作)
 template <typename T>
 static void test_stats_distribution(size_t n) noexcept
 {
@@ -1019,7 +1041,7 @@ static void test_stats_distribution(size_t n) noexcept
 
     {
         size_t idx = 0;
-        auto s = benchmark_cycles(10000, 1000, [&]() {
+        auto s = benchmark_precise_cycles(10000, 1000, [&]() {
             T* p = set.template get_ptr_fast_inline<T>(entity(static_cast<uint32_t>(idx), 1));
             touch_ptr(p);
             idx = (idx + 1) % n;
@@ -1029,7 +1051,7 @@ static void test_stats_distribution(size_t n) noexcept
 
     {
         std::uniform_int_distribution<uint32_t> d(0, static_cast<uint32_t>(n - 1));
-        auto s = benchmark_cycles(10000, 1000, [&]() {
+        auto s = benchmark_precise_cycles(10000, 1000, [&]() {
             T* p = set.template get_ptr_fast_inline<T>(entity(d(gen), 1));
             touch_ptr(p);
         });
@@ -1038,7 +1060,7 @@ static void test_stats_distribution(size_t n) noexcept
 
     {
         std::uniform_int_distribution<uint32_t> d(0, static_cast<uint32_t>(n - 1));
-        auto s = benchmark_cycles(10000, 1000, [&]() {
+        auto s = benchmark_precise_cycles(10000, 1000, [&]() {
             volatile bool b = set.contains_entity(entity(d(gen), 1));
             (void)b;
         });
@@ -1053,7 +1075,7 @@ static void test_stats_distribution(size_t n) noexcept
         tmp.increase_capacity(n + 10000);
         tmp.add(entity(0, 1), T{});
         uint32_t next_idx = 1;
-        auto s = benchmark_cycles(10000, 1000, [&]() {
+        auto s = benchmark_precise_cycles(10000, 1000, [&]() {
             tmp.add(entity(next_idx, 1), T{});
             ++next_idx;
         });
@@ -1071,19 +1093,16 @@ int main()
 
     std::cout << "========================================================\n"
               << "  single_class_set 独立性能测试\n"
-              << "  工具: time.hpp (timer/cycle_timer/benchmark_ns/measure_cache_hits)\n"
+              << "  工具: time.hpp (stopwatch/benchmark/scope_time) + analysis.hpp (cache/barrier)\n"
               << "========================================================\n";
 
     constexpr size_t N = 1000000;  // 1M 实体
 
     std::cout << "\n┌─ CPU 信息\n";
-    std::cout << "  TSC 频率: " << std::fixed << std::setprecision(3)
-              << cpu_ghz_cached() << " GHz\n";
-    latency_thresholds th = detect_cache_latency_thresholds();
-    std::cout << "  缓存层级: " << th.cache_levels
-              << " (L1<" << th.l1_max << "cyc"
-              << ", L2<" << th.l2_max << "cyc"
-              << ", L3<" << th.l3_max << "cyc)\n";
+    latency_thresholds auto_th = detect_cache_latency_thresholds();
+    std::cout << "  缓存层级: " << auto_th.cache_levels << " 级"
+              << "  L1<=" << auto_th.l1_max << "  L2<=" << auto_th.l2_max
+              << "  L3<=" << auto_th.l3_max << "  cyc\n";
     std::cout << "└──────────────────────────────────────────────\n";
 
     // 对 3 种大小组件测试: POD4 (4B), POD12 (12B), POD32 (32B)

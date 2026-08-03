@@ -2218,6 +2218,11 @@ window.DOCS_DATA['reflection_usage'] = {
 | \`REFLECT_PRIVATE(Cls, ...)\` | 类外注册私有成员，偏移量和类型由成员指针自动推导；自动注册类型元信息（无需先 \`REGISTER\`） |
 | \`REGISTER_PRIVATE_OFFSETS(Cls, ...)\` + \`PRIV_FIELD(name, offset, Type)\` | 手填偏移量注册私有成员，用于无法修改的第三方类型 |
 | \`REGISTER_TYPE_ONLY(Cls)\` | 只注册类型元信息，不自动遍历字段。用于无字段类型，或配合 \`register_array_field\` 手动注册 |
+| \`REGISTER_ENUM(EnumType, v1, v2, ...)\` | 注册枚举类型，自动生成 \`{E::v, #v}\` 名值对，支持 1~10 个枚举值 |
+| \`REGISTER_BASE(Derived, Base)\` | 注册单继承关系（\`offset=0\`），用于向上/向下转型 |
+| \`REGISTER_BASE_OFFSET(Derived, Base, off)\` | 注册多继承关系，手填派生类→基类指针调整量 |
+| \`REGISTER_FIELD_ATTR(Cls, field, key, value)\` | 为字段注册属性/注解，\`value\` 任意类型（\`void_any\` 存储） |
+| \`REGISTER_CONVERT(From, To)\` | 注册类型转换（要求 \`From\` 可隐式转换到 \`To\`） |
 
 ### 11.2 查询入口
 
@@ -2230,6 +2235,7 @@ window.DOCS_DATA['reflection_usage'] = {
 | \`reflect::try_get<T>()\` | 软失败版本，未注册返回 \`query_view::valid()==false\`，不 abort |
 | \`reflect::try_get_by_name(name)\` | 软失败版本（按名），不 abort |
 | \`reflect::global()\` | 全局存储对象 |
+| \`reflect::global().find_type_by_hash(hash)\` | 按 \`name_hash\`（FNV-1a(name)）查找 \`type_meta*\`，跨编译器/DLL 稳定标识，未找到返回 nullptr |
 
 ### 11.3 query_view 接口
 
@@ -2237,6 +2243,7 @@ window.DOCS_DATA['reflection_usage'] = {
 |------|------|
 | \`name()\` | 类型名 |
 | \`valid()\` | 是否绑定有效元数据（\`try_get\` 后用于判断是否注册） |
+| \`meta()\` | 取底层 \`const type_meta*\`，用于访问 name_hash/构造/继承等扩展字段 |
 | \`size()\` | \`sizeof(T)\` |
 | \`align()\` | \`alignof(T)\` |
 | \`field_count()\` | 字段数 |
@@ -2254,6 +2261,11 @@ window.DOCS_DATA['reflection_usage'] = {
 | \`get_ptr(obj, name)\` (const) | const 对象版本 |
 | \`invoke<R>(obj, name, args...)\` | 调用方法，返回 R。参数数量不匹配或未注册触发 \`std::abort()\` |
 | \`try_invoke<R>(obj, name, args...)\` | 软失败版本。\`R=void\` 返回 \`bool\`；非 void 返回 \`std::optional<R>\`。失败不 abort |
+| \`find_overload(name, given_ids, n_args)\` | 按参数类型 id 精确匹配重载，返回 \`const method_meta*\`；无精确匹配回退首个同名方法；未找到返回 nullptr |
+| \`get_by_path(obj, path)\` | 按 \`a.b.c\` 嵌套路径取字段 \`void*\`，递归查找子类型；任一级未找到返回 nullptr |
+| \`get_by_path(obj, path)\` (const) | const 对象版本 |
+| \`get_by_path_as<T>(obj, path)\` | 路径访问并转型为 \`T*\` |
+| \`get_by_path_as<T>(obj, path)\` (const) | const 对象版本 |
 | \`for_each_field(obj, f)\` | 遍历实例字段，\`f(name, ptr, type_id)\` |
 | \`for_each_field(obj, f)\` (const) | const 对象版本 |
 | \`for_each_field_meta(f)\` | 遍历字段元数据，\`f(field_meta&)\` |
@@ -2277,6 +2289,147 @@ window.DOCS_DATA['reflection_usage'] = {
 | \`array_get_by_name<T>(obj, name, element_idx)\` | 按名类型安全访问 |
 | \`array_set<T>(obj, field_idx, element_idx, value)\` | 类型安全写入 |
 | \`array_set_by_name<T>(obj, name, element_idx, value)\` | 按名类型安全写入 |
+
+### 11.4 construct_view — 对象构造/销毁
+
+\`#include "reflection/construct.hpp"\`。反射式构造与析构，基于 \`type_meta\` 的默认构造/析构函数指针。需类型可默认构造。
+
+| 接口 | 说明 |
+|------|------|
+| \`construct_view()\` | 默认构造，未绑定 |
+| \`has_default_construct()\` | 类型是否可默认构造 |
+| \`create()\` | 堆分配默认构造，返回 \`void*\`；不可构造或未绑定返回 nullptr |
+| \`create_inplace(buf)\` | 就地默认构造（\`buf\` 需足够大且对齐），返回 \`void*\` |
+| \`destroy(obj)\` | 析构对象（不释放内存，用于就地对象） |
+| \`destroy_heap(obj)\` | 析构并释放堆内存（配合 \`create()\` 使用） |
+| \`reflect::get_construct<T>()\` | 按类型取 \`construct_view\` |
+| \`reflect::get_construct(q)\` | 由 \`query_view\` 构造 \`construct_view\` |
+
+### 11.5 inheritance_view — 继承关系
+
+\`#include "reflection/inheritance.hpp"\`。查询直接/间接基类与派生类，支持向上转型。需先 \`REGISTER_BASE\` 注册关系。
+
+| 接口 | 说明 |
+|------|------|
+| \`is_derived_from(base_type_id)\` | 是否继承自指定类型（含间接继承） |
+| \`is_derived_from<Base>()\` | 模板版本 |
+| \`is_base_of(derived_type_id)\` | 是否是指定类型的基类 |
+| \`is_base_of<Derived>()\` | 模板版本 |
+| \`upcast(derived_obj, base_type_id)\` | 派生类指针向上转型为基类指针，失败返回 nullptr |
+| \`upcast<Base>(derived_obj)\` | 模板版本，返回 \`Base*\` |
+| \`base_count()\` | 直接基类数量 |
+| \`derived_count()\` | 直接派生类数量 |
+| \`base_type_id_at(idx)\` | 取第 idx 个直接基类 type_id，越界返回 -1 |
+| \`derived_type_id_at(idx)\` | 取第 idx 个直接派生类 type_id，越界返回 -1 |
+| \`for_each_base(f)\` | 遍历直接基类，\`f(base_type_id, offset)\` |
+| \`for_each_derived(f)\` | 遍历直接派生类，\`f(derived_type_id)\` |
+| \`reflect::get_inheritance<T>()\` | 按类型取 \`inheritance_view\` |
+| \`reflect::get_inheritance(q)\` | 由 \`query_view\` 构造 |
+
+### 11.6 enum_view — 枚举反射
+
+\`#include "reflection/enum_view.hpp"\`。枚举值↔名称互转与遍历。需先 \`REGISTER_ENUM\` 注册。
+
+| 接口 | 说明 |
+|------|------|
+| \`valid()\` | 是否绑定有效枚举元数据 |
+| \`name()\` | 枚举类型名 |
+| \`type_id_value()\` | 枚举类型 id |
+| \`underlying_type_id()\` | 底层整数类型 id |
+| \`value_count()\` | 枚举值数量 |
+| \`value_to_name(uint64_t)\` | 值→名称，失败返回 nullptr |
+| \`value_to_name(E value)\` | 模板版本，接受枚举值 |
+| \`name_to_value(name, out)\` | 名称→值（\`uint64_t&\`），失败返回 false |
+| \`name_to_value<E>(name, out)\` | 模板版本，\`out\` 为 \`E&\` |
+| \`for_each_value(f)\` | 遍历所有枚举值，\`f(uint64_t value, const char* name)\` |
+| \`reflect::get_enum<E>()\` | 按枚举类型取 \`enum_view\` |
+| \`reflect::get_enum(type_id)\` | 按类型 id 取 \`enum_view\` |
+
+### 11.7 attribute_view — 属性/注解
+
+\`#include "reflection/attributes.hpp"\`。查询字段附加的键值对属性。需先 \`REGISTER_FIELD_ATTR\` 注册。
+
+| 接口 | 说明 |
+|------|------|
+| \`has_attr(field_idx, key)\` | 按字段索引判断是否含指定属性 |
+| \`has_attr(field_name, key)\` | 按字段名判断 |
+| \`get_attr(field_idx, key)\` | 取属性值 \`const void_any*\`，失败返回 nullptr |
+| \`get_attr(field_name, key)\` | 按字段名取 |
+| \`get_attr_as<V>(field_idx, key)\` | 类型安全取属性值，返回 \`const V*\` |
+| \`get_attr_as<V>(field_name, key)\` | 按字段名类型安全取 |
+| \`for_each_attr(field_idx, f)\` | 遍历字段所有属性，\`f(key_hash, void_any&)\` |
+| \`reflect::get_attributes<T>()\` | 按类型取 \`attribute_view\` |
+| \`reflect::get_attributes(q)\` | 由 \`query_view\` 构造 |
+
+### 11.8 container_view — 容器反射
+
+\`#include "reflection/container.hpp"\`。统一访问顺序容器（\`dense<T>\`/\`std::vector\` 等）的元素。需先 \`register_sequential<T>()\` 注册容器特征。
+
+| 接口 | 说明 |
+|------|------|
+| \`valid()\` | 是否绑定有效容器与 ops |
+| \`is_container()\` | ops 是否非空 |
+| \`category()\` | 容器类别（\`sequential\`/\`none\`） |
+| \`element_type_id()\` | 元素类型 id |
+| \`size()\` | 元素数 |
+| \`at(index)\` | 取元素 \`void*\`，越界返回 nullptr |
+| \`at_as<T>(index)\` | 类型安全取元素 |
+| \`push_back(element)\` | 追加元素（\`const void*\`） |
+| \`push_back<T>(value)\` | 模板版本 |
+| \`clear()\` | 清空容器 |
+| \`reserve(n)\` | 预留容量 |
+| \`for_each(f)\` | 遍历元素，\`f(void* element, size_t index)\` |
+| \`reflect::as_container(obj, type_id)\` | 由对象指针与类型 id 构造 \`container_view\` |
+| \`reflect::as_container(q, obj)\` | 由 \`query_view\`（字段类型）与对象指针构造 |
+
+### 11.9 virtual_dispatch_view — 动态派发
+
+\`#include "reflection/virtual_dispatch.hpp"\`。查询方法是否虚函数及 vtable 偏移。通过 \`register_method\` 注册的虚函数，invoker 已正确处理 vtable，可直接 \`invoke_virtual\` 调用。
+
+| 接口 | 说明 |
+|------|------|
+| \`is_virtual(method_name)\` | 方法是否为虚函数 |
+| \`vtable_offset(method_name)\` | 虚函数 vtable 偏移（非虚返回 -1） |
+| \`invoke_virtual<R>(obj, name, args...)\` | 调用虚函数（复用重载解析），未找到触发 \`std::abort()\` |
+| \`reflect::get_virtual_dispatch<T>()\` | 按类型取 \`virtual_dispatch_view\` |
+| \`reflect::get_virtual_dispatch(q)\` | 由 \`query_view\` 构造 |
+
+### 11.10 convert_view — 类型转换
+
+\`#include "reflection/convert.hpp"\`。查询与执行已注册的类型转换。需先 \`REGISTER_CONVERT\` 注册。
+
+| 接口 | 说明 |
+|------|------|
+| \`can_convert_to(target_type_id)\` | 是否可转换到目标类型 |
+| \`can_convert_to<U>()\` | 模板版本 |
+| \`convert_to(src, target_type_id, dst)\` | 执行转换写入 \`dst\`，失败返回 false |
+| \`convert_to<U>(src)\` | 类型安全转换，返回 \`std::optional<U>\` |
+| \`for_each_convertible(f)\` | 遍历所有可转换目标，\`f(target_type_id)\` |
+| \`reflect::get_convert<T>()\` | 按类型取 \`convert_view\` |
+| \`reflect::get_convert(q)\` | 由 \`query_view\` 构造 |
+
+### 11.11 compare_view — 字段比较/克隆
+
+\`#include "reflection/compare.hpp"\`。逐字段相等比较、克隆、赋值与析构。数组字段逐元素处理；无 \`type_ops\` 的字段回退到 \`memcmp\`/\`memcpy\`。
+
+| 接口 | 说明 |
+|------|------|
+| \`equal(a, b)\` | 逐字段相等比较（\`a==b\` 返回 true；其一为 nullptr 返回 false） |
+| \`clone(src, dst)\` | 逐字段拷贝构造（\`dst\` 必须是未初始化内存） |
+| \`copy_assign(src, dst)\` | 逐字段赋值（\`dst\` 已构造） |
+| \`destroy_fields(obj)\` | 逐字段析构（对象销毁前调用） |
+| \`reflect::get_compare<T>()\` | 按类型取 \`compare_view\` |
+| \`reflect::get_compare(q)\` | 由 \`query_view\` 构造 |
+
+### 11.12 hash_view — 字段哈希
+
+\`#include "reflection/hash.hpp"\`。逐字段 FNV-1a 哈希组合。有 \`type_ops::hash_fn\` 的字段用其计算，否则字节级 FNV-1a。
+
+| 接口 | 说明 |
+|------|------|
+| \`hash(obj)\` | 计算对象哈希，返回 \`uint64_t\`；未绑定或 \`obj\` 为空返回 0 |
+| \`reflect::get_hash<T>()\` | 按类型取 \`hash_view\` |
+| \`reflect::get_hash(q)\` | 由 \`query_view\` 构造 |
 
 ### 使用
 
@@ -2420,6 +2573,141 @@ gv.array_rank(0);                     // 2
 gv.array_total_elements(0);           // 64
 gv.array_extent(0, 0);                // 8
 gv.array_extent(0, 1);                // 8
+
+// === #3 枚举反射 ===
+enum class Element { Fire, Water, Earth, Air };
+REGISTER_ENUM(Element, Fire, Water, Earth, Air);  // 自动生成名值对
+
+auto ev = reflect::get_enum<Element>();
+ev.value_count();                                    // 4
+ev.value_to_name(Element::Fire);                     // "Fire"
+Element out{};
+ev.name_to_value("Air", out);                        // true, out == Element::Air
+ev.for_each_value([](uint64_t v, const char* name) {
+    std::cout << name << " = " << v << "\\n";
+});
+
+// === #2 继承关系 ===
+struct Base { int base_val; };
+struct Derived : Base { int derived_val; };
+REGISTER(Base);
+REGISTER_TYPE_ONLY(Derived);
+REGISTER_PRIVATE_OFFSETS(Derived,
+    PRIV_FIELD("base_val",    offsetof(Derived, base_val),    int),
+    PRIV_FIELD("derived_val", offsetof(Derived, derived_val), int));
+REGISTER_BASE(Derived, Base);   // 注册单继承关系
+
+auto iv = reflect::get_inheritance<Derived>();
+iv.base_count();                       // 1
+iv.is_derived_from<Base>();            // true
+Derived d{};
+d.base_val = 10;
+Base* b = iv.upcast<Base>(&d);         // 向上转型
+std::cout << b->base_val;              // 10
+
+auto ivb = reflect::get_inheritance<Base>();
+ivb.derived_count();                   // 1
+ivb.is_base_of<Derived>();             // true
+
+// === #4 字段属性/注解 ===
+struct Player { int hp; int mp; float x; };
+REGISTER_TYPE_ONLY(Player);
+REGISTER_MEMBERS(Player, hp, mp, x);
+REGISTER_FIELD_ATTR(Player, hp, "range_min", 0);       // int 属性
+REGISTER_FIELD_ATTR(Player, hp, "range_max", 100);
+REGISTER_FIELD_ATTR(Player, hp, "category", "Combat");  // 字符串属性
+
+auto av = reflect::get_attributes<Player>();
+av.has_attr("hp", "range_min");                       // true
+const int* min_val = av.get_attr_as<int>("hp", "range_min");   // *min_val == 0
+const int* max_val = av.get_attr_as<int>("hp", "range_max");   // *max_val == 100
+
+// === #7 类型转换 ===
+REGISTER_TYPE_ONLY(int);
+REGISTER_TYPE_ONLY(float);
+REGISTER_CONVERT(int, int64_t);     // int → int64_t
+REGISTER_CONVERT(float, double);    // float → double
+
+auto cv = reflect::get_convert<int>();
+cv.can_convert_to<int64_t>();       // true
+int src = 42;
+int64_t dst{};
+cv.convert_to(&src, type_id::get_type_id<int64_t>(), &dst);  // dst == 42
+auto result = cv.convert_to<int64_t>(&src);  // std::optional<int64_t>, *result == 42
+
+// === #1 对象构造/销毁 ===
+struct Constructable { int a; float b; };
+REGISTER(Constructable);
+
+auto ctv = reflect::get_construct<Constructable>();
+ctv.has_default_construct();        // true
+void* obj = ctv.create();           // 堆分配默认构造
+// ... 使用 obj ...
+ctv.destroy_heap(obj);              // 析构并释放
+
+alignas(Constructable) char buf[sizeof(Constructable)];
+void* obj2 = ctv.create_inplace(buf);  // 就地构造
+ctv.destroy(obj2);                     // 仅析构（不释放）
+
+// === #8 字段比较/克隆 ===
+struct CompareTest { int a; float b; };
+REGISTER(CompareTest);
+
+auto cmpv = reflect::get_compare<CompareTest>();
+CompareTest a{1, 2.0f}, b{1, 2.0f}, c{1, 3.0f};
+cmpv.equal(&a, &b);                 // true
+cmpv.equal(&a, &c);                 // false
+
+alignas(CompareTest) char cbuf[sizeof(CompareTest)];
+cmpv.clone(&a, cbuf);               // 拷贝构造到未初始化内存
+cmpv.copy_assign(&a, &c);           // 逐字段赋值 (c 已构造)
+cmpv.destroy_fields(&c);            // 逐字段析构
+
+// === #9 字段哈希 ===
+auto hv = reflect::get_hash<CompareTest>();
+uint64_t ha = hv.hash(&a);          // FNV-1a 组合哈希
+uint64_t hb = hv.hash(&b);          // ha == hb (字段值相同)
+
+// === #11 字段路径访问 (嵌套) ===
+struct Inner { int value; };
+struct Outer { Inner inner; };
+REGISTER_TYPE_ONLY(Inner);
+REGISTER_MEMBERS(Inner, value);
+REGISTER_TYPE_ONLY(Outer);
+REGISTER_MEMBERS(Outer, inner);
+
+Outer obj{};
+obj.inner.value = 42;
+auto q = reflect::get<Outer>();
+void* p = q.get_by_path(&obj, "inner.value");   // 指向 obj.inner.value
+int* ip = q.get_by_path_as<int>(&obj, "inner.value");  // *ip == 42
+
+// === #12 重载按类型匹配 ===
+auto q2 = reflect::get<Calculator>();
+int ids[] = { type_id::get_type_id<int>(), type_id::get_type_id<int>() };
+const reflect::method_meta* m = q2.find_overload("add", ids, 2);  // 精确匹配 add(int,int)
+
+// === #10 类型名稳定标识 (name_hash) ===
+auto v3 = reflect::get<Vec3>();
+v3.meta()->name_hash;                                        // FNV-1a("Vec3")
+const reflect::type_meta* found =
+    reflect::global().find_type_by_hash(fnv1a_runtime("Vec3"));  // 按 hash 查找
+
+// === #5 容器反射 ===
+reflect::global().register_type_only<dense<int>>("dense<int>");
+global_container_ops().register_sequential<dense<int>>();   // 注册容器特征
+
+dense<int> vec;
+vec.push_back(10);
+vec.push_back(20);
+auto ccv = reflect::as_container(&vec, type_id::get_type_id<dense<int>>());
+ccv.valid();                // true
+ccv.size();                 // 2
+int* p0 = ccv.at_as<int>(0);  // *p0 == 10
+ccv.for_each([](void* elem, size_t idx) {
+    std::cout << idx << ": " << *static_cast<int*>(elem) << "\\n";
+});
+ccv.push_back<int>(30);     // 追加元素
 \`\`\`
 
 ### 注意事项
@@ -2439,6 +2727,16 @@ gv.array_extent(0, 1);                // 8
 | 含 C 数组字段的类型直接用 \`REGISTER\` | 结构化绑定展开数组为多个标量字段，字段计数错误 | 改用 \`REGISTER_MEMBERS\`（自动判断标量/数组 + 推导数组元数据） |
 | \`REGISTER_MEMBERS\` 数组维度数超过 4 | 注册被忽略 | 维度数限制 1~4，更高维度需拆分为结构体嵌套 |
 | \`array_element_ptr\` 越界访问 | 返回 nullptr，解引用崩溃 | \`element_idx\` 必须 < \`array_total_elements\` |
+| 未 \`REGISTER_BASE\` 就调用 \`upcast\` | 返回 nullptr | 先 \`REGISTER_BASE(Derived, Base)\` 注册继承关系 |
+| 未 \`REGISTER_ENUM\` 就调用 \`get_enum\` | \`enum_view::valid()==false\` | 先 \`REGISTER_ENUM(E, ...)\` 注册枚举 |
+| 未 \`REGISTER_FIELD_ATTR\` 就调用 \`get_attr\` | 返回 nullptr | 先 \`REGISTER_FIELD_ATTR\` 注册属性 |
+| 未 \`REGISTER_CONVERT\` 就调用 \`convert_to\` | 返回 false/\`nullopt\` | 先 \`REGISTER_CONVERT(From, To)\` 注册转换 |
+| \`convert_to\` 的 \`From\` 不可隐式转换到 \`To\` | 编译错误 | \`REGISTER_CONVERT\` 要求 \`is_convertible_v<From, To>\` |
+| \`clone\` 的 \`dst\` 已构造 | 内存泄漏/双重析构 | \`clone\` 仅用于未初始化内存；已构造对象用 \`copy_assign\` |
+| \`create_inplace\` 的 \`buf\` 未对齐 | placement new 未对齐访问崩溃 | \`alignas(T) char buf[sizeof(T)]\` |
+| 容器未 \`register_sequential\` 就用 \`as_container\` | \`container_view::valid()==false\` | 先 \`global_container_ops().register_sequential<T>()\` |
+| \`get_by_path\` 路径中间字段未注册子类型 | 返回 nullptr | 中间字段类型也需 \`REGISTER\`/\`REGISTER_MEMBERS\` |
+| \`REGISTER_ENUM\` 枚举值超过 10 个 | 宏展开错误 | 超过 10 个值时直接调 \`reflect::global().register_enum<E>(name, {...})\` |
 
 ### 私有成员注册方式选择
 

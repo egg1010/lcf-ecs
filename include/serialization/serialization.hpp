@@ -1,5 +1,5 @@
 // serialization.hpp - 序列化模块统一入口
-// 命名空间: ecs
+// 命名空间: serialize
 //
 // 模块分层:
 //   archive_codec.hpp        编码器抽象接口 (archive_writer/reader/codec)

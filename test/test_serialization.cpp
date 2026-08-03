@@ -4,11 +4,11 @@
 #include <cstdio>
 #include <cstring>
 
-using ecs::serialization;
+using serialize::serialization;
 using ecs::entity;
 using ecs::manager;
-using ecs::serialize_filter;
-using ecs::load_mode;
+using serialize::serialize_filter;
+using serialize::load_mode;
 using ::register_component_version;
 using ::register_migration;
 using ::rle_compress;

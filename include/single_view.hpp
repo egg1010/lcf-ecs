@@ -37,11 +37,13 @@
 
         [[nodiscard]] component_iterator component_begin() noexcept
         {
+            if (!set_) [[unlikely]] return nullptr;
             auto* pool = set_->template get_typed_pool_ptr<T>();
             return pool ? pool->data() : nullptr;
         }
         [[nodiscard]] component_iterator component_end() noexcept
         {
+            if (!set_) [[unlikely]] return nullptr;
             auto* pool = set_->template get_typed_pool_ptr<T>();
             return pool ? pool->data() + pool->size() : nullptr;
         }
@@ -549,15 +551,15 @@
         private:
             single_view base_;
             uint64_t last_version_{0};
-            dense<size_t> changed_indices_;
+            size_t changed_count_{0};
             bool needs_rebuild_{true};
 
             void rebuild() noexcept
             {
-                changed_indices_.clear();
                 base_.resolve_set();
                 if (!base_.set_) [[unlikely]]
                 {
+                    changed_count_ = 0;
                     needs_rebuild_ = false;
                     return;
                 }
@@ -565,20 +567,16 @@
                 uint64_t cur = base_.set_->get_pool_version();
                 if (cur == last_version_)
                 {
+                    changed_count_ = 0;
                     needs_rebuild_ = false;
                     return;
                 }
                 last_version_ = cur;
 
+                // pool_version 变化: 全部实体均为 changed, 无需存储 indices
+                // for_each 直接顺序遍历 [0, n)
                 auto* pool = base_.set_->template get_typed_pool_ptr<T>();
-                if (!pool) [[unlikely]] return;
-                const size_t n = pool->size();
-                changed_indices_.reserve_exact(n);
-                for (size_t i = 0; i < n; ++i)
-                {
-                    changed_indices_.push_back(i);
-                }
-
+                changed_count_ = pool ? pool->size() : 0;
                 needs_rebuild_ = false;
             }
 
@@ -594,13 +592,13 @@
                 rebuild();
             }
 
-            [[nodiscard]] size_t size() const noexcept { return changed_indices_.size(); }
-            [[nodiscard]] bool empty() const noexcept { return changed_indices_.empty(); }
+            [[nodiscard]] size_t size() const noexcept { return changed_count_; }
+            [[nodiscard]] bool empty() const noexcept { return changed_count_ == 0; }
 
             void reset_tracking() noexcept
             {
                 last_version_ = 0;
-                changed_indices_.clear();
+                changed_count_ = 0;
                 needs_rebuild_ = true;
             }
 
@@ -609,13 +607,13 @@
             {
                 ensure_fresh();
                 needs_rebuild_ = true;
-                if (changed_indices_.empty()) return;
+                if (changed_count_ == 0) return;
 
                 T* data = base_.set_->template get_typed_pool_data_ptr<T>();
                 if (!data) [[unlikely]] return;
                 auto& indices = base_.set_->get_entity_indices();
                 auto& versions = base_.set_->get_entity_versions();
-                const size_t n = changed_indices_.size();
+                const size_t n = changed_count_;
 
                 if constexpr (std::is_invocable_v<Func, entity, T&>)
                 {
@@ -624,32 +622,64 @@
                     {
                         const uint32_t* idx_data = indices.data();
                         const uint32_t* ver_data = versions.data();
-                        const size_t* changed = changed_indices_.data();
-                        for (size_t i = 0; i < n; ++i)
+                        // 8x 循环展开
+                        const size_t n8 = n & ~size_t{7};
+                        size_t i = 0;
+                        for (; i < n8; i += 8)
                         {
-                            size_t idx = changed[i];
-                            entity e(idx_data[idx], ver_data[idx]);
-                            func(e, data[idx]);
+                            entity e0(idx_data[i],     ver_data[i]);
+                            entity e1(idx_data[i + 1], ver_data[i + 1]);
+                            entity e2(idx_data[i + 2], ver_data[i + 2]);
+                            entity e3(idx_data[i + 3], ver_data[i + 3]);
+                            entity e4(idx_data[i + 4], ver_data[i + 4]);
+                            entity e5(idx_data[i + 5], ver_data[i + 5]);
+                            entity e6(idx_data[i + 6], ver_data[i + 6]);
+                            entity e7(idx_data[i + 7], ver_data[i + 7]);
+                            func(e0, data[i]);
+                            func(e1, data[i + 1]);
+                            func(e2, data[i + 2]);
+                            func(e3, data[i + 3]);
+                            func(e4, data[i + 4]);
+                            func(e5, data[i + 5]);
+                            func(e6, data[i + 6]);
+                            func(e7, data[i + 7]);
+                        }
+                        for (; i < n; ++i)
+                        {
+                            entity e(idx_data[i], ver_data[i]);
+                            func(e, data[i]);
                         }
                     }
                     else
                     {
                         for (size_t i = 0; i < n; ++i)
                         {
-                            size_t idx = changed_indices_[i];
-                            uint32_t eid = indices[idx];
+                            uint32_t eid = indices[i];
                             uint32_t ver = base_.set_->sparse_version_at_public(eid);
                             entity e(eid, ver);
-                            func(e, data[idx]);
+                            func(e, data[i]);
                         }
                     }
                 }
                 else
                 {
-                    const size_t* changed = changed_indices_.data();
-                    for (size_t i = 0; i < n; ++i)
+                    // 8x 循环展开 (无 entity 版本)
+                    const size_t n8 = n & ~size_t{7};
+                    size_t i = 0;
+                    for (; i < n8; i += 8)
                     {
-                        func(data[changed[i]]);
+                        func(data[i]);
+                        func(data[i + 1]);
+                        func(data[i + 2]);
+                        func(data[i + 3]);
+                        func(data[i + 4]);
+                        func(data[i + 5]);
+                        func(data[i + 6]);
+                        func(data[i + 7]);
+                    }
+                    for (; i < n; ++i)
+                    {
+                        func(data[i]);
                     }
                 }
             }
@@ -692,12 +722,32 @@
                 while (last_observed_versions_.size() < n)
                     last_observed_versions_.push_back(0);
 
-                for (size_t i = 0; i < n; ++i)
+                // entity_change_tracking_ 是 dense 数组, 顺序访问 + 预取
+                const auto* trk = base_.set_->get_entity_change_tracking_data();
+                uint64_t* obs = last_observed_versions_.data();
+                changed_indices_.reserve_exact(n);
+                const size_t n8 = n & ~size_t{7};
+                size_t i = 0;
+                for (; i < n8; i += 8)
                 {
-                    uint64_t cur = base_.set_->get_entity_change_version(i);
-                    if (cur != last_observed_versions_[i])
+                    if (i + 32 < n) [[likely]] PREFETCH_R(&trk[i + 32]);
+                    for (size_t k = 0; k < 8; ++k)
                     {
-                        last_observed_versions_[i] = cur;
+                        size_t ii = i + k;
+                        uint64_t cur = trk[ii].change_version;
+                        if (cur != obs[ii])
+                        {
+                            obs[ii] = cur;
+                            changed_indices_.push_back(ii);
+                        }
+                    }
+                }
+                for (; i < n; ++i)
+                {
+                    uint64_t cur = trk[i].change_version;
+                    if (cur != obs[i])
+                    {
+                        obs[i] = cur;
                         changed_indices_.push_back(i);
                     }
                 }
@@ -808,12 +858,32 @@
                 while (last_observed_added_.size() < n)
                     last_observed_added_.push_back(0);
 
-                for (size_t i = 0; i < n; ++i)
+                // entity_change_tracking_ 顺序访问 + 预取
+                const auto* trk = base_.set_->get_entity_change_tracking_data();
+                uint64_t* obs = last_observed_added_.data();
+                added_indices_.reserve_exact(n);
+                const size_t n8 = n & ~size_t{7};
+                size_t i = 0;
+                for (; i < n8; i += 8)
                 {
-                    uint64_t cur = base_.set_->get_entity_added_version(i);
-                    if (cur > baseline_added_counter_ && cur != last_observed_added_[i])
+                    if (i + 32 < n) [[likely]] PREFETCH_R(&trk[i + 32]);
+                    for (size_t k = 0; k < 8; ++k)
                     {
-                        last_observed_added_[i] = cur;
+                        size_t ii = i + k;
+                        uint64_t cur = trk[ii].added_version;
+                        if (cur > baseline_added_counter_ && cur != obs[ii])
+                        {
+                            obs[ii] = cur;
+                            added_indices_.push_back(ii);
+                        }
+                    }
+                }
+                for (; i < n; ++i)
+                {
+                    uint64_t cur = trk[i].added_version;
+                    if (cur > baseline_added_counter_ && cur != obs[i])
+                    {
+                        obs[i] = cur;
                         added_indices_.push_back(i);
                     }
                 }

@@ -10,14 +10,30 @@
 
 #if defined(VOID_ANY_USE_LAYERED_ALLOCATOR)
 #include "layered_allocator.hpp"
-#elif defined(VOID_ANY_ENABLE_MEMORY_POOL)
-#include "memory_pool.hpp"
 #endif
 
 #if defined(VOID_ANY_USE_LAYERED_ALLOCATOR)
 inline layered_allocator void_any_pool_{};
-#elif defined(VOID_ANY_ENABLE_MEMORY_POOL)
-inline memory_pool void_any_pool_{};
+
+[[nodiscard]] inline void* void_any_allocate(size_t n) noexcept
+{
+    return void_any_pool_.allocate(n);
+}
+
+inline void void_any_deallocate(void* p) noexcept
+{
+    void_any_pool_.deallocate(p);
+}
+#else
+[[nodiscard]] inline void* void_any_allocate(size_t n) noexcept
+{
+    return ::operator new(n, std::nothrow);
+}
+
+inline void void_any_deallocate(void* p) noexcept
+{
+    ::operator delete(p);
+}
 #endif
 
 // 编译期类型标签: 每个类型 T 拥有唯一地址, 链接期常量, 无守卫检查
@@ -30,8 +46,14 @@ namespace void_any_detail {
     };
 }
 
-class void_any
+// 模板化 void_any: SsoSize 控制 SSO 缓冲区大小, SsoAlign 控制对齐
+// 对外仅暴露 void_any 别名, 用户无需选择类型
+template<size_t SsoSize = 56, size_t SsoAlign = 8>
+class define_void_any
 {
+    static_assert(SsoSize % 8 == 0, "SsoSize must be a multiple of 8");
+    static_assert(SsoAlign >= 8, "SsoAlign must be at least 8");
+
 private:
     struct vtable
     {
@@ -44,12 +66,12 @@ private:
     };
 
 #if defined(VOID_ANY_ENABLE_SSO)
-    static constexpr size_t sso_buffer_size = VOID_ANY_SSO_BUFFER_SIZE;
-    static constexpr size_t sso_alignment = VOID_ANY_SSO_ALIGNMENT;
+    static constexpr size_t sso_buffer_size = SsoSize;
+    static constexpr size_t sso_alignment = SsoAlign;
 
     union storage
     {
-        alignas(sso_alignment) uint8_t sso_data_[sso_buffer_size];
+        alignas(SsoAlign) uint8_t sso_data_[SsoSize];
         void* ptr_;
     };
 
@@ -182,7 +204,7 @@ private:
     // 全量复制 SSO buffer (struct copy, GCC 内联为 mov 指令序列)
     static FORCE_INLINE void sso_buffer_copy(void* dst, const void* src) noexcept
     {
-        struct sso_copy_t { uint64_t q[7]; };
+        struct sso_copy_t { uint64_t q[SsoSize / 8]; };
         *static_cast<sso_copy_t*>(dst) = *static_cast<const sso_copy_t*>(src);
     }
 
@@ -307,7 +329,6 @@ private:
     static constexpr bool use_inline_encoded_v =
         std::is_trivially_destructible_v<T> && std::is_trivially_copyable_v<T>;
 
-#if defined(VOID_ANY_ENABLE_MEMORY_POOL)
     template<typename T>
     static const vtable& get_heap_vtable()
     {
@@ -320,7 +341,7 @@ private:
             {
                 v.destroy = [](void* p) noexcept
                 {
-                    void_any_pool_.deallocate(p);
+                    void_any_deallocate(p);
                 };
                 v.copy_to = nullptr;
                 v.move_to = nullptr;
@@ -328,8 +349,11 @@ private:
                 {
                     v.clone = [](const void* src) noexcept -> void*
                     {
-                        void* new_ptr = void_any_pool_.allocate(sizeof(T));
-                        if (!new_ptr) [[unlikely]] { return nullptr; }
+                        void* new_ptr = void_any_allocate(sizeof(T));
+                        if (!new_ptr) [[unlikely]]
+                        {
+                            return nullptr;
+                        }
                         std::memcpy(new_ptr, src, sizeof(T));
                         return new_ptr;
                     };
@@ -344,7 +368,7 @@ private:
                 v.destroy = [](void* p) noexcept
                 {
                     static_cast<T*>(p)->~T();
-                    void_any_pool_.deallocate(p);
+                    void_any_deallocate(p);
                 };
                 v.copy_to = nullptr;
                 v.move_to = nullptr;
@@ -352,8 +376,11 @@ private:
                 {
                     v.clone = [](const void* src) noexcept -> void*
                     {
-                        void* new_ptr = void_any_pool_.allocate(sizeof(T));
-                        if (!new_ptr) [[unlikely]] { return nullptr; }
+                        void* new_ptr = void_any_allocate(sizeof(T));
+                        if (!new_ptr) [[unlikely]]
+                        {
+                            return nullptr;
+                        }
                         new (new_ptr) T(*static_cast<const T*>(src));
                         return new_ptr;
                     };
@@ -367,67 +394,6 @@ private:
         }();
         return vt;
     }
-#else
-    template<typename T>
-    static const vtable& get_heap_vtable()
-    {
-        static const vtable vt = []{
-            vtable v{};
-            v.type_id = type_id::get_type_id<T>();
-            v.element_size = sizeof(T);
-
-            if constexpr (std::is_trivially_copyable_v<T>)
-            {
-                v.destroy = [](void* p) noexcept
-                {
-                    ::operator delete(p);
-                };
-                v.copy_to = nullptr;
-                v.move_to = nullptr;
-                if constexpr (std::is_copy_constructible_v<T>)
-                {
-                    v.clone = [](const void* src) noexcept -> void*
-                    {
-                        void* new_ptr = ::operator new(sizeof(T), std::nothrow);
-                        if (!new_ptr) [[unlikely]] { return nullptr; }
-                        std::memcpy(new_ptr, src, sizeof(T));
-                        return new_ptr;
-                    };
-                }
-                else
-                {
-                    v.clone = nullptr;
-                }
-            }
-            else
-            {
-                v.destroy = [](void* p) noexcept
-                {
-                    static_cast<T*>(p)->~T();
-                    ::operator delete(p);
-                };
-                v.copy_to = nullptr;
-                v.move_to = nullptr;
-                if constexpr (std::is_copy_constructible_v<T>)
-                {
-                    v.clone = [](const void* src) noexcept -> void*
-                    {
-                        void* new_ptr = ::operator new(sizeof(T), std::nothrow);
-                        if (!new_ptr) [[unlikely]] { return nullptr; }
-                        new (new_ptr) T(*static_cast<const T*>(src));
-                        return new_ptr;
-                    };
-                }
-                else
-                {
-                    v.clone = nullptr;
-                }
-            }
-            return v;
-        }();
-        return vt;
-    }
-#endif
 
     FORCE_INLINE void destroy_data() noexcept
     {
@@ -508,11 +474,7 @@ private:
         set_encoded(&get_heap_vtable<DecayedT>(), false, trivial_dtor, trivial_copy, 0);
 #endif
 
-#if defined(VOID_ANY_ENABLE_MEMORY_POOL)
-        void* new_ptr = void_any_pool_.allocate(sizeof(DecayedT));
-#else
-        void* new_ptr = ::operator new(sizeof(DecayedT), std::nothrow);
-#endif
+        void* new_ptr = void_any_allocate(sizeof(DecayedT));
 
         if (!new_ptr) [[unlikely]]
         {
@@ -533,24 +495,59 @@ private:
     }
 
 public:
-    void_any() noexcept = default;
+    define_void_any() noexcept = default;
 
     template<typename T>
-        requires (!std::is_same_v<std::decay_t<T>, void_any>)
-    FORCE_INLINE void_any(T&& object) noexcept
+        requires (!std::is_same_v<std::decay_t<T>, define_void_any>)
+    FORCE_INLINE define_void_any(T&& object) noexcept
     {
         construct_from(std::forward<T>(object));
     }
 
-    FORCE_INLINE ~void_any() noexcept
+    FORCE_INLINE ~define_void_any() noexcept
     {
         destroy_data();
     }
 
     template<typename T>
-        requires (!std::is_same_v<std::decay_t<T>, void_any>)
+        requires (!std::is_same_v<std::decay_t<T>, define_void_any>)
     FORCE_INLINE void set(T&& object) noexcept
     {
+        using DecayedT = std::decay_t<T>;
+
+        // 同类型 fast path: 直接赋值, 跳过析构+构造
+        if (has_value_fast()) [[likely]]
+        {
+            bool same_type = false;
+            void* data_ptr = nullptr;
+#if INTPTR_MAX == INT64_MAX
+            if (is_inline_type_id()) [[unlikely]]
+            {
+                same_type = (get_inline_type_tag_ptr() == &void_any_detail::type_tag_holder<DecayedT>::tag);
+            }
+            else
+            {
+                same_type = (get_vtable()->type_id == type_id::get_type_id<DecayedT>());
+            }
+#else
+            same_type = (vtable_ && vtable_->type_id == type_id::get_type_id<DecayedT>());
+#endif
+            if (same_type) [[likely]]
+            {
+                data_ptr = get_void_ptr();
+                if constexpr (std::is_trivially_copyable_v<DecayedT>)
+                {
+                    std::memcpy(data_ptr, &object, sizeof(DecayedT));
+                }
+                else
+                {
+                    *static_cast<DecayedT*>(data_ptr) = std::forward<T>(object);
+                }
+                return;
+            }
+        }
+
+        // 慢路径: 析构旧值 + 构造新值
         destroy_data();
 #if INTPTR_MAX == INT64_MAX
         vtable_sso_type_ = 0;
@@ -560,7 +557,7 @@ public:
         construct_from(std::forward<T>(object));
     }
 
-    FORCE_INLINE void_any(const void_any& other) noexcept
+    FORCE_INLINE define_void_any(const define_void_any& other) noexcept
     {
 #if INTPTR_MAX == INT64_MAX
         uintptr_t vst = other.vtable_sso_type_;
@@ -637,7 +634,7 @@ public:
 #endif
     }
 
-    FORCE_INLINE void_any(void_any&& other) noexcept
+    FORCE_INLINE define_void_any(define_void_any&& other) noexcept
     {
 #if INTPTR_MAX == INT64_MAX
         uintptr_t vst = other.vtable_sso_type_;
@@ -717,7 +714,7 @@ public:
 #endif
     }
 
-    FORCE_INLINE void_any& operator=(const void_any& other) noexcept
+    FORCE_INLINE define_void_any& operator=(const define_void_any& other) noexcept
     {
         if (this != &other) [[likely]]
         {
@@ -800,7 +797,7 @@ public:
         return *this;
     }
 
-    FORCE_INLINE void_any& operator=(void_any&& other) noexcept
+    FORCE_INLINE define_void_any& operator=(define_void_any&& other) noexcept
     {
         if (this != &other) [[likely]]
         {
@@ -1006,7 +1003,7 @@ public:
     }
 
     template<typename T>
-        requires (!std::is_same_v<std::decay_t<T>, void_any>)
+        requires (!std::is_same_v<std::decay_t<T>, define_void_any>)
     FORCE_INLINE void copy_from(const T& object) noexcept
     {
         using DecayedT = std::decay_t<T>;
@@ -1048,11 +1045,7 @@ public:
 #else
         set_encoded(&get_heap_vtable<DecayedT>(), false, trivial_dtor, trivial_copy, 0);
 #endif
-#if defined(VOID_ANY_ENABLE_MEMORY_POOL)
-        void* new_ptr = void_any_pool_.allocate(sizeof(DecayedT));
-#else
-        void* new_ptr = ::operator new(sizeof(DecayedT), std::nothrow);
-#endif
+        void* new_ptr = void_any_allocate(sizeof(DecayedT));
         if (!new_ptr) [[unlikely]]
         {
 #if INTPTR_MAX == INT64_MAX
@@ -1078,7 +1071,7 @@ public:
     }
 
     template<typename T>
-        requires (!std::is_same_v<std::decay_t<T>, void_any>)
+        requires (!std::is_same_v<std::decay_t<T>, define_void_any>)
     FORCE_INLINE void move_from(T&& object) noexcept
     {
         using DecayedT = std::decay_t<T>;
@@ -1120,11 +1113,7 @@ public:
 #else
         set_encoded(&get_heap_vtable<DecayedT>(), false, trivial_dtor, trivial_copy, 0);
 #endif
-#if defined(VOID_ANY_ENABLE_MEMORY_POOL)
-        void* new_ptr = void_any_pool_.allocate(sizeof(DecayedT));
-#else
-        void* new_ptr = ::operator new(sizeof(DecayedT), std::nothrow);
-#endif
+        void* new_ptr = void_any_allocate(sizeof(DecayedT));
         if (!new_ptr) [[unlikely]]
         {
 #if INTPTR_MAX == INT64_MAX
@@ -1152,3 +1141,6 @@ public:
         return has_value_fast() ? get_void_ptr() : nullptr;
     }
 };
+
+// void_any: 唯一对外别名, 通用类型擦除容器
+using void_any = define_void_any<56, 8>;

@@ -5,7 +5,7 @@
 #include "../component.hpp"
 #include <cstdint>
 
-namespace ecs {
+namespace serialize {
 
 struct serialize_filter
 {
@@ -25,7 +25,7 @@ struct serialize_filter
     dense<uint32_t> entity_whitelist;
     bool use_whitelist = false;
 
-    [[nodiscard]] bool matches(const entity_state& state) const noexcept
+    [[nodiscard]] bool matches(const ecs::entity_state& state) const noexcept
     {
         if (use_layer && state.layer != layer)
         {
@@ -46,7 +46,7 @@ struct serialize_filter
         return true;
     }
 
-    [[nodiscard]] bool matches_entity(uint32_t idx, const entity_state& state) const noexcept
+    [[nodiscard]] bool matches_entity(uint32_t idx, const ecs::entity_state& state) const noexcept
     {
         if (use_whitelist)
         {
@@ -75,4 +75,4 @@ struct serialize_filter
     }
 };
 
-} // namespace ecs
+} // namespace serialize

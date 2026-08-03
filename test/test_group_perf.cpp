@@ -6,11 +6,16 @@ using namespace std;
 using ecs::manager;
 using ecs::entity;
 
-struct Pos { float x, y, z; };
-struct Vel { float vx, vy, vz; };
-struct Hp  { int v; };
-struct Dmg { int v; };
-struct Armor { int v; };
+struct Pos { float x, y, z; };           // 12B
+struct Vel { float vx, vy, vz; };        // 12B
+struct Hp  { int v; };                   // 4B
+struct Dmg { int v; };                   // 4B
+struct Armor { int v; };                 // 4B
+struct Spd { float v; };                 // 4B
+struct Rot { float x, y, z, w; };        // 16B
+struct Scl { float x, y, z; };           // 12B
+struct Name { char data[32]; };          // 32B
+struct Mass { float v; };                // 4B
 
 static void build_manager(manager& mgr, size_t n, mt19937& rng)
 {
@@ -18,12 +23,34 @@ static void build_manager(manager& mgr, size_t n, mt19937& rng)
     uniform_int_distribution<int> ri(0, 100);
     for (size_t i = 0; i < n; ++i)
     {
-        entity e(static_cast<uint32_t>(i), 1);
+        entity e = mgr.create_entity();
         mgr.add(Pos{rf(rng), rf(rng), rf(rng)}, e);
         mgr.add(Vel{rf(rng), rf(rng), rf(rng)}, e);
         mgr.add(Hp{ri(rng)}, e);
         mgr.add(Dmg{ri(rng)}, e);
         mgr.add(Armor{ri(rng)}, e);
+    }
+}
+
+// 10 组件版 build: total_size = 12+12+4+4+4+4+16+12+32+4 = 104B
+static void build_manager_10(manager& mgr, size_t n, mt19937& rng)
+{
+    uniform_real_distribution<float> rf(-1000, 1000);
+    uniform_int_distribution<int> ri(0, 100);
+    for (size_t i = 0; i < n; ++i)
+    {
+        entity e = mgr.create_entity();
+        mgr.add(Pos{rf(rng), rf(rng), rf(rng)}, e);
+        mgr.add(Vel{rf(rng), rf(rng), rf(rng)}, e);
+        mgr.add(Hp{ri(rng)}, e);
+        mgr.add(Dmg{ri(rng)}, e);
+        mgr.add(Armor{ri(rng)}, e);
+        mgr.add(Spd{rf(rng)}, e);
+        mgr.add(Rot{rf(rng), rf(rng), rf(rng), 1.0f}, e);
+        mgr.add(Scl{rf(rng), rf(rng), rf(rng)}, e);
+        Name nm; memset(nm.data, static_cast<int>(i & 0xFF), 32);
+        mgr.add(nm, e);
+        mgr.add(Mass{rf(rng) * 10.0f}, e);
     }
 }
 
@@ -238,6 +265,20 @@ int main()
 
     test_owning_group<Pos, Vel>(mgr, N, "2-comp");
     test_owning_group<Pos, Vel, Hp>(mgr, N, "3-comp");
+
+    // 7~10 组件寄存器压力测试 (total_size: 7=60B, 8=72B, 9=104B, 10=108B)
+    {
+        cout << "\n============================================================\n";
+        cout << "  7~10 组件寄存器压力测试 (10 组件 build)\n";
+        cout << "============================================================\n";
+        manager mgr10;
+        build_manager_10(mgr10, N, rng);
+
+        test_group_for_each<Pos, Vel, Hp, Dmg, Armor, Spd, Rot>(mgr10, N, "7-comp (60B)");
+        test_group_for_each<Pos, Vel, Hp, Dmg, Armor, Spd, Rot, Scl>(mgr10, N, "8-comp (72B)");
+        test_group_for_each<Pos, Vel, Hp, Dmg, Armor, Spd, Rot, Scl, Name>(mgr10, N, "9-comp (104B)");
+        test_group_for_each<Pos, Vel, Hp, Dmg, Armor, Spd, Rot, Scl, Name, Mass>(mgr10, N, "10-comp (108B)");
+    }
 
     cout << "\n============================================================\n";
     cout << "  测试完成\n";

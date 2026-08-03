@@ -14,6 +14,22 @@ struct Vel { float vx, vy, vz; };
 struct Hp  { int v; };
 struct Name { char buf[32]; };
 
+// 防 DCE: 强制编译器不能消除对 v/e 的读取
+#if defined(_MSC_VER)
+    inline void touch_v(float v) noexcept    { volatile float sink = v; _ReadWriteBarrier(); (void)sink; }
+    inline void touch_v(int v) noexcept      { volatile int sink = v; _ReadWriteBarrier(); (void)sink; }
+    inline void touch_v(const Name& v) noexcept { volatile char sink = v.buf[0]; _ReadWriteBarrier(); (void)sink; }
+    inline void touch_e(uint32_t v) noexcept { volatile uint32_t sink = v; _ReadWriteBarrier(); (void)sink; }
+#else
+    inline void touch_v(float v) noexcept    { asm volatile("" : : "x"(v) :); }
+    inline void touch_v(int v) noexcept      { asm volatile("" : : "r"(v) :); }
+    inline void touch_v(const Name& v) noexcept { asm volatile("" : : "r"(v.buf) :); }
+    inline void touch_e(uint32_t v) noexcept { asm volatile("" : : "r"(v) :); }
+#endif
+inline void touch_v(const Pos& v) noexcept { touch_v(v.x); }
+inline void touch_v(const Vel& v) noexcept { touch_v(v.vx); }
+inline void touch_v(const Hp& v) noexcept  { touch_v(v.v); }
+
 // 构建测试用 manager
 template <typename T>
 static void build_manager(manager& mgr, size_t n, mt19937& rng)
@@ -186,20 +202,16 @@ static void test_for_each(size_t n)
 
     {
         double ns = best_ns(REPEAT, [&]() {
-            T sink{};
-            sv.for_each([&](T& v) { sink = v; });
+            sv.for_each([&](T& v) { touch_v(v); });
             compiler_barrier();
-            (void)sink;
         });
         print_ns("for_each (T&)", n, ns / static_cast<double>(n));
     }
 
     {
         double ns = best_ns(REPEAT, [&]() {
-            entity sink{};
-            sv.for_each([&](entity e, T&) { sink = e; });
+            sv.for_each([&](entity e, T& v) { touch_e(static_cast<uint32_t>(e.parts_.index_)); touch_v(v); });
             compiler_barrier();
-            (void)sink;
         });
         print_ns("for_each (entity, T&)", n, ns / static_cast<double>(n));
     }
@@ -222,10 +234,8 @@ static void test_nested_views(size_t n)
     {
         auto pv = sv.page(n / 4, n / 2);
         double ns = best_ns(REPEAT, [&]() {
-            volatile size_t s = 0;
-            pv.for_each([&](T&) { ++s; });
+            pv.for_each([&](T& v) { touch_v(v); });
             compiler_barrier();
-            return s;
         });
         print_ns("paged_view.for_each", n / 2, ns / static_cast<double>(n / 2));
 
@@ -242,7 +252,7 @@ static void test_nested_views(size_t n)
         double ns = best_ns(REPEAT, [&]() {
             auto sorted = sv.sorted_by_component([](const T& a, const T& b) { return &a < &b; });
             volatile size_t s = sorted.size();
-            sorted.for_each([](T&) {});
+            sorted.for_each([](T& v) { touch_v(v); });
             compiler_barrier();
             return s;
         });
@@ -253,7 +263,7 @@ static void test_nested_views(size_t n)
         double ns = best_ns(REPEAT, [&]() {
             auto cv = sv.track_changes();
             volatile size_t s = cv.size();
-            cv.for_each([](T&) {});
+            cv.for_each([](T& v) { touch_v(v); });
             compiler_barrier();
             return s;
         });
@@ -262,7 +272,7 @@ static void test_nested_views(size_t n)
         ns = best_ns(REPEAT, [&]() {
             auto fv = sv.filter_changed();
             volatile size_t s = fv.size();
-            fv.for_each([](T&) {});
+            fv.for_each([](T& v) { touch_v(v); });
             compiler_barrier();
             return s;
         });
@@ -271,7 +281,7 @@ static void test_nested_views(size_t n)
         ns = best_ns(REPEAT, [&]() {
             auto fa = sv.filter_added();
             volatile size_t s = fa.size();
-            fa.for_each([](T&) {});
+            fa.for_each([](T& v) { touch_v(v); });
             compiler_barrier();
             return s;
         });
@@ -301,7 +311,7 @@ int main()
     cout << "  single_view<T> 独立性能测试\n";
     cout << "============================================================\n";
 
-    const size_t N = 1 << 18;  // 256K
+    const size_t N = 1000000;  // 百万
 
     cout << "\n=== Pos (12B) ===\n";
     test_basic<Pos>(N);

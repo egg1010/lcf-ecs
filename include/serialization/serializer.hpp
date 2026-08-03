@@ -30,7 +30,7 @@
 #include <cstdint>
 #include <utility>
 
-namespace ecs {
+namespace serialize {
 
 using detail::archive_header;
 using detail::entity_remap;
@@ -53,7 +53,7 @@ using decompress_fn = std::string(*)(const std::string&) noexcept;
 class serialization
 {
 private:
-    manager& mgr_;
+    ecs::manager& mgr_;
     serialize_limits limits_;
     detail::archive_header header_;
     const serialize_filter* filter_ = nullptr;
@@ -69,7 +69,7 @@ private:
     decompress_fn decompress_cb_ = nullptr;
 
 public:
-    explicit serialization(manager& m) noexcept
+    explicit serialization(ecs::manager& m) noexcept
         : mgr_(m) {}
 
     [[nodiscard]] serialize_limits& limits() noexcept { return limits_; }
@@ -331,7 +331,7 @@ public:
     // 单实体序列化
     // ====================================================================
     template<typename... Ts>
-    operating_message save_entity(entity e, std::string& out) noexcept {
+    operating_message save_entity(ecs::entity e, std::string& out) noexcept {
         serialize_filter ef;
         ef.use_whitelist = true;
         ef.entity_whitelist.push_back(e.parts_.index_);
@@ -343,13 +343,13 @@ public:
     }
 
     template<typename... Ts>
-    operating_message load_entity(std::string_view json, entity& out_e) noexcept {
+    operating_message load_entity(std::string_view json, ecs::entity& out_e) noexcept {
         load_mode old_mode = load_mode_;
         load_mode_ = load_mode::append;
         auto r = load_from_string<Ts...>(json);
         load_mode_ = old_mode;
         // 返回最后一个创建的实体
-        out_e = entity{};
+        out_e = ecs::entity{};
         return r;
     }
 
@@ -385,13 +385,13 @@ public:
     // 便捷静态接口
     // ====================================================================
     template<typename... Ts>
-    [[nodiscard]] static operating_message save(manager& m, const std::string& path,
+    [[nodiscard]] static operating_message save(ecs::manager& m, const std::string& path,
                                                   format fmt = format::json) noexcept {
         return serialization(m).save_to_file<Ts...>(path, fmt);
     }
 
     template<typename... Ts>
-    [[nodiscard]] static operating_message load(manager& m, const std::string& path) noexcept {
+    [[nodiscard]] static operating_message load(ecs::manager& m, const std::string& path) noexcept {
         return serialization(m).load_from_file<Ts...>(path);
     }
 
@@ -425,7 +425,7 @@ private:
 
     template<typename T>
     void check_type_changed(size_t& idx, bool& any_changed) noexcept {
-        const single_class_set* set = mgr_.get_single_class_set<T>();
+        const ecs::single_class_set* set = mgr_.get_single_class_set<T>();
         if (set)
         {
             uint64_t cur = set->get_pool_version();
@@ -519,7 +519,7 @@ private:
 
     template<typename T>
     void collect_max_entity_idx(uint32_t& max_idx, bool& any) noexcept {
-        const single_class_set* set = mgr_.get_single_class_set<T>();
+        const ecs::single_class_set* set = mgr_.get_single_class_set<T>();
         if (!set || set->size() == 0)
         {
             return;
@@ -538,7 +538,7 @@ private:
 
     template<typename T>
     void save_unique_entities(json_writer& w, dense<uint64_t>& seen) noexcept {
-        const single_class_set* set = mgr_.get_single_class_set<T>();
+        const ecs::single_class_set* set = mgr_.get_single_class_set<T>();
         if (!set)
         {
             return;
@@ -577,7 +577,7 @@ private:
     void save_one_type(json_writer& w) noexcept {
         std::string name = std::string(type_name<T>());
         w.key(name).begin_array();
-        const single_class_set* set = mgr_.get_single_class_set<T>();
+        const ecs::single_class_set* set = mgr_.get_single_class_set<T>();
         if (!set)
         {
             w.end_array();
@@ -819,10 +819,10 @@ private:
                     r.skip_value();
                 }
             }
-            entity new_e = mgr_.create_entity();
+            ecs::entity new_e = mgr_.create_entity();
             while (remap.old_to_new.size() <= idx)
             {
-                remap.old_to_new.push_back(entity{});
+                remap.old_to_new.push_back(ecs::entity{});
                 remap.old_versions.push_back(0);
             }
             remap.old_to_new[idx] = new_e;
@@ -908,7 +908,7 @@ private:
                 r.end_element();
                 continue;
             }
-            entity e = remap.old_to_new[idx];
+            ecs::entity e = remap.old_to_new[idx];
             if (!e.is_valid())
             {
                 r.end_element();
@@ -967,7 +967,7 @@ private:
     }
 
     template<typename T>
-    void construct_component(entity e, const std::string& data_str) noexcept {
+    void construct_component(ecs::entity e, const std::string& data_str) noexcept {
         if constexpr (reflect_bridge::has_json_deserialize<T>)
         {
             T comp{};
@@ -1011,7 +1011,7 @@ private:
     // ====================================================================
     template<typename T>
     void remap_entity_fields(const detail::entity_remap& remap) noexcept {
-        single_class_set* set = mgr_.get_single_class_set<T>();
+        ecs::single_class_set* set = mgr_.get_single_class_set<T>();
         if (!set)
         {
             return;
@@ -1049,7 +1049,7 @@ private:
             char* base = static_cast<char*>(static_cast<void*>(&comp));
             for (size_t k = 0; k < offsets.size(); ++k)
             {
-                entity* ref = reinterpret_cast<entity*>(base + offsets[k]);
+                ecs::entity* ref = reinterpret_cast<ecs::entity*>(base + offsets[k]);
                 if (!ref->is_valid())
                 {
                     continue;
@@ -1117,7 +1117,7 @@ private:
 
         // 先写入临时缓冲区, 再写入总字节数
         binary_writer type_data;
-        const single_class_set* set = mgr_.get_single_class_set<T>();
+        const ecs::single_class_set* set = mgr_.get_single_class_set<T>();
         size_t total = set ? set->size() : 0;
 
         // 先计算过滤后的实际数量
@@ -1373,7 +1373,7 @@ private:
                 skip_binary_element<T>(r);
                 continue;
             }
-            entity e = remap.old_to_new[idx];
+            ecs::entity e = remap.old_to_new[idx];
             if (!e.is_valid())
             {
                 skip_binary_element<T>(r);
@@ -1615,10 +1615,10 @@ private:
             r.leave_object();
             r.end_element();
 
-            entity new_e = mgr_.create_entity();
+            ecs::entity new_e = mgr_.create_entity();
             while (remap.old_to_new.size() <= idx)
             {
-                remap.old_to_new.push_back(entity{});
+                remap.old_to_new.push_back(ecs::entity{});
                 remap.old_versions.push_back(0);
             }
             remap.old_to_new[idx] = new_e;
@@ -1674,7 +1674,7 @@ private:
                 r.end_element();
                 continue;
             }
-            entity e = remap.old_to_new[idx];
+            ecs::entity e = remap.old_to_new[idx];
             if (!e.is_valid())
             {
                 r.leave_object();
@@ -1773,4 +1773,4 @@ private:
     }
 };
 
-} // namespace ecs
+} // namespace serialize

@@ -87,7 +87,7 @@ struct reflect_access;
 
 // 私有成员描述
 #define PRIV_FIELD(field_name, offset, Type) \
-    ::offset_desc{ field_name, offset, ::type_id::get_type_id<Type>() }
+    ::offset_desc{ field_name, offset, ::type_id::get_type_id<Type>(), static_cast<uint32_t>(sizeof(Type)) }
 
 // === 侵入式自动推导注册 (类内 friend + 类外字段名列表) ===
 // 类内标记宏: 展开为 friend 声明, 授权反射访问器访问私有成员
@@ -143,3 +143,59 @@ struct reflect_access;
 // 用法: REGISTER_TYPE_ONLY(Mixed);
 #define REGISTER_TYPE_ONLY(Cls) \
     inline int REFLECT_UNIQUE(_reflect_reg_only_) = []{ ::reflect::global().register_type_only<Cls>(#Cls); return 0; }()
+
+// === #3 枚举注册 ===
+// 用法: REGISTER_ENUM(Color, Red, Green, Blue);
+// 注意: 需要逗号分隔, REFLECT_FOR_EACH_DATA 用空格分隔, 故手动展开
+#define REFLECT_ENUM_PAIR(E, v) { E::v, #v }
+#define REFLECT_ENUM_PAIRS_1(E, a) REFLECT_ENUM_PAIR(E, a)
+#define REFLECT_ENUM_PAIRS_2(E, a, b) REFLECT_ENUM_PAIR(E, a), REFLECT_ENUM_PAIR(E, b)
+#define REFLECT_ENUM_PAIRS_3(E, a, b, c) REFLECT_ENUM_PAIR(E, a), REFLECT_ENUM_PAIR(E, b), REFLECT_ENUM_PAIR(E, c)
+#define REFLECT_ENUM_PAIRS_4(E, a, b, c, d) REFLECT_ENUM_PAIR(E, a), REFLECT_ENUM_PAIR(E, b), REFLECT_ENUM_PAIR(E, c), REFLECT_ENUM_PAIR(E, d)
+#define REFLECT_ENUM_PAIRS_5(E, a, b, c, d, e) REFLECT_ENUM_PAIR(E, a), REFLECT_ENUM_PAIR(E, b), REFLECT_ENUM_PAIR(E, c), REFLECT_ENUM_PAIR(E, d), REFLECT_ENUM_PAIR(E, e)
+#define REFLECT_ENUM_PAIRS_6(E, a, b, c, d, e, f) REFLECT_ENUM_PAIR(E, a), REFLECT_ENUM_PAIR(E, b), REFLECT_ENUM_PAIR(E, c), REFLECT_ENUM_PAIR(E, d), REFLECT_ENUM_PAIR(E, e), REFLECT_ENUM_PAIR(E, f)
+#define REFLECT_ENUM_PAIRS_7(E, a, b, c, d, e, f, g) REFLECT_ENUM_PAIR(E, a), REFLECT_ENUM_PAIR(E, b), REFLECT_ENUM_PAIR(E, c), REFLECT_ENUM_PAIR(E, d), REFLECT_ENUM_PAIR(E, e), REFLECT_ENUM_PAIR(E, f), REFLECT_ENUM_PAIR(E, g)
+#define REFLECT_ENUM_PAIRS_8(E, a, b, c, d, e, f, g, h) REFLECT_ENUM_PAIR(E, a), REFLECT_ENUM_PAIR(E, b), REFLECT_ENUM_PAIR(E, c), REFLECT_ENUM_PAIR(E, d), REFLECT_ENUM_PAIR(E, e), REFLECT_ENUM_PAIR(E, f), REFLECT_ENUM_PAIR(E, g), REFLECT_ENUM_PAIR(E, h)
+#define REFLECT_ENUM_PAIRS_9(E, a, b, c, d, e, f, g, h, i) REFLECT_ENUM_PAIR(E, a), REFLECT_ENUM_PAIR(E, b), REFLECT_ENUM_PAIR(E, c), REFLECT_ENUM_PAIR(E, d), REFLECT_ENUM_PAIR(E, e), REFLECT_ENUM_PAIR(E, f), REFLECT_ENUM_PAIR(E, g), REFLECT_ENUM_PAIR(E, h), REFLECT_ENUM_PAIR(E, i)
+#define REFLECT_ENUM_PAIRS_10(E, a, b, c, d, e, f, g, h, i, j) REFLECT_ENUM_PAIR(E, a), REFLECT_ENUM_PAIR(E, b), REFLECT_ENUM_PAIR(E, c), REFLECT_ENUM_PAIR(E, d), REFLECT_ENUM_PAIR(E, e), REFLECT_ENUM_PAIR(E, f), REFLECT_ENUM_PAIR(E, g), REFLECT_ENUM_PAIR(E, h), REFLECT_ENUM_PAIR(E, i), REFLECT_ENUM_PAIR(E, j)
+
+#define REGISTER_ENUM(EnumType, ...) \
+    inline int REFLECT_UNIQUE(_reflect_enum_) = []{ \
+        ::reflect::global().register_enum<EnumType>(#EnumType, \
+            { REFLECT_CAT(REFLECT_ENUM_PAIRS_, REFLECT_NARG(__VA_ARGS__))(EnumType, __VA_ARGS__) }); \
+        return 0; \
+    }()
+
+// === #2 继承关系注册 ===
+// 用法: REGISTER_BASE(Derived, Base);
+// 单继承 offset=0, 多继承需手填 offset
+#define REGISTER_BASE(Derived, Base) \
+    inline int REFLECT_UNIQUE(_reflect_base_) = []{ \
+        ::reflect::global().register_base<Derived, Base>(0); \
+        return 0; \
+    }()
+
+#define REGISTER_BASE_OFFSET(Derived, Base, off) \
+    inline int REFLECT_UNIQUE(_reflect_base_off_) = []{ \
+        ::reflect::global().register_base<Derived, Base>(off); \
+        return 0; \
+    }()
+
+// === #4 字段属性注册 ===
+// 用法: REGISTER_FIELD_ATTR(Player, hp, "range_min", 0);
+//       REGISTER_FIELD_ATTR(Player, hp, "range_max", 100);
+//       REGISTER_FIELD_ATTR(Player, name, "category", "Combat");
+#define REGISTER_FIELD_ATTR(Cls, field, key, value) \
+    inline int REFLECT_UNIQUE(_reflect_attr_) = []{ \
+        ::reflect::global().register_field_attr<Cls, \
+            decltype(Cls::field), &Cls::field>(#field, key, value); \
+        return 0; \
+    }()
+
+// === #7 类型转换注册 ===
+// 用法: REGISTER_CONVERT(int, int64_t);
+#define REGISTER_CONVERT(From, To) \
+    inline int REFLECT_UNIQUE(_reflect_convert_) = []{ \
+        ::reflect::global().register_convert<From, To>(); \
+        return 0; \
+    }()

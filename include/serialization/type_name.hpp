@@ -8,7 +8,7 @@
 #include <cstdint>
 #include <type_traits>
 
-namespace ecs {
+namespace serialize {
 
 namespace detail {
 
@@ -163,5 +163,5 @@ template<typename T>
     return name;
 }
 
-} // namespace ecs
+} // namespace serialize
 

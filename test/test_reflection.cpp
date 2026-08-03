@@ -87,6 +87,62 @@ REGISTER_MEMBERS(Path, points);
 REGISTER_MEMBERS(Grid, cells);
 REGISTER_MEMBERS(Inventory, slots);
 
+// === 新功能测试类型 (1~12) ===
+
+// #3 枚举类型
+enum class Element { Fire, Water, Earth, Air };
+inline int _reflect_enum_Element = []{
+    ::reflect::global().register_enum<Element>("Element", {
+        {Element::Fire, "Fire"}, {Element::Water, "Water"},
+        {Element::Earth, "Earth"}, {Element::Air, "Air"}
+    });
+    return 0;
+}();
+
+// #4 字段属性测试类型
+struct Player { int hp; int mp; float x; };
+REGISTER_TYPE_ONLY(Player);
+REGISTER_MEMBERS(Player, hp, mp, x);
+REGISTER_FIELD_ATTR(Player, hp, "range_min", 0);
+REGISTER_FIELD_ATTR(Player, hp, "range_max", 100);
+REGISTER_FIELD_ATTR(Player, hp, "category", "Combat");
+
+// #1 构造测试类型
+struct Constructable { int a; float b; };
+REGISTER(Constructable);
+
+// #2 继承测试类型
+struct Base { int base_val; };
+struct Derived : Base { int derived_val; };
+REGISTER(Base);
+REGISTER_TYPE_ONLY(Derived);
+REGISTER_PRIVATE_OFFSETS(Derived,
+    PRIV_FIELD("base_val", offsetof(Derived, base_val), int),
+    PRIV_FIELD("derived_val", offsetof(Derived, derived_val), int));
+REGISTER_BASE(Derived, Base);
+
+// #5 容器测试类型 (dense<int> 字段)
+struct ContainerHolder { int id; };
+REGISTER(ContainerHolder);
+
+// #7 类型转换注册 (需先注册源类型)
+REGISTER_TYPE_ONLY(int);
+REGISTER_TYPE_ONLY(float);
+REGISTER_CONVERT(int, int64_t);
+REGISTER_CONVERT(float, double);
+
+// #11 路径访问嵌套类型
+struct Inner { int value; };
+struct Outer { Inner inner; };
+REGISTER_TYPE_ONLY(Inner);
+REGISTER_MEMBERS(Inner, value);
+REGISTER_TYPE_ONLY(Outer);
+REGISTER_MEMBERS(Outer, inner);
+
+// #8/#9 比较与哈希测试类型
+struct CompareTest { int a; float b; };
+REGISTER(CompareTest);
+
 int main()
 {
     // === 1. 聚合类型字段自动遍历 ===
@@ -524,6 +580,271 @@ int main()
         // array_set 2D
         grid_view.array_set<float>(&g, 0, 5 * 8 + 4, 77.0f);  // cells[5][4]
         print_item("Grid array_set 2D 写入成功", g.cells[5][4] == 77.0f);
+    }
+
+    // === 19. #10 类型名稳定标识 (name_hash) ===
+    print_section(19, "类型名稳定标识 (name_hash)");
+    {
+        auto v3 = reflect::get<Vec3>();
+        print_item("Vec3 name_hash 非零", v3.meta()->name_hash != 0);
+        print_item("Vec3 name_hash == FNV-1a", v3.meta()->name_hash == fnv1a_runtime("Vec3"));
+
+        auto acc = reflect::get<Account>();
+        print_item("Account name_hash == FNV-1a", acc.meta()->name_hash == fnv1a_runtime("Account"));
+
+        // 按 hash 查找
+        const reflect::type_meta* found = reflect::global().find_type_by_hash(fnv1a_runtime("Vec3"));
+        print_item("find_type_by_hash(Vec3) 成功", found != nullptr);
+        print_item("find_type_by_hash(Vec3) type_id 匹配", found && found->type_id == v3.type_id_value());
+
+        const reflect::type_meta* not_found = reflect::global().find_type_by_hash(0xDEADBEEF);
+        print_item("find_type_by_hash(无效) 返回 nullptr", not_found == nullptr);
+    }
+
+    // === 20. #3 枚举反射 ===
+    print_section(20, "枚举反射");
+    {
+        auto ev = reflect::get_enum<Element>();
+        print_item("enum_view valid", ev.valid());
+        print_item("enum name == Element", std::string(ev.name()) == "Element");
+        print_item("enum value_count == 4", ev.value_count() == 4);
+
+        // 值 → 名称
+        print_item("value_to_name(Fire) == Fire", std::string(ev.value_to_name(Element::Fire)) == "Fire");
+        print_item("value_to_name(Water) == Water", std::string(ev.value_to_name(Element::Water)) == "Water");
+        print_item("value_to_name(Earth) == Earth", std::string(ev.value_to_name(Element::Earth)) == "Earth");
+
+        // 名称 → 值
+        Element out{};
+        bool ok = ev.name_to_value("Fire", out);
+        print_item("name_to_value(Fire) 成功", ok && out == Element::Fire);
+        ok = ev.name_to_value("Air", out);
+        print_item("name_to_value(Air) == Air", ok && out == Element::Air);
+        ok = ev.name_to_value("Invalid", out);
+        print_item("name_to_value(Invalid) 失败", !ok);
+
+        // 遍历
+        int count = 0;
+        ev.for_each_value([&](uint64_t, const char*) { ++count; });
+        print_item("for_each_value 计数 == 4", count == 4);
+    }
+
+    // === 21. #11 字段路径访问 ===
+    print_section(21, "字段路径访问");
+    {
+        Outer obj{};
+        obj.inner.value = 42;
+
+        auto q = reflect::get<Outer>();
+        void* p = q.get_by_path(&obj, "inner.value");
+        print_item("get_by_path(inner.value) 非空", p != nullptr);
+        print_item("get_by_path(inner.value) == 42", p && *static_cast<int*>(p) == 42);
+
+        int* ip = q.get_by_path_as<int>(&obj, "inner.value");
+        print_item("get_by_path_as<int> == 42", ip && *ip == 42);
+
+        // 单级路径
+        void* p2 = q.get_by_path(&obj, "inner");
+        print_item("get_by_path(inner) 非空", p2 != nullptr);
+
+        // 无效路径
+        void* p3 = q.get_by_path(&obj, "invalid.path");
+        print_item("get_by_path(无效) 返回 nullptr", p3 == nullptr);
+    }
+
+    // === 22. #12 方法重载类型匹配 ===
+    print_section(22, "方法重载类型匹配");
+    {
+        auto q = reflect::get<Calculator>();
+        Calculator calc{};
+
+        // 正常调用 (arg_type_ids 精确匹配)
+        int r1 = q.invoke<int>(&calc, "add", 1, 2);
+        print_item("invoke(add, 1, 2) == 3", r1 == 3);
+
+        bool r2 = q.invoke<bool>(&calc, "is_positive", 5);
+        print_item("invoke(is_positive, 5) == true", r2);
+
+        // try_invoke 软失败
+        auto r3 = q.try_invoke<int>(&calc, "add", 10, 20);
+        print_item("try_invoke(add) == 30", r3.has_value() && *r3 == 30);
+
+        auto r4 = q.try_invoke<int>(&calc, "nonexistent", 1);
+        print_item("try_invoke(不存在) == nullopt", !r4.has_value());
+
+        // find_overload 查询
+        int ids[] = { type_id::get_type_id<int>(), type_id::get_type_id<int>() };
+        const reflect::method_meta* m = q.find_overload("add", ids, 2);
+        print_item("find_overload(add, int, int) 找到", m != nullptr);
+        print_item("find_overload arg_count == 2", m && m->arg_count == 2);
+    }
+
+    // === 23. #1 对象构造/销毁 ===
+    print_section(23, "对象构造/销毁");
+    {
+        auto cv = reflect::get_construct<Constructable>();
+        print_item("has_default_construct", cv.has_default_construct());
+
+        // 堆分配构造
+        void* obj = cv.create();
+        print_item("create() 非空", obj != nullptr);
+        if (obj)
+        {
+            auto* ct = static_cast<Constructable*>(obj);
+            print_item("create() a == 0", ct->a == 0);
+            print_item("create() b == 0.0", ct->b == 0.0f);
+            cv.destroy_heap(obj);
+        }
+
+        // 就地构造
+        alignas(Constructable) char buf[sizeof(Constructable)];
+        void* obj2 = cv.create_inplace(buf);
+        print_item("create_inplace() 非空", obj2 != nullptr);
+        if (obj2)
+        {
+            cv.destroy(obj2);
+        }
+    }
+
+    // === 24. #8 字段比较/克隆 ===
+    print_section(24, "字段比较/克隆");
+    {
+        auto cv = reflect::get_compare<CompareTest>();
+
+        CompareTest a{1, 2.0f};
+        CompareTest b{1, 2.0f};
+        CompareTest c{1, 3.0f};
+
+        print_item("equal(a, b) == true", cv.equal(&a, &b));
+        print_item("equal(a, c) == false", !cv.equal(&a, &c));
+
+        // 克隆
+        alignas(CompareTest) char buf[sizeof(CompareTest)];
+        cv.clone(&a, buf);
+        CompareTest* cloned = reinterpret_cast<CompareTest*>(buf);
+        print_item("clone() a == 1", cloned->a == 1);
+        print_item("clone() b == 2.0", cloned->b == 2.0f);
+
+        // copy_assign (src, dst): 把 a 的值赋给 c
+        cv.copy_assign(&a, &c);
+        print_item("copy_assign() b == 2.0", c.b == 2.0f);
+    }
+
+    // === 25. #9 字段哈希 ===
+    print_section(25, "字段哈希");
+    {
+        auto hv = reflect::get_hash<CompareTest>();
+        CompareTest a{1, 2.0f};
+        CompareTest b{1, 2.0f};
+        CompareTest c{1, 3.0f};
+
+        uint64_t ha = hv.hash(&a);
+        uint64_t hb = hv.hash(&b);
+        uint64_t hc = hv.hash(&c);
+
+        print_item("hash(a) 非零", ha != 0);
+        print_item("hash(a) == hash(b)", ha == hb);
+        print_item("hash(a) != hash(c)", ha != hc);
+    }
+
+    // === 26. #7 类型转换 ===
+    print_section(26, "类型转换");
+    {
+        auto cv = reflect::get_convert<int>();
+
+        print_item("can_convert_to<int64_t>", cv.can_convert_to<int64_t>());
+        print_item("can_convert_to<double> false", !cv.can_convert_to<double>());
+
+        // 转换
+        int src = 42;
+        int64_t dst{};
+        bool ok = cv.convert_to(&src, type_id::get_type_id<int64_t>(), &dst);
+        print_item("convert_to(int→int64_t) 成功", ok && dst == 42);
+
+        // 类型安全转换
+        auto result = cv.convert_to<int64_t>(&src);
+        print_item("convert_to<int64_t>(42) == 42", result.has_value() && *result == 42);
+
+        // float → double
+        auto fv = reflect::get_convert<float>();
+        float f = 3.14f;
+        auto dresult = fv.convert_to<double>(&f);
+        print_item("convert_to<double>(3.14f) ≈ 3.14", dresult.has_value() && *dresult > 3.13 && *dresult < 3.15);
+    }
+
+    // === 27. #4 字段属性/注解 ===
+    print_section(27, "字段属性/注解");
+    {
+        auto av = reflect::get_attributes<Player>();
+
+        // has_attr
+        print_item("has_attr(hp, range_min)", av.has_attr("hp", "range_min"));
+        print_item("has_attr(hp, range_max)", av.has_attr("hp", "range_max"));
+        print_item("has_attr(hp, nonexistent) false", !av.has_attr("hp", "nonexistent"));
+
+        // get_attr_as
+        const int* min_val = av.get_attr_as<int>("hp", "range_min");
+        const int* max_val = av.get_attr_as<int>("hp", "range_max");
+        print_item("get_attr_as<int>(range_min) == 0", min_val && *min_val == 0);
+        print_item("get_attr_as<int>(range_max) == 100", max_val && *max_val == 100);
+
+        // 字符串属性: void_any 存 std::string, 用 get_attr 检查
+        const void_any* any = av.get_attr("hp", "category");
+        print_item("get_attr(category) 非空", any != nullptr);
+    }
+
+    // === 28. #2 继承关系 ===
+    print_section(28, "继承关系");
+    {
+        auto iv = reflect::get_inheritance<Derived>();
+
+        print_item("Derived base_count == 1", iv.base_count() == 1);
+        print_item("Derived is_derived_from<Base>", iv.is_derived_from<Base>());
+
+        auto ivb = reflect::get_inheritance<Base>();
+        print_item("Base derived_count == 1", ivb.derived_count() == 1);
+        print_item("Base is_base_of<Derived>", ivb.is_base_of<Derived>());
+
+        // upcast
+        Derived d{};
+        d.base_val = 10;
+        d.derived_val = 20;
+        Base* b = iv.upcast<Base>(&d);
+        print_item("upcast<Base> 非空", b != nullptr);
+        print_item("upcast<Base> base_val == 10", b && b->base_val == 10);
+    }
+
+    // === 29. #5 容器反射 ===
+    print_section(29, "容器反射");
+    {
+        // 注册 dense<int> 为容器 (手动注册容器特征)
+        reflect::global().register_type_only<dense<int>>("dense<int>");
+        global_container_ops().register_sequential<dense<int>>();
+
+        dense<int> vec;
+        vec.push_back(10);
+        vec.push_back(20);
+        vec.push_back(30);
+
+        // 通过 container_view 访问
+        auto cv = reflect::as_container(&vec, type_id::get_type_id<dense<int>>());
+        print_item("container_view valid", cv.valid());
+        print_item("container_view size == 3", cv.size() == 3);
+
+        // at
+        int* p0 = cv.at_as<int>(0);
+        int* p1 = cv.at_as<int>(1);
+        print_item("at(0) == 10", p0 && *p0 == 10);
+        print_item("at(1) == 20", p1 && *p1 == 20);
+
+        // for_each
+        int sum = 0;
+        cv.for_each([&](void* elem, size_t) { sum += *static_cast<int*>(elem); });
+        print_item("for_each sum == 60", sum == 60);
+
+        // push_back
+        cv.push_back<int>(40);
+        print_item("push_back 后 size == 4", cv.size() == 4);
     }
 
     print_summary("功能测试");

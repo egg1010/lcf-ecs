@@ -8,9 +8,9 @@
 #include <string>
 #include <string_view>
 
-namespace ecs {
+namespace ecs { struct entity; }
 
-struct entity;
+namespace serialize {
 
 // ECS 序列化安全限制 (扩展通用 safety_limits, 增加实体数量上限)
 struct serialize_limits : safety_limits {
@@ -27,7 +27,7 @@ struct archive_header {
 
 // 实体重映射表 (加载时建立旧→新映射)
 struct entity_remap {
-    dense<entity> old_to_new;
+    dense<ecs::entity> old_to_new;
     dense<uint32_t> old_versions;
 };
 
@@ -38,5 +38,5 @@ struct metadata_entry {
 };
 
 } // namespace detail
-} // namespace ecs
+} // namespace serialize
 

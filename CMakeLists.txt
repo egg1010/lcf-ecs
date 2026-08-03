@@ -164,6 +164,7 @@ endfunction()
 
 if(BUILD_FUNCTIONAL_TESTS)
     lcf_add_executable(test_functional test/test_functional.cpp)
+    lcf_add_executable(test_single_view test/test_single_view.cpp)
     lcf_add_executable(test_multi_view test/test_multi_view.cpp)
 endif()
 

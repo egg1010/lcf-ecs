@@ -76,34 +76,34 @@ double best_ns(int repeat, F&& fn) noexcept
     double best = 1e18;
     for (int r = 0; r < repeat; ++r)
     {
-        timer t;
+        stopwatch sw;
         fn();
-        double ns = t.elapsed_ns();
+        double ns = sw.ns();
         if (ns < best) best = ns;
     }
     return best;
 }
 
 // 单次测量的周期数 (用于 sub-ns 级测量)
-// 使用 cycle_timer 直接测一次, 不走 benchmark_cycles 的多次平均
+// 使用 stopwatch 直接测一次, 不走多次平均
 inline double measure_cycles_once() noexcept
 {
-    cycle_timer ct;
-    ct.reset();
-    return static_cast<double>(ct.elapsed_cycles());
+    stopwatch sw;
+    sw.reset();
+    return static_cast<double>(sw.cycles());
 }
 
-// 多次重复取最小值 (周期版本, 用 cycle_timer 的单次迭代)
+// 多次重复取最小值 (周期版本, 用 stopwatch 的单次迭代)
 template <typename F>
 double best_cycles(int repeat, F&& fn) noexcept
 {
     double best = 1e18;
     for (int r = 0; r < repeat; ++r)
     {
-        cycle_timer ct;
-        ct.reset();
+        stopwatch sw;
+        sw.reset();
         fn();
-        double c = static_cast<double>(ct.elapsed_cycles());
+        double c = static_cast<double>(sw.cycles());
         if (c < best) best = c;
     }
     return best;

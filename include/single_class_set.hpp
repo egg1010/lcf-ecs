@@ -375,7 +375,7 @@ private:
             const entity& e = entities[i];
             if (!e.is_valid()) [[unlikely]]
             {
-                result.write_message(false, "single_class_set::add_batch(): invalid entity index ", std::to_string(e.parts_.index_));
+                OM_MSG(result, false, "single_class_set::add_batch(): invalid entity index ", e.parts_.index_);
                 return result;
             }
             if (e.parts_.index_ > max_index) max_index = e.parts_.index_;
@@ -592,13 +592,13 @@ public:
         }
         else if (type_id_ != tid) [[unlikely]]
         {
-            result.write_message(false, "single_class_set::add(): type mismatch");
+            OM_MSG(result, false, "single_class_set::add(): type mismatch");
             return result;
         }
 
         if (!e.is_valid()) [[unlikely]]
         {
-            result.write_message(false, "single_class_set::add(): ID is invalid, index=", std::to_string(e.parts_.index_));
+            OM_MSG(result, false, "single_class_set::add(): ID is invalid, index=", e.parts_.index_);
             return result;
         }
 
@@ -716,7 +716,7 @@ public:
         if (entities.size() != components.size()) [[unlikely]]
         {
             operating_message result;
-            result.write_message(false, "single_class_set::add_batch(): entities and components size mismatch");
+            OM_MSG(result, false, "single_class_set::add_batch(): entities and components size mismatch");
             return result;
         }
         return add_batch_impl<T>(entities, entities.size(),
@@ -1066,6 +1066,11 @@ public:
         return entity_change_tracking_[dense_index].change_version;
     }
 
+    [[nodiscard]] const change_tracking_entry* get_entity_change_tracking_data() const noexcept
+    {
+        return entity_change_tracking_.data();
+    }
+
     [[nodiscard]] uint64_t get_entity_added_version(size_t dense_index) const noexcept
     {
         if (dense_index >= entity_change_tracking_.size()) [[unlikely]] return 0;
@@ -1087,13 +1092,13 @@ public:
         operating_message result;
         if (!e.is_valid() || e.parts_.index_ >= sparse_size_) [[unlikely]]
         {
-            result.write_message(false, "single_class_set::hard_remove(): invalid entity or version mismatch, index=", std::to_string(e.parts_.index_));
+            OM_MSG(result, false, "single_class_set::hard_remove(): invalid entity or version mismatch, index=", e.parts_.index_);
             return result;
         }
         const sparse_entry* se = sparse_entry_checked_(e.parts_.index_);
         if (!se || se->dense == dense_invalid || se->version != e.parts_.version_) [[unlikely]]
         {
-            result.write_message(false, "single_class_set::hard_remove(): invalid entity or version mismatch, index=", std::to_string(e.parts_.index_));
+            OM_MSG(result, false, "single_class_set::hard_remove(): invalid entity or version mismatch, index=", e.parts_.index_);
             return result;
         }
 
@@ -1162,13 +1167,13 @@ public:
         operating_message result;
         if (!e.is_valid() || e.parts_.index_ >= sparse_size_) [[unlikely]]
         {
-            result.write_message(false, "single_class_set::soft_remove(): invalid entity or version mismatch, index=", std::to_string(e.parts_.index_));
+            OM_MSG(result, false, "single_class_set::soft_remove(): invalid entity or version mismatch, index=", e.parts_.index_);
             return result;
         }
         const sparse_entry* se = sparse_entry_checked_(e.parts_.index_);
         if (!se || se->dense == dense_invalid || se->version != e.parts_.version_) [[unlikely]]
         {
-            result.write_message(false, "single_class_set::soft_remove(): invalid entity or version mismatch, index=", std::to_string(e.parts_.index_));
+            OM_MSG(result, false, "single_class_set::soft_remove(): invalid entity or version mismatch, index=", e.parts_.index_);
             return result;
         }
 

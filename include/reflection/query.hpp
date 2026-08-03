@@ -25,6 +25,8 @@ public:
 
     [[nodiscard]] bool valid() const noexcept { return meta_ != nullptr; }
 
+    [[nodiscard]] const type_meta* meta() const noexcept { return meta_; }
+
     [[nodiscard]] const char* name() const noexcept { return meta_ ? meta_->name : nullptr; }
     [[nodiscard]] size_t size() const noexcept { return meta_ ? meta_->size : 0; }
     [[nodiscard]] size_t align() const noexcept { return meta_ ? meta_->align : 0; }
@@ -321,18 +323,65 @@ public:
         }
     }
 
-    // 方法调用 (失败 abort)
+    // #12 按参数类型 id 精确匹配的重载查找
+    [[nodiscard]] const method_meta* find_overload(
+        const char* name, const int* given_ids, size_t n_args) const noexcept
+    {
+        if (!meta_)
+        {
+            return nullptr;
+        }
+        size_t n = meta_->method_count.load(std::memory_order_acquire);
+        const method_meta* fallback = nullptr;
+        for (size_t i = 0; i < n; ++i)
+        {
+            const method_meta& mm = meta_->methods[i];
+            if (std::strcmp(mm.name, name) != 0)
+            {
+                continue;
+            }
+            if (mm.arg_count != n_args)
+            {
+                continue;
+            }
+            // 精确匹配 arg_type_ids
+            if (mm.arg_type_ids)
+            {
+                bool exact = true;
+                for (uint8_t j = 0; j < mm.arg_count; ++j)
+                {
+                    if (mm.arg_type_ids[j] != given_ids[j])
+                    {
+                        exact = false;
+                        break;
+                    }
+                }
+                if (exact)
+                {
+                    return &mm;
+                }
+            }
+            if (!fallback)
+            {
+                fallback = &mm;  // 无 arg_type_ids 或不精确, 作为回退
+            }
+        }
+        return fallback;
+    }
+
+    // 方法调用 (失败 abort, #12 支持重载按类型匹配)
     template<typename R = void, typename... Args>
     R invoke(void* obj, const char* name, Args&&... args) const noexcept
     {
-        const method_meta* m = method_by_name(name);
+        if (!meta_)
+        {
+            detail::abort_with_location("invoke: query_view invalid");
+        }
+        int given_ids[] = { type_id::get_type_id<std::decay_t<Args>>()... };
+        const method_meta* m = find_overload(name, given_ids, sizeof...(Args));
         if (m == nullptr)
         {
             detail::abort_with_location("invoke: method not found");
-        }
-        if (m->arg_count != sizeof...(Args))
-        {
-            detail::abort_with_location("invoke: arg count mismatch");
         }
 
         std::array<const void*, sizeof...(Args)> arg_ptrs = { static_cast<const void*>(&args)... };
@@ -362,8 +411,9 @@ public:
             {
                 return false;
             }
-            const method_meta* m = method_by_name(name);
-            if (m == nullptr || m->arg_count != sizeof...(Args))
+            int given_ids[] = { type_id::get_type_id<std::decay_t<Args>>()... };
+            const method_meta* m = find_overload(name, given_ids, sizeof...(Args));
+            if (!m)
             {
                 return false;
             }
@@ -377,8 +427,9 @@ public:
             {
                 return std::optional<R>{};
             }
-            const method_meta* m = method_by_name(name);
-            if (m == nullptr || m->arg_count != sizeof...(Args))
+            int given_ids[] = { type_id::get_type_id<std::decay_t<Args>>()... };
+            const method_meta* m = find_overload(name, given_ids, sizeof...(Args));
+            if (!m)
             {
                 return std::optional<R>{};
             }
@@ -390,6 +441,93 @@ public:
             result_ptr->~R();
             return ret;
         }
+    }
+
+    // #11 字段路径访问 (支持 "a.b.c" 嵌套路径)
+    [[nodiscard]] void* get_by_path(void* obj, const char* path) const noexcept
+    {
+        if (!meta_ || !path)
+        {
+            return nullptr;
+        }
+        const char* dot = std::strchr(path, '.');
+        size_t len = dot ? static_cast<size_t>(dot - path) : std::strlen(path);
+        // 当前级字段查找
+        size_t n = meta_->field_count.load(std::memory_order_acquire);
+        const field_meta* found = nullptr;
+        for (size_t i = 0; i < n; ++i)
+        {
+            const field_meta& fm = meta_->fields[i];
+            if (fm.name && std::strlen(fm.name) == len && std::strncmp(fm.name, path, len) == 0)
+            {
+                found = &fm;
+                break;
+            }
+        }
+        if (!found)
+        {
+            return nullptr;
+        }
+        void* next = static_cast<char*>(obj) + found->offset;
+        if (!dot)
+        {
+            return next;
+        }
+        // 递归: 根据 found->type_id 查子类型
+        const type_meta* sub = global().get_type(found->type_id);
+        if (!sub)
+        {
+            return nullptr;
+        }
+        return query_view(sub).get_by_path(next, dot + 1);
+    }
+
+    [[nodiscard]] const void* get_by_path(const void* obj, const char* path) const noexcept
+    {
+        if (!meta_ || !path)
+        {
+            return nullptr;
+        }
+        const char* dot = std::strchr(path, '.');
+        size_t len = dot ? static_cast<size_t>(dot - path) : std::strlen(path);
+        size_t n = meta_->field_count.load(std::memory_order_acquire);
+        const field_meta* found = nullptr;
+        for (size_t i = 0; i < n; ++i)
+        {
+            const field_meta& fm = meta_->fields[i];
+            if (fm.name && std::strlen(fm.name) == len && std::strncmp(fm.name, path, len) == 0)
+            {
+                found = &fm;
+                break;
+            }
+        }
+        if (!found)
+        {
+            return nullptr;
+        }
+        const void* next = static_cast<const char*>(obj) + found->offset;
+        if (!dot)
+        {
+            return next;
+        }
+        const type_meta* sub = global().get_type(found->type_id);
+        if (!sub)
+        {
+            return nullptr;
+        }
+        return query_view(sub).get_by_path(next, dot + 1);
+    }
+
+    template<typename T>
+    [[nodiscard]] T* get_by_path_as(void* obj, const char* path) const noexcept
+    {
+        return static_cast<T*>(get_by_path(obj, path));
+    }
+
+    template<typename T>
+    [[nodiscard]] const T* get_by_path_as(const void* obj, const char* path) const noexcept
+    {
+        return static_cast<const T*>(get_by_path(obj, path));
     }
 
     template<typename F>

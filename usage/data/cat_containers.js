@@ -409,19 +409,44 @@ window.DOCS_DATA['void_any'] = {
   order: 17,
   content: `## 16. void_any — 类型擦除存储
 
-类型擦除容器，保持 \`void*\` 设计理念，通过位编码将元信息打包到单个 64 位字中，减少内存访问。支持 SSO 和内存池（通过宏配置）。
+\`#include "part/void_any.hpp"\`，无命名空间。所有接口 \`noexcept\`。类型擦除容器，可存储任意类型对象，运行时通过 \`get_ptr<T>()\` 按类型安全取值。
 
-### 存储模式
+\`void_any\` 是类模板 \`define_void_any<SsoSize, SsoAlign>\` 的预设别名，SSO 缓冲区大小与对齐由模板参数编译期确定。需要更大内联存储时可直接实例化模板。
 
-64 位平台下，\`void_any\` 根据类型特征自动选择三种存储模式之一：
+**模板参数：**
 
-| 模式 | 适用条件 | 特征 |
+| 参数 | 类型 | 约束 | 说明 |
+|------|------|------|------|
+| \`SsoSize\` | \`size_t\` | 8 的倍数 | SSO 缓冲区字节数，决定内联存储上限 |
+| \`SsoAlign\` | \`size_t\` | ≥ 8 | SSO 缓冲区对齐值 |
+
+**预设别名：**
+
+| 别名 | 模板实参 | 说明 |
 |------|---------|------|
-| inline 编码 | SSO + trivially_copyable + trivially_destructible | 无 vtable 访问，type_id 通过编译期类型标签比较 |
-| SSO vtable | SSO 但非 trivially_copyable/destructible | 内联存储，通过 vtable 调用 copy/move/destroy |
-| heap vtable | 超出 SSO 容量 | 堆分配，通过 vtable 管理 |
+| \`void_any\` | \`define_void_any<56, 8>\` | 默认通用别名 |
 
-inline 编码模式将 \`element_size\`、\`trivially_destructible\`、\`trivially_copyable\` 等信息编码到 vtable 指针的空闲位中，对 trivial 类型完全跳过 vtable 访问，copy/move 操作仅执行分级内存复制。
+**\`SsoSize\` 取值参考（\`SsoAlign\` 保持 8）：**
+
+| \`SsoSize\` | \`sizeof\` | 内联存储上限 | 适用场景 |
+|-----------|----------|------------|---------|
+| \`8\` | 16B | ≤ 8B | 仅存小标量（int/double/指针） |
+| \`24\` | 32B | ≤ 24B | 小对象，内存敏感场景 |
+| \`56\` | 64B | ≤ 56B | 默认，通用场景 |
+| \`120\` | 128B | ≤ 120B | 需内联存储较大对象（如 \`std::string\`） |
+| \`248\` | 256B | ≤ 248B | 大对象内联存储 |
+
+> 注：\`sizeof\` = \`SsoSize\` + 8（类型标记字段）。超出内联上限的对象自动转为堆分配，功能不受影响。
+
+**\`SsoAlign\` 取值参考：**
+
+| \`SsoAlign\` | 说明 |
+|------------|------|
+| \`8\` | 默认，适配大多数类型 |
+| \`16\` | 需要 16 字节对齐的类型（如部分 SIMD 类型） |
+| \`32\` | 需要 32 字节对齐的类型（如 AVX 向量） |
+
+> 注：\`SsoAlign\` 过大可能增加 \`sizeof\`（padding 填充），无特殊对齐需求时保持 \`8\`。
 
 ### 构造与赋值
 
@@ -438,61 +463,149 @@ inline 编码模式将 \`element_size\`、\`trivially_destructible\`、\`trivial
 
 | 接口 | 说明 |
 |------|------|
-| \`set(T&&)\` | 设置新值（先析构旧值再构造新值） |
-| \`type_id()\` | 获取类型 ID（空值返回 -1；inline 编码模式返回类型标签派生值，仅用于同类型一致性比较） |
+| \`set(T&&)\` | 设置新值（同类型直接覆盖；不同类型先析构旧值再构造新值） |
+| \`type_id()\` | 获取类型 ID（空值返回 -1；仅用于同类型一致性比较，不等于 \`type_id::get_type_id<T>()\`） |
 | \`get_ptr<T>()\` | 获取指针（带类型检查，不匹配返回 nullptr） |
 | \`get_ptr<T>() const\` | const 版本 |
-| \`fast_get_ptr<T>()\` | 快速获取（跳过 type_id 检查） |
+| \`fast_get_ptr<T>()\` | 获取指针（跳过 type_id 检查） |
 | \`fast_get_ptr<T>() const\` | const 版本 |
-| \`get_ptr_unchecked<T>()\` | 无检查获取（不验证 has_value 和 type_id） |
+| \`get_ptr_unchecked<T>()\` | 获取指针（不验证 has_value 和 type_id） |
 | \`get_ptr_unchecked<T>() const\` | const 版本 |
 | \`get<T>()\` | 获取值副本（空值或类型不匹配返回默认构造） |
 | \`get_void()\` | 获取 \`void*\`（空值返回 nullptr） |
 | \`get_void() const\` | const 版本 |
-| \`copy_from<T>(const T&)\` | 编译期已知 T 的拷贝赋值 |
-| \`move_from<T>(T&&)\` | 编译期已知 T 的移动赋值 |
+| \`copy_from<T>(const T&)\` | 拷贝赋值（编译期已知 T） |
+| \`move_from<T>(T&&)\` | 移动赋值（编译期已知 T） |
 | \`has_value()\` | 是否有值 |
 | \`reset()\` | 清空（析构并置空） |
 
-> 注：\`type_id()\` 在 inline 编码模式下返回类型标签指针派生值，不等于 \`type_id::get_type_id<T>()\`。需要类型匹配判断时使用 \`get_ptr<T>()\`。
+> 注：判断存储类型是否为 T 时，使用 \`get_ptr<T>() != nullptr\`，不要用 \`type_id() == type_id::get_type_id<T>()\`。
 
 ### 使用
 
 \`\`\`cpp
-void_any a(42);
-a.has_value();                 // true
-a.type_id();                   // 类型标识 (空值返回 -1)
+#include "part/void_any.hpp"
 
-int* p = a.get_ptr<int>();     // 带类型检查
-int* pf = a.fast_get_ptr<int>();  // 无 type_id 检查
-int* pu = a.get_ptr_unchecked<int>();  // 无检查
-int val = a.get<int>();        // 获取值副本
+// 基本构造
+void_any a(42);                     // 存储 int
+void_any b(std::string("hello"));   // 存储 std::string
+void_any c;                         // 空值
 
-double* pd = a.get_ptr<double>();  // 类型不匹配返回 nullptr
+// 状态查询
+a.has_value();                      // true
+c.has_value();                      // false
+a.type_id();                        // 类型标识 (空值返回 -1)
 
-a.set(99);                     // 设置新值
-a.reset();                     // 清空
-
-// 拷贝与移动
-void_any b(std::string("world"));
-void_any b_copy(b);            // 拷贝构造
-void_any b_move(std::move(b)); // 移动构造
-void_any b_assign;
-b_assign = b_copy;             // 拷贝赋值
-void_any b_move_assign;
-b_move_assign = std::move(b_move);  // 移动赋值
+// 取值 (带类型检查)
+int* pi = a.get_ptr<int>();         // 匹配, 返回指针
+double* pd = a.get_ptr<double>();   // 不匹配, 返回 nullptr
+int val = a.get<int>();             // 获取值副本 (空值或类型不匹配返回默认构造)
 
 // void* 访问
-void* vp = a.get_void();       // 返回 void* (空值返回 nullptr)
+void* vp = a.get_void();            // 返回 void* (空值返回 nullptr)
 
-// 编译期已知 T 的高性能接口
-void_any c;
-c.copy_from(42);               // 编译期已知 int, 跳过 vtable 间接调用
-c.move_from(std::string("x")); // 编译期已知 string
+// 设置新值 (同类型直接覆盖; 不同类型先析构旧值再构造新值)
+a.set(99);                          // int 42 → 99 (同类型覆盖)
+a.set(std::string("world"));        // int 99 → std::string (不同类型, 析构+构造)
 
-// 类型一致性比较 (inline 编码模式)
-void_any x(1), y(2);
-x.type_id() == y.type_id();    // true, 同类型返回相同值
+// 清空
+a.reset();                          // 析构并置空
+a.has_value();                      // false
+
+// 拷贝与移动
+void_any src(std::string("data"));
+void_any cp(src);                   // 拷贝构造
+void_any mv(std::move(src));        // 移动构造 (src 变空)
+
+void_any dst;
+dst = cp;                           // 拷贝赋值
+dst = std::move(mv);                // 移动赋值 (mv 变空)
+\`\`\`
+
+### 编译期已知类型的接口
+
+\`\`\`cpp
+void_any a;
+
+// copy_from / move_from: 编译期已知 T, 无需运行时类型推导
+a.copy_from(42);                    // 拷贝 int
+a.move_from(std::string("x"));      // 移动 string
+
+// fast_get_ptr: 跳过 type_id 检查 (需调用方确保类型正确)
+int* p = a.fast_get_ptr<int>();
+
+// get_ptr_unchecked: 不验证 has_value 和 type_id (需调用方确保值存在)
+int* pu = a.get_ptr_unchecked<int>();
+\`\`\`
+
+### 存储自定义类型
+
+\`\`\`cpp
+struct player {
+    int hp;
+    int mp;
+};
+
+void_any a(player{100, 50});
+player* p = a.get_ptr<player>();
+if (p) {
+    p->hp -= 10;
+}
+\`\`\`
+
+### 在容器中存储
+
+\`\`\`cpp
+#include "part/dense.hpp"
+
+dense<void_any> bag;
+bag.push_back(42);
+bag.push_back(std::string("item"));
+bag.push_back(3.14);
+
+// 遍历并按类型取值
+for (size_t i = 0; i < bag.size(); ++i) {
+    if (auto* p = bag[i].get_ptr<int>()) {
+        // 处理 int
+    } else if (auto* p = bag[i].get_ptr<std::string>()) {
+        // 处理 string
+    } else if (auto* p = bag[i].get_ptr<double>()) {
+        // 处理 double
+    }
+}
+\`\`\`
+
+### 类型一致性比较
+
+\`\`\`cpp
+void_any x(1), y(2), z(std::string("a"));
+x.type_id() == y.type_id();        // true, 同为 int
+x.type_id() == z.type_id();        // false, int 与 string 不同
+\`\`\`
+
+> 注：\`type_id()\` 仅用于同类型一致性比较，不等于 \`type_id::get_type_id<T>()\`。判断存储类型是否为 T 时，使用 \`get_ptr<T>() != nullptr\`。
+
+### 自定义 SSO 配置
+
+\`\`\`cpp
+#include "part/void_any.hpp"
+
+// 默认 void_any: 56B SSO, 可内联存储 ≤56B 的对象
+void_any a(42);
+
+// 自定义更大 SSO 缓冲, 内联存储更大对象避免堆分配
+// 例如需要内联存储 100B 的结构体
+struct big_data { char buf[100]; };
+
+using my_void_any = define_void_any<120, 8>;   // 120B SSO
+my_void_any b(big_data{});
+
+// 自定义对齐值 (需 ≥ 8)
+using aligned_any = define_void_any<56, 16>;   // 16 字节对齐
+aligned_any c(3.14);
+
+// 注意: 不同模板实参实例化的类型不兼容, 不能互相赋值
+// my_void_any x = a;   // 编译错误
 \`\`\`
 
 ### 不要做什么
@@ -503,7 +616,10 @@ x.type_id() == y.type_id();    // true, 同类型返回相同值
 | 依赖 \`get<T>()\` 返回默认值来判断类型 | 默认构造值可能与实际值相同 | 先用 \`get_ptr<T>()\` 检查指针是否为空 |
 | 移动后继续使用 | 移动后源对象为空 | 移动后仅可调用 \`reset()\` 或重新赋值 |
 | 在 \`set()\` 之前访问 | \`has_value()\` 为 false，get_ptr 返回 nullptr | 先 \`set()\` 或构造时传值 |
-| 用 \`type_id() == type_id::get_type_id<T>()\` 判断类型 | inline 编码模式下两者不相等 | 用 \`get_ptr<T>() != nullptr\` 判断类型 |
+| 用 \`type_id() == type_id::get_type_id<T>()\` 判断类型 | 两者不相等 | 用 \`get_ptr<T>() != nullptr\` 判断类型 |
+| \`SsoSize\` 非 8 的倍数 | \`static_assert\` 编译失败 | \`SsoSize\` 必须为 8 的倍数 |
+| \`SsoAlign\` 小于 8 | \`static_assert\` 编译失败 | \`SsoAlign\` 必须 ≥ 8 |
+| 不同模板实参的 \`define_void_any\` 互相赋值 | 类型不兼容，编译错误 | 同类型间赋值，或通过 \`get_ptr\` 取值后重新构造 |
 
 ---
 `

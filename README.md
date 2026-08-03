@@ -13,7 +13,6 @@
 ## 目录
 
 - [特性](#特性)
-- [编译器支持](#编译器支持)
 - [构建](#构建)
 - [快速上手](#快速上手)
 - [文档](#文档)
@@ -33,18 +32,6 @@
 - **序列化框架**：JSON / Binary / Protobuf / FlatBuffer 四格式 + 编解码注册表
 - **UTF-8 字符串**：`utf8pp` 拥有串 + `utf8_view` 零拷贝视图，完整 Unicode 支持
 - **零异常设计**：禁用异常，错误经返回值/状态码传递
-
-## 编译器支持
-
-| 编译器 | 最低版本 | SIMD | LTO |
-|---|---|---|---|
-| GCC (Linux/macOS) | 11+ | AVX2 + FMA + BMI2 | `-flto=N` |
-| MinGW GCC (Windows) | 11+ | SSE2 + BMI2 | `-flto=N` |
-| Clang (Linux/macOS) | 13+ | AVX2 + FMA + BMI2 | `-flto=thin` |
-| Clang-cl (Windows) | 13+ | AVX2 + FMA + BMI2 | `/GL + /LTCG` |
-| MSVC `cl.exe` | 19.30+ (VS 2022) | AVX2 | `/GL + /LTCG` |
-
-> MinGW GCC 退化为 SSE2/BMI2：MinGW x64 ABI 仅保证 16 字节栈对齐，启用 AVX2 会随机崩溃。
 
 ## 构建
 

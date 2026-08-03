@@ -53,11 +53,21 @@ inline void group<First, Rest...>::rebuild() noexcept
 
     if (use_mask_path_)
     {
-        // 位掩码路径: 仅 check_blocks 快速过滤, 不构建 mapping
+        // 位掩码路径: check_blocks 过滤 + mapping 构建合并为单遍历
+        dense_mappings_.reserve_exact(n);
         for (size_t i = 0; i < n; ++i)
         {
-            if (check_blocks(indices[i]))
-                cached_.push_back(static_cast<uint32_t>(i));
+            if (!check_blocks(indices[i])) continue;
+            uint32_t eid = indices[i];
+            std::array<uint32_t, N> entry{};
+            entry[primary_idx_] = static_cast<uint32_t>(i);
+            for (size_t k = 0; k < N; ++k)
+            {
+                if (k == primary_idx_) continue;
+                entry[k] = sets_[k]->sparse_dense_at_public(eid);
+            }
+            cached_.push_back(static_cast<uint32_t>(i));
+            dense_mappings_.push_back(entry);
         }
     }
     else
@@ -100,26 +110,6 @@ inline void group<First, Rest...>::rebuild() noexcept
     for (size_t i = 0; i < N; ++i)
     {
         if (sets_[i]) cached_versions_[i] = sets_[i]->get_pool_version();
-    }
-
-    // mask_path 补充构建 mapping (sparse 路径已在主循环中构建)
-    if (use_mask_path_ && !cached_.empty())
-    {
-        dense_mappings_.reserve_exact(cached_.size());
-        dense_mappings_.increase_capacity(cached_.size(), std::array<uint32_t, N>{});
-        for (size_t i = 0; i < cached_.size(); ++i)
-        {
-            auto& entry = dense_mappings_[i];
-            uint32_t eid = indices[cached_[i]];
-            entry[primary_idx_] = cached_[i];
-            for (size_t k = 0; k < N; ++k)
-            {
-                if (k == primary_idx_) continue;
-                if (i + 8 < cached_.size()) [[likely]]
-                    sets_[k]->prefetch_sparse_entry(indices[cached_[i + 8]]);
-                entry[k] = sets_[k]->sparse_dense_at_public(eid);
-            }
-        }
     }
 }
 

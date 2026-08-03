@@ -1,291 +1,224 @@
-// test_multi_view_perf.cpp - multi_view<T...> 独立性能测试
+// test_multi_view_perf.cpp - multi_view<T...> 多组件查询性能测试
+// 1M 实体, 1~10 组件 for_each 遍历性能 scaling
 #include "perf_common.hpp"
 #include "include/component.hpp"
+#include <bit>
 
 using namespace std;
 using ecs::manager;
 using ecs::entity;
 
-struct Pos { float x, y, z; };
-struct Vel { float vx, vy, vz; };
-struct Hp  { int v; };
-struct Dmg { int v; };
-struct Armor { int v; };
-struct Speed { float v; };
-struct Rot { float x, y, z, w; };
-struct Scale { float x, y, z; };
+// === 测试组件 (10 种, 覆盖 4B/8B/12B/16B/32B 多种尺寸) ===
+struct Pos  { float x, y, z; };           // 12B
+struct Vel  { float vx, vy, vz; };        // 12B
+struct Hp   { int current, max; };        // 8B
+struct Dmg  { int amount; };              // 4B
+struct Arm  { int defense; };             // 4B
+struct Spd  { float value; };             // 4B
+struct Rot  { float x, y, z, w; };        // 16B
+struct Scl  { float x, y, z; };           // 12B
+struct Name { char data[32]; };           // 32B
+struct Mass { float value; };             // 4B
 
-// 构建测试 manager (所有实体都有所有组件, pools_aligned)
-static void build_full_manager(manager& mgr, size_t n, mt19937& rng)
-{
-    uniform_real_distribution<float> rf(-1000, 1000);
-    uniform_int_distribution<int> ri(0, 100);
-    mgr.append_preallocated_entities(n);
-    for (size_t i = 0; i < n; ++i)
-    {
-        entity e(static_cast<uint32_t>(i), 1);
-        mgr.add(Pos{rf(rng), rf(rng), rf(rng)}, e);
-        mgr.add(Vel{rf(rng), rf(rng), rf(rng)}, e);
-        mgr.add(Hp{ri(rng)}, e);
-        mgr.add(Dmg{ri(rng)}, e);
-        mgr.add(Armor{ri(rng)}, e);
-        mgr.add(Speed{rf(rng)}, e);
-        mgr.add(Rot{rf(rng), rf(rng), rf(rng), rf(rng)}, e);
-        mgr.add(Scale{rf(rng), rf(rng), rf(rng)}, e);
-    }
-}
+// === 防死码消除: 组件字段读取器 ===
+// float 字段直接返回 (vmovss 单指令, 2 loads/cyc)
+// int 字段返回 uint32_t (mov 单指令, 避免 vcvtsi2ss 1/cyc 瓶颈)
+inline float    comp_touch(const Pos& v)   noexcept { return v.x; }
+inline float    comp_touch(const Vel& v)   noexcept { return v.vx; }
+inline uint32_t comp_touch(const Hp& v)    noexcept { return static_cast<uint32_t>(v.current); }
+inline uint32_t comp_touch(const Dmg& v)   noexcept { return static_cast<uint32_t>(v.amount); }
+inline uint32_t comp_touch(const Arm& v)   noexcept { return static_cast<uint32_t>(v.defense); }
+inline float    comp_touch(const Spd& v)   noexcept { return v.value; }
+inline float    comp_touch(const Rot& v)   noexcept { return v.x; }
+inline float    comp_touch(const Scl& v)   noexcept { return v.x; }
+inline uint32_t comp_touch(const Name& v)  noexcept { return static_cast<uint32_t>(v.data[0]); }
+inline float    comp_touch(const Mass& v)  noexcept { return v.value; }
 
-// 构建部分匹配 manager (50% 实体有全部组件)
-static void build_partial_manager(manager& mgr, size_t n, mt19937& rng)
-{
-    uniform_real_distribution<float> rf(-1000, 1000);
-    uniform_int_distribution<int> ri(0, 100);
-    mgr.append_preallocated_entities(n);
-    for (size_t i = 0; i < n; ++i)
-    {
-        entity e(static_cast<uint32_t>(i), 1);
-        mgr.add(Pos{rf(rng), rf(rng), rf(rng)}, e);
-        if ((i & 1) == 0)
-        {
-            mgr.add(Vel{rf(rng), rf(rng), rf(rng)}, e);
-            mgr.add(Hp{ri(rng)}, e);
-        }
-    }
-}
+// touch_barrier: 标记值已使用, 防止死码消除, 不创建串行依赖
+#if defined(_MSC_VER)
+    inline void touch_barrier(float v) noexcept    { volatile float sink = v; _ReadWriteBarrier(); (void)sink; }
+    inline void touch_barrier(uint32_t v) noexcept { volatile uint32_t sink = v; _ReadWriteBarrier(); (void)sink; }
+#else
+    inline void touch_barrier(float v) noexcept    { asm volatile("" : : "x"(v) :); }
+    inline void touch_barrier(uint32_t v) noexcept { asm volatile("" : : "r"(v) :); }
+#endif
 
-// === Section 1: 基本查询接口 ===
+// 批量屏障: 所有 load 作为实参先求值, 再依次施加 barrier
+// 使编译器可自由调度所有 load 指令 (2 loads/cyc 并行发射)
 template <typename... Ts>
-static void test_basic_impl(manager& mgr, size_t n, const char* types_str)
+inline void touch_all(Ts... vs) noexcept
 {
-    print_header((string("Section 1: basic (") + types_str + ", N=" + to_string(n) + ")").c_str());
-    auto mv = mgr.view<Ts...>();
+    (touch_barrier(vs), ...);
+}
+
+// === 通用 for_each 基准 ===
+// 构造 view 一次复用, warmup 预建 mappings + 预热 cache
+// 多次取最小值, 减少大数据集 L3 越界导致的测量噪声
+template <typename... Comps>
+static void bench_for_each(manager& mgr, const char* label) noexcept
+{
+    auto v = mgr.view<Comps...>();
+    size_t cnt = v.size();
+
+    // warmup: 预建 mappings + 预热 L3 cache
+    v.for_each([&](Comps&... comps) {
+        touch_all(comp_touch(comps)...);
+    });
+    v.for_each([&](Comps&... comps) {
+        touch_all(comp_touch(comps)...);
+    });
+    v.for_each([&](Comps&... comps) {
+        touch_all(comp_touch(comps)...);
+    });
+
+    // timed: 多次取最小值
+    constexpr int REPEAT = 5;
+    double best_ns = 1e18;
+    for (int r = 0; r < REPEAT; ++r)
+    {
+        stopwatch sw;
+        sw.reset();
+        v.for_each([&](Comps&... comps) {
+            touch_all(comp_touch(comps)...);
+        });
+        double ns = sw.ns();
+        if (ns < best_ns) best_ns = ns;
+    }
+
+    double per_entity = best_ns / static_cast<double>(cnt);
+    double throughput = (best_ns > 0) ? static_cast<double>(cnt) / best_ns : 0;
+    cout << "  " << left << setw(28) << label
+         << " | " << right << setw(10) << cnt << " 实体"
+         << " | " << fixed << setprecision(3) << setw(10) << per_entity << " ns/实体"
+         << " | " << setprecision(2) << setw(10) << throughput << " 亿/s"
+         << " | 总计 " << setprecision(3) << setw(10) << best_ns / 1e6 << " ms\n";
+}
+
+// 带 entity 版本
+template <typename... Comps>
+static void bench_for_each_ent(manager& mgr, const char* label) noexcept
+{
+    auto v = mgr.view<Comps...>();
+    size_t cnt = v.size();
+
+    v.for_each([&](entity, Comps&... comps) {
+        touch_all(comp_touch(comps)...);
+    });
+    v.for_each([&](entity, Comps&... comps) {
+        touch_all(comp_touch(comps)...);
+    });
 
     constexpr int REPEAT = 5;
-
+    double best_ns = 1e18;
+    for (int r = 0; r < REPEAT; ++r)
     {
-        const size_t OPS = 1000000;
-        double ns = best_ns(REPEAT, [&]() {
-            volatile size_t s = 0;
-            for (size_t i = 0; i < OPS; ++i)
-            {
-                s += mv.pool_size();
-                s += mv.empty() ? 1 : 0;
-            }
-            (void)s;
+        stopwatch sw;
+        sw.reset();
+        v.for_each([&](entity e, Comps&... comps) {
+            touch_all(static_cast<uint32_t>(e.parts_.index_), comp_touch(comps)...);
         });
-        print_ns("pool_size/empty", OPS, ns / static_cast<double>(OPS));
+        double ns = sw.ns();
+        if (ns < best_ns) best_ns = ns;
     }
 
-    {
-        double ns = best_ns(REPEAT, [&]() {
-            volatile size_t s = mv.size();
-            (void)s;
-            return s;
-        });
-        print_ns("size (cached count)", 1, ns);
-    }
-
-    {
-        double ns = best_ns(REPEAT, [&]() {
-            volatile bool s = false;
-            for (size_t i = 0; i < n; ++i) s = mv.contains(entity(static_cast<uint32_t>(opaque(i)), 1));
-            (void)s;
-        });
-        print_ns("contains (hit)", n, ns / static_cast<double>(n));
-    }
-
-    {
-        double ns = best_ns(REPEAT, [&]() {
-            entity f{}, l{}, a{};
-            for (size_t i = 0; i < n; ++i)
-            {
-                f = mv.get_first_entity();
-                l = mv.get_last_entity();
-                a = mv.get_entity_at_index(opaque(i % n));
-            }
-            compiler_barrier();
-            (void)f; (void)l; (void)a;
-        });
-        print_ns("first/last/at_index", 3 * n, ns / static_cast<double>(3 * n));
-    }
-
-    {
-        using First = tuple_element_t<0, tuple<Ts...>>;
-        double ns = best_ns(REPEAT, [&]() {
-            First* p = nullptr;
-            for (size_t i = 0; i < n; ++i)
-                p = mv.template get_component_for_entity<First>(entity(static_cast<uint32_t>(opaque(i)), 1));
-            touch_ptr(p);
-            return p;
-        });
-        print_ns("get_component_for_entity", n, ns / static_cast<double>(n));
-    }
-
-    print_footer();
-}
-
-// === Section 2: for_each ===
-template <typename... Ts>
-static void test_for_each_impl(manager& mgr, size_t n, const char* types_str)
-{
-    print_header((string("Section 2: for_each (") + types_str + ", N=" + to_string(n) + ")").c_str());
-    auto mv = mgr.view<Ts...>();
-
-    constexpr int REPEAT = 5;
-
-    {
-        double ns = best_ns(REPEAT, [&]() {
-            volatile float sink = 0;
-            mv.for_each([&](auto&... comps) {
-                float tmp = 0;
-                ((tmp += *reinterpret_cast<float*>(&comps)), ...);
-                sink = tmp;
-            });
-            (void)sink;
-        });
-        print_ns("for_each (comps&...)", n, ns / static_cast<double>(n));
-    }
-
-    {
-        double ns = best_ns(REPEAT, [&]() {
-            entity sink{};
-            mv.for_each([&](entity e, auto&...) { sink = e; });
-            compiler_barrier();
-            (void)sink;
-        });
-        print_ns("for_each (entity, comps&...)", n, ns / static_cast<double>(n));
-    }
-
-    print_footer();
-}
-
-// === Section 3: 嵌套视图 ===
-template <typename... Ts>
-static void test_nested_impl(manager& mgr, size_t n, const char* types_str)
-{
-    print_header((string("Section 3: nested views (") + types_str + ", N=" + to_string(n) + ")").c_str());
-    auto mv = mgr.view<Ts...>();
-
-    constexpr int REPEAT = 3;
-
-    {
-        auto pv = mv.page(n / 4, n / 2);
-        double ns = best_ns(REPEAT, [&]() {
-            size_t s = 0;
-            pv.for_each([&](auto&...) { ++s; });
-            compiler_barrier();
-            return s;
-        });
-        print_ns("paged_view.for_each", n / 2, ns / static_cast<double>(n / 2));
-    }
-
-    {
-        double ns = best_ns(REPEAT, [&]() {
-            auto cv = mv.track_changes();
-            volatile size_t s = cv.size();
-            cv.for_each([](auto&...) {});
-            compiler_barrier();
-            return s;
-        });
-        print_ns("track_changes (build+iter)", n, ns / static_cast<double>(n));
-    }
-
-    {
-        using First = tuple_element_t<0, tuple<Ts...>>;
-        double ns = best_ns(REPEAT, [&]() {
-            auto fc = mv.template filter_changed<First>();
-            volatile size_t s = fc.size();
-            fc.for_each([](auto&...) {});
-            compiler_barrier();
-            return s;
-        });
-        print_ns("filter_changed<T> (build+iter)", n, ns / static_cast<double>(n));
-
-        ns = best_ns(REPEAT, [&]() {
-            auto fa = mv.filter_any_changed();
-            volatile size_t s = fa.size();
-            fa.for_each([](auto&...) {});
-            compiler_barrier();
-            return s;
-        });
-        print_ns("filter_any_changed (build+iter)", n, ns / static_cast<double>(n));
-
-        ns = best_ns(REPEAT, [&]() {
-            auto fa = mv.template filter_added<First>();
-            volatile size_t s = fa.size();
-            fa.for_each([](auto&...) {});
-            compiler_barrier();
-            return s;
-        });
-        print_ns("filter_added<T> (build+iter)", n, ns / static_cast<double>(n));
-    }
-
-    {
-        // 构建只有一个匹配实体的 manager
-        manager mgr2;
-        mgr2.append_preallocated_entities(1);
-        entity e0(0, 1);
-        mgr2.add(Pos{1, 2, 3}, e0);
-        mgr2.add(Vel{4, 5, 6}, e0);
-        auto mv2 = mgr2.view<Pos, Vel>();
-
-        double ns = best_ns(REPEAT, [&]() {
-            auto [p, v] = mv2.exactly_one();
-            touch_ptr(&p);
-            touch_ptr(&v);
-            return 0;
-        });
-        print_ns("exactly_one", 1, ns);
-
-        ns = best_ns(REPEAT, [&]() {
-            auto [p, v] = mv2.find_one(e0);
-            touch_ptr(p);
-            touch_ptr(v);
-            return p;
-        });
-        print_ns("find_one", 1, ns);
-    }
-
-    print_footer();
+    double per_entity = best_ns / static_cast<double>(cnt);
+    double throughput = (best_ns > 0) ? static_cast<double>(cnt) / best_ns : 0;
+    cout << "  " << left << setw(28) << label
+         << " | " << right << setw(10) << cnt << " 实体"
+         << " | " << fixed << setprecision(3) << setw(10) << per_entity << " ns/实体"
+         << " | " << setprecision(2) << setw(10) << throughput << " 亿/s"
+         << " | 总计 " << setprecision(3) << setw(10) << best_ns / 1e6 << " ms\n";
 }
 
 int main()
 {
     cout << "============================================================\n";
-    cout << "  multi_view<T...> 独立性能测试\n";
+    cout << "  multi_view 多组件查询性能测试 (1~10 组件, 1M/百万)\n";
     cout << "============================================================\n";
 
-    const size_t N = 1 << 18;  // 256K
+    constexpr size_t N = 1000000;
 
-    // pools_aligned 路径 (所有实体都有所有组件)
-    cout << "\n=== pools_aligned (full match) ===\n";
+    // 构建 1M 实体, 每个实体拥有全部 10 个组件 (pools_aligned 快路径)
+    manager mgr;
+    mgr.disable_track_changes();
+    mgr.disable_comp_signals();
+    mgr.append_preallocated_entities(N);
+
+    mt19937 rng(42);
+    uniform_real_distribution<float> rf(-1000.0f, 1000.0f);
+    uniform_int_distribution<int> ri(0, 100);
+
+    dense<entity> ents; ents.increase_capacity(N);
+    dense<Pos> pos;     pos.increase_capacity(N);
+    dense<Vel> vel;     vel.increase_capacity(N);
+    dense<Hp>  hp;      hp.increase_capacity(N);
+    dense<Dmg> dmg;     dmg.increase_capacity(N);
+    dense<Arm> arm;     arm.increase_capacity(N);
+    dense<Spd> spd;     spd.increase_capacity(N);
+    dense<Rot> rot;     rot.increase_capacity(N);
+    dense<Scl> scl;     scl.increase_capacity(N);
+    dense<Name> name;   name.increase_capacity(N);
+    dense<Mass> mass;   mass.increase_capacity(N);
+
+    for (size_t i = 0; i < N; ++i)
     {
-        mt19937 rng(42);
-        manager mgr;
-        build_full_manager(mgr, N, rng);
-
-        test_basic_impl<Pos, Vel>(mgr, N, "2-comp aligned");
-        test_for_each_impl<Pos, Vel>(mgr, N, "2-comp aligned");
-        test_nested_impl<Pos, Vel>(mgr, N, "2-comp aligned");
-
-        test_basic_impl<Pos, Vel, Hp>(mgr, N, "3-comp aligned");
-        test_for_each_impl<Pos, Vel, Hp>(mgr, N, "3-comp aligned");
-
-        test_for_each_impl<Pos, Vel, Hp, Dmg, Armor>(mgr, N, "5-comp aligned");
-        test_for_each_impl<Pos, Vel, Hp, Dmg, Armor, Speed, Rot, Scale>(mgr, N, "8-comp aligned");
+        ents.emplace_back(mgr.create_entity());
+        pos.emplace_back(rf(rng), rf(rng), rf(rng));
+        vel.emplace_back(rf(rng), rf(rng), rf(rng));
+        hp.emplace_back(ri(rng), 100);
+        dmg.emplace_back(ri(rng));
+        arm.emplace_back(ri(rng));
+        spd.emplace_back(rf(rng));
+        rot.emplace_back(rf(rng), rf(rng), rf(rng), 1.0f);
+        scl.emplace_back(rf(rng), rf(rng), rf(rng));
+        Name nm; memset(nm.data, static_cast<int>(i & 0xFF), 32);
+        name.emplace_back(nm);
+        mass.emplace_back(rf(rng) * 10.0f);
     }
 
-    // 部分匹配路径 (pools_aligned_ = false)
-    cout << "\n=== partial match (50% entities) ===\n";
-    {
-        mt19937 rng(42);
-        manager mgr;
-        build_partial_manager(mgr, N, rng);
+    mgr.add_batch(std::span<const entity>(ents.data(), N), std::span<const Pos>(pos.data(), N));
+    mgr.add_batch(std::span<const entity>(ents.data(), N), std::span<const Vel>(vel.data(), N));
+    mgr.add_batch(std::span<const entity>(ents.data(), N), std::span<const Hp>(hp.data(), N));
+    mgr.add_batch(std::span<const entity>(ents.data(), N), std::span<const Dmg>(dmg.data(), N));
+    mgr.add_batch(std::span<const entity>(ents.data(), N), std::span<const Arm>(arm.data(), N));
+    mgr.add_batch(std::span<const entity>(ents.data(), N), std::span<const Spd>(spd.data(), N));
+    mgr.add_batch(std::span<const entity>(ents.data(), N), std::span<const Rot>(rot.data(), N));
+    mgr.add_batch(std::span<const entity>(ents.data(), N), std::span<const Scl>(scl.data(), N));
+    mgr.add_batch(std::span<const entity>(ents.data(), N), std::span<const Name>(name.data(), N));
+    mgr.add_batch(std::span<const entity>(ents.data(), N), std::span<const Mass>(mass.data(), N));
 
-        test_basic_impl<Pos, Vel, Hp>(mgr, N, "3-comp partial");
-        test_for_each_impl<Pos, Vel, Hp>(mgr, N, "3-comp partial");
-        test_nested_impl<Pos, Vel, Hp>(mgr, N, "3-comp partial");
-    }
+    cout << "\n  数据: " << N << " 实体, 每个实体拥有全部 10 个组件 (pools_aligned)\n";
+    cout << "  组件: Pos(12B) Vel(12B) Hp(8B) Dmg(4B) Arm(4B) Spd(4B) Rot(16B) Scl(12B) Name(32B) Mass(4B)\n";
+    cout << "  总计: 108B/实体 × " << N << " = " << (108 * N) / (1024 * 1024) << " MB\n";
+
+    // === for_each 1~10 组件 scaling ===
+    print_header("for_each 1~10 组件 (1M/百万, pools_aligned)");
+    cout << "\n";
+
+    bench_for_each<Pos>(mgr, "1 comp");
+    bench_for_each<Pos, Vel>(mgr, "2 comps");
+    bench_for_each<Pos, Vel, Hp>(mgr, "3 comps");
+    bench_for_each<Pos, Vel, Hp, Dmg>(mgr, "4 comps");
+    bench_for_each<Pos, Vel, Hp, Dmg, Arm>(mgr, "5 comps");
+    bench_for_each<Pos, Vel, Hp, Dmg, Arm, Spd>(mgr, "6 comps");
+    bench_for_each<Pos, Vel, Hp, Dmg, Arm, Spd, Rot>(mgr, "7 comps");
+    bench_for_each<Pos, Vel, Hp, Dmg, Arm, Spd, Rot, Scl>(mgr, "8 comps");
+    bench_for_each<Pos, Vel, Hp, Dmg, Arm, Spd, Rot, Scl, Name>(mgr, "9 comps");
+    bench_for_each<Pos, Vel, Hp, Dmg, Arm, Spd, Rot, Scl, Name, Mass>(mgr, "10 comps");
+
+    cout << "\n";
+    print_footer();
+
+    // === 带 entity 版本 (2 组件对照) ===
+    print_header("for_each +entity (1M/百万, pools_aligned)");
+    cout << "\n";
+
+    bench_for_each_ent<Pos, Vel>(mgr, "2 comps +entity");
+    bench_for_each_ent<Pos, Vel, Hp, Dmg, Arm>(mgr, "5 comps +entity");
+    bench_for_each_ent<Pos, Vel, Hp, Dmg, Arm, Spd, Rot, Scl, Name, Mass>(mgr, "10 comps +entity");
+
+    cout << "\n";
+    print_footer();
 
     cout << "\n============================================================\n";
     cout << "  测试完成\n";

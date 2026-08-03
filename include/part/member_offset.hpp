@@ -13,6 +13,7 @@ struct offset_desc
     const char* name;
     size_t offset;
     int type_id;
+    uint32_t size;  // 类型大小 (字节), 用于 compare/hash 回退
 };
 
 namespace detail_member_offset {

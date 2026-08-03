@@ -228,6 +228,8 @@ inline void lcf_sink_all(Ts&&... vs) noexcept {
 }
 
 // === 缓存命中率详细输出 (基于 time.hpp) - 中文格式 ===
+// 缓存测量功能已从 time.hpp 移除, 禁用以下两个函数
+#if 0
 void print_cache_report(const char* name, const cache_report& r) {
     std::cout << std::fixed << std::setprecision(2);
     std::cout << "  " << std::left << std::setw(28) << name
@@ -255,6 +257,7 @@ void print_cache_batch(const char* name, const batch_cache_result& r) {
               << " | 净值 " << std::setw(8) << r.net_cycles_per_access << " 周期/次"
               << " | 基线 " << std::setw(8) << r.baseline_cycles << "\n";
 }
+#endif // 缓存测量功能已从 time.hpp 移除
 
 // 统计分布输出 (min/mean/p50/p95/p99/max) - 中文格式
 void print_stats(const char* name, const stats& s, const char* unit = "ns") {

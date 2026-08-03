@@ -5,7 +5,7 @@
 #include "test_common.hpp"
 #include <string>
 
-using ecs::serialization;
+using serialize::serialization;
 using ecs::entity;
 using ecs::manager;
 

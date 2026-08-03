@@ -14,7 +14,7 @@
 #include <string_view>
 #include <type_traits>
 
-namespace ecs {
+namespace serialize {
 
 namespace reflect_bridge {
 
@@ -371,4 +371,4 @@ concept json_serializable = (reflect_bridge::has_json_serialize<T> &&
                             || std::is_trivially_copyable_v<T>
                             || std::is_class_v<T>;
 
-} // namespace ecs
+} // namespace serialize

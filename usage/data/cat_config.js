@@ -35,11 +35,7 @@ target_compile_definitions(my_target PRIVATE LCF_MINIMAL_STACK=1)
 | 宏 | 说明 |
 |------|------|
 | \`VOID_ANY_ENABLE_SSO\` | 启用 void_any 小对象存储（SSO），小对象内联存储 |
-| \`VOID_ANY_ENABLE_MEMORY_POOL\` | 启用 void_any 内存池，使用 \`memory_pool\` 替代 \`::operator new\` |
-| \`VOID_ANY_USE_LAYERED_ALLOCATOR\` | 启用分层分配器：小对象（≤128B）走 slab，大对象走 TLSF（优先级高于 \`VOID_ANY_ENABLE_MEMORY_POOL\`） |
-| \`VOID_ANY_SSO_BUFFER_SIZE\` | SSO 缓冲区大小（默认 56 字节） |
-| \`VOID_ANY_SSO_ALIGNMENT\` | SSO 对齐（默认 8 字节） |
-| \`VOID_ANY_MEMORY_POOL_NOT_ENABLED\` | 禁用内存池（与 \`VOID_ANY_ENABLE_MEMORY_POOL\` 互斥） |
+| \`VOID_ANY_USE_LAYERED_ALLOCATOR\` | 启用分层分配器：小对象（≤128B）走 slab，大对象走 TLSF |
 | \`VOID_ANY_SSO_NOT_ENABLED\` | 禁用 SSO（与 \`VOID_ANY_ENABLE_SSO\` 互斥） |
 
 ### 13.3 反射模块配置（\`config/reflect_config.hpp\`）
@@ -83,28 +79,17 @@ target_compile_definitions(my_target PRIVATE UTF8PP_ENABLE_ALLOCATOR=1 UTF8PP_AL
 \`\`\`cpp
 // config/void_any_config.hpp
 
-// 启用内存池
-#define VOID_ANY_ENABLE_MEMORY_POOL
-
-// 启用分层分配器（小对象走 slab, 大对象走 TLSF, 优先级高于 memory_pool）
+// 启用分层分配器（小对象走 slab, 大对象走 TLSF）
 #define VOID_ANY_USE_LAYERED_ALLOCATOR
 
 // 启用小对象存储
 #define VOID_ANY_ENABLE_SSO
-
-// SSO 缓冲区大小
-#define VOID_ANY_SSO_BUFFER_SIZE 56
-
-// SSO 对齐
-#define VOID_ANY_SSO_ALIGNMENT 8
 \`\`\`
 
 ### 13.5 不要做什么
 
 | 错误做法 | 问题 | 正确做法 |
 |---------|------|---------|
-| \`VOID_ANY_SSO_ALIGNMENT\` 设为 32 | \`sizeof(void_any)\` 会改变 | 保持默认 8 |
-| 同时定义 \`VOID_ANY_ENABLE_MEMORY_POOL\` 和 \`VOID_ANY_MEMORY_POOL_NOT_ENABLED\` | 互斥宏冲突 | 二选一 |
 | \`LCF_MINIMAL_STACK=1\` 后期望排序性能不变 | 堆分配有额外开销 | 嵌入式场景排序非热路径，可接受 |
 | 在 \`config/\` 文件夹外查找配置文件 | \`ecs_config.hpp\` 和 \`void_any_config.hpp\` 均在 \`include/config/\` | include 路径为 \`"config/ecs_config.hpp"\` 和 \`"config/void_any_config.hpp"\` |
 

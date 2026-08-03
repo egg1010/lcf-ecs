@@ -484,7 +484,7 @@ public:
             return set->soft_remove(entitys);
         }
         operating_message result;
-        result.write_message(false, "manager::soft_remove(): component set does not exist, type=", std::to_string(type_id::get_type_id<T>()));
+        OM_MSG(result, false, "manager::soft_remove(): component set does not exist, type=", type_id::get_type_id<T>());
         return result;
     }
 
@@ -505,7 +505,7 @@ public:
             return set->hard_remove(entitys);
         }
         operating_message result;
-        result.write_message(false, "manager::hard_remove(): component set does not exist, type=", std::to_string(type_id::get_type_id<T>()));
+        OM_MSG(result, false, "manager::hard_remove(): component set does not exist, type=", type_id::get_type_id<T>());
         return result;
     }
 

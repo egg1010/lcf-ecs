@@ -21,7 +21,7 @@
 #include <type_traits>
 #include <utility>
 
-namespace ecs {
+namespace serialize {
 
 // ============================================================================
 // archive_logic — 公共逻辑层
@@ -29,12 +29,12 @@ namespace ecs {
 // ============================================================================
 class archive_logic
 {
-    manager& mgr_;
+    ecs::manager& mgr_;
     const serialize_filter* filter_ = nullptr;
     serialize_stats stats_;
 
 public:
-    explicit archive_logic(manager& m) noexcept : mgr_(m) {}
+    explicit archive_logic(ecs::manager& m) noexcept : mgr_(m) {}
 
     void set_filter(const serialize_filter* f) noexcept { filter_ = f; }
     [[nodiscard]] const serialize_filter* filter() const noexcept { return filter_; }
@@ -115,7 +115,7 @@ public:
 
     template<typename T>
     void collect_max_entity_idx(uint32_t& max_idx, bool& any) noexcept {
-        const single_class_set* set = mgr_.get_single_class_set<T>();
+        const ecs::single_class_set* set = mgr_.get_single_class_set<T>();
         if (!set || set->size() == 0)
         {
             return;
@@ -131,9 +131,9 @@ public:
         }
     }
 
-    template<typename T>
+    template <typename T>
     void save_unique_entities(archive_writer& w, dense<uint64_t>& seen) noexcept {
-        const single_class_set* set = mgr_.get_single_class_set<T>();
+        const ecs::single_class_set* set = mgr_.get_single_class_set<T>();
         if (!set)
         {
             return;
@@ -158,6 +158,7 @@ public:
             seen[block] |= bit;
 
             const auto& state = mgr_.get_entity_state(idx);
+
             w.begin_object();
             w.key("i"); w.write_u32(idx);
             w.key("v"); w.write_u32(ver);
@@ -184,7 +185,7 @@ public:
         w.key(name);
         w.begin_array(0);
 
-        const single_class_set* set = mgr_.get_single_class_set<T>();
+        const ecs::single_class_set* set = mgr_.get_single_class_set<T>();
         if (!set)
         {
             w.end_array();
@@ -383,10 +384,10 @@ public:
             }
             r.end_element();
 
-            entity new_e = mgr_.create_entity();
+            ecs::entity new_e = mgr_.create_entity();
             while (remap.old_to_new.size() <= idx)
             {
-                remap.old_to_new.push_back(entity{});
+                remap.old_to_new.push_back(ecs::entity{});
                 remap.old_versions.push_back(0);
             }
             remap.old_to_new[idx] = new_e;
@@ -402,4 +403,4 @@ public:
     }
 };
 
-} // namespace ecs
+} // namespace serialize

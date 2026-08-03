@@ -5,6 +5,7 @@
 #include <cstring>
 
 using namespace ecs;
+using namespace serialize;
 
 // === 测试用组件 ===
 struct PbVec3 {
