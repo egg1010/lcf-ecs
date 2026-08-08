@@ -53,30 +53,30 @@ double best_ns(int repeat, F&& fn) noexcept
     double best = 1e18;
     for (int r = 0; r < repeat; ++r)
     {
-        stopwatch sw;
+        timer t;
         fn();
-        double ns = sw.ns();
+        double ns = t.elapsed_nanoseconds();
         if (ns < best) best = ns;
     }
     return best;
 }
 
 // CPU TSC 频率估算 (首次调用校准, 后续返回缓存值)
-// time.hpp 不提供 CPU 频率, 此处用 stopwatch (周期 + 墙钟) 自校准
+// time.hpp 不提供 CPU 频率, 此处用 timer (周期 + 墙钟) 自校准
 inline double cpu_ghz_cached() noexcept
 {
     static const double ghz = []() noexcept -> double {
-        stopwatch sw;
+        timer t;
         volatile double sink = 0.0;
-        while (sw.ns() < 5'000'000.0)
+        while (t.elapsed_nanoseconds() < 5'000'000.0)
         {
             sink += 1.0;
         }
         (void)sink;
-        time_snapshot snap = sw.snapshot();
-        if (snap.ns_val > 0.0)
+        timer::snapshot snap = t.take_snapshot();
+        if (snap.nanoseconds > 0.0)
         {
-            return static_cast<double>(snap.cycles) / snap.ns_val;
+            return static_cast<double>(snap.cycles) / snap.nanoseconds;
         }
         return 0.0;
     }();
@@ -104,9 +104,55 @@ inline void print_ns(const char* label, size_t n, double ns) noexcept
               << " | " << std::setprecision(2) << std::setw(8) << throughput << " 亿/s\n";
 }
 
+// 简单统计结构 (替代旧 stats, 仅本文件内部使用)
+struct perf_stats
+{
+    double min = 0;
+    double max = 0;
+    double mean = 0;
+    double p50 = 0;
+    double p95 = 0;
+    double p99 = 0;
+    size_t count = 0;
+};
+
+// 周期级精确基准 (替代旧 benchmark_precise_cycles, 仅本文件内部使用)
+template<typename F>
+perf_stats benchmark_precise_cycles(size_t iterations, size_t warmup, F&& fn) noexcept
+{
+    for (size_t i = 0; i < warmup; ++i) { fn(); }
+    std::vector<double> samples;
+    samples.reserve(iterations);
+    for (size_t i = 0; i < iterations; ++i)
+    {
+        uint64_t c0 = rdtscp();
+        fn();
+        uint64_t c1 = rdtscp();
+        samples.push_back(static_cast<double>(c1 - c0));
+    }
+    if (samples.empty()) { return {}; }
+    std::sort(samples.begin(), samples.end());
+    perf_stats s;
+    s.count = samples.size();
+    s.min = samples.front();
+    s.max = samples.back();
+    double sum = std::accumulate(samples.begin(), samples.end(), 0.0);
+    s.mean = sum / static_cast<double>(s.count);
+    auto pct = [&](double q) -> double
+    {
+        if (s.count == 1) { return samples[0]; }
+        size_t idx = static_cast<size_t>(q * static_cast<double>(s.count - 1));
+        return samples[idx];
+    };
+    s.p50 = pct(0.50);
+    s.p95 = pct(0.95);
+    s.p99 = pct(0.99);
+    return s;
+}
+
 // 统计分布输出 (min/p50/p95/p99/max + mean)
 // unit="ns" 显示纳秒, unit="cyc" 显示周期
-inline void print_dist(const char* label, const stats& s, const char* unit = "ns") noexcept
+inline void print_dist(const char* label, const perf_stats& s, const char* unit = "ns") noexcept
 {
     std::cout << "  " << std::left << std::setw(36) << label
               << " | n=" << std::right << std::setw(8) << s.count
@@ -799,7 +845,7 @@ static void test_cache_hierarchy(size_t n) noexcept
     auto set = build_set<T>(n, gen);
 
     std::cout << "  ── CPU 缓存层级 ──\n";
-    latency_thresholds th = detect_cache_latency_thresholds();
+    analyzer::config th = analyzer::detect_config();
     if (th.l1_max < 1.0)
     {
         // 经验阈值 (x86 desktop/server): L1~4cyc, L2~15cyc, L3~50cyc, DRAM~200+cyc
@@ -809,6 +855,7 @@ static void test_cache_hierarchy(size_t n) noexcept
         th.cache_levels = 3;
         std::cout << "    (自动检测失败, 使用经验阈值)\n";
     }
+    analyzer a(th);
     std::cout << "    缓存层级: " << th.cache_levels << " 级\n";
     std::cout << "    L1 阈值: < " << th.l1_max << " cycles\n";
     if (th.cache_levels >= 2)
@@ -826,8 +873,8 @@ static void test_cache_hierarchy(size_t n) noexcept
         addrs.increase_capacity(n);
         for (size_t i = 0; i < n; ++i)
             addrs.emplace_back(&data[i]);
-        address_view addrs_av{addrs.data(), addrs.size()};
-        cache_report cr = measure_cache_hits(addrs_av, th);
+        analyzer::address_view addrs_av{addrs.data(), addrs.size()};
+        analyzer::cache_report cr = a.measure_hits(addrs_av);
         std::cout << "    typed_pool 顺序访问 (size=" << n << "*" << sizeof(T) << "B="
                   << (n * sizeof(T) / 1024) << "KB):\n";
         std::cout << "      L1=" << (cr.l1_hit_rate * 100) << "%"
@@ -851,8 +898,8 @@ static void test_cache_hierarchy(size_t n) noexcept
         addrs.increase_capacity(n);
         for (size_t i = 0; i < n; ++i)
             addrs.emplace_back(&data[rnd_idx[i]]);
-        address_view addrs_av{addrs.data(), addrs.size()};
-        cache_report cr = measure_cache_hits(addrs_av, th);
+        analyzer::address_view addrs_av{addrs.data(), addrs.size()};
+        analyzer::cache_report cr = a.measure_hits(addrs_av);
         std::cout << "    typed_pool 随机访问 (size=" << n << "*" << sizeof(T) << "B="
                   << (n * sizeof(T) / 1024) << "KB):\n";
         std::cout << "      L1=" << (cr.l1_hit_rate * 100) << "%"
@@ -1093,13 +1140,13 @@ int main()
 
     std::cout << "========================================================\n"
               << "  single_class_set 独立性能测试\n"
-              << "  工具: time.hpp (stopwatch/benchmark/scope_time) + analysis.hpp (cache/barrier)\n"
+              << "  工具: time.hpp (timer/scheduler) + analysis.hpp (cache/barrier)\n"
               << "========================================================\n";
 
     constexpr size_t N = 1000000;  // 1M 实体
 
     std::cout << "\n┌─ CPU 信息\n";
-    latency_thresholds auto_th = detect_cache_latency_thresholds();
+    analyzer::config auto_th = analyzer::detect_config();
     std::cout << "  缓存层级: " << auto_th.cache_levels << " 级"
               << "  L1<=" << auto_th.l1_max << "  L2<=" << auto_th.l2_max
               << "  L3<=" << auto_th.l3_max << "  cyc\n";

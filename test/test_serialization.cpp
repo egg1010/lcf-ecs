@@ -352,7 +352,9 @@ static void test_binary_roundtrip()
     mgr.add<PlayerInfo>(e1, PlayerInfo("BinTest", 42));
 
     std::string bin;
-    auto r = serialization(mgr).save_to_string<Vec3, PlayerInfo>(bin, serialization::format::binary);
+    serialization s_bin(mgr);
+    s_bin.set_checksum_enabled(false);
+    auto r = s_bin.save_to_string<Vec3, PlayerInfo>(bin, serialization::format::binary);
     bool pass = (bool)r;
     print_item("save_to_string binary", pass);
 
@@ -527,12 +529,14 @@ static void test_validate_string()
     auto r2 = s.validate_string(invalid_json);
     print_item("非法 JSON 校验失败", !r2);
 
-    // 二进制格式
+    // 二进制格式 (禁用 checksum 以测试原始二进制格式)
     manager mgr2;
     entity e = mgr2.create_entity();
     mgr2.add<Vec3>(e, Vec3(1, 2, 3));
     std::string bin;
-    serialization(mgr2).save_to_string<Vec3>(bin, serialization::format::binary);
+    serialization s_bin2(mgr2);
+    s_bin2.set_checksum_enabled(false);
+    s_bin2.save_to_string<Vec3>(bin, serialization::format::binary);
     auto r3 = s.validate_string(bin);
     print_item("合法二进制校验通过", (bool)r3);
 }

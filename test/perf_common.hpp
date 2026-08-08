@@ -76,34 +76,34 @@ double best_ns(int repeat, F&& fn) noexcept
     double best = 1e18;
     for (int r = 0; r < repeat; ++r)
     {
-        stopwatch sw;
+        timer t;
         fn();
-        double ns = sw.ns();
+        double ns = t.elapsed_nanoseconds();
         if (ns < best) best = ns;
     }
     return best;
 }
 
 // 单次测量的周期数 (用于 sub-ns 级测量)
-// 使用 stopwatch 直接测一次, 不走多次平均
+// 使用 timer 直接测一次, 不走多次平均
 inline double measure_cycles_once() noexcept
 {
-    stopwatch sw;
-    sw.reset();
-    return static_cast<double>(sw.cycles());
+    timer t;
+    t.reset();
+    return static_cast<double>(t.elapsed_cycles());
 }
 
-// 多次重复取最小值 (周期版本, 用 stopwatch 的单次迭代)
+// 多次重复取最小值 (周期版本, 用 timer 的单次迭代)
 template <typename F>
 double best_cycles(int repeat, F&& fn) noexcept
 {
     double best = 1e18;
     for (int r = 0; r < repeat; ++r)
     {
-        stopwatch sw;
-        sw.reset();
+        timer t;
+        t.reset();
         fn();
-        double c = static_cast<double>(sw.cycles());
+        double c = static_cast<double>(t.elapsed_cycles());
         if (c < best) best = c;
     }
     return best;
@@ -131,7 +131,45 @@ inline void print_ns(const char* label, size_t n, double ns) noexcept
 }
 
 // 统计分布输出 (min/p50/p95/p99/max + mean)
-inline void print_dist(const char* label, const stats& s, const char* unit = "ns") noexcept
+// 简单统计结构 (替代旧 stats, 仅 perf_common 内部使用)
+struct perf_stats
+{
+    double min = 0;
+    double max = 0;
+    double mean = 0;
+    double p50 = 0;
+    double p95 = 0;
+    double p99 = 0;
+    size_t count = 0;
+};
+
+// 从已排序样本计算简单统计 (perf_common 内部使用)
+inline perf_stats compute_perf_stats(std::vector<double>& samples) noexcept
+{
+    if (samples.empty())
+    {
+        return {};
+    }
+    std::sort(samples.begin(), samples.end());
+    perf_stats s;
+    s.count = samples.size();
+    s.min = samples.front();
+    s.max = samples.back();
+    double sum = std::accumulate(samples.begin(), samples.end(), 0.0);
+    s.mean = sum / static_cast<double>(s.count);
+    auto pct = [&](double q) -> double
+    {
+        if (s.count == 1) return samples[0];
+        size_t idx = static_cast<size_t>(q * static_cast<double>(s.count - 1));
+        return samples[idx];
+    };
+    s.p50 = pct(0.50);
+    s.p95 = pct(0.95);
+    s.p99 = pct(0.99);
+    return s;
+}
+
+inline void print_dist(const char* label, const perf_stats& s, const char* unit = "ns") noexcept
 {
     std::cout << "  " << std::left << std::setw(36) << label
               << " | n=" << std::right << std::setw(8) << s.count

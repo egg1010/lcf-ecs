@@ -76,12 +76,12 @@ static void bench_for_each(manager& mgr, const char* label) noexcept
     double best_ns = 1e18;
     for (int r = 0; r < REPEAT; ++r)
     {
-        stopwatch sw;
-        sw.reset();
+        timer t;
+        t.reset();
         v.for_each([&](Comps&... comps) {
             touch_all(comp_touch(comps)...);
         });
-        double ns = sw.ns();
+        double ns = t.elapsed_nanoseconds();
         if (ns < best_ns) best_ns = ns;
     }
 
@@ -112,12 +112,12 @@ static void bench_for_each_ent(manager& mgr, const char* label) noexcept
     double best_ns = 1e18;
     for (int r = 0; r < REPEAT; ++r)
     {
-        stopwatch sw;
-        sw.reset();
+        timer t;
+        t.reset();
         v.for_each([&](entity e, Comps&... comps) {
             touch_all(static_cast<uint32_t>(e.parts_.index_), comp_touch(comps)...);
         });
-        double ns = sw.ns();
+        double ns = t.elapsed_nanoseconds();
         if (ns < best_ns) best_ns = ns;
     }
 

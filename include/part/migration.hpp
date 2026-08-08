@@ -3,8 +3,8 @@
 
 #include "dense.hpp"
 #include "type_id.hpp"
-#include "json_writer.hpp"
-#include "json_reader.hpp"
+#include "codec/json_writer.hpp"
+#include "codec/json_reader.hpp"
 #include <cstdint>
 #include <cstring>
 #include <functional>
@@ -137,4 +137,182 @@ inline bool migrate_component(int tid, uint32_t from_ver, uint32_t to_ver,
         return w.take();
     }
     return std::string(old_data);
+}
+
+// ============================================================================
+// #C1 声明式字段 rename/drop + #C2 默认值注入
+// 字段级 schema 演进, 不依赖组件版本号, 每次加载自动应用
+// 用法:
+//   register_field_rename<T>("old_hp", "hp");     // 旧字段名 → 新字段名
+//   register_field_drop<T>("deprecated_flag");    // 加载时跳过此字段
+//   register_field_default<T>("max_mp", "100");   // 缺失字段注入默认值
+// ============================================================================
+
+namespace detail {
+
+struct field_rename_entry {
+    int         type_id;
+    const char* old_name;
+    const char* new_name;
+};
+
+struct field_drop_entry {
+    int         type_id;
+    const char* field_name;
+};
+
+struct field_default_entry {
+    int         type_id;
+    const char* field_name;
+    std::string default_json;  // JSON 值片段, e.g. "100", "\"hello\"", "{\"x\":1}"
+};
+
+inline dense<field_rename_entry>& field_rename_registry() noexcept {
+    static dense<field_rename_entry> reg;
+    return reg;
+}
+
+inline dense<field_drop_entry>& field_drop_registry() noexcept {
+    static dense<field_drop_entry> reg;
+    return reg;
+}
+
+inline dense<field_default_entry>& field_default_registry() noexcept {
+    static dense<field_default_entry> reg;
+    return reg;
+}
+
+// 检查 type_id 是否有任何字段 schema 注册 (用于快速跳过)
+[[nodiscard]] inline bool has_field_schema(int tid) noexcept {
+    auto& renames = field_rename_registry();
+    for (size_t i = 0; i < renames.size(); ++i) {
+        if (renames[i].type_id == tid) return true;
+    }
+    auto& drops = field_drop_registry();
+    for (size_t i = 0; i < drops.size(); ++i) {
+        if (drops[i].type_id == tid) return true;
+    }
+    auto& defaults = field_default_registry();
+    for (size_t i = 0; i < defaults.size(); ++i) {
+        if (defaults[i].type_id == tid) return true;
+    }
+    return false;
+}
+
+// 查找字段重命名: old_name → new_name (nullptr 表示无重命名)
+[[nodiscard]] inline const char* lookup_field_rename(int tid, std::string_view old_name) noexcept {
+    auto& reg = field_rename_registry();
+    for (size_t i = 0; i < reg.size(); ++i) {
+        if (reg[i].type_id == tid && std::string_view(reg[i].old_name) == old_name) {
+            return reg[i].new_name;
+        }
+    }
+    return nullptr;
+}
+
+// 检查字段是否应被丢弃
+[[nodiscard]] inline bool is_field_dropped(int tid, std::string_view name) noexcept {
+    auto& reg = field_drop_registry();
+    for (size_t i = 0; i < reg.size(); ++i) {
+        if (reg[i].type_id == tid && std::string_view(reg[i].field_name) == name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+} // namespace detail
+
+// 注册字段重命名
+template<typename T>
+void register_field_rename(const char* old_name, const char* new_name) noexcept {
+    int tid = type_id::get_type_id<T>();
+    auto& reg = detail::field_rename_registry();
+    for (size_t i = 0; i < reg.size(); ++i) {
+        if (reg[i].type_id == tid && std::string_view(reg[i].old_name) == old_name) {
+            reg[i].new_name = new_name;
+            return;
+        }
+    }
+    reg.push_back({tid, old_name, new_name});
+}
+
+// 注册字段丢弃 (加载时跳过)
+template<typename T>
+void register_field_drop(const char* field_name) noexcept {
+    int tid = type_id::get_type_id<T>();
+    auto& reg = detail::field_drop_registry();
+    for (size_t i = 0; i < reg.size(); ++i) {
+        if (reg[i].type_id == tid && std::string_view(reg[i].field_name) == field_name) {
+            return;
+        }
+    }
+    reg.push_back({tid, field_name});
+}
+
+// 注册字段默认值 (缺失时注入, default_json 为 JSON 值片段)
+template<typename T>
+void register_field_default(const char* field_name, std::string default_json) noexcept {
+    int tid = type_id::get_type_id<T>();
+    auto& reg = detail::field_default_registry();
+    for (size_t i = 0; i < reg.size(); ++i) {
+        if (reg[i].type_id == tid && std::string_view(reg[i].field_name) == field_name) {
+            reg[i].default_json = std::move(default_json);
+            return;
+        }
+    }
+    reg.push_back({tid, field_name, std::move(default_json)});
+}
+
+// 应用字段 schema: 无注册时返回原字符串 (零开销快速路径)
+[[nodiscard]] inline std::string apply_field_schema(int tid, std::string_view json) noexcept {
+    if (!detail::has_field_schema(tid)) {
+        return std::string(json);
+    }
+
+    json_reader r(json);
+    if (!r.enter_object()) {
+        return std::string(json);
+    }
+
+    json_writer w;
+    w.begin_object();
+
+    // 记录已出现字段名, 用于后续默认值注入判断
+    dense<std::string_view> seen_fields;
+
+    std::string_view key;
+    while (!(key = r.next_key()).empty()) {
+        if (detail::is_field_dropped(tid, key)) {
+            r.skip_value();
+            continue;
+        }
+        const char* new_name = detail::lookup_field_rename(tid, key);
+        std::string_view out_name = new_name ? std::string_view(new_name) : key;
+
+        std::string_view raw = r.read_raw_value();
+        w.key(std::string(out_name));
+        w.raw_value(raw);
+        seen_fields.push_back(out_name);
+    }
+
+    // #C2 注入缺失字段的默认值
+    auto& defaults = detail::field_default_registry();
+    for (size_t i = 0; i < defaults.size(); ++i) {
+        if (defaults[i].type_id != tid) continue;
+        bool found = false;
+        for (size_t j = 0; j < seen_fields.size(); ++j) {
+            if (seen_fields[j] == defaults[i].field_name) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            w.key(defaults[i].field_name);
+            w.raw_value(defaults[i].default_json);
+        }
+    }
+
+    w.end_object();
+    return w.take();
 }

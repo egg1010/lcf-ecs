@@ -35,8 +35,9 @@ target_compile_definitions(my_target PRIVATE LCF_MINIMAL_STACK=1)
 | 宏 | 说明 |
 |------|------|
 | \`VOID_ANY_ENABLE_SSO\` | 启用 void_any 小对象存储（SSO），小对象内联存储 |
-| \`VOID_ANY_USE_LAYERED_ALLOCATOR\` | 启用分层分配器：小对象（≤128B）走 slab，大对象走 TLSF |
+| \`VOID_ANY_USE_LAYERED_ALLOCATOR\` | 启用分层分配器，堆路径走 \`memory::layered_allocator\` |
 | \`VOID_ANY_SSO_NOT_ENABLED\` | 禁用 SSO（与 \`VOID_ANY_ENABLE_SSO\` 互斥） |
+| \`VOID_ANY_LAYERED_ALLOCATOR_NOT_ENABLED\` | 禁用分层分配器，堆路径使用 \`std::malloc\`/\`std::free\` |
 
 ### 13.3 反射模块配置（\`config/reflect_config.hpp\`）
 
@@ -59,19 +60,13 @@ target_compile_definitions(my_target PRIVATE LCF_MINIMAL_STACK=1)
 
 ### 13.4 utf8pp 内存分配器配置（\`config/utf8pp_config.hpp\`）
 
-\`utf8pp\` 已实现完整内存分配架构（SSO + 3 级增长 + 堆管理）。默认关闭，堆路径使用 \`std::malloc/std::free\`；启用后堆路径接入项目分配器。
+\`utf8pp\` 堆路径可接入项目分层分配器 \`memory::layered_allocator\`。
 
-| 宏 | 默认值 | 说明 |
-|------|--------|------|
-| \`UTF8PP_ENABLE_ALLOCATOR\` | \`0\` | \`1\` 启用项目分配器接入 utf8pp 堆路径 |
-| \`UTF8PP_ALLOCATOR_TYPE\` | \`UTF8PP_ALLOC_MEMORY_POOL\` | 启用时的分配器类型：\`UTF8PP_ALLOC_MEMORY_POOL\`（TLSF 内存池）/ \`UTF8PP_ALLOC_LAYERED\`（分层分配器：小对象 slab + 大对象 TLSF） |
-
-\`\`\`cmake
-# 启用 utf8pp 内存池
-target_compile_definitions(my_target PRIVATE UTF8PP_ENABLE_ALLOCATOR=1)
-
-# 启用分层分配器
-target_compile_definitions(my_target PRIVATE UTF8PP_ENABLE_ALLOCATOR=1 UTF8PP_ALLOCATOR_TYPE=UTF8PP_ALLOC_LAYERED)
+\`\`\`cpp
+// 选项 1: 禁用分层分配器, 堆路径使用 std::malloc/std::free
+// #define UTF8PP_LAYERED_ALLOCATOR_NOT_ENABLED
+// 选项 2: 启用分层分配器 (默认)
+#define UTF8PP_USE_LAYERED_ALLOCATOR
 \`\`\`
 
 ### 14.4 配置示例
@@ -79,7 +74,7 @@ target_compile_definitions(my_target PRIVATE UTF8PP_ENABLE_ALLOCATOR=1 UTF8PP_AL
 \`\`\`cpp
 // config/void_any_config.hpp
 
-// 启用分层分配器（小对象走 slab, 大对象走 TLSF）
+// 启用分层分配器
 #define VOID_ANY_USE_LAYERED_ALLOCATOR
 
 // 启用小对象存储

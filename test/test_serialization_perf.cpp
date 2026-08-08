@@ -1,7 +1,7 @@
 // test_serialization_perf.cpp - ECS 序列化性能测试
 #include "include/serialization/serialization.hpp"
-#include "include/part/json_writer.hpp"
-#include "include/part/json_reader.hpp"
+#include "include/part/codec/json_writer.hpp"
+#include "include/part/codec/json_reader.hpp"
 #include "test_common.hpp"
 #include <string>
 
@@ -56,7 +56,7 @@ static void bench_json_writer_basic(size_t count)
         w.key("arr").begin_array().value(1).value(2).value(3).end_array();
         w.end_object();
         lcf_sink(w.size());
-        total += t.elapsed_ms();
+        total += t.elapsed_milliseconds();
     }
     print_perf("json_writer (基础对象)", count, total);
 }
@@ -84,7 +84,7 @@ static void bench_json_reader_basic(size_t count)
             }
             else r.skip_value();
         }
-        total += t.elapsed_ms();
+        total += t.elapsed_milliseconds();
     }
     print_perf("json_reader (基础对象)", count, total);
 }
@@ -104,7 +104,7 @@ static void bench_save_trivial(size_t entity_count, size_t iter_count)
     {
         timer t;
         serialization(mgr).save_to_string<Vec3>(json);
-        total += t.elapsed_ms();
+        total += t.elapsed_milliseconds();
     }
     lcf_sink(json.size());
     print_perf("save<Vec3> (" + std::to_string(entity_count) + " 实体)", iter_count, total);
@@ -128,7 +128,7 @@ static void bench_load_trivial(size_t entity_count, size_t iter_count)
         manager mgr2;
         timer t;
         serialization(mgr2).load_from_string<Vec3>(json);
-        total += t.elapsed_ms();
+        total += t.elapsed_milliseconds();
     }
     print_perf("load<Vec3> (" + std::to_string(entity_count) + " 实体)", iter_count, total);
 }
@@ -148,7 +148,7 @@ static void bench_save_json_method(size_t entity_count, size_t iter_count)
     {
         timer t;
         serialization(mgr).save_to_string<Hp>(json);
-        total += t.elapsed_ms();
+        total += t.elapsed_milliseconds();
     }
     lcf_sink(json.size());
     print_perf("save<Hp> (" + std::to_string(entity_count) + " 实体)", iter_count, total);
@@ -172,7 +172,7 @@ static void bench_load_json_method(size_t entity_count, size_t iter_count)
         manager mgr2;
         timer t;
         serialization(mgr2).load_from_string<Hp>(json);
-        total += t.elapsed_ms();
+        total += t.elapsed_milliseconds();
     }
     print_perf("load<Hp> (" + std::to_string(entity_count) + " 实体)", iter_count, total);
 }
@@ -195,7 +195,7 @@ static void bench_round_trip_multi(size_t entity_count, size_t iter_count)
         timer t;
         serialization(mgr).save_to_string<Vec3, Hp>(json);
         serialization(mgr2).load_from_string<Vec3, Hp>(json);
-        total += t.elapsed_ms();
+        total += t.elapsed_milliseconds();
     }
     lcf_sink(json.size());
     print_perf("round_trip<Vec3,Hp> (" + std::to_string(entity_count) + " 实体)", iter_count, total);
@@ -216,7 +216,7 @@ static void bench_json_writer_large_array(size_t count)
         }
         w.end_array();
         lcf_sink(w.size());
-        total += t.elapsed_ms();
+        total += t.elapsed_milliseconds();
     }
     print_perf("json_writer 10000 整数数组", count, total);
 }
@@ -244,7 +244,7 @@ static void bench_json_reader_large_array(size_t count)
         {
             sum += r.read_int32();
         }
-        total += t.elapsed_ms();
+        total += t.elapsed_milliseconds();
     }
     lcf_sink(sum);
     print_perf("json_reader 10000 整数数组", count, total);
@@ -268,7 +268,7 @@ static void bench_extreme_writer_1m_ints(size_t count)
         }
         w.end_array();
         lcf_sink(w.size());
-        total += t.elapsed_ms();
+        total += t.elapsed_milliseconds();
     }
     print_perf("writer 100万 int", count, total);
 }
@@ -290,7 +290,7 @@ static void bench_extreme_reader_1m_ints(size_t count)
         json_reader r(json);
         r.enter_array();
         while (r.next_element()) sum += r.read_int32();
-        total += t.elapsed_ms();
+        total += t.elapsed_milliseconds();
     }
     lcf_sink(sum);
     print_perf("reader 100万 int", count, total);
@@ -317,7 +317,7 @@ static void bench_extreme_writer_100k_objects(size_t count)
         }
         w.end_array();
         lcf_sink(w.size());
-        total += t.elapsed_ms();
+        total += t.elapsed_milliseconds();
     }
     print_perf("writer 10万 object", count, total);
 }
@@ -356,7 +356,7 @@ static void bench_extreme_reader_100k_objects(size_t count)
                 else r.skip_value();
             }
         }
-        total += t.elapsed_ms();
+        total += t.elapsed_milliseconds();
     }
     lcf_sink(sum);
     print_perf("reader 10万 object", count, total);
@@ -376,7 +376,7 @@ static void bench_extreme_writer_1mb_string(size_t count)
         w.key("data").value(big);
         w.end_object();
         lcf_sink(w.size());
-        total += t.elapsed_ms();
+        total += t.elapsed_milliseconds();
     }
     print_perf("writer 1MB string", count, total);
 }
@@ -408,7 +408,7 @@ static void bench_extreme_reader_1mb_string(size_t count)
             }
             else r.skip_value();
         }
-        total += t.elapsed_ms();
+        total += t.elapsed_milliseconds();
     }
     lcf_sink(len);
     print_perf("reader 1MB string", count, total);
@@ -434,7 +434,7 @@ static void bench_extreme_writer_deep_nesting(size_t count)
         w.end_object();
         for (int i = 0; i < 100; ++i) w.end_object();
         lcf_sink(w.size());
-        total += t.elapsed_ms();
+        total += t.elapsed_milliseconds();
     }
     print_perf("writer 100层嵌套", count, total);
 }
@@ -480,7 +480,7 @@ static void bench_extreme_reader_deep_nesting(size_t count)
         {
             r.exit_object();
         }
-        total += t.elapsed_ms();
+        total += t.elapsed_milliseconds();
     }
     lcf_sink(sum);
     print_perf("reader 100层嵌套", count, total);
@@ -504,7 +504,7 @@ static void bench_extreme_writer_1m_tiny_objects(size_t count)
         }
         w.end_array();
         lcf_sink(w.size());
-        total += t.elapsed_ms();
+        total += t.elapsed_milliseconds();
     }
     print_perf("writer 100万 tiny obj", count, total);
 }
@@ -525,7 +525,7 @@ static void bench_extreme_writer_floats(size_t count)
         }
         w.end_array();
         lcf_sink(w.size());
-        total += t.elapsed_ms();
+        total += t.elapsed_milliseconds();
     }
     print_perf("writer 10万 double", count, total);
 }
@@ -550,7 +550,7 @@ static void bench_extreme_reader_floats(size_t count)
         json_reader r(json);
         r.enter_array();
         while (r.next_element()) sum += r.read_double();
-        total += t.elapsed_ms();
+        total += t.elapsed_milliseconds();
     }
     lcf_sink(sum);
     print_perf("reader 10万 double", count, total);
@@ -575,7 +575,7 @@ static void bench_extreme_writer_escaped(size_t count)
         for (int i = 0; i < 100; ++i) w.value(escaped);
         w.end_array();
         lcf_sink(w.size());
-        total += t.elapsed_ms();
+        total += t.elapsed_milliseconds();
     }
     print_perf("writer 转义密集 (100个)", count, total);
 }
@@ -607,7 +607,7 @@ static void bench_extreme_reader_escaped(size_t count)
             std::string s = r.read_string();
             len = s.size();
         }
-        total += t.elapsed_ms();
+        total += t.elapsed_milliseconds();
     }
     lcf_sink(len);
     print_perf("reader 转义密集 (100个)", count, total);
@@ -645,7 +645,7 @@ static void bench_extreme_reader_tolerant(size_t count)
             }
             else r.skip_value();
         }
-        total += t.elapsed_ms();
+        total += t.elapsed_milliseconds();
     }
     lcf_sink(sum);
     print_perf("reader 容忍模式", count, total);

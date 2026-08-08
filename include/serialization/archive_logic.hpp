@@ -3,7 +3,7 @@
 // 通过 archive_writer/reader 抽象接口操作, 各格式编码器各自实现接口
 #pragma once
 
-#include "../part/archive_codec.hpp"
+#include "../part/codec/archive_codec.hpp"
 #include "archive_types.hpp"
 #include "../component.hpp"
 #include "../part/operating_message.hpp"

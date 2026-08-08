@@ -1,7 +1,7 @@
 // binary_reader.hpp - 原生二进制读取器
 #pragma once
 
-#include "safety.hpp"
+#include "../safety.hpp"
 #include <cstdint>
 #include <cstring>
 #include <string>

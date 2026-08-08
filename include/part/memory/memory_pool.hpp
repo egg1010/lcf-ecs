@@ -1,12 +1,16 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <new>
 #include <type_traits>
 #include <bit>
 #include <array>
-#include "dense.hpp"
-#include "force_inline.hpp"
+#include "../dense.hpp"
+#include "oom_handler.hpp"
+#include "../force_inline.hpp"
+
+namespace memory {
 
 struct memory_block
 {
@@ -59,8 +63,8 @@ static_assert(!std::is_trivially_copyable_v<memory_block>,
 struct pool_stats
 {
     size_t total_allocated;
-    size_t total_used;            // 含 header
-    size_t total_free;            // 含 header
+    size_t total_used;            // 已使用字节
+    size_t total_free;            // 空闲字节
     size_t free_block_count;
     size_t max_contiguous_free;
     double fragmentation;         // 碎片率 [0,1]
@@ -69,7 +73,7 @@ struct pool_stats
 class memory_pool
 {
 private:
-    // chunk 预分配池: 4 档 LIFO, 缓存释放的 chunk 避免 ::operator delete/new
+    // chunk 预分配池
     struct chunk_pool
     {
         static constexpr size_t TIERS = 4;
@@ -102,8 +106,14 @@ private:
             size_t tier = tier_index(min_size);
             if (tier >= TIERS) [[unlikely]]
             {
+                // 超大块直接向 OS 申请
                 actual_size = min_size;
-                return static_cast<uint8_t*>(::operator new(min_size));
+                uint8_t* p = static_cast<uint8_t*>(::operator new(min_size, std::nothrow));
+                if (!p) [[unlikely]]
+                {
+                    handle_oom(min_size, "memory_pool::chunk_pool::take(oversize)");
+                }
+                return p;
             }
             node* n = free_lists_[tier];
             if (n) [[likely]]
@@ -114,7 +124,12 @@ private:
                 return reinterpret_cast<uint8_t*>(n);
             }
             actual_size = TIER_SIZES[tier];
-            return static_cast<uint8_t*>(::operator new(TIER_SIZES[tier]));
+            uint8_t* p = static_cast<uint8_t*>(::operator new(TIER_SIZES[tier], std::nothrow));
+            if (!p) [[unlikely]]
+            {
+                handle_oom(TIER_SIZES[tier], "memory_pool::chunk_pool::take");
+            }
+            return p;
         }
 
         void return_chunk(uint8_t* data, size_t size) noexcept
@@ -171,14 +186,12 @@ private:
         }
     };
 
-    // 块头: 16 字节
     struct alignas(16) block_header
     {
         size_t size_;                 // 含 in_use 标志
         block_header* prev_physical_;
     };
 
-    // 空闲块链表节点
     struct free_node
     {
         block_header* next_;
@@ -251,18 +264,15 @@ private:
     std::array<uint32_t, FL_MAX> sl_bitmaps_;
     size_t total_allocated_;
     size_t total_used_;
-    size_t free_block_count_;   // 增量维护: free_lists + small_cache + wilderness 的空闲块总数
+    size_t peak_used_{0};
+    size_t free_block_count_;   // 空闲块总数
     size_t chunk_size_;
     chunk_pool chunk_pool_;
 
-    // 小块缓存: 16 个 size class (16-256B), LIFO 单链表
     static constexpr size_t SMALL_CLASS_COUNT = 16;
     static constexpr size_t SMALL_MAX_SIZE = 256;
-    static constexpr size_t SMALL_CACHE_MAX = 1 << 20;
     std::array<void*, SMALL_CLASS_COUNT> small_heads_{};
-    std::array<uint32_t, SMALL_CLASS_COUNT> small_counts_{};
 
-    // wilderness: 上次 split 的剩余块, 不在 free list 中
     block_header* wilderness_ = nullptr;
 
     [[nodiscard]] static constexpr size_t small_class_index(size_t aligned_size) noexcept
@@ -276,8 +286,8 @@ private:
         {
             size_t w_fl, w_sl;
             size_to_index(block_size(wilderness_), w_fl, w_sl);
-            add_to_free_list(wilderness_, w_fl, w_sl); // ++free_block_count_
-            wilderness_ = nullptr;                      // wilderness_ 块转入 free_list, 净不变
+            add_to_free_list(wilderness_, w_fl, w_sl);
+            wilderness_ = nullptr;
             --free_block_count_;
         }
 
@@ -287,13 +297,12 @@ private:
             {
                 void* ptr = small_heads_[idx];
                 small_heads_[idx] = *static_cast<void**>(ptr);
-                --small_counts_[idx];
-                --free_block_count_; // small_cache 块被取出, 将通过 merge 进入 free_list
+                --free_block_count_;
 
                 uint8_t* bp = static_cast<uint8_t*>(ptr) - HEADER_SIZE;
                 block_header* block = reinterpret_cast<block_header*>(bp);
                 set_in_use(block, false);
-                merge_adjacent_blocks(block); // 内部 add_to_free_list 会 ++
+                merge_adjacent_blocks(block);
             }
         }
     }
@@ -349,7 +358,6 @@ private:
         ++free_block_count_;
     }
 
-    // 合并相邻空闲块
     [[gnu::noinline]] void merge_adjacent_blocks(block_header* block) noexcept
     {
         uint8_t* next_block_ptr = reinterpret_cast<uint8_t*>(block) + HEADER_SIZE + block_size(block);
@@ -360,7 +368,7 @@ private:
             if (next_block == wilderness_)
             {
                 wilderness_ = nullptr;
-                --free_block_count_; // wilderness_ 被合并
+                --free_block_count_;
             }
             else
             {
@@ -384,7 +392,7 @@ private:
                 if (prev_block == wilderness_)
                 {
                     wilderness_ = nullptr;
-                    --free_block_count_; // wilderness_ 被合并
+                    --free_block_count_;
                 }
                 else
                 {
@@ -432,7 +440,7 @@ private:
         else
         {
             wilderness_ = header;
-            ++free_block_count_; // 新 chunk 的 wilderness_
+            ++free_block_count_;
         }
 
         // 二分查找插入位置, 保持按地址排序
@@ -509,7 +517,6 @@ public:
 
         size = (size + ALIGNMENT - 1) & ~(ALIGNMENT - 1);
 
-        // 小块缓存
         if (size <= SMALL_MAX_SIZE) [[likely]]
         {
             size_t idx = small_class_index(size);
@@ -517,9 +524,12 @@ public:
             if (p) [[likely]]
             {
                 small_heads_[idx] = *static_cast<void**>(p);
-                --small_counts_[idx];
                 total_used_ += size + HEADER_SIZE;
-                --free_block_count_; // small_cache 块被取出
+                if (total_used_ > peak_used_) [[unlikely]]
+                {
+                    peak_used_ = total_used_;
+                }
+                --free_block_count_;
                 return p;
             }
         }
@@ -542,25 +552,31 @@ public:
                     wilderness_ = new_block;
                     block->size_ = size | IN_USE_FLAG;
                     total_used_ += size + HEADER_SIZE;
-                    // wilderness_ 块数不变: 原 wilderness_→in_use, 新 wilderness_ 替代
+                    if (total_used_ > peak_used_) [[unlikely]]
+                    {
+                        peak_used_ = total_used_;
+                    }
                 }
                 else
                 {
                     wilderness_ = nullptr;
                     set_in_use(block, true);
                     total_used_ += wsize + HEADER_SIZE;
-                    --free_block_count_; // wilderness_ 被使用
+                    if (total_used_ > peak_used_) [[unlikely]]
+                    {
+                        peak_used_ = total_used_;
+                    }
+                    --free_block_count_;
                 }
                 return reinterpret_cast<uint8_t*>(block) + HEADER_SIZE;
             }
             size_t w_fl, w_sl;
             size_to_index(wsize, w_fl, w_sl);
-            add_to_free_list(wilderness_, w_fl, w_sl); // ++free_block_count_
-            wilderness_ = nullptr;                      // --free_block_count_ (净不变)
+            add_to_free_list(wilderness_, w_fl, w_sl);
+            wilderness_ = nullptr;
             --free_block_count_;
         }
 
-        // TLSF 路径
         size_t fl, sl;
         size_to_index(size, fl, sl);
 
@@ -582,7 +598,7 @@ public:
                 bool has_cached = false;
                 for (size_t i = 0; i < SMALL_CLASS_COUNT; ++i)
                 {
-                    if (small_counts_[i])
+                    if (small_heads_[i])
                     {
                         has_cached = true;
                         break;
@@ -609,6 +625,10 @@ public:
 
         set_in_use(block, true);
         total_used_ += block_size(block) + HEADER_SIZE;
+        if (total_used_ > peak_used_) [[unlikely]]
+        {
+            peak_used_ = total_used_;
+        }
         return reinterpret_cast<uint8_t*>(block) + HEADER_SIZE;
     }
 
@@ -630,22 +650,16 @@ public:
 
         size_t bsize = block_size(block);
 
-        // 小块缓存
         if (bsize <= SMALL_MAX_SIZE) [[likely]]
         {
             size_t idx = small_class_index(bsize);
-            if (small_counts_[idx] < SMALL_CACHE_MAX) [[likely]]
-            {
-                *static_cast<void**>(ptr) = small_heads_[idx];
-                small_heads_[idx] = ptr;
-                ++small_counts_[idx];
-                total_used_ -= bsize + HEADER_SIZE;
-                ++free_block_count_; // small_cache 块放入
-                return;
-            }
+            *static_cast<void**>(ptr) = small_heads_[idx];
+            small_heads_[idx] = ptr;
+            total_used_ -= bsize + HEADER_SIZE;
+            ++free_block_count_;
+            return;
         }
 
-        // TLSF 路径
         set_in_use(block, false);
         total_used_ -= bsize + HEADER_SIZE;
 
@@ -679,13 +693,57 @@ public:
             size_t idx = small_class_index(aligned);
             *static_cast<void**>(ptr) = small_heads_[idx];
             small_heads_[idx] = ptr;
-            ++small_counts_[idx];
             total_used_ -= aligned + HEADER_SIZE;
-            ++free_block_count_; // small_cache 块放入
+            ++free_block_count_;
             return;
         }
 
         deallocate(ptr);
+    }
+
+    [[nodiscard]] FORCE_INLINE
+    void* allocate_zeroed(size_t size) noexcept
+    {
+        void* p = allocate(size);
+        if (p) [[likely]]
+        {
+            std::memset(p, 0, size);
+        }
+        return p;
+    }
+
+    // align > ALIGNMENT 时分配 size+align, 手动对齐, padding 前一个 sizeof(void*) 存原始指针
+    [[nodiscard]] void* allocate_aligned(size_t size, size_t align) noexcept
+    {
+        if (size == 0 || align == 0) [[unlikely]]
+        {
+            return nullptr;
+        }
+        if (align <= ALIGNMENT) [[likely]]
+        {
+            return allocate(size);
+        }
+        size_t raw_size = size + align + sizeof(void*);
+        void* raw = allocate(raw_size);
+        if (!raw) [[unlikely]]
+        {
+            return nullptr;
+        }
+        uintptr_t base = reinterpret_cast<uintptr_t>(raw) + sizeof(void*);
+        uintptr_t aligned = (base + align - 1) & ~(align - 1);
+        void* user = reinterpret_cast<void*>(aligned);
+        *(static_cast<void**>(user) - 1) = raw;
+        return user;
+    }
+
+    void deallocate_aligned(void* p) noexcept
+    {
+        if (!p) [[unlikely]]
+        {
+            return;
+        }
+        void* raw = *(static_cast<void**>(p) - 1);
+        deallocate(raw);
     }
 
     // 模板化 sized 路径: 编译期常量传播, 消除对齐计算与小块分支
@@ -707,7 +765,6 @@ public:
             if (p) [[likely]]
             {
                 small_heads_[Idx] = *static_cast<void**>(p);
-                --small_counts_[Idx];
                 total_used_ += Aligned + HEADER_SIZE;
                 return p;
             }
@@ -731,7 +788,6 @@ public:
             constexpr size_t Idx = small_class_index(Aligned);
             *static_cast<void**>(ptr) = small_heads_[Idx];
             small_heads_[Idx] = ptr;
-            ++small_counts_[Idx];
             total_used_ -= Aligned + HEADER_SIZE;
             return;
         }
@@ -763,8 +819,96 @@ public:
         deallocate_sized<sizeof(T)>(ptr);
     }
 
+    // 原位重分配: 检查物理相邻的下一块是否空闲且可合并
+    [[nodiscard]] FORCE_INLINE
+    bool reallocate_inplace(void* ptr, size_t old_size, size_t new_size) noexcept
+    {
+        if (!ptr) [[unlikely]]
+        {
+            return false;
+        }
+        size_t old_aligned = (old_size + ALIGNMENT - 1) & ~(ALIGNMENT - 1);
+        size_t new_aligned = (new_size + ALIGNMENT - 1) & ~(ALIGNMENT - 1);
+        if (new_aligned <= old_aligned)
+        {
+            return true;
+        }
+        uint8_t* block_ptr = reinterpret_cast<uint8_t*>(ptr) - HEADER_SIZE;
+        block_header* block = reinterpret_cast<block_header*>(block_ptr);
+        size_t bsize = block_size(block);
+        uint8_t* next_ptr = block_ptr + HEADER_SIZE + bsize;
+        block_header* next_block = reinterpret_cast<block_header*>(next_ptr);
+        if (!is_in_use(next_block) && bsize + HEADER_SIZE + block_size(next_block) >= new_aligned)
+        {
+            if (next_block == wilderness_)
+            {
+                wilderness_ = nullptr;
+                --free_block_count_;
+            }
+            else
+            {
+                size_t nf, ns;
+                size_to_index(block_size(next_block), nf, ns);
+                remove_from_free_list(next_block, nf, ns);
+            }
+            set_block_size(block, bsize + HEADER_SIZE + block_size(next_block));
+            uint8_t* after_ptr = reinterpret_cast<uint8_t*>(block) + HEADER_SIZE + block_size(block);
+            block_header* after_block = reinterpret_cast<block_header*>(after_ptr);
+            after_block->prev_physical_ = block;
+            if (block_size(block) >= new_aligned + MIN_SPLIT)
+            {
+                split_block(block, new_aligned);
+            }
+            total_used_ += block_size(block) + HEADER_SIZE - bsize - HEADER_SIZE;
+            return true;
+        }
+        return false;
+    }
+
+    // 尝试原位, 失败则分配+拷贝+释放
+    [[nodiscard]] FORCE_INLINE
+    void* reallocate(void* ptr, size_t old_size, size_t new_size) noexcept
+    {
+        if (new_size == 0) [[unlikely]]
+        {
+            deallocate(ptr, old_size);
+            return nullptr;
+        }
+        if (!ptr) [[unlikely]]
+        {
+            return allocate(new_size);
+        }
+        if (reallocate_inplace(ptr, old_size, new_size))
+        {
+            return ptr;
+        }
+        void* new_ptr = allocate(new_size);
+        if (!new_ptr) [[unlikely]]
+        {
+            return nullptr;
+        }
+        size_t copy_size = old_size < new_size ? old_size : new_size;
+        std::memcpy(new_ptr, ptr, copy_size);
+        deallocate(ptr, old_size);
+        return new_ptr;
+    }
+
     [[nodiscard]] constexpr size_t total_allocated() const noexcept { return total_allocated_; }
     [[nodiscard]] constexpr size_t total_used() const noexcept { return total_used_; }
+
+    [[nodiscard]] size_t allocation_size(const void* ptr) const noexcept
+    {
+        if (!ptr) [[unlikely]]
+        {
+            return 0;
+        }
+        const uint8_t* block_ptr = static_cast<const uint8_t*>(ptr) - HEADER_SIZE;
+        const block_header* block = reinterpret_cast<const block_header*>(block_ptr);
+        return block_size(block);
+    }
+
+    [[nodiscard]] constexpr size_t peak_used() const noexcept { return peak_used_; }
+
     [[nodiscard]] constexpr size_t chunk_size() const noexcept { return chunk_size_; }
     [[nodiscard]] constexpr bool empty() const noexcept { return total_used_ == 0; }
 
@@ -805,10 +949,10 @@ public:
         s.total_allocated = total_allocated_;
         s.total_used = total_used_;
         s.total_free = (total_allocated_ >= total_used_) ? (total_allocated_ - total_used_) : 0;
-        s.free_block_count = free_block_count_; // O(1) 增量维护
+        s.free_block_count = free_block_count_;
         s.max_contiguous_free = 0;
 
-        // 仅遍历求 max_contiguous_free (用于 fragmentation)
+        // 遍历求 max_contiguous_free (用于 fragmentation)
         for (size_t fl = 0; fl < FL_MAX; ++fl)
         {
             if (!(fl_bitmap_ & (1U << fl)))
@@ -834,7 +978,6 @@ public:
             }
         }
 
-        // wilderness 可能是最大连续空闲块
         if (wilderness_)
         {
             size_t ws = block_size(wilderness_);
@@ -876,7 +1019,6 @@ public:
             }
         }
 
-        // 遍历小块缓存
         for (size_t idx = 0; idx < SMALL_CLASS_COUNT; ++idx)
         {
             void* p = small_heads_[idx];
@@ -890,7 +1032,6 @@ public:
             }
         }
 
-        // 遍历 wilderness
         if (wilderness_)
         {
             fn(reinterpret_cast<void*>(const_cast<uint8_t*>(
@@ -915,7 +1056,6 @@ public:
             return;
         }
 
-        // 刷新小块缓存, 使缓存块参与合并和回收
         flush_cache();
 
         for (auto it = memory_chunks_.begin(); it != memory_chunks_.end(); )
@@ -963,11 +1103,12 @@ public:
         fl_bitmap_ = 0;
         sl_bitmaps_.fill(0);
         small_heads_.fill(nullptr);
-        small_counts_.fill(0);
         wilderness_ = nullptr;
         total_allocated_ = 0;
         total_used_ = 0;
         free_block_count_ = 0;
     }
 };
+
+} // namespace memory
 

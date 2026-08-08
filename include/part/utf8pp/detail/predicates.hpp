@@ -1,4 +1,4 @@
-// predicates.hpp - 谓词
+// 谓词
 
     [[nodiscard]] bool is_all_alpha() const noexcept
     {
@@ -49,7 +49,7 @@
         return true;
     }
 
-    // === 串级 Script 判断 ===
+    // === 串级脚本判断 ===
     // 返回首字符的脚本 (空串返回 unknown; 首字符为组合标记时为 inherited)
     [[nodiscard]] script script_of() const noexcept
     {
@@ -70,7 +70,7 @@
         }
         return true;
     }
-    // 是否包含至少一个指定脚本的码点
+    // 至少一个码点属于指定脚本
     [[nodiscard]] bool contains_script(script s) const noexcept
     {
         ensure_cp_info();

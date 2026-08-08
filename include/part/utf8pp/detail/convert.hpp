@@ -1,14 +1,19 @@
-// convert.hpp - 转换
+// 转换
 
     [[nodiscard]] std::string to_std_string() const { return std::string(data_ ? data_ : "", byte_size_); }
     [[nodiscard]] std::u32string to_u32string() const
     {
         ensure_cp_info();
         std::u32string result;
+        if (cp_count_ == 0) return result;
         result.reserve(cp_count_);
-        for (size_t i = 0; i < cp_count_; ++i)
+        // 无校验快速解码: utf8pp 数据保证合法
+        const uint8_t* p = reinterpret_cast<const uint8_t*>(data_);
+        const uint8_t* end = p + byte_size_;
+        while (p < end)
         {
-            result.push_back(static_cast<char32_t>(cp_at_byte(cp_byte_offset(i))));
+            result.push_back(detail_utf8::utf8_decode_unchecked(p));
+            p += detail_utf8::k_utf8_seq_len[*p];
         }
         return result;
     }
@@ -17,13 +22,13 @@
         return data_ ? std::u8string(reinterpret_cast<const char8_t*>(data_), byte_size_)
                      : std::u8string();
     }
-    // 转换为 utf8_view (零拷贝, 指向内部缓冲区; 生命周期受 *this 限制)
+    // 零拷贝视图: 指向内部缓冲区, 生命周期受 *this 限制
     [[nodiscard]] utf8_view to_utf8_view() const noexcept
     {
         return utf8_view(data_ ? data_ : "", byte_size_);
     }
 
-    // === 字符串 → 数字 (不抛异常, 转换失败返回 0/0.0; pos 输出消费的字符数) ===
+    // === 字符串转数字 (不抛异常, 失败返回 0; pos 输出消费字符数) ===
     // 与 std::stoi/stol/stof 等价但无异常, base 仅整数有效 (2/8/10/16)
     [[nodiscard]] int to_int(size_t* pos = nullptr, int base = 10) const
     {
@@ -70,7 +75,7 @@
         return v;
     }
 
-    // std 风格别名 (便于 std::string 迁移)
+    // 风格别名 std (便于 std::string 迁移)
     [[nodiscard]] int         stoi(size_t* pos = nullptr, int base = 10) const { return to_int(pos, base); }
     [[nodiscard]] long        stol(size_t* pos = nullptr, int base = 10) const { return to_long(pos, base); }
     [[nodiscard]] long long   stoll(size_t* pos = nullptr, int base = 10) const { return to_ll(pos, base); }
@@ -81,7 +86,7 @@
     [[nodiscard]] long double stold(size_t* pos = nullptr) const { return to_long_double(pos); }
 
     // === 解析 (返回 bool 表示是否完全转换, 输出值到 out) ===
-    // 整数解析允许前导 +/- 与首尾空白; base∈{2,8,10,16}; 全串须为有效数字
+    // 整数允许前导 +/- 与首尾空白, base∈{2,8,10,16}, 全串须为有效数字
     [[nodiscard]] bool parse_int(int& out, int base = 10) const noexcept
     {
         long long v = 0;
@@ -112,10 +117,9 @@
         while (start < end && is_space_cp(cp_at_byte(cp_byte_offset(start)))) ++start;
         while (end > start && is_space_cp(cp_at_byte(cp_byte_offset(end - 1)))) --end;
         if (start >= end) return false;
-        // 取出字节范围
         size_t bstart = cp_byte_offset(start);
         size_t bend = (end < cp_count_) ? cp_byte_offset(end) : byte_size_;
-        // 构造临时 C 串 (源可能无 '\0', 复制到临时缓冲)
+        // 构造临时 C 串: 源可能无 '\0', 复制到临时缓冲
         char buf[64];
         char* p = buf;
         size_t len = bend - bstart;
@@ -215,7 +219,6 @@
         return true;
     }
 
-    // long double 严格解析
     [[nodiscard]] bool parse_long_double(long double& out) const noexcept
     {
         ensure_cp_info();
@@ -248,14 +251,14 @@
     }
 
     // === 内容判断 ===
-    // is_integer: 整数 (允许前导 +/-, 首尾空白; base 默认 10)
+    // 整数 (允许前导 +/-, 首尾空白, base 默认 10)
     [[nodiscard]] bool is_integer(int base = 10) const noexcept
     {
         long long v = 0;
         return parse_ll(v, base);
     }
 
-    // is_float: 浮点数 (允许 +/-/小数点/指数, 首尾空白; 不接受 inf/nan 之外的纯整数也算浮点)
+    // 浮点数 (允许 +/-/小数点/指数, 首尾空白)
     [[nodiscard]] bool is_float() const noexcept
     {
         ensure_cp_info();
@@ -264,7 +267,7 @@
         return parse_double(v);
     }
 
-    // is_number: 整数或浮点数
+    // 整数或浮点数
     [[nodiscard]] bool is_number() const noexcept
     {
         if (is_integer()) return true;
@@ -276,8 +279,7 @@
     [[nodiscard]] bool is_binary() const noexcept { return is_integer(2); }
     [[nodiscard]] bool is_octal() const noexcept  { return is_integer(8); }
 
-    // === 单码点字符分类 (公开静态; 完整 Unicode 覆盖 via unicode_data) ===
-    // 覆盖: Latin/Greek/Cyrillic/Armenian/Hebrew/Arabic/Indic/CJK/Hangul/Hiragana/Katakana 等
+    // === 单码点字符分类 (公开静态, 完整 Unicode 覆盖 via unicode_data) ===
     [[nodiscard]] static bool is_alpha(char32_t cp) noexcept
     {
         return unicode_data::is_alpha_cp(static_cast<uint32_t>(cp));
@@ -296,12 +298,12 @@
     }
     [[nodiscard]] static bool is_punct(char32_t cp) noexcept
     {
-        // ASCII 标点: ! " # $ % & ' ( ) * + , - . / : ; < = > ? @ [ \ ] ^ _ ` { | } ~
+        // 标点 ASCII: ! " # $ % & ' ( ) * + , - . / : ; < = > ? @ [ \ ] ^ _ ` { | } ~
         if ((cp >= U'!' && cp <= U'/') || (cp >= U':' && cp <= U'@') ||
             (cp >= U'[' && cp <= U'`') || (cp >= U'{' && cp <= U'~')) return true;
-        // Latin-1 标点 (¡ ¢ £ ¤ ¥ ¦ § ¨ © ª « ¬ ­ ® ¯ ° ± ² ³ ´ µ ¶ · ¸ ¹ º » ¼ ½ ¾ ¿)
+        // 标点 Latin-1 (¡ ¢ £ ¤ ¥ ¦ § ¨ © ª « ¬ ­ ® ¯ ° ± ² ³ ´ µ ¶ · ¸ ¹ º » ¼ ½ ¾ ¿)
         if (cp >= U'\u00A1' && cp <= U'\u00BF') return true;
-        // General Punctuation / CJK Symbols / 全角标点
+        // 通用标点 General Punctuation / CJK Symbols / 全角标点
         if (cp >= U'\u2000' && cp <= U'\u206F') return true;   // General Punctuation
         if (cp >= U'\u3000' && cp <= U'\u303F') return true;   // CJK Symbols and Punctuation
         if (cp >= U'\uFF01' && cp <= U'\uFF0F') return true;   // 全角 ASCII 标点
@@ -356,7 +358,6 @@
     {
         return unicode_data::cp_display_width(static_cast<uint32_t>(cp));
     }
-    // 单码点大小写转换 (完整 Unicode via unicode_data)
     [[nodiscard]] static char32_t to_lower_cp(char32_t cp) noexcept
     {
         return static_cast<char32_t>(unicode_data::to_lower_cp(static_cast<uint32_t>(cp)));
@@ -370,9 +371,9 @@
         return static_cast<char32_t>(unicode_data::to_title_cp(static_cast<uint32_t>(cp)));
     }
 
-    // === Unicode Script 判断 (UAX #24) ===
-    // 复用 unicode_data::script 枚举与查找表; 用于识别字符所属脚本 (中文/英文/日文等)
-    // (script 类型别名定义于 construct.hpp, 此处直接使用)
+    // === Unicode 脚本判断 (UAX #24) ===
+    // 复用 unicode_data::script 枚举与查找表
+    // 类型别名 script 定义于 construct.hpp, 此处直接使用
 
     [[nodiscard]] static script script_of(char32_t cp) noexcept
     {

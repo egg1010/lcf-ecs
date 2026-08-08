@@ -165,11 +165,11 @@ int main()
         print_item("SSO 短消息写入", om_sso.read_message().find("短消息") != std::string_view::npos);
         print_item("SSO 容量 == SSO_SIZE", om_sso.capacity() == 48);
 
-        // 溢出到 slab (48-256 字节)
+        // 溢出到堆 (> 48 字节)
         operating_message om_slab;
         om_slab.write_message(true, "这是一条超过SSO缓冲区大小的较长消息用于测试slab分配器溢出路径12345678901234567890");
-        print_item("slab 溢出消息写入", om_slab.read_message().size() > 48);
-        print_item("slab 溢出容量 >= 256", om_slab.capacity() >= 256);
+        print_item("溢出消息写入", om_slab.read_message().size() > 48);
+        print_item("溢出容量 > SSO_SIZE", om_slab.capacity() > 48);
 
         // 溢出到 large (> 256 字节)
         operating_message om_large;
@@ -786,10 +786,10 @@ int main()
             auto l = last(p, 5);
             print_item("last(n)", (l.size() == 5 && l[0] == 95 && l[4] == 99));
 
-            auto ff = first_fixed<int, 4>(p);
+            auto ff = first_fixed<4>(p);
             print_item("first_fixed<4>", (ff.size() == 4 && ff[0] == 0 && ff[3] == 3));
 
-            auto lf = last_fixed<int, 4>(p);
+            auto lf = last_fixed<4>(p);
             print_item("last_fixed<4>", (lf.size() == 4 && lf[0] == 96 && lf[3] == 99));
 
             // 越界处理
@@ -817,11 +817,11 @@ int main()
             print_item("strided_for_each (rt step)", sum == (0 + 96) * 25 / 2);
 
             int sum2 = 0;
-            strided_for_each<int, 4>(p, [&](int& v) { sum2 += v; });
+            strided_for_each<4>(p, [&](int& v) { sum2 += v; });
             print_item("strided_for_each<4> (ct step)", sum2 == sum);
 
             int sum3 = 0;
-            strided_for_each<int, 1>(p, [&](int& v) { sum3 += v; });
+            strided_for_each<1>(p, [&](int& v) { sum3 += v; });
             print_item("strided_for_each<1> fast path", sum3 == 4950);
 
             auto sv = strided_span_view(p, 0, 5, 10);
@@ -840,7 +840,7 @@ int main()
             print_item("transform_for_each (x2)", sum == 9900);
 
             int dst[100];
-            transform_to<int, int>(p, dst, 100, [](const int& v) -> int { return v + 1; });
+            transform_to(p, dst, 100, [](const int& v) -> int { return v + 1; });
             print_item("transform_to (+1)", (dst[0] == 1 && dst[99] == 100));
         }
 
@@ -907,19 +907,19 @@ int main()
         // G. 窗口与分块
         {
             int sum_w = 0;
-            for_each_window<int, 4>(p, [&](std::span<int, 4> w) { sum_w += w[0]; });
+            for_each_window<4>(p, [&](std::span<int, 4> w) { sum_w += w[0]; });
             // 窗口起点: 0..96, 97 个窗口
             print_item("for_each_window<4>", sum_w == (0 + 96) * 97 / 2);
 
             int sum_c = 0;
-            for_each_chunk<int, 4>(p, [&](std::span<int, 4> c) { sum_c += c[0]; });
+            for_each_chunk<4>(p, [&](std::span<int, 4> c) { sum_c += c[0]; });
             // 25 块, 起点 0,4,8,...,96
             print_item("for_each_chunk<4>", sum_c == (0 + 96) * 25 / 2);
 
-            auto ws = window_span<int, 4>(p, 50);
+            auto ws = window_span<4>(p, 50);
             print_item("window_span<4>(50)", (ws.size() == 4 && ws[0] == 50));
 
-            auto cs = chunk_span<int, 4>(p, 10);
+            auto cs = chunk_span<4>(p, 10);
             print_item("chunk_span<4>(10)", (cs.size() == 4 && cs[0] == 40));
         }
 
@@ -955,7 +955,7 @@ int main()
             print_item("for_each_zip (ptr)", sum_zip2 == 14850);
 
             int dst[100];
-            zip_with_to<int, int, int>(p, q.data(), dst, 100,
+            zip_with_to(p, q.data(), dst, 100,
                 [](const int& a, const int& b) -> int { return a + b; });
             print_item("zip_with_to", (dst[0] == 0 && dst[99] == 99 + 198));
 

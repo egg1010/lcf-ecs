@@ -1,8 +1,8 @@
 // reflect_bridge.hpp - 反射桥接: 自动序列化/反序列化 (支持嵌套对象/数组/枚举)
 #pragma once
 
-#include "../part/json_writer.hpp"
-#include "../part/json_reader.hpp"
+#include "../part/codec/json_writer.hpp"
+#include "../part/codec/json_reader.hpp"
 #include "../part/type_id.hpp"
 #include "../reflection/meta.hpp"
 #include "../reflection/query.hpp"

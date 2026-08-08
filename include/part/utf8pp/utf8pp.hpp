@@ -1,7 +1,6 @@
 #pragma once
 
-// utf8pp.hpp - utf8pp 字符串类 (拥有内存, SSO + 码点偏移缓存)
-// 实现拆分到 utf8pp/detail/*.hpp
+// 字符串类: 拥有内存, SSO + 码点偏移缓存, 实现拆分到 detail/*.hpp
 
 #include <cstdint>
 #include <cstddef>
@@ -19,30 +18,46 @@
 #include <iterator>
 #include <iostream>
 #include <limits>
-#include "force_inline.hpp"
-#include "dense.hpp"
+#include "../force_inline.hpp"
+#include "../dense.hpp"
 #include "utf8_codec.hpp"
 #include "utf8_view.hpp"
 #include "unicode_data.hpp"
-#include "../config/utf8pp_config.hpp"
+#include "../../config/utf8pp_config.hpp"
 
-#if UTF8PP_ENABLE_ALLOCATOR
-#include "memory_pool.hpp"
-#if UTF8PP_ALLOCATOR_TYPE == UTF8PP_ALLOC_LAYERED
-#include "layered_allocator.hpp"
-#endif
-#endif
+// 内存分配层: 启用时接入 layered_allocator, 否则回退 malloc/free
+#if defined(UTF8PP_USE_LAYERED_ALLOCATOR)
+#include "../memory/layered_allocator.hpp"
+#include <bit>
 
-// 内存分配层 (默认 std::malloc/std::free; 启用配置接入项目分配器)
-#if UTF8PP_ENABLE_ALLOCATOR
-#if UTF8PP_ALLOCATOR_TYPE == UTF8PP_ALLOC_LAYERED
-inline layered_allocator utf8pp_pool_{};
-#elif UTF8PP_ALLOCATOR_TYPE == UTF8PP_ALLOC_MEMORY_POOL
-inline memory_pool utf8pp_pool_{};
-#endif
+inline memory::layered_allocator utf8pp_pool_{};
+
+// 无分支 slab 定位: ≤128 按位宽分桶, >128 统一大块
+[[nodiscard]] static constexpr size_t utf8pp_slab_index(size_t n) noexcept
+{
+    if (n <= 128) return std::bit_width(n - 1) - 4;
+    return 4;
+}
+
 [[nodiscard]] FORCE_INLINE void* utf8pp_alloc(size_t n) noexcept { return utf8pp_pool_.allocate(n); }
+
+// 带大小释放: slab 定位 + owns 验证, slab 满时安全回退 big_pool
+FORCE_INLINE void utf8pp_free(void* p, size_t n) noexcept
+{
+    if (!p) [[unlikely]] return;
+    if (n > 128) { utf8pp_pool_.big_pool().soft_deallocate(p); return; }
+    size_t idx = utf8pp_slab_index(n);
+    if (utf8pp_pool_.slab(idx).owns(p)) [[likely]]
+    {
+        utf8pp_pool_.slab(idx).deallocate(p);
+        return;
+    }
+    // 满降级回退 big_pool
+    utf8pp_pool_.big_pool().soft_deallocate(p);
+}
+
+// 无大小释放: 地址扫描定位
 FORCE_INLINE void utf8pp_free(void* p) noexcept { return utf8pp_pool_.deallocate(p); }
-FORCE_INLINE void utf8pp_free(void* p, size_t n) noexcept { return utf8pp_pool_.deallocate(p, n); }
 #else
 [[nodiscard]] FORCE_INLINE void* utf8pp_alloc(size_t n) noexcept { return std::malloc(n); }
 FORCE_INLINE void utf8pp_free(void* p) noexcept { return std::free(p); }
@@ -52,16 +67,16 @@ FORCE_INLINE void utf8pp_free(void* p, size_t /*n*/) noexcept { return std::free
 class utf8pp
 {
 public:
-    #include "utf8pp/detail/iterators.hpp"
-    #include "utf8pp/detail/construct.hpp"
-    #include "utf8pp/detail/capacity.hpp"
-    #include "utf8pp/detail/modify.hpp"
-    #include "utf8pp/detail/search.hpp"
-    #include "utf8pp/detail/predicates.hpp"
-    #include "utf8pp/detail/convert.hpp"
-    #include "utf8pp/detail/string_ops.hpp"
-    #include "utf8pp/detail/unicode.hpp"
-    #include "utf8pp/detail/private.hpp"
+    #include "detail/iterators.hpp"
+    #include "detail/construct.hpp"
+    #include "detail/capacity.hpp"
+    #include "detail/modify.hpp"
+    #include "detail/search.hpp"
+    #include "detail/predicates.hpp"
+    #include "detail/convert.hpp"
+    #include "detail/string_ops.hpp"
+    #include "detail/unicode.hpp"
+    #include "detail/private.hpp"
 };
 
-#include "utf8pp/nonmember.hpp"
+#include "nonmember.hpp"

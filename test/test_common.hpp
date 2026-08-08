@@ -4,11 +4,11 @@
 
 #include "include/component.hpp"
 #include "include/part/void_any.hpp"
-#include "include/part/memory_pool.hpp"
+#include "include/part/memory/memory_pool.hpp"
 #include "include/part/class_pool.hpp"
-#include "include/part/arena_allocator.hpp"
-#include "include/part/slab_allocator.hpp"
-#include "include/part/layered_allocator.hpp"
+#include "include/part/memory/arena_allocator.hpp"
+#include "include/part/memory/slab_allocator.hpp"
+#include "include/part/memory/layered_allocator.hpp"
 #include "include/part/time.hpp"
 #include <iostream>
 #include <chrono>
@@ -21,6 +21,9 @@
 #include <array>
 #include <span>
 #include <cstring>
+
+// 内存分配器全部位于 memory 命名空间
+using namespace memory;
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -83,6 +86,20 @@ struct Mass {
 };
 
 // === 辅助工具 (timer 来自 time.hpp, 全局命名空间) ===
+
+// 简单统计结构 (替代旧 time.hpp 的 stats, 仅测试内部使用)
+struct stats {
+    double min = 0;
+    double max = 0;
+    double mean = 0;
+    double median = 0;
+    double p50 = 0;
+    double p90 = 0;
+    double p95 = 0;
+    double p99 = 0;
+    double stddev = 0;
+    size_t count = 0;
+};
 
 // 模块性能统计 (用于模块汇总与异常检查)
 namespace test_stats {

@@ -1,6 +1,6 @@
 #pragma once
 
-// operating_message.hpp - 操作消息 (SSO 缓冲 + slab 分配 + 错误码 + 位置追踪)
+// operating_message.hpp - 操作消息 (SSO 缓冲 + 堆扩容 + 错误码 + 位置追踪)
 // 无命名空间, 通用工具
 
 #include <string_view>
@@ -14,7 +14,6 @@
 #include <source_location>
 #include <iterator>
 #include "fnv1a.hpp"
-#include "slab_allocator.hpp"
 #include "force_inline.hpp"
 
 // 消息写入开关: Release 构建 (NDEBUG) 默认高性能零开销, Debug 构建默认写消息
@@ -66,13 +65,7 @@ inline constexpr uint16_t om_err_null_pointer      = static_cast<uint16_t>(fnv1a
 inline constexpr uint16_t om_err_capacity_exceeded = static_cast<uint16_t>(fnv1a_consteval("capacity_exceeded"));
 inline constexpr uint16_t om_err_not_found         = static_cast<uint16_t>(fnv1a_consteval("not_found"));
 inline constexpr uint16_t om_err_already_exists    = static_cast<uint16_t>(fnv1a_consteval("already_exists"));
-
-// slab 池 (256 字节块, 覆盖溢出消息)
-inline slab_allocator& om_slab_pool() noexcept
-{
-    static slab_allocator pool(256, 8, 64);
-    return pool;
-}
+inline constexpr uint16_t om_err_out_of_memory     = static_cast<uint16_t>(fnv1a_consteval("out_of_memory"));
 
 // 运行时格式串校验: 占位符数量匹配 + 基本语法合法
 // 不校验类型匹配 (如 {:f} 配 int), 类型错误仍可能触发 format_error
@@ -123,7 +116,6 @@ class operating_message
 {
 private:
     static constexpr size_t SSO_SIZE = 48;
-    static constexpr size_t SLAB_BLOCK = 256;
 
     // SSO 缓冲 + 堆指针 union
     union msg_storage
@@ -136,7 +128,6 @@ private:
     uint32_t size_{0};
     uint32_t capacity_{SSO_SIZE};
     bool switch_{true};
-    bool is_large_{false};
     uint8_t min_level_{static_cast<uint8_t>(msg_level::info)};
     uint16_t code_{0};
 
@@ -167,21 +158,13 @@ private:
     {
         if (!is_sso())
         {
-            if (is_large_)
-            {
-                ::operator delete(storage_.heap_ptr);
-            }
-            else
-            {
-                om_slab_pool().deallocate(storage_.heap_ptr);
-            }
+            ::operator delete(storage_.heap_ptr);
             storage_ = {};
             capacity_ = SSO_SIZE;
-            is_large_ = false;
         }
     }
 
-    // 扩容到 need 字节 (SSO → slab → large)
+    // 扩容到 need 字节 (SSO → 堆)
     void grow_to(size_t need) noexcept
     {
         if (need <= capacity_)
@@ -189,23 +172,8 @@ private:
             return;
         }
 
-        size_t new_cap;
-        bool new_large;
-        char* new_buf;
-
-        if (need > SLAB_BLOCK)
-        {
-            new_cap = need;
-            new_large = true;
-            new_buf = static_cast<char*>(::operator new(new_cap, std::nothrow));
-        }
-        else
-        {
-            new_cap = SLAB_BLOCK;
-            new_large = false;
-            new_buf = static_cast<char*>(om_slab_pool().allocate());
-        }
-
+        size_t new_cap = need;
+        char* new_buf = static_cast<char*>(::operator new(new_cap, std::nothrow));
         if (!new_buf)
         {
             std::abort();
@@ -220,7 +188,6 @@ private:
 
         storage_.heap_ptr = new_buf;
         capacity_ = static_cast<uint32_t>(new_cap);
-        is_large_ = new_large;
     }
 
     // 追加原始字节
@@ -456,14 +423,12 @@ public:
         , size_(other.size_)
         , capacity_(other.capacity_)
         , switch_(other.switch_)
-        , is_large_(other.is_large_)
         , min_level_(other.min_level_)
         , code_(other.code_)
     {
         other.storage_ = {};
         other.size_ = 0;
         other.capacity_ = SSO_SIZE;
-        other.is_large_ = false;
     }
 
     operating_message& operator=(operating_message&& other) noexcept
@@ -475,13 +440,11 @@ public:
             size_ = other.size_;
             capacity_ = other.capacity_;
             switch_ = other.switch_;
-            is_large_ = other.is_large_;
             min_level_ = other.min_level_;
             code_ = other.code_;
             other.storage_ = {};
             other.size_ = 0;
             other.capacity_ = SSO_SIZE;
-            other.is_large_ = false;
         }
         return *this;
     }
@@ -491,7 +454,6 @@ public:
         , size_(0)
         , capacity_(SSO_SIZE)
         , switch_(other.switch_)
-        , is_large_(false)
         , min_level_(other.min_level_)
         , code_(other.code_)
     {
@@ -510,7 +472,6 @@ public:
             free_heap_buffer();
             size_ = 0;
             capacity_ = SSO_SIZE;
-            is_large_ = false;
             switch_ = other.switch_;
             min_level_ = other.min_level_;
             code_ = other.code_;
@@ -1147,6 +1108,7 @@ struct om_error_entry
         t.push_back({om_err_capacity_exceeded,"capacity_exceeded","容量超限"});
         t.push_back({om_err_not_found,        "not_found",        "未找到"});
         t.push_back({om_err_already_exists,   "already_exists",   "已存在"});
+        t.push_back({om_err_out_of_memory,    "out_of_memory",    "内存分配失败"});
         return t;
     }();
     return table;
@@ -1260,14 +1222,14 @@ struct om_scope_timer
 {
     operating_message& om_;
     const char* name_;
-    stopwatch sw_;
+    timer timer_;
 
     om_scope_timer(operating_message& om, const char* name) noexcept
-        : om_(om), name_(name), sw_() {}
+        : om_(om), name_(name), timer_() {}
 
     ~om_scope_timer() noexcept
     {
-        double us = sw_.us();
+        double us = timer_.elapsed_microseconds();
         om_.write_message_fmt_runtime(true, "[{}] 耗时 {:.1f}us", name_, us);
     }
     om_scope_timer(const om_scope_timer&) = delete;
@@ -1279,14 +1241,14 @@ struct om_scope_cycles
 {
     operating_message& om_;
     const char* name_;
-    stopwatch sw_;
+    timer timer_;
 
     om_scope_cycles(operating_message& om, const char* name) noexcept
-        : om_(om), name_(name), sw_() {}
+        : om_(om), name_(name), timer_() {}
 
     ~om_scope_cycles() noexcept
     {
-        uint64_t cyc = sw_.cycles();
+        uint64_t cyc = timer_.elapsed_cycles();
         om_.write_message_fmt_runtime(true, "[{}] {} cycles", name_, cyc);
     }
     om_scope_cycles(const om_scope_cycles&) = delete;
@@ -1383,123 +1345,6 @@ public:
     [[nodiscard]] std::string_view read_message() const noexcept { return om_.read_message(); }
     [[nodiscard]] operating_message&& take() noexcept { return std::move(om_); }
 };
-
-// === P2: 操作耗时统计 (离线 stats, 存全部样本) ===
-
-class om_latency_tracker
-{
-    dense<double> samples_us_;
-
-public:
-    void reserve(size_t n) noexcept
-    {
-        samples_us_.reserve_exact(n);
-    }
-
-    // 测量一次操作耗时 (us)
-    template<typename Func>
-    void measure(Func&& fn) noexcept
-    {
-        stopwatch sw;
-        fn();
-        samples_us_.push_back(sw.us());
-    }
-
-    // 计算统计量 (会排序内部样本)
-    [[nodiscard]] stats compute() const noexcept
-    {
-        if (samples_us_.empty())
-        {
-            return {};
-        }
-        return compute_stats(samples_us_);
-    }
-
-    void reset() noexcept { samples_us_.clear(); }
-    [[nodiscard]] size_t count() const noexcept { return samples_us_.size(); }
-};
-
-// === P2: 在线延迟监控 (P² 分位数, O(1) 空间) ===
-
-class om_latency_monitor
-{
-    p2_quantile p50_{0.50};
-    p2_quantile p95_{0.95};
-    p2_quantile p99_{0.99};
-
-public:
-    void record_us(double us) noexcept
-    {
-        p50_.add(us);
-        p95_.add(us);
-        p99_.add(us);
-    }
-
-    template<typename Func>
-    void measure(Func&& fn) noexcept
-    {
-        stopwatch sw;
-        fn();
-        record_us(sw.us());
-    }
-
-    [[nodiscard]] double p50() const noexcept { return p50_.estimate(); }
-    [[nodiscard]] double p95() const noexcept { return p95_.estimate(); }
-    [[nodiscard]] double p99() const noexcept { return p99_.estimate(); }
-    [[nodiscard]] size_t count() const noexcept { return p50_.count(); }
-
-    void reset() noexcept
-    {
-        p50_.reset();
-        p95_.reset();
-        p99_.reset();
-    }
-};
-
-// === P2: 延迟异常检测 (基于 P² p99 动态阈值, 复用 p2_quantile) ===
-// 注: 以纳秒为单元, 样本不足 min_samples 时不判定
-
-struct om_latency_anomaly_detector
-{
-    p2_quantile p99_{0.99};
-    double multiplier = 3.0;
-    size_t min_samples = 100;
-
-    void add(double ns) noexcept { p99_.add(ns); }
-
-    [[nodiscard]] double anomaly_threshold() const noexcept
-    {
-        return p99_.estimate() * multiplier;
-    }
-
-    [[nodiscard]] bool is_anomaly(double ns) const noexcept
-    {
-        if (p99_.count() < min_samples)
-        {
-            return false;
-        }
-        return ns > anomaly_threshold();
-    }
-
-    void reset() noexcept { p99_.reset(); }
-};
-
-[[nodiscard]] inline om_latency_anomaly_detector& om_anomaly_detector() noexcept
-{
-    static om_latency_anomaly_detector det;
-    return det;
-}
-
-// 测量操作, 自动喂入异常检测器, 返回是否异常 (耗时单位: 纳秒)
-template<typename Func>
-bool om_measure_and_check(Func&& fn) noexcept
-{
-    stopwatch sw;
-    fn();
-    double ns = sw.ns();
-    om_anomaly_detector().add(ns);
-    return om_anomaly_detector().is_anomaly(ns);
-}
 
 // === P2: 错误恢复策略表 ===
 

@@ -1,6 +1,6 @@
 // test_json_reader.cpp - JSON 解析器单元测试
-#include "include/part/json_reader.hpp"
-#include "include/part/json_writer.hpp"
+#include "include/part/codec/json_reader.hpp"
+#include "include/part/codec/json_writer.hpp"
 #include "test_common.hpp"
 #include <string>
 

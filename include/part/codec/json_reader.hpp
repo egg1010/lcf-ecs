@@ -8,7 +8,7 @@
 #include <cstdint>
 #include <charconv>
 #include <cstdlib>
-#include "operating_message.hpp"
+#include "../operating_message.hpp"
 
 class json_reader
 {
@@ -223,6 +223,8 @@ public:
 
     [[nodiscard]] bool has_error() const noexcept { return has_err_; }
     [[nodiscard]] operating_message last_error() const noexcept { return err_; }
+    // #D3 清除错误状态, 用于 best_effort 模式恢复继续解析
+    void clear_error() noexcept { has_err_ = false; }
 
     // === 容器导航 ===
 

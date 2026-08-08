@@ -1,10 +1,14 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <new>
-#include "dense.hpp"
-#include "force_inline.hpp"
+#include "../dense.hpp"
+#include "../force_inline.hpp"
 
+namespace memory {
+
+// 固定块大小分配器
 class slab_allocator
 {
 private:
@@ -24,6 +28,7 @@ private:
     size_t blocks_per_chunk_;
     size_t total_blocks_{0};
     size_t free_blocks_{0};
+    size_t peak_used_blocks_{0};
 
     static constexpr size_t DEFAULT_BLOCKS_PER_CHUNK = 256;
 
@@ -137,6 +142,11 @@ public:
         void* p = free_list_head_;
         free_list_head_ = *(void**)p;
         --free_blocks_;
+        size_t used = total_blocks_ - free_blocks_;
+        if (used > peak_used_blocks_) [[unlikely]]
+        {
+            peak_used_blocks_ = used;
+        }
         return p;
     }
 
@@ -177,10 +187,86 @@ public:
         return up >= c.data && up < c.data + c.size;
     }
 
+    // 重置: 释放所有块到初始状态, 不归还底层内存
+    void reset() noexcept
+    {
+        free_list_head_ = nullptr;
+        for (size_t i = 0; i < chunks_.size(); ++i)
+        {
+            for (size_t j = 0; j < blocks_per_chunk_; ++j)
+            {
+                void* block = chunks_[i].data + j * block_size_;
+                *(void**)block = free_list_head_;
+                free_list_head_ = block;
+            }
+        }
+        free_blocks_ = total_blocks_;
+    }
+
     [[nodiscard]] constexpr size_t block_size() const noexcept { return block_size_; }
     [[nodiscard]] constexpr size_t total_blocks() const noexcept { return total_blocks_; }
     [[nodiscard]] constexpr size_t free_blocks() const noexcept { return free_blocks_; }
+    [[nodiscard]] constexpr size_t total_used() const noexcept { return total_blocks_ - free_blocks_; }
+    [[nodiscard]] constexpr size_t total_bytes() const noexcept { return total_blocks_ * block_size_; }
+    [[nodiscard]] constexpr size_t used_bytes() const noexcept { return (total_blocks_ - free_blocks_) * block_size_; }
     [[nodiscard]] constexpr bool empty() const noexcept { return free_blocks_ == total_blocks_; }
+
+    [[nodiscard]] FORCE_INLINE void* allocate_zeroed() noexcept
+    {
+        void* p = allocate();
+        if (p) [[likely]]
+        {
+            std::memset(p, 0, block_size_);
+        }
+        return p;
+    }
+
+    template <typename T, typename... Args>
+    [[nodiscard]] FORCE_INLINE T* construct(Args&&... args) noexcept
+    {
+        void* ptr = allocate();
+        if (!ptr) [[unlikely]]
+        {
+            return nullptr;
+        }
+        return new (ptr) T(std::forward<Args>(args)...);
+    }
+
+    template <typename T>
+    FORCE_INLINE void destroy(T* ptr) noexcept
+    {
+        if (!ptr) [[unlikely]]
+        {
+            return;
+        }
+        ptr->~T();
+        deallocate(ptr);
+    }
+
+    // 预分配至少 blocks 个空闲块
+    void reserve(size_t blocks) noexcept
+    {
+        if (blocks <= free_blocks_) [[likely]]
+        {
+            return;
+        }
+        size_t need = blocks - free_blocks_;
+        size_t chunks_needed = (need + blocks_per_chunk_ - 1) / blocks_per_chunk_;
+        for (size_t i = 0; i < chunks_needed; ++i)
+        {
+            grow();
+            if (free_blocks_ >= blocks)
+            {
+                break;
+            }
+        }
+    }
+
+    [[nodiscard]] constexpr size_t free_bytes() const noexcept { return free_blocks_ * block_size_; }
+    [[nodiscard]] constexpr size_t peak_used_blocks() const noexcept { return peak_used_blocks_; }
+
     [[nodiscard]] const uint8_t* min_addr() const noexcept { return min_addr_; }
     [[nodiscard]] const uint8_t* max_addr() const noexcept { return max_addr_; }
 };
+
+} // namespace memory

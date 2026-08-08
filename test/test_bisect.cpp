@@ -1,6 +1,6 @@
-﻿// test_utf8pp.cpp - utf8pp 模块功能测试 (编解码函数 + utf8pp 类)
+// test_utf8pp.cpp - utf8pp 模块功能测试 (编解码函数 + utf8pp 类)
 #include "test_common.hpp"
-#include "include/part/utf8pp.hpp"
+#include "include/part/utf8pp/utf8pp.hpp"
 #include "include/part/dense.hpp"
 #include <cmath>
 

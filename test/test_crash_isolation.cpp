@@ -1,6 +1,8 @@
-#include "include/part/memory_pool.hpp"
-#include "include/part/arena_allocator.hpp"
+#include "include/part/memory/memory_pool.hpp"
+#include "include/part/memory/arena_allocator.hpp"
 #include <cstdio>
+
+using namespace memory;
 
 int main()
 {

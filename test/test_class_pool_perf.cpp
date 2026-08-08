@@ -793,8 +793,8 @@ static void test_subrange_views(size_t n)
     {
         constexpr size_t FN = 8;
         double ns = best_ns(REPEAT, [&]() {
-            auto f = first_fixed<T, FN>(p);
-            auto l = last_fixed<T, FN>(p);
+            auto f = first_fixed<FN>(p);
+            auto l = last_fixed<FN>(p);
             uint32_t sum = 0;
             for (auto& v : f) { sum += checksum(v); }
             for (auto& v : l) { sum += checksum(v); }
@@ -913,7 +913,7 @@ static void test_strided_views(size_t n)
     {
         double ns = best_ns(REPEAT, [&]() {
             uint32_t sum = 0;
-            strided_for_each<T, 4>(p, [&](T& v) { sum += checksum(v); });
+            strided_for_each<4>(p, [&](T& v) { sum += checksum(v); });
             return opaque(sum);
         });
         print_ns("strided_for_each<4> (ct step)", cnt, ns / static_cast<double>(cnt));
@@ -923,7 +923,7 @@ static void test_strided_views(size_t n)
     {
         double ns = best_ns(REPEAT, [&]() {
             uint32_t sum = 0;
-            strided_for_each<T, 1>(p, [&](T& v) { sum += checksum(v); });
+            strided_for_each<1>(p, [&](T& v) { sum += checksum(v); });
             return opaque(sum);
         });
         print_ns("strided_for_each<1> (fast path)", n, ns / static_cast<double>(n));
@@ -975,7 +975,7 @@ static void test_transform_views(size_t n)
         class_pool<T> dst;
         dst.increase_capacity(n);
         double ns = best_ns(REPEAT, [&]() {
-            transform_to<T, T>(p, dst.data(), n, [](const T& v) -> T { return v; });
+            transform_to(p, dst.data(), n, [](const T& v) -> T { return v; });
             uint32_t sum = 0;
             for (size_t i = 0; i < n; ++i) { sum += checksum(dst[i]); }
             return opaque(sum);
@@ -1234,7 +1234,7 @@ static void test_window_chunk_views(size_t n)
     {
         double ns = best_ns(REPEAT, [&]() {
             uint32_t sum = 0;
-            for_each_window<T, WN>(p, [&](std::span<T, WN> w) { sum += checksum(w[0]); });
+            for_each_window<WN>(p, [&](std::span<T, WN> w) { sum += checksum(w[0]); });
             return opaque(sum);
         });
         print_ns("for_each_window<4>", n - WN + 1, ns / static_cast<double>(n - WN + 1));
@@ -1245,7 +1245,7 @@ static void test_window_chunk_views(size_t n)
         const class_pool<T>& cp = p;
         double ns = best_ns(REPEAT, [&]() {
             uint32_t sum = 0;
-            for_each_window<T, WN>(cp, [&](std::span<const T, WN> w) { sum += checksum(w[0]); });
+            for_each_window<WN>(cp, [&](std::span<const T, WN> w) { sum += checksum(w[0]); });
             return opaque(sum);
         });
         print_ns("for_each_window<4> const", n - WN + 1, ns / static_cast<double>(n - WN + 1));
@@ -1255,7 +1255,7 @@ static void test_window_chunk_views(size_t n)
     {
         double ns = best_ns(REPEAT, [&]() {
             uint32_t sum = 0;
-            for_each_chunk<T, WN>(p, [&](std::span<T, WN> c) { sum += checksum(c[0]); });
+            for_each_chunk<WN>(p, [&](std::span<T, WN> c) { sum += checksum(c[0]); });
             return opaque(sum);
         });
         print_ns("for_each_chunk<4>", n / WN, ns / static_cast<double>(n / WN));
@@ -1264,7 +1264,7 @@ static void test_window_chunk_views(size_t n)
     // G.4 window_span<N>
     {
         double ns = best_ns(REPEAT, [&]() {
-            auto w = window_span<T, WN>(p, n / 2);
+            auto w = window_span<WN>(p, n / 2);
             uint32_t sum = 0;
             for (auto& v : w) { sum += checksum(v); }
             return opaque(sum);
@@ -1275,7 +1275,7 @@ static void test_window_chunk_views(size_t n)
     // G.5 chunk_span<N>
     {
         double ns = best_ns(REPEAT, [&]() {
-            auto c = chunk_span<T, WN>(p, n / (WN * 2));
+            auto c = chunk_span<WN>(p, n / (WN * 2));
             uint32_t sum = 0;
             for (auto& v : c) { sum += checksum(v); }
             return opaque(sum);
@@ -1375,7 +1375,7 @@ static void test_zip_views(size_t n)
         class_pool<T> dst;
         dst.increase_capacity(n);
         double ns = best_ns(REPEAT, [&]() {
-            zip_with_to<T, T, T>(a, b.data(), dst.data(), n,
+            zip_with_to(a, b.data(), dst.data(), n,
                 [](const T& x, const T& y) -> T { (void)y; return x; });
             uint32_t sum = 0;
             for (size_t i = 0; i < n; ++i) { sum += checksum(dst[i]); }

@@ -8,7 +8,7 @@ window.DOCS_DATA['utf8pp'] = {
   order: 36,
   content: `## 35. utf8_codec / utf8pp — UTF-8 编解码与拥有型字符串
 
-\`#include "part/utf8pp.hpp"\`（自动包含 \`utf8_codec.hpp\` 与 \`dense.hpp\`），全局命名空间。核心接口 \`noexcept\`，修改操作（需扩容时失败 \`std::abort\`）亦为 \`noexcept\`。
+\`#include "part/utf8pp/utf8pp.hpp"\`（自动包含 \`utf8_codec.hpp\` 与 \`dense.hpp\`），全局命名空间。核心接口 \`noexcept\`，修改操作（需扩容时失败 \`std::abort\`）亦为 \`noexcept\`。
 
 模块分三层：
 
@@ -18,7 +18,16 @@ window.DOCS_DATA['utf8pp'] = {
 
 仅支持 Unicode 编码（UTF-8 / UTF-32 码点），不支持其他编码（GBK / UTF-16 等）。非法序列替换为 U+FFFD 替换字符。支持完整 Unicode 字符处理：码点级 + 字形簇级 + East Asian Width 显示宽度 + NFC/NFKC 规范化（含 Hangul 算法） + Script 脚本判断。
 
-### 35.1 编解码接口（utf8_codec.hpp）
+### 35.1 宏配置（utf8pp_config.hpp）
+
+| 宏 | 说明 |
+|------|------|
+| \`UTF8PP_USE_LAYERED_ALLOCATOR\` | 启用分层分配器，堆路径接入 \`layered_allocator\`（slab 分桶 + big_pool） |
+| \`UTF8PP_LAYERED_ALLOCATOR_NOT_ENABLED\` | 禁用分层分配器，堆路径回退 \`std::malloc\` / \`std::free\` |
+
+> 二选一，默认启用 \`UTF8PP_USE_LAYERED_ALLOCATOR\`。
+
+### 35.2 编解码接口（utf8_codec.hpp）
 
 | 接口 | 说明 |
 |------|------|
@@ -30,7 +39,7 @@ window.DOCS_DATA['utf8pp'] = {
 
 \`out_has_err\` 为可选输出参数（\`bool*\`），传入 \`nullptr\` 表示不接收错误标志。返回值为需要写入的总数：\`<= out_cap\` 表示已全部写入；\`> out_cap\` 表示所需容量（调用方扩容后重试）。
 
-### 35.2 utf8pp 类接口
+### 35.3 utf8pp 类接口
 
 #### 构造与赋值
 
@@ -43,6 +52,7 @@ window.DOCS_DATA['utf8pp'] = {
 | \`utf8pp(size_t n, char32_t cp)\` | 用 n 个 cp 填充构造 |
 | \`utf8pp(std::string_view sv)\` | 从 string_view 构造 |
 | \`utf8pp(const std::string& s)\` / \`utf8pp(const std::u8string& s)\` / \`utf8pp(const std::u32string& s)\` | 从 std 字符串构造 |
+| \`utf8pp(const utf8_view& v)\` | 从 \`utf8_view\` 构造 |
 | \`utf8pp(std::initializer_list<char32_t> il)\` | 从码点初始化列表构造 |
 | \`utf8pp(InputIt first, InputIt last)\` | 从迭代器范围构造（SFINAE 排除整数类型） |
 | \`explicit utf8pp(const std::array<utf8pp, N>& parts)\` / \`explicit utf8pp(const std::vector<utf8pp>& parts)\` | 从范围拼接构造 |
@@ -52,8 +62,9 @@ window.DOCS_DATA['utf8pp'] = {
 | \`operator=(const char*)\` / \`operator=(std::string_view)\` / \`operator=(char32_t)\` | 从常见类型赋值 |
 | \`operator=(const char8_t*)\` / \`operator=(std::initializer_list<char32_t>)\` | 从 char8_t/初始化列表赋值 |
 | \`operator=(const std::string&)\` / \`operator=(const std::u8string&)\` | 从 std 字符串赋值 |
+| \`operator=(const utf8_view& v)\` | 从 \`utf8_view\` 赋值 |
 | \`assign(const char* s, size_t byte_len)\` / \`assign(const char* s)\` / \`assign(const utf8pp&)\` | 重新赋值 |
-| \`assign(std::string_view)\` / \`assign(const std::string&)\` / \`assign(const char8_t*)\` | 重新赋值 |
+| \`assign(std::string_view)\` / \`assign(const std::string&)\` / \`assign(const char8_t*)\` / \`assign(const utf8_view&)\` | 重新赋值 |
 | \`assign(std::initializer_list<char32_t>)\` / \`assign(InputIt first, InputIt last)\` | 从初始化列表/迭代器范围赋值 |
 | \`assign(size_t n, char32_t cp)\` | 重新赋值为 n 个 cp |
 | \`assign(const std::u8string&)\` / \`assign(const std::u32string&)\` | 从 u8/u32 字符串赋值 |
@@ -65,7 +76,7 @@ window.DOCS_DATA['utf8pp'] = {
 
 | 接口 | 说明 |
 |------|------|
-| \`size()\` / \`length()\` | 码点数（O(1)） |
+| \`size()\` / \`length()\` | 码点数 |
 | \`byte_size()\` | 字节数 |
 | \`capacity()\` | 当前字节容量 |
 | \`cp_capacity()\` | 当前码点容量（与字节容量解耦） |
@@ -79,15 +90,17 @@ window.DOCS_DATA['utf8pp'] = {
 | \`increase_capacity(new_cap)\` | 同时扩容字节缓冲与码点偏移数组 |
 | \`shrink_to_fit()\` | 释放多余容量（若可回退到 SSO 则回退） |
 | \`clear() noexcept\` | 清空内容（不释放内存） |
+| \`rebuild_cp_offsets() noexcept\` | 直接修改 \`data()\` 后重建码点偏移缓存 |
+| \`rebuild(new_byte_size) noexcept\` | 设置新字节大小并重建码点偏移缓存（\`data()\` 修改后的便捷接口） |
 
 #### 访问
 
 | 接口 | 说明 |
 |------|------|
-| \`at(cp_idx)\` / \`operator[](cp_idx)\` | 码点索引访问（O(1)，越界返回 U+FFFD） |
+| \`at(cp_idx)\` / \`operator[](cp_idx)\` | 码点索引访问（越界返回 U+FFFD） |
 | \`front()\` / \`back()\` | 首尾码点（空串返回 U+FFFD） |
 | \`c_str()\` / \`data()\` (const) | C 字符串（**空对象返回 \`""\`，非 nullptr**） |
-| \`data()\` (非 const) | 可写字节指针 |
+| \`data()\` (非 const) | 可写字节指针（修改后须调用 \`rebuild_cp_offsets()\` 重建缓存） |
 | \`view()\` / \`binary_view()\` | \`std::string_view\`（两者等价，\`binary_view\` 强调字节语义） |
 | \`u8view()\` | \`std::u8string_view\` |
 
@@ -95,12 +108,26 @@ window.DOCS_DATA['utf8pp'] = {
 
 | 接口 | 说明 |
 |------|------|
-| \`begin()\` / \`end()\` / \`cbegin()\` / \`cend()\` | 码点级前向迭代器（\`random_access_iterator_tag\`，解引用返回 \`char32_t\`） |
-| \`rbegin()\` / \`rend()\` / \`crbegin()\` / \`crend()\` | 码点级反向迭代器（\`random_access_iterator_tag\`） |
+| \`begin()\` / \`end()\` / \`cbegin()\` / \`cend()\` | 码点级前向迭代器（\`contiguous_iterator_tag\`，解引用返回 \`char32_t\`） |
+| \`rbegin()\` / \`rend()\` / \`crbegin()\` / \`crend()\` | 码点级反向迭代器（\`bidirectional_iterator_tag\`） |
+| \`make_iterator(cp_idx)\` | 构建指向指定码点索引的迭代器（insert/erase 后使用） |
 | \`byte_begin()\` / \`byte_end()\` / \`byte_cbegin()\` / \`byte_cend()\` | 字节级前向迭代器（\`contiguous_iterator_tag\`，解引用返回 \`char\`） |
-| \`rbyte_begin()\` / \`rbyte_end()\` | 字节级反向迭代器（\`contiguous_iterator_tag\`） |
-| \`const_iterator::ptr()\` | 暴露 \`const char*\`（用于与 C API 交互） |
+| \`rbyte_begin()\` / \`rbyte_end()\` / \`byte_crbegin()\` / \`byte_crend()\` | 字节级反向迭代器（\`contiguous_iterator_tag\`） |
+| \`const_iterator::ptr()\` / \`const_iterator::cp_ptr()\` | 暴露 \`const char*\` / \`const char32_t*\`（用于与 C API 交互） |
 | \`const_byte_iterator::ptr()\` | 暴露 \`const char*\` |
+
+#### 字形簇迭代器
+
+字形簇 = 用户感知字符（组合标记 / ZWJ 序列不分割），遵循 UAX #29 简化规则。解引用返回 \`utf8_view\`，覆盖组合标记、Hangul LVT 序列、Emoji ZWJ 序列等场景。
+
+| 接口 | 说明 |
+|------|------|
+| \`grapheme_begin()\` / \`grapheme_end()\` | 字形簇级前向迭代器（\`forward_iterator_tag\`） |
+| \`grapheme_cbegin()\` / \`grapheme_cend()\` | 常量字形簇级前向迭代器 |
+| \`grapheme_count()\` | 字形簇数量 |
+| \`grapheme_clusters()\` | 按字形簇分割，返回 \`dense<utf8_view>\` |
+| \`const_grapheme_iterator::ptr()\` | 当前字形簇结束位置 \`const char*\` |
+| \`const_grapheme_iterator::start()\` | 当前字形簇起始位置 \`const char*\` |
 
 #### 修改操作
 
@@ -109,16 +136,19 @@ window.DOCS_DATA['utf8pp'] = {
 | \`push_back(char32_t cp)\` | 追加单个码点 |
 | \`append(const char*)\` / \`append(const char*, size_t)\` / \`append(const char8_t*)\` | 追加 UTF-8 字符串 |
 | \`append(const char32_t*, size_t)\` / \`append(const utf8pp&)\` / \`append(std::string_view)\` | 追加其他形式 |
-| \`append(const std::string&)\` / \`append(std::initializer_list<char32_t>)\` | 追加 std string / 初始化列表 |
+| \`append(const std::string&)\` / \`append(const std::u8string&)\` / \`append(const std::u32string&)\` | 追加 std 字符串 |
+| \`append(std::initializer_list<char32_t>)\` / \`append(size_t n, char32_t cp)\` | 追加初始化列表 / n 个相同码点 |
+| \`append(InputIt first, InputIt last)\` | 追加迭代器范围（SFINAE 排除整数类型） |
 | \`append(std::array<utf8pp, N>&)\` / \`append(std::vector<utf8pp>&)\` / \`append(const utf8pp*, size_t)\` / \`append(std::span<const utf8pp>)\` | 批量追加 |
 | \`operator+=(char32_t)\` / \`operator+=(const char*)\` / \`operator+=(const utf8pp&)\` | 追加运算符 |
 | \`operator+=(std::string_view)\` / \`operator+=(const char8_t*)\` / \`operator+=(std::initializer_list<char32_t>)\` | 追加运算符扩展 |
 | \`insert(cp_idx, char32_t)\` | 按码点索引插入单码点 |
 | \`insert(cp_idx, const utf8pp&)\` / \`insert(cp_idx, const char*)\` / \`insert(cp_idx, std::string_view)\` | 按码点索引插入字符串 |
 | \`insert(cp_idx, const char* s, size_t n)\` / \`insert(cp_idx, size_t n, char32_t cp)\` / \`insert(cp_idx, std::initializer_list<char32_t>)\` | 按码点索引插入（指定长度/填充/初始化列表） |
+| \`insert(cp_idx, const utf8pp& str, size_t pos2, size_t n2)\` | 子串插入：从 str 的 [pos2, pos2+n2) 插入 |
 | \`insert(const_iterator pos, char32_t)\` / \`insert(pos, size_t n, char32_t cp)\` | 迭代器版插入 |
 | \`insert(const_iterator pos, InputIt first, InputIt last)\` | 迭代器版插入（模板迭代器范围） |
-| \`insert(const_iterator pos, const utf8pp&)\` / \`insert(pos, const char*)\` / \`insert(pos, std::string_view)\` / \`insert(pos, std::initializer_list<char32_t>)\` | 迭代器版插入字符串 |
+| \`insert(const_iterator pos, const utf8pp&)\` / \`insert(pos, const char*)\` / \`insert(pos, const char*, size_t byte_len)\` / \`insert(pos, std::string_view)\` / \`insert(pos, std::initializer_list<char32_t>)\` | 迭代器版插入字符串 |
 | \`erase(cp_idx, n=1)\` | 按码点索引删除 n 个码点 |
 | \`erase(const_iterator pos)\` / \`erase(first, last)\` | 迭代器版删除 |
 | \`pop_back()\` | 删除末尾码点 |
@@ -127,7 +157,7 @@ window.DOCS_DATA['utf8pp'] = {
 | \`assign_cp(n, cp)\` | 清空后赋 n 个相同码点 |
 | \`resize_cp(n, cp=U'\\0')\` / \`resize(n)\` / \`resize(n, cp)\` | 调整码点数（小于则截断，大于则补 cp；\`resize\` 为 \`std::string\` 别名） |
 | \`replace(pos, n, const utf8pp&)\` / \`replace(pos, n, const char*)\` / \`replace(pos, n, std::string_view)\` | 替换 [pos, pos+n) |
-| \`replace(pos, n, const char* s, size_t n2)\` / \`replace(pos, n, size_t n2, char32_t cp)\` | 替换（指定长度/填充） |
+| \`replace(pos, n, const char* s, size_t n2)\` / \`replace(pos, n, size_t n2, char32_t cp)\` / \`replace(pos, n, std::initializer_list<char32_t>)\` | 替换（指定长度/填充/初始化列表） |
 | \`replace(pos1, n1, const utf8pp& other, pos2, n2)\` / \`replace(pos1, n1, const char* s, pos2, n2)\` | 双区间替换（本串 [pos1,pos1+n1) ← other [pos2,pos2+n2)） |
 | \`replace(const_iterator first, last, const utf8pp&)\` / \`replace(first, last, const char*)\` / \`replace(first, last, std::string_view)\` | 迭代器范围替换 |
 | \`replace(const_iterator first, last, const char* s, size_t n2)\` / \`replace(first, last, size_t n2, char32_t cp)\` | 迭代器范围替换（指定长度/填充） |
@@ -246,6 +276,7 @@ window.DOCS_DATA['utf8pp'] = {
 | \`to_std_string()\` | 转 \`std::string\` |
 | \`to_u32string()\` | 转 \`std::u32string\` |
 | \`to_u8string()\` | 转 \`std::u8string\` |
+| \`to_utf8_view()\` | 零拷贝转 \`utf8_view\`（指向内部缓冲区，生命周期受 \`*this\` 限制） |
 
 #### BOM / 校验
 
@@ -271,7 +302,7 @@ window.DOCS_DATA['utf8pp'] = {
 | \`static join(const std::array<utf8pp, N>&, const utf8pp&)\` / \`static join(const std::vector<utf8pp>&, ...)\` | 拼接 std 容器 |
 | \`static join(const utf8pp* parts, size_t count, const utf8pp&)\` | 拼接裸指针 |
 
-### 35.3 utf8pp 非成员接口
+### 35.4 utf8pp 非成员接口
 
 | 接口 | 说明 |
 |------|------|
@@ -290,14 +321,16 @@ window.DOCS_DATA['utf8pp'] = {
 | \`to_utf8pp(float/double/long double)\` | 浮点 → utf8pp |
 | \`utf8pp_format(const char* fmt, ...)\` / \`utf8pp_vformat(const char* fmt, std::va_list ap)\` | 自由函数版格式化（与静态成员 \`format\`/\`vformat\` 并存） |
 | \`"..."_u8\` (const char*) / \`"..."_u8\` (const char8_t*) | 字面量运算符（返回 utf8pp，两个重载） |
+| \`"..."_utf8\` (const char*) / \`"..."_utf8\` (const char8_t*) | 字面量运算符别名（返回 utf8pp，两个重载） |
 | \`std::hash<utf8pp>\` | hash 特化（**FNV-1a 字节哈希**，分布更均匀） |
+| \`std::swap<utf8pp>\` | std::swap 特化（委托成员 \`swap\`） |
 | \`erase(utf8pp&, char32_t cp)\` / \`erase_if(utf8pp&, Pred pred)\` | 全局删除所有匹配码点（C++20 风格，返回移除数量） |
-| \`std::formatter<utf8pp>\` | C++20 \`std::format\` 特化（受 \`__cpp_lib_format >= 201907L\` 保护，委托 \`std::formatter<std::string_view>\`） |
+| \`std::formatter<utf8pp>\` | C++20 \`std::format\` 特化（受 \`__cpp_lib_format >= 201907L\` 保护，支持 width/fill/align 及大小写转换标志 U/L/T/C） |
 
 ### 使用
 
 \`\`\`cpp
-#include "part/utf8pp.hpp"
+#include "part/utf8pp/utf8pp.hpp"
 
 // === 编解码函数 ===
 char32_t ch = to_char(0x4E2D);       // '中'
@@ -308,7 +341,7 @@ size_t n = utf8_to_codepoints("你好", 6, cps, 16);  // n = 2
 utf8pp s("Hello你好");     // 从 UTF-8 C 字符串构造
 s.size();                  // 7 (码点数)
 s.byte_size();             // 11 (字节数: 5 + 6)
-s.at(0);                   // 'H' (O(1))
+s.at(0);                   // 'H'
 s.at(5);                   // '你' (U+4F60)
 
 // 码点级迭代
@@ -316,6 +349,14 @@ for (char32_t cp : s) { /* 遍历每个码点 */ }
 
 // 反向迭代
 for (auto it = s.rbegin(); it != s.rend(); ++it) { /* 反向遍历 */ }
+
+// 字形簇迭代 (用户感知字符, 组合标记/ZWJ 序列不分割)
+utf8pp emoji_str(U"Hello\\U0001F600\\U0001F926\\U0001F631");
+for (auto it = emoji_str.grapheme_begin(); it != emoji_str.grapheme_end(); ++it) {
+    utf8_view gv = *it;  // 覆盖单个字形簇的字节范围
+}
+size_t gc = emoji_str.grapheme_count();  // 字形簇数量
+dense<utf8_view> clusters = emoji_str.grapheme_clusters();
 
 // 追加/插入/删除
 s.push_back(char32_t(0x1F600));   // 追加 emoji
@@ -490,15 +531,11 @@ window.DOCS_DATA['utf8_view'] = {
   order: 37,
   content: `## 36. utf8_view — UTF-8 字符串视图
 
-\`#include "part/utf8_view.hpp"\`（自动包含 \`utf8_codec.hpp\`），全局命名空间。所有接口 \`noexcept\`。
+\`#include "part/utf8pp/utf8_view.hpp"\`（自动包含 \`utf8_codec.hpp\`），全局命名空间。所有接口 \`noexcept\`。
 
 非拥有型轻量级 UTF-8 字符串视图，类似 \`std::string_view\`，但提供码点级接口。内部仅存储 \`const char*\` 与字节数两个字段（16 字节），不分配内存。
 
-**复杂度分层**：
-
-- 字节级操作 O(1)：\`byte_size()\` / \`data()\` / \`substr_bytes()\` / \`find_byte()\` / \`remove_prefix()\` / \`remove_suffix()\` / \`copy()\` 等。
-- 码点级操作 O(n)：\`size()\` / \`at()\` / \`substr()\` / \`find()\` / \`find_first_of()\` 等（需遍历）。
-- 与 \`utf8pp\` 互转：\`utf8pp\` 可经 \`std::string_view\` 中转构造自 \`utf8_view\`（\`utf8_view\` 隐式转 \`std::string_view\`，\`utf8pp\` 接收 \`std::string_view\`）；\`utf8_view\` 可由 \`utf8pp\` 的 \`data()\` + \`byte_size()\` 显式构造。
+字节级接口直接操作指针，码点级接口需遍历解码。与 \`utf8pp\` 互转：\`utf8pp\` 可经 \`std::string_view\` 中转构造自 \`utf8_view\`（\`utf8_view\` 隐式转 \`std::string_view\`，\`utf8pp\` 接收 \`std::string_view\`）；\`utf8_view\` 可由 \`utf8pp\` 的 \`data()\` + \`byte_size()\` 显式构造。
 
 ### 36.1 构造与赋值
 
@@ -516,8 +553,8 @@ window.DOCS_DATA['utf8_view'] = {
 
 | 接口 | 说明 |
 |------|------|
-| \`byte_size()\` / \`size_bytes()\` / \`length_bytes()\` | 字节数（O(1)） |
-| \`size()\` / \`length()\` | 码点数（O(n)） |
+| \`byte_size()\` / \`size_bytes()\` / \`length_bytes()\` | 字节数 |
+| \`size()\` / \`length()\` | 码点数 |
 | \`empty()\` | 是否为空 |
 | \`max_size()\` | 理论最大值 |
 
@@ -527,8 +564,8 @@ window.DOCS_DATA['utf8_view'] = {
 |------|------|
 | \`data()\` / \`c_str()\` | 原始字节指针（\`data()\` 空视图返回 \`nullptr\`，\`c_str()\` 返回 \`""\`） |
 | \`byte_view()\` / \`operator std::string_view()\` | 转 \`std::string_view\`（隐式转换） |
-| \`byte_at(i)\` | 字节级访问（O(1)，越界返回 \`'\\0'\`） |
-| \`at(cp_idx)\` / \`operator[](cp_idx)\` | 码点级访问（O(n)，越界返回 U+FFFD） |
+| \`byte_at(i)\` | 字节级访问（越界返回 \`'\\0'\`） |
+| \`at(cp_idx)\` / \`operator[](cp_idx)\` | 码点级访问（越界返回 U+FFFD） |
 | \`front()\` / \`back()\` | 首/尾码点（空视图返回 U+FFFD） |
 
 ### 36.4 迭代器
@@ -546,8 +583,8 @@ window.DOCS_DATA['utf8_view'] = {
 
 | 接口 | 说明 |
 |------|------|
-| \`substr_bytes(byte_pos, byte_len=npos)\` | 字节级子串（O(1)） |
-| \`substr(cp_pos, cp_count=npos)\` | 码点级子串（O(n)） |
+| \`substr_bytes(byte_pos, byte_len=npos)\` | 字节级子串 |
+| \`substr(cp_pos, cp_count=npos)\` | 码点级子串 |
 | \`remove_prefix(byte_n)\` | 移除前缀（STL 语义，字节级） |
 | \`remove_suffix(byte_n)\` | 移除后缀（字节级） |
 | \`copy(char* buf, size_t byte_n, byte_pos=0)\` | 拷贝到外部缓冲区 |
@@ -557,7 +594,7 @@ window.DOCS_DATA['utf8_view'] = {
 
 | 接口 | 说明 |
 |------|------|
-| \`find_byte(char c, byte_pos=0)\` | 字节正向查找（memchr 优化） |
+| \`find_byte(char c, byte_pos=0)\` | 字节正向查找 |
 | \`rfind_byte(char c, byte_pos=npos)\` | 字节逆向查找 |
 | \`find_bytes(std::string_view str, byte_pos=0)\` | 字节子串正向查找 |
 | \`rfind_bytes(std::string_view str, byte_pos=npos)\` | 字节子串逆向查找 |
@@ -568,30 +605,90 @@ window.DOCS_DATA['utf8_view'] = {
 | \`find_first_not_of(char32_t, cp_pos=0)\` / \`find_first_not_of(const utf8_view&, cp_pos=0)\` | 首个不匹配 |
 | \`find_last_not_of(char32_t, cp_pos=npos)\` / \`find_last_not_of(const utf8_view&, cp_pos=npos)\` | 末个不匹配 |
 | \`contains(char32_t)\` / \`contains(const utf8_view&)\` | 包含判断 |
-| \`starts_with(char32_t)\` | 码点级前缀判断（O(n)） |
-| \`starts_with(const utf8_view&)\` | 字节级前缀判断（O(1) memcmp） |
-| \`ends_with(char32_t)\` | 码点级后缀判断（O(n)） |
-| \`ends_with(const utf8_view&)\` | 字节级后缀判断（O(1) memcmp） |
+| \`starts_with(char32_t)\` | 码点级前缀判断 |
+| \`starts_with(const utf8_view&)\` | 字节级前缀判断 |
+| \`ends_with(char32_t)\` | 码点级后缀判断 |
+| \`ends_with(const utf8_view&)\` | 字节级后缀判断 |
 
 ### 36.7 比较
 
 | 接口 | 说明 |
 |------|------|
-| \`compare(const utf8_view&)\` / \`compare(std::string_view)\` / \`compare(const char*)\` | 三态比较（memcmp） |
+| \`compare(const utf8_view&)\` / \`compare(std::string_view)\` / \`compare(const char*)\` | 三态比较（字节序） |
 | \`operator==\` / \`!=\` / \`<\` / \`>\` / \`<=\` / \`>=\` | 与 \`utf8_view\` / \`std::string_view\` / \`const char*\` 比较 |
 | \`operator<=>(const utf8_view&)\` / \`operator<=>(std::string_view)\` / \`operator<=>(const char*)\` | 三态比较运算符 |
 
-### 36.8 非成员接口
+### 36.8 只读查询（零分配）
+
+| 接口 | 说明 |
+|------|------|
+| \`display_width()\` | 显示宽度（East Asian Width: CJK/全角=2, 零宽=0, 其他=1） |
+| \`to_lower_into(out, cap)\` | 小写转换写入外部缓冲，返回写入字节数（cap 不足返回所需字节数） |
+| \`to_upper_into(out, cap)\` | 大写转换写入外部缓冲，返回写入字节数（同上） |
+| \`trimmed()\` / \`trimmed_left()\` / \`trimmed_right()\` | 返回去除空白后的子视图（仅指针移动，零分配） |
+| \`is_ascii()\` | 全 ASCII 判断 |
+| \`is_valid()\` | 合法 UTF-8 校验（码点范围 + 最短形式） |
+| \`count(char32_t)\` | 统计码点出现次数 |
+
+\`\`\`cpp
+// 显示宽度 (对齐布局用)
+size_t w = utf8_view("顺序访问").display_width();  // 8 (4 CJK × 2)
+
+// 大小写转换 (零分配, 用户提供缓冲)
+char buf[64];
+size_t n = utf8_view("ABC").to_lower_into(buf, sizeof(buf));  // n=3, buf="abc"
+
+// trim (返回子 view, 不分配)
+utf8_view t = utf8_view("  hello  ").trimmed();  // "hello"
+
+// 校验
+bool ok = utf8_view("Hello你好").is_valid();   // true
+bool ascii = utf8_view("Hello").is_ascii();    // true
+
+// 计数
+size_t n = utf8_view("a,b,c").count(U',');     // 2
+\`\`\`
+
+### 36.9 非成员接口
 
 | 接口 | 说明 |
 |------|------|
 | \`operator<<(std::ostream&, const utf8_view&)\` | 流输出 |
 | \`std::hash<utf8_view>\` | hash 特化（按字节 hash） |
+| \`utf8_display_width(const char*)\` / \`utf8_display_width(string_view)\` | 直接算显示宽度，免构造 view |
+| \`utf8_cp_count(const char*)\` / \`utf8_cp_count(string_view)\` | 直接算码点数 |
+| \`utf8_byte_offset(s, cp_idx)\` | 第 cp_idx 个码点的字节偏移（越界返回 \`npos\`） |
+| \`utf8_is_valid(const char*)\` / \`utf8_is_valid(string_view)\` | 合法 UTF-8 校验 |
+| \`utf8_is_ascii(const char*)\` / \`utf8_is_ascii(string_view)\` | 纯 ASCII 判断 |
+| \`utf8_next_cp(p, end, *consumed=nullptr)\` | 游标式解码一个码点 |
+| \`utf8_prev_cp(begin, p, *consumed=nullptr)\` | 游标式回溯一个码点 |
+
+\`\`\`cpp
+// 直接对 const char* / string_view 操作, 不必构造 view
+size_t w = utf8_display_width("顺序访问");      // 8
+size_t n = utf8_cp_count("Hello你好");          // 7
+bool ok = utf8_is_valid("Hello你好");           // true
+bool ascii = utf8_is_ascii("Hello");            // true
+
+// 码点索引转字节偏移
+size_t off = utf8_byte_offset("Hello你好", 5);  // 5 (第 5 个码点的字节起点)
+
+// 游标式迭代 (适合手写循环)
+const char* s = "Hello你好";
+const char* p = s;
+const char* end = s + std::strlen(s);
+while (p < end) {
+    size_t len = 0;
+    char32_t cp = utf8_next_cp(p, end, &len);
+    use(cp);
+    p += len;
+}
+\`\`\`
 
 ### 使用
 
 \`\`\`cpp
-#include "part/utf8_view.hpp"
+#include "part/utf8pp/utf8_view.hpp"
 
 // === 构造 ===
 utf8_view v1("Hello你好");          // C 字符串
@@ -600,13 +697,13 @@ utf8_view v3(std::string_view("abc"));
 utf8_view v4(u8"中文");
 
 // === 容量 ===
-v1.byte_size();                  // 11 (O(1))
-v1.size();                       // 7   (O(n), 码点数)
+v1.byte_size();                  // 11
+v1.size();                       // 7 (码点数)
 v1.empty();                      // false
 
 // === 访问 ===
-v1.byte_at(0);                   // 'H' (O(1))
-v1.at(0);                        // 'H' (O(n))
+v1.byte_at(0);                   // 'H'
+v1.at(0);                        // 'H'
 v1.at(5);                        // '你' (U+4F60)
 v1.front();                      // 'H'
 v1.back();                       // '好'
@@ -616,16 +713,16 @@ for (char32_t cp : v1) { /* 码点级遍历 */ }
 for (auto it = v1.rbegin(); it != v1.rend(); ++it) { /* 反向 */ }
 
 // === 子串 ===
-utf8_view b1 = v1.substr_bytes(0, 5);   // "Hello" (O(1))
-utf8_view b2 = v1.substr(0, 5);         // "Hello你" (O(n), 取 5 个码点)
+utf8_view b1 = v1.substr_bytes(0, 5);   // "Hello"
+utf8_view b2 = v1.substr(0, 5);         // "Hello你" (取 5 个码点)
 v1.remove_prefix(6);                    // 移除前 6 字节 → "你好"
 v1.remove_suffix(3);                    // 移除后 3 字节
 
 // === 查找 ===
-v1.find_byte('l');                      // 2 (O(1) memchr)
+v1.find_byte('l');                      // 2
 v1.rfind_byte('l');                     // 3
 v1.find_bytes("ll");                    // 字节子串查找
-v1.find(U'好');                         // 码点级查找 (O(n))
+v1.find(U'好');                         // 码点级查找
 v1.rfind(U'好');
 v1.find_first_of(utf8_view("aeiou"));
 v1.find_last_not_of(U' ');
@@ -663,19 +760,19 @@ utf8_view dangling;
 | 错误做法 | 问题 | 正确做法 |
 |---------|------|---------|
 | 视图持有内存的假设 | \`utf8_view\` 不拥有内存，源对象析构后视图悬垂 | 确保源对象生命周期覆盖视图使用范围 |
-| 用 \`size()\` 做字节操作 | \`size()\` 是码点数（O(n)），非字节数 | 用 \`byte_size()\` 取字节数 |
-| 高频调用 \`size()\` / \`at()\` | 每次 O(n) 遍历 | 高频场景转 \`utf8pp\` |
+| 用 \`size()\` 做字节操作 | \`size()\` 是码点数，非字节数 | 用 \`byte_size()\` 取字节数 |
+| 高频调用 \`size()\` / \`at()\` | 每次需遍历解码 | 高频场景转 \`utf8pp\` |
 | \`remove_prefix(n)\` 传码点数 | \`remove_prefix\` 是字节级 | 码点级用 \`substr(cp_pos, cp_count)\` |
 | 对视图调用 \`to_lower()\` / \`split()\` | 视图只读，无修改方法 | 用 \`utf8pp\` 或自行转换 |
 | 字节级 \`find_byte\` 与码点级 \`find\` 混用 | 字节查找返回字节位置，码点查找返回码点索引 | 阅读接口前缀区分（\`find_byte\` vs \`find\`） |
-| \`starts_with(char32_t)\` 与 \`starts_with(utf8_view)\` 混用 | 前者 O(n) 码点级，后者 O(1) 字节级 memcmp | 按场景选择，注意参数类型 |
+| \`starts_with(char32_t)\` 与 \`starts_with(utf8_view)\` 混用 | 前者码点级需遍历，后者字节级直接比较 | 按场景选择，注意参数类型 |
 | 正向迭代器 \`--it\` | 正向迭代器为 \`forward_iterator_tag\`，不支持 \`--\` | 用反向迭代器 \`rbegin()\`/\`rend()\` |
 | 越界 \`at()\` / \`front()\` / \`back()\` | 返回 U+FFFD，非崩溃 | 检查索引或用 \`operator[]\` |
 | 越界 \`byte_at()\` | 返回 \`'\\0'\`，非崩溃 | 检查索引 |
 | \`data()\` 与 \`c_str()\` 空视图返回值不同 | \`data()\` 返回 \`nullptr\`，\`c_str()\` 返回 \`""\` | 需要 C 字符串语义时用 \`c_str()\` |
 | 期望 BOM / 校验接口 | \`utf8_view\` 不提供 BOM / 校验 | 用 \`utf8pp::has_bom()\` / \`utf8pp::valid()\` |
 | 期望 \`operator>>\` / 字面量 / \`to_string\` | \`utf8_view\` 不提供这些接口 | 用 \`utf8pp\` 或经 \`std::string_view\` 中转 |
-| 比较运算期望码点序 | 比较基于 \`memcmp\` 字节序（与 \`std::string_view\` 一致） | 字节序 = 码点序（UTF-8 特性），但需注意 |
+| 比较运算期望码点序 | 比较基于字节序（与 \`std::string_view\` 一致） | 字节序 = 码点序（UTF-8 特性），但需注意 |
 
 ---
 `

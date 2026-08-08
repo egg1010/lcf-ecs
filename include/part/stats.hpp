@@ -10,6 +10,7 @@ struct serialize_stats
     size_t entity_count = 0;
     size_t total_bytes = 0;
     uint32_t archive_version = 0;
+    size_t skipped_count = 0;  // #D3 best_effort 模式跳过的损坏组件数
 
     struct type_stats
     {
@@ -24,6 +25,7 @@ struct serialize_stats
     {
         entity_count = 0;
         total_bytes = 0;
+        skipped_count = 0;
         per_type.clear();
     }
 };

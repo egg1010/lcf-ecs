@@ -22,6 +22,11 @@
 
 namespace ecs { class single_class_set; }
 
+// 前置声明: pool_strided_span 定义于 class_pool_views.hpp
+// 用于 strided_span_view 成员函数返回值声明
+template <typename T>
+struct pool_strided_span;
+
 // 清除最低设置位 (BMI1 BLSR 指令, 不可用时回退到标量)
 [[nodiscard]] static inline uint64_t clear_lowest_bit(uint64_t x) noexcept
 {
@@ -256,7 +261,7 @@ public:
 
 		basic_iterator() noexcept : ptr_(nullptr), end_(nullptr), bits_(nullptr), origin_(nullptr) {}
 
-		// MinGW 标量拷贝构造规避 AVX2 codegen bug
+		// 规避 MinGW AVX2 codegen bug: 标量拷贝构造
 #if defined(__MINGW32__) || defined(__MINGW64__)
 		basic_iterator(const basic_iterator& other) noexcept
 			: ptr_(other.ptr_), end_(other.end_), bits_(other.bits_), origin_(other.origin_) {}
@@ -289,7 +294,7 @@ public:
 		Ptr operator->() const noexcept { return ptr_; }
 
 		// 返回 >= start 的下一个设置位位置, 没有则返回 total
-		// pure/noinline 属性: 由 LCF_PURE/NOINLINE 宏跨平台处理 (见 force_inline.hpp)
+		// 属性 pure/noinline 由 LCF_PURE/NOINLINE 宏跨平台处理 (见 force_inline.hpp)
 		LCF_PURE static NOINLINE size_t find_next_set_bit(
 			const uint64_t* bits, size_t start, size_t total) noexcept
 		{
@@ -597,10 +602,7 @@ public:
 	template <typename... Args>
 	size_t fill_the_hole_at(Args&&... args) noexcept;
 
-private:
-	[[nodiscard]] size_t find_first_hole_() noexcept;
-	void recompute_is_dense() noexcept;
-	void bulk_set_bits(size_t start, size_t end) noexcept;
+	// 批量追加接口 (与 dense 对齐)
 	void append_bulk(const T* src, size_t count) noexcept;
 	void append_bulk_move(T* src, size_t count) noexcept;
 	void append_incrementing(size_t count, uint64_t& counter) noexcept;
@@ -608,14 +610,180 @@ private:
 	template <typename F>
 	void append_generated(size_t count, F&& generator) noexcept;
 
-	template <typename EntityLike>
-	void append_indices_from(const EntityLike* entities, size_t count) noexcept;
+	[[nodiscard]] constexpr size_type max_size() const noexcept { return static_cast<size_t>(-1) / sizeof(T); }
 
-public:
 	void fill_bulk(const T& value, size_t start, size_t count) noexcept;
 	void prepare_dense(size_t new_size) noexcept;
 
+	// 视图成员函数: 转发至 container_views.hpp 全局函数 (与 dense 接口对齐)
+
+	template <typename F>
+	void for_each(F&& f) noexcept
+	{
+		for (auto it = begin(); it != end(); ++it)
+		{
+			f(*it);
+		}
+	}
+	template <typename F>
+	void for_each(F&& f) const noexcept
+	{
+		for (auto it = cbegin(); it != cend(); ++it)
+		{
+			f(*it);
+		}
+	}
+
+	template <typename F> void reverse_for_each(F&& f) noexcept;
+	template <typename F> void reverse_for_each(F&& f) const noexcept;
+
+	[[nodiscard]] std::span<T> subspan(size_t offset, size_t count) noexcept;
+	[[nodiscard]] std::span<const T> subspan(size_t offset, size_t count) const noexcept;
+	[[nodiscard]] std::span<T> subspan(size_t offset) noexcept;
+	[[nodiscard]] std::span<const T> subspan(size_t offset) const noexcept;
+	[[nodiscard]] std::span<T> first(size_t n) noexcept;
+	[[nodiscard]] std::span<const T> first(size_t n) const noexcept;
+	[[nodiscard]] std::span<T> last(size_t n) noexcept;
+	[[nodiscard]] std::span<const T> last(size_t n) const noexcept;
+	template <size_t N> [[nodiscard]] std::span<T, N> first_fixed() noexcept;
+	template <size_t N> [[nodiscard]] std::span<const T, N> first_fixed() const noexcept;
+	template <size_t N> [[nodiscard]] std::span<T, N> last_fixed() noexcept;
+	template <size_t N> [[nodiscard]] std::span<const T, N> last_fixed() const noexcept;
+
+	[[nodiscard]] pool_strided_span<T> strided_span_view(size_t start, size_t step, size_t count) noexcept;
+	template <typename F> void strided_for_each(size_t start, size_t step, F&& f) noexcept;
+	template <typename F> void strided_for_each(size_t start, size_t step, F&& f) const noexcept;
+	template <size_t Step, typename F> void strided_for_each(F&& f) noexcept;
+	template <size_t Step, typename F> void strided_for_each(F&& f) const noexcept;
+
+	template <typename FTransform, typename FConsume>
+	void transform_for_each(FTransform&& tr, FConsume&& con) noexcept;
+	template <typename FTransform, typename FConsume>
+	void transform_for_each(FTransform&& tr, FConsume&& con) const noexcept;
+	template <typename R, typename F>
+	void transform_to(R* dst, size_t count, F&& tr) const noexcept;
+
+	[[nodiscard]] T* find(const T& value) noexcept;
+	[[nodiscard]] const T* find(const T& value) const noexcept;
+	template <typename Pred> requires std::predicate<Pred, const T&>
+	[[nodiscard]] T* find_if(Pred pred) noexcept;
+	template <typename Pred> requires std::predicate<Pred, const T&>
+	[[nodiscard]] const T* find_if(Pred pred) const noexcept;
+	template <typename Pred> requires std::predicate<Pred, const T&>
+	[[nodiscard]] T* find_if_not(Pred pred) noexcept;
+	template <typename Pred> requires std::predicate<Pred, const T&>
+	[[nodiscard]] const T* find_if_not(Pred pred) const noexcept;
+	[[nodiscard]] bool contains(const T& value) const noexcept;
+	template <typename Pred> requires std::predicate<Pred, const T&>
+	[[nodiscard]] size_t count_if(Pred pred) const noexcept;
+	template <typename Pred, typename F>
+	requires std::predicate<Pred, const T&> && std::invocable<F, T&>
+	void filter_for_each(Pred pred, F&& f) noexcept;
+	template <typename Pred, typename F>
+	requires std::predicate<Pred, const T&> && std::invocable<F, const T&>
+	void filter_for_each(Pred pred, F&& f) const noexcept;
+	template <typename Pred> requires std::predicate<Pred, const T&>
+	void filter_indices_to(class_pool<size_t>& dst, Pred pred) noexcept;
+
+	template <typename F, typename U = T>
+	[[nodiscard]] U reduce(F&& f, U init) const noexcept;
+	template <typename F, typename U = T>
+	[[nodiscard]] U reduce_pairwise(F&& f, U init) const noexcept;
+	[[nodiscard]] T* min_element() noexcept;
+	[[nodiscard]] const T* min_element() const noexcept;
+	[[nodiscard]] T* max_element() noexcept;
+	[[nodiscard]] const T* max_element() const noexcept;
+	[[nodiscard]] std::pair<T*, T*> minmax_element() noexcept;
+	[[nodiscard]] std::pair<const T*, const T*> minmax_element() const noexcept;
+	template <typename U = T> requires std::is_arithmetic_v<U>
+	[[nodiscard]] U sum() const noexcept;
+	template <typename U = T> requires std::is_arithmetic_v<U>
+	[[nodiscard]] U dot_product(const U* other, size_t count) const noexcept;
+
+	template <size_t N, typename F>
+	requires (N > 0) && std::invocable<F, std::span<T, N>>
+	void for_each_window(F&& f) noexcept;
+	template <size_t N, typename F>
+	requires (N > 0) && std::invocable<F, std::span<const T, N>>
+	void for_each_window(F&& f) const noexcept;
+	template <size_t N, typename F>
+	requires (N > 0) && std::invocable<F, std::span<T, N>>
+	void for_each_chunk(F&& f) noexcept;
+	template <size_t N, typename F>
+	requires (N > 0) && std::invocable<F, std::span<const T, N>>
+	void for_each_chunk(F&& f) const noexcept;
+	template <size_t N> requires (N > 0)
+	[[nodiscard]] std::span<T, N> window_span(size_t offset) noexcept;
+	template <size_t N> requires (N > 0)
+	[[nodiscard]] std::span<const T, N> window_span(size_t offset) const noexcept;
+	template <size_t N> requires (N > 0)
+	[[nodiscard]] std::span<T, N> chunk_span(size_t chunk_idx) noexcept;
+	template <size_t N> requires (N > 0)
+	[[nodiscard]] std::span<const T, N> chunk_span(size_t chunk_idx) const noexcept;
+
+	template <typename F> requires std::invocable<F, size_t, T&>
+	void for_each_enumerated(F&& f) noexcept;
+	template <typename F> requires std::invocable<F, size_t, const T&>
+	void for_each_enumerated(F&& f) const noexcept;
+
+	template <typename U, typename F>
+	requires std::invocable<F, T&, U&>
+	void for_each_zip(class_pool<U>& other, F&& f) noexcept;
+	template <typename U, typename F>
+	requires std::invocable<F, const T&, const U&>
+	void for_each_zip(const class_pool<U>& other, F&& f) const noexcept;
+	template <typename U, typename F>
+	requires std::invocable<F, T&, U&>
+	void for_each_zip(U* other, size_t count, F&& f) noexcept;
+	template <typename U, typename F>
+	requires std::invocable<F, const T&, const U&>
+	void for_each_zip(const U* other, size_t count, F&& f) const noexcept;
+	template <typename U, typename F>
+	requires std::invocable<F, T&, U&>
+	void for_each_zip(std::span<U> other, F&& f) noexcept;
+	template <typename U, typename F>
+	requires std::invocable<F, const T&, const U&>
+	void for_each_zip(std::span<const U> other, F&& f) const noexcept;
+	template <typename U, typename R, typename F>
+	requires std::invocable<F, const T&, const U&>
+	void zip_with_to(R* dst, const U* other, size_t count, F&& f) const noexcept;
+
+	[[nodiscard]] bool equal(const T* other, size_t count) const noexcept;
+	template <typename U>
+	[[nodiscard]] bool equal(const class_pool<U>& other) const noexcept;
+	template <typename U>
+	[[nodiscard]] bool equal(std::span<const U> other) const noexcept;
+
+	[[nodiscard]] T* aligned_data() noexcept;
+	[[nodiscard]] const T* aligned_data() const noexcept;
+	[[nodiscard]] std::span<T> aligned_span() noexcept;
+	[[nodiscard]] std::span<const T> aligned_span() const noexcept;
+	template <typename F> requires std::is_trivially_copyable_v<T> && std::invocable<F, T&>
+	void simd_for_each(F&& f) noexcept;
+	template <typename F> requires std::is_trivially_copyable_v<T> && std::invocable<F, const T&>
+	void simd_for_each(F&& f) const noexcept;
+	[[nodiscard]] size_t unaligned_tail_offset() const noexcept;
+
+	void copy_to(T* dst, size_t count) const noexcept;
+	void copy_to(std::span<T> dst) const noexcept;
+	void move_to(T* dst, size_t count) noexcept;
+	void move_to(std::span<T> dst) noexcept;
+	void reverse_copy_to(T* dst, size_t count) const noexcept;
+	void reverse_copy_to(std::span<T> dst) const noexcept;
+
+	// class_pool 独有接口
+	[[nodiscard]] size_t compact_to(T* dst, size_t count) const noexcept;
+	[[nodiscard]] size_t live_count() const noexcept;
+	[[nodiscard]] size_t holes_count() const noexcept;
+
 private:
+	[[nodiscard]] size_t find_first_hole_() noexcept;
+	void recompute_is_dense() noexcept;
+	void bulk_set_bits(size_t start, size_t end) noexcept;
+
+	template <typename EntityLike>
+	void append_indices_from(const EntityLike* entities, size_t count) noexcept;
+
 	void update_dense_status() noexcept;
 };
 
@@ -623,3 +791,485 @@ template <typename T>
 void swap(class_pool<T>& a, class_pool<T>& b) noexcept;
 
 #include "class_pool_impl.hpp"
+#include "class_pool_views.hpp"
+
+// 视图成员函数定义: 转发至 container_views.hpp 全局函数
+
+template <typename T>
+template <typename F>
+inline void class_pool<T>::reverse_for_each(F&& f) noexcept
+{
+	::reverse_for_each(*this, std::forward<F>(f));
+}
+template <typename T>
+template <typename F>
+inline void class_pool<T>::reverse_for_each(F&& f) const noexcept
+{
+	::reverse_for_each(*this, std::forward<F>(f));
+}
+
+template <typename T>
+inline std::span<T> class_pool<T>::subspan(size_t offset, size_t count) noexcept
+{
+	return ::subspan(*this, offset, count);
+}
+template <typename T>
+inline std::span<const T> class_pool<T>::subspan(size_t offset, size_t count) const noexcept
+{
+	return ::subspan(*this, offset, count);
+}
+template <typename T>
+inline std::span<T> class_pool<T>::subspan(size_t offset) noexcept
+{
+	return ::subspan(*this, offset);
+}
+template <typename T>
+inline std::span<const T> class_pool<T>::subspan(size_t offset) const noexcept
+{
+	return ::subspan(*this, offset);
+}
+template <typename T>
+inline std::span<T> class_pool<T>::first(size_t n) noexcept
+{
+	return ::first(*this, n);
+}
+template <typename T>
+inline std::span<const T> class_pool<T>::first(size_t n) const noexcept
+{
+	return ::first(*this, n);
+}
+template <typename T>
+inline std::span<T> class_pool<T>::last(size_t n) noexcept
+{
+	return ::last(*this, n);
+}
+template <typename T>
+inline std::span<const T> class_pool<T>::last(size_t n) const noexcept
+{
+	return ::last(*this, n);
+}
+template <typename T>
+template <size_t N>
+inline std::span<T, N> class_pool<T>::first_fixed() noexcept
+{
+	return ::first_fixed<N>(*this);
+}
+template <typename T>
+template <size_t N>
+inline std::span<const T, N> class_pool<T>::first_fixed() const noexcept
+{
+	return ::first_fixed<N>(*this);
+}
+template <typename T>
+template <size_t N>
+inline std::span<T, N> class_pool<T>::last_fixed() noexcept
+{
+	return ::last_fixed<N>(*this);
+}
+template <typename T>
+template <size_t N>
+inline std::span<const T, N> class_pool<T>::last_fixed() const noexcept
+{
+	return ::last_fixed<N>(*this);
+}
+
+template <typename T>
+inline pool_strided_span<T> class_pool<T>::strided_span_view(
+    size_t start, size_t step, size_t count) noexcept
+{
+	return ::strided_span_view(*this, start, step, count);
+}
+template <typename T>
+template <typename F>
+inline void class_pool<T>::strided_for_each(size_t start, size_t step, F&& f) noexcept
+{
+	::strided_for_each(*this, start, step, std::forward<F>(f));
+}
+template <typename T>
+template <typename F>
+inline void class_pool<T>::strided_for_each(size_t start, size_t step, F&& f) const noexcept
+{
+	::strided_for_each(*this, start, step, std::forward<F>(f));
+}
+template <typename T>
+template <size_t Step, typename F>
+inline void class_pool<T>::strided_for_each(F&& f) noexcept
+{
+	::strided_for_each<Step>(*this, std::forward<F>(f));
+}
+template <typename T>
+template <size_t Step, typename F>
+inline void class_pool<T>::strided_for_each(F&& f) const noexcept
+{
+	::strided_for_each<Step>(*this, std::forward<F>(f));
+}
+
+template <typename T>
+template <typename FTransform, typename FConsume>
+inline void class_pool<T>::transform_for_each(FTransform&& tr, FConsume&& con) noexcept
+{
+	::transform_for_each(*this, std::forward<FTransform>(tr), std::forward<FConsume>(con));
+}
+template <typename T>
+template <typename FTransform, typename FConsume>
+inline void class_pool<T>::transform_for_each(FTransform&& tr, FConsume&& con) const noexcept
+{
+	::transform_for_each(*this, std::forward<FTransform>(tr), std::forward<FConsume>(con));
+}
+template <typename T>
+template <typename R, typename F>
+inline void class_pool<T>::transform_to(R* dst, size_t count, F&& tr) const noexcept
+{
+	::transform_to(*this, dst, count, std::forward<F>(tr));
+}
+
+template <typename T>
+inline T* class_pool<T>::find(const T& value) noexcept
+{
+	return ::find(*this, value);
+}
+template <typename T>
+inline const T* class_pool<T>::find(const T& value) const noexcept
+{
+	return ::find(*this, value);
+}
+template <typename T>
+template <typename Pred> requires std::predicate<Pred, const T&>
+inline T* class_pool<T>::find_if(Pred pred) noexcept
+{
+	return ::find_if(*this, pred);
+}
+template <typename T>
+template <typename Pred> requires std::predicate<Pred, const T&>
+inline const T* class_pool<T>::find_if(Pred pred) const noexcept
+{
+	return ::find_if(*this, pred);
+}
+template <typename T>
+template <typename Pred> requires std::predicate<Pred, const T&>
+inline T* class_pool<T>::find_if_not(Pred pred) noexcept
+{
+	return ::find_if_not(*this, pred);
+}
+template <typename T>
+template <typename Pred> requires std::predicate<Pred, const T&>
+inline const T* class_pool<T>::find_if_not(Pred pred) const noexcept
+{
+	return ::find_if_not(*this, pred);
+}
+template <typename T>
+inline bool class_pool<T>::contains(const T& value) const noexcept
+{
+	return ::contains(*this, value);
+}
+template <typename T>
+template <typename Pred> requires std::predicate<Pred, const T&>
+inline size_t class_pool<T>::count_if(Pred pred) const noexcept
+{
+	return ::count_if(*this, pred);
+}
+template <typename T>
+template <typename Pred, typename F>
+requires std::predicate<Pred, const T&> && std::invocable<F, T&>
+inline void class_pool<T>::filter_for_each(Pred pred, F&& f) noexcept
+{
+	::filter_for_each(*this, pred, std::forward<F>(f));
+}
+template <typename T>
+template <typename Pred, typename F>
+requires std::predicate<Pred, const T&> && std::invocable<F, const T&>
+inline void class_pool<T>::filter_for_each(Pred pred, F&& f) const noexcept
+{
+	::filter_for_each(*this, pred, std::forward<F>(f));
+}
+template <typename T>
+template <typename Pred> requires std::predicate<Pred, const T&>
+inline void class_pool<T>::filter_indices_to(class_pool<size_t>& dst, Pred pred) noexcept
+{
+	::filter_indices_to(*this, dst, pred);
+}
+
+template <typename T>
+template <typename F, typename U>
+inline U class_pool<T>::reduce(F&& f, U init) const noexcept
+{
+	return ::reduce(*this, std::forward<F>(f), std::move(init));
+}
+template <typename T>
+template <typename F, typename U>
+inline U class_pool<T>::reduce_pairwise(F&& f, U init) const noexcept
+{
+	return ::reduce_pairwise(*this, std::forward<F>(f), std::move(init));
+}
+template <typename T>
+inline T* class_pool<T>::min_element() noexcept
+{
+	return ::min_element(*this);
+}
+template <typename T>
+inline const T* class_pool<T>::min_element() const noexcept
+{
+	return ::min_element(*this);
+}
+template <typename T>
+inline T* class_pool<T>::max_element() noexcept
+{
+	return ::max_element(*this);
+}
+template <typename T>
+inline const T* class_pool<T>::max_element() const noexcept
+{
+	return ::max_element(*this);
+}
+template <typename T>
+inline std::pair<T*, T*> class_pool<T>::minmax_element() noexcept
+{
+	return ::minmax_element(*this);
+}
+template <typename T>
+inline std::pair<const T*, const T*> class_pool<T>::minmax_element() const noexcept
+{
+	return ::minmax_element(*this);
+}
+template <typename T>
+template <typename U> requires std::is_arithmetic_v<U>
+inline U class_pool<T>::sum() const noexcept
+{
+	return ::sum(*this);
+}
+template <typename T>
+template <typename U> requires std::is_arithmetic_v<U>
+inline U class_pool<T>::dot_product(const U* other, size_t count) const noexcept
+{
+	return ::dot_product(*this, other, count);
+}
+
+template <typename T>
+template <size_t N, typename F>
+requires (N > 0) && std::invocable<F, std::span<T, N>>
+inline void class_pool<T>::for_each_window(F&& f) noexcept
+{
+	::for_each_window<N>(*this, std::forward<F>(f));
+}
+template <typename T>
+template <size_t N, typename F>
+requires (N > 0) && std::invocable<F, std::span<const T, N>>
+inline void class_pool<T>::for_each_window(F&& f) const noexcept
+{
+	::for_each_window<N>(*this, std::forward<F>(f));
+}
+template <typename T>
+template <size_t N, typename F>
+requires (N > 0) && std::invocable<F, std::span<T, N>>
+inline void class_pool<T>::for_each_chunk(F&& f) noexcept
+{
+	::for_each_chunk<N>(*this, std::forward<F>(f));
+}
+template <typename T>
+template <size_t N, typename F>
+requires (N > 0) && std::invocable<F, std::span<const T, N>>
+inline void class_pool<T>::for_each_chunk(F&& f) const noexcept
+{
+	::for_each_chunk<N>(*this, std::forward<F>(f));
+}
+template <typename T>
+template <size_t N> requires (N > 0)
+inline std::span<T, N> class_pool<T>::window_span(size_t offset) noexcept
+{
+	return ::window_span<N>(*this, offset);
+}
+template <typename T>
+template <size_t N> requires (N > 0)
+inline std::span<const T, N> class_pool<T>::window_span(size_t offset) const noexcept
+{
+	return ::window_span<N>(*this, offset);
+}
+template <typename T>
+template <size_t N> requires (N > 0)
+inline std::span<T, N> class_pool<T>::chunk_span(size_t chunk_idx) noexcept
+{
+	return ::chunk_span<N>(*this, chunk_idx);
+}
+template <typename T>
+template <size_t N> requires (N > 0)
+inline std::span<const T, N> class_pool<T>::chunk_span(size_t chunk_idx) const noexcept
+{
+	return ::chunk_span<N>(*this, chunk_idx);
+}
+
+template <typename T>
+template <typename F> requires std::invocable<F, size_t, T&>
+inline void class_pool<T>::for_each_enumerated(F&& f) noexcept
+{
+	::for_each_enumerated(*this, std::forward<F>(f));
+}
+template <typename T>
+template <typename F> requires std::invocable<F, size_t, const T&>
+inline void class_pool<T>::for_each_enumerated(F&& f) const noexcept
+{
+	::for_each_enumerated(*this, std::forward<F>(f));
+}
+
+template <typename T>
+template <typename U, typename F>
+requires std::invocable<F, T&, U&>
+inline void class_pool<T>::for_each_zip(class_pool<U>& other, F&& f) noexcept
+{
+	::for_each_zip(*this, other, std::forward<F>(f));
+}
+template <typename T>
+template <typename U, typename F>
+requires std::invocable<F, const T&, const U&>
+inline void class_pool<T>::for_each_zip(const class_pool<U>& other, F&& f) const noexcept
+{
+	::for_each_zip(*this, other, std::forward<F>(f));
+}
+template <typename T>
+template <typename U, typename F>
+requires std::invocable<F, T&, U&>
+inline void class_pool<T>::for_each_zip(U* other, size_t count, F&& f) noexcept
+{
+	::for_each_zip(*this, other, count, std::forward<F>(f));
+}
+template <typename T>
+template <typename U, typename F>
+requires std::invocable<F, const T&, const U&>
+inline void class_pool<T>::for_each_zip(const U* other, size_t count, F&& f) const noexcept
+{
+	::for_each_zip(*this, other, count, std::forward<F>(f));
+}
+template <typename T>
+template <typename U, typename F>
+requires std::invocable<F, T&, U&>
+inline void class_pool<T>::for_each_zip(std::span<U> other, F&& f) noexcept
+{
+	::for_each_zip(*this, other.data(), other.size(), std::forward<F>(f));
+}
+template <typename T>
+template <typename U, typename F>
+requires std::invocable<F, const T&, const U&>
+inline void class_pool<T>::for_each_zip(std::span<const U> other, F&& f) const noexcept
+{
+	::for_each_zip(*this, other.data(), other.size(), std::forward<F>(f));
+}
+template <typename T>
+template <typename U, typename R, typename F>
+requires std::invocable<F, const T&, const U&>
+inline void class_pool<T>::zip_with_to(R* dst, const U* other, size_t count, F&& f) const noexcept
+{
+	::zip_with_to(*this, other, dst, count, std::forward<F>(f));
+}
+
+template <typename T>
+inline bool class_pool<T>::equal(const T* other, size_t count) const noexcept
+{
+	return ::equal(*this, other, count);
+}
+template <typename T>
+template <typename U>
+inline bool class_pool<T>::equal(const class_pool<U>& other) const noexcept
+{
+	if (count() != other.count()) [[unlikely]] { return false; }
+	auto ia = cbegin();
+	auto ib = other.cbegin();
+	const auto ea = cend();
+	while (ia != ea)
+	{
+		if (!(*ia == *ib)) [[unlikely]] { return false; }
+		++ia;
+		++ib;
+	}
+	return true;
+}
+template <typename T>
+template <typename U>
+inline bool class_pool<T>::equal(std::span<const U> other) const noexcept
+{
+	return equal(other.data(), other.size());
+}
+
+template <typename T>
+inline T* class_pool<T>::aligned_data() noexcept
+{
+	return ::aligned_data(*this);
+}
+template <typename T>
+inline const T* class_pool<T>::aligned_data() const noexcept
+{
+	return ::aligned_data(*this);
+}
+template <typename T>
+inline std::span<T> class_pool<T>::aligned_span() noexcept
+{
+	return ::aligned_span(*this);
+}
+template <typename T>
+inline std::span<const T> class_pool<T>::aligned_span() const noexcept
+{
+	return ::aligned_span(*this);
+}
+template <typename T>
+template <typename F> requires std::is_trivially_copyable_v<T> && std::invocable<F, T&>
+inline void class_pool<T>::simd_for_each(F&& f) noexcept
+{
+	::simd_for_each(*this, std::forward<F>(f));
+}
+template <typename T>
+template <typename F> requires std::is_trivially_copyable_v<T> && std::invocable<F, const T&>
+inline void class_pool<T>::simd_for_each(F&& f) const noexcept
+{
+	::simd_for_each(*this, std::forward<F>(f));
+}
+template <typename T>
+inline size_t class_pool<T>::unaligned_tail_offset() const noexcept
+{
+	return ::unaligned_tail_offset(*this);
+}
+
+template <typename T>
+inline void class_pool<T>::copy_to(T* dst, size_t count) const noexcept
+{
+	::copy_to(*this, dst, count);
+}
+template <typename T>
+inline void class_pool<T>::copy_to(std::span<T> dst) const noexcept
+{
+	::copy_to(*this, dst);
+}
+template <typename T>
+inline void class_pool<T>::move_to(T* dst, size_t count) noexcept
+{
+	::move_to(*this, dst, count);
+}
+template <typename T>
+inline void class_pool<T>::move_to(std::span<T> dst) noexcept
+{
+	::move_to(*this, dst);
+}
+template <typename T>
+inline void class_pool<T>::reverse_copy_to(T* dst, size_t count) const noexcept
+{
+	::reverse_copy_to(*this, dst, count);
+}
+template <typename T>
+inline void class_pool<T>::reverse_copy_to(std::span<T> dst) const noexcept
+{
+	::reverse_copy_to(*this, dst);
+}
+
+// class_pool 独有接口
+template <typename T>
+inline size_t class_pool<T>::compact_to(T* dst, size_t count) const noexcept
+{
+	return ::compact_to(*this, dst, count);
+}
+template <typename T>
+inline size_t class_pool<T>::live_count() const noexcept
+{
+	return ::live_count(*this);
+}
+template <typename T>
+inline size_t class_pool<T>::holes_count() const noexcept
+{
+	return ::holes_count(*this);
+}

@@ -1282,7 +1282,7 @@ static void test_zip_views(size_t n)
             T* dp = dst.data();
             T* bp = b.data();
             a.template zip_with_to<T, T>(dp, bp, n,
-                [](const T& x, const T& y) -> T { return x; });
+                [](const T& x, [[maybe_unused]] const T& y) -> T { return x; });
             uint32_t sum = 0;
             for (size_t i = 0; i < n; ++i) { sum += checksum(dst[i]); }
             return opaque(sum);

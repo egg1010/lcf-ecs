@@ -507,15 +507,15 @@ NOINLINE void heavy_function() noexcept
 
 window.DOCS_DATA['time'] = {
   id: 'time',
-  title: "time — 计时与基准测量",
+  title: "timer — 计时与定时触发",
   category: 'tools',
   icon: 'T',
   order: 28,
-  content: `## 28. time — 计时与基准测量
+  content: `## 28. timer — 计时与定时触发
 
 \`#include "part/time.hpp"\`，全局命名空间。\`noexcept\`。
 
-时间测量工具（仅时间相关操作）：墙钟 + CPU 周期 / 配对计时 / RAII 作用域计时 / 统计 / 基准测试。设计原则：精度第一，性能第二。不提供 CPU 频率/缓存/屏障。x86/x64 提供 \`rdtsc\`/\`rdtscp\`，其他平台返回 0。
+时间测量与定时触发：墙钟时间（纳秒/微秒/毫秒/秒）与 CPU 周期测量，配对计时，定时调度器。x86/x64 提供 \`rdtsc\`/\`rdtscp\`，其他平台返回 0。
 
 ### 28.1 rdtsc / rdtscp — CPU 周期读取原语
 
@@ -529,179 +529,105 @@ uint64_t tsc = rdtsc();
 uint64_t tsc_serialized = rdtscp();
 \`\`\`
 
-### 28.2 stopwatch — 统一计时器（同时记录墙钟 + 周期）
-
-构造时双 \`now()\`：先 \`rdtscp\`（序列化，干净起点），后 \`steady_clock\`（单调，绝对时间）。
+### 28.2 timer — 统一计时器
 
 | 接口 | 说明 |
 |------|------|
-| \`stopwatch()\` | 构造并记录起点（先 rdtscp 后 clock::now） |
+| \`timer()\` | 构造并记录起点 |
 | \`reset()\` | 重置起点 |
-| \`ns()\` | 墙钟纳秒数 |
-| \`us()\` | 墙钟微秒数 |
-| \`ms()\` | 墙钟毫秒数 |
-| \`s()\` | 墙钟秒数 |
-| \`cycles()\` | CPU 周期数 |
-| \`snapshot()\` | 一次性返回 \`time_snapshot{ns_val, cycles}\`，避免多次 now() 调用 |
+| \`elapsed_nanoseconds()\` | 墙钟已逝纳秒数 |
+| \`elapsed_microseconds()\` | 墙钟已逝微秒数 |
+| \`elapsed_milliseconds()\` | 墙钟已逝毫秒数 |
+| \`elapsed_seconds()\` | 墙钟已逝秒数 |
+| \`elapsed_cycles()\` | CPU 周期数（非 x86 返回 0） |
+| \`take_snapshot()\` | 一次性返回 \`snapshot{nanoseconds, cycles}\` |
 
 \`\`\`cpp
-stopwatch sw;
+timer t;
 // ... 执行操作 ...
-double ns = sw.ns();
-uint64_t cycles = sw.cycles();
+double ns = t.elapsed_nanoseconds();
+uint64_t cycles = t.elapsed_cycles();
 
-// 一次性快照（精度优先，终点先 rdtscp 后 clock::now）
-time_snapshot snap = sw.snapshot();
-// snap.ns_val, snap.cycles
+// 一次性快照
+timer::snapshot snap = t.take_snapshot();
+// snap.nanoseconds, snap.cycles
 \`\`\`
 
-### 28.3 measure_ns / measure_cycles — 配对计时
+### 28.3 timer 静态原语 — 当前时间与配对计时
 
 | 接口 | 说明 |
 |------|------|
-| \`measure_ns(fn)\` | 墙钟配对计时，返回纳秒 |
-| \`measure_cycles(fn)\` | 周期配对计时，返回周期数（非 x86 返回 0） |
+| \`timer::now_cycles()\` | 当前 CPU 周期计数（绝对值，非 x86 返回 0） |
+| \`timer::now_nanoseconds()\` | 当前墙钟纳秒（绝对值，自 epoch 起） |
+| \`timer::measure_nanoseconds(fn)\` | 配对计时，返回 fn 执行的墙钟纳秒 |
+| \`timer::measure_cycles(fn)\` | 配对计时，返回 fn 执行的 CPU 周期数（非 x86 返回 0） |
 
 \`\`\`cpp
-double ns = measure_ns([]() { /* 被测代码 */ });
-uint64_t cyc = measure_cycles([]() { /* 被测代码 */ });
+uint64_t c = timer::now_cycles();
+double ns = timer::now_nanoseconds();
+
+double elapsed_ns = timer::measure_nanoseconds([]() { /* 被测代码 */ });
+uint64_t elapsed_cyc = timer::measure_cycles([]() { /* 被测代码 */ });
 \`\`\`
 
-### 28.4 format_duration — 耗时自动格式化
+### 28.4 时间字面量 — 配合 scheduler 使用
+
+| 字面量 | 说明 |
+|------|------|
+| \`100_ns\` | 100 纳秒 |
+| \`100_us\` | 100 微秒（= 100,000 纳秒） |
+| \`100_ms\` | 100 毫秒（= 100,000,000 纳秒） |
+| \`1_sec\` | 1 秒（= 1,000,000,000 纳秒） |
+
+\`\`\`cpp
+double a = 100_ms;   // 100000000.0
+double b = 16_ms;    // 16000000.0
+double c = 1_sec;    // 1000000000.0
+\`\`\`
+
+### 28.5 timer::scheduler — 定时触发器
 
 | 接口 | 说明 |
 |------|------|
-| \`format_duration(ns_val, buf, cap)\` | 将纳秒值格式化为可读字符串，自动选单位（ns/us/ms/s） |
+| \`timer::scheduler::invalid_id\` | 无效定时器 ID 常量 |
+| \`schedule_after(delay_ns, task)\` | 一次性：delay_ns 纳秒后触发，返回 \`timer_id\`（可用字面量） |
+| \`schedule_every(period_ns, task)\` | 周期性：每 period_ns 纳秒触发，返回 \`timer_id\`（可用字面量） |
+| \`cancel(id)\` | 取消定时器（惰性标记，ID 不失效） |
+| \`tick()\` | 推进时间，触发所有到期回调 |
+| \`compact()\` | 清理已取消的槽位（调用后 ID 可能失效） |
+| \`pending_count()\` | 挂起定时器数量 |
+| \`clear()\` | 清空所有定时器 |
+
+\`task\` 参数类型为 \`t_fun<void()>\`，可传入函数指针、lambda 或成员函数指针（CTAD 自动推导）。
 
 \`\`\`cpp
-char buf[32];
-format_duration(1234.5, buf, sizeof(buf));  // "1.23us"
-format_duration(0.5, buf, sizeof(buf));     // "0.5ns"
-format_duration(1500000.0, buf, sizeof(buf)); // "1.50ms"
-\`\`\`
+timer::scheduler sched;
 
-### 28.5 scope_time — RAII 作用域计时
-
-| 接口 | 说明 |
-|------|------|
-| \`scope_time(name)\` | 构造并开始计时，析构时记录到全局 \`scope_records()\` |
-| \`scope_records()\` | 全局记录表引用（\`dense<scope_record_entry>\`） |
-| \`scope_clear()\` | 清空全局记录 |
-| \`scope_report()\` | 打印所有记录到 stdout（格式化对齐） |
-
-\`\`\`cpp
-{
-    scope_time st("my_function");
-    // ... 执行操作 ...
-}  // 析构时自动记录 name + ns + cycles
-
-scope_report();  // 打印所有作用域计时记录
-scope_clear();   // 清空记录
-\`\`\`
-
-### 28.6 stats — 统计分布
-
-| 字段/接口 | 说明 |
-|------|------|
-| \`min\` / \`max\` / \`mean\` / \`median\` | 基本统计量（字段） |
-| \`p50\` / \`p90\` / \`p95\` / \`p99\` | 百分位（字段） |
-| \`stddev\` | 标准差（字段） |
-| \`count\` | 样本数（字段） |
-| \`compute_stats(const dense<double>&)\` | 从样本计算统计量（内部拷贝排序） |
-| \`compute_stats(dense<double>&&)\` | 移动版（直接排序原样本） |
-| \`compute_stats_t<T>(const dense<T>&)\` | 通用类型版（uint64_t/int 等） |
-
-\`\`\`cpp
-dense<double> samples;
-samples.push_back(1.0);
-samples.push_back(2.0);
-samples.push_back(3.0);
-stats s = compute_stats(std::move(samples));
-// s.mean == 2.0, s.median == 2.0
-\`\`\`
-
-### 28.7 p2_quantile — P² 在线分位数估计器
-
-| 接口 | 说明 |
-|------|------|
-| \`p2_quantile(quantile)\` | 构造指定分位数估计器（0.0~1.0） |
-| \`add(x)\` | 添加观测值，O(1) |
-| \`estimate()\` | 当前分位数估计值 |
-| \`count()\` | 已观测样本数 |
-| \`reset()\` | 重置估计器 |
-
-\`\`\`cpp
-p2_quantile est(0.99);  // p99 估计器
-for (int i = 0; i < 1000000; ++i)
-{
-    est.add(measure_ns(some_fn));
-}
-double p99 = est.estimate();
-// 无需存储 100 万个样本，内存 O(1)
-\`\`\`
-
-### 28.8 benchmark — 自动模式基准测试
-
-基于单次耗时自动选择模式（精度优先）：< 100ns 用 batch，100ns~10us 用 chunked（P² 分位数），> 10us 用 precise（全样本）。
-
-| 接口 | 说明 |
-|------|------|
-| \`benchmark(fn, iterations=10000)\` | 自动模式选择，返回 \`benchmark_result\` |
-| \`benchmark_batch(iterations, warmup, fn)\` | batch 模式（单次计时包裹循环），返回 \`stats\` |
-| \`benchmark_chunked(iterations, chunk_size, warmup, fn)\` | chunked 模式（P² 分位数），返回 \`p2_benchmark_result\` |
-| \`benchmark_precise(iterations, warmup, fn)\` | precise 模式（全样本，每次单独计时），返回 \`stats\` |
-| \`benchmark_precise_cycles(iterations, warmup, fn)\` | precise 周期版（仅 x86），返回 \`stats\` |
-| \`benchmark_p2(iterations, warmup, fn)\` | P² 流式基准，返回 \`p2_benchmark_result\` |
-| \`warmup_until_stable(fn, max_iter=10000)\` | 预热直到连续 3 次偏差 <5% |
-
-\`\`\`cpp
-// 自动模式（推荐）
-benchmark_result r = benchmark([]() { /* 被测代码 */ });
-// r.ns_mean, r.ns_p50, r.ns_p99, r.cycles_mean, r.iterations
-
-// 精确周期级基准（亚 ns 级操作）
-stats s = benchmark_precise_cycles(10000, 1000, []() { /* 被测代码 */ });
-// s.min, s.p50, s.p99, s.mean 等
-
-// 流式基准（超大迭代次数，O(1) 空间）
-p2_benchmark_result r2 = benchmark_p2(1000000, 100, []() { /* 被测代码 */ });
-// r2.p50, r2.p90, r2.p95, r2.p99
-\`\`\`
-
-### 28.9 benchmark_runner — 多场景对比
-
-| 接口 | 说明 |
-|------|------|
-| \`run(name, fn, iterations=10000)\` | 运行一个场景并记录结果 |
-| \`report()\` | 打印对比表格到 stdout |
-| \`report_to(sink)\` | 可指定 sink 输出（sink 签名：\`sink(name, mean, p50, p99, cycles, iterations)\`） |
-| \`clear()\` | 清空结果 |
-| \`size()\` | 已记录场景数 |
-
-\`\`\`cpp
-benchmark_runner runner;
-runner.run("方案A", []() { /* 方案A代码 */ });
-runner.run("方案B", []() { /* 方案B代码 */ });
-runner.report();  // 打印对比表格
-
-// 自定义输出
-runner.report_to([](const char* name, const char* mean,
-                     const char* p50, const char* p99,
-                     uint64_t cycles, size_t iters) {
-    // 自定义处理
+// 一次性：100ms 后触发
+auto id1 = sched.schedule_after(100_ms, []() {
+    // 延迟回调
 });
+
+// 周期性：每 16ms 触发（约 60 FPS）
+auto id2 = sched.schedule_every(16_ms, []() {
+    // 帧调度
+});
+
+// 主循环推进
+while (running)
+{
+    sched.tick();
+}
+
+// 取消单个
+sched.cancel(id1);
+
+// 清理已取消槽位
+sched.compact();
+
+// 清空全部
+sched.clear();
 \`\`\`
-
-### 不要做什么
-
-| 错误做法 | 问题 | 正确做法 |
-|---------|------|---------|
-| 非 x86 平台依赖 \`cycles()\` 精度 | \`TIME_HAS_RDTSC=0\`，\`rdtscp()\` 返回 0 | 非 x86 平台用 \`ns()\`/\`us()\` 而非 \`cycles()\` |
-| \`compute_stats\` 传入空 samples | count=0，所有统计量为 0 | 先检查 samples 非空 |
-| \`scope_time\` 忘记 \`scope_clear()\` | 全局记录持续累积 | 每轮测试前调用 \`scope_clear()\` |
-| 多次调用 \`ns()\` + \`cycles()\` 取终点 | \`cycles()\` 含 \`ns()\` 调用开销 | 用 \`snapshot()\` 一次性获取 |
-| 大样本用 \`benchmark_precise\` 存储全部样本 | 内存占用 O(n) | 大样本（>10M）用 \`benchmark_p2\`，O(1) 空间 |
-| 亚 ns 级操作用 \`benchmark()\` 的 ns 路径 | \`steady_clock\` 分辨率 ~15ns | 用 \`benchmark_precise_cycles()\` 周期级精度 |
 
 ---
 `
@@ -709,157 +635,157 @@ runner.report_to([](const char* name, const char* mean,
 
 window.DOCS_DATA['analysis'] = {
   id: 'analysis',
-  title: "analysis — 微架构分析",
+  title: "analyzer — 微架构分析",
   category: 'tools',
   icon: 'A',
   order: 29,
-  content: `## 29. analysis — 微架构分析
+  content: `## 29. analyzer — 微架构分析
 
 \`#include "part/analysis.hpp"\`，全局命名空间。\`noexcept\`。
 
-微架构分析工具：内存屏障、缓存控制、序列化周期测量、地址生成、缓存命中测量、自适应层级检测。x86/x64 提供完整支持（rdtscp/clflush/mfence/lfence/sfence），其他平台屏障为编译器屏障，缓存测量回退到周期计数。
+微架构分析器：内存屏障、缓存控制、序列化周期测量、地址生成、缓存命中测量、自适应层级检测。x86/x64 全套支持，其他平台屏障为编译器屏障，缓存测量回退到周期计数。
 
-### 29.1 内存屏障原语
+### 29.1 配置与报告类型
+
+| 类型 | 说明 |
+|------|------|
+| \`analyzer::config\` | 缓存层级阈值配置（\`l1_max\`/\`l2_max\`/\`l3_max\`/\`l4_max\`/\`cache_levels\`，默认 3 级） |
+| \`analyzer::cache_report\` | 命中测量报告（各级命中率 + 百分位周期） |
+| \`analyzer::batch_result\` | 批量测量结果（含基线扣除） |
+| \`analyzer::address_view\` | 地址视图 POD（零分配，持有指针 + 数量） |
+
+\`\`\`cpp
+analyzer::config c;            // 默认 3 级阈值
+c.cache_levels = 4;            // 切换为 4 级 (含 L4/DRAM)
+c.l4_max = 150.0;
+
+analyzer::config auto_c = analyzer::detect_config();  // 自适应检测
+\`\`\`
+
+### 29.2 构造与配置
 
 | 接口 | 说明 |
 |------|------|
-| \`mfence()\` | 全屏障（Store + Load 序列化） |
-| \`lfence()\` | Load 屏障（后续 Load 不重排到前面） |
-| \`sfence()\` | Store 屏障（后续 Store 不重排到前面） |
+| \`analyzer()\` | 默认构造（3 级阈值） |
+| \`analyzer(config)\` | 用指定配置构造 |
+| \`get_config()\` / \`set_config(c)\` | 读取 / 修改配置 |
 
 \`\`\`cpp
-// 确保前面的 Store 全局可见后再执行后续 Load
+analyzer a;                    // 默认 3 级
+analyzer a_auto(auto_c);       // 自适应配置
+a.set_config(c);               // 运行时切换配置
+\`\`\`
+
+### 29.3 内存屏障原语（静态）
+
+| 接口 | 说明 |
+|------|------|
+| \`analyzer::mfence()\` | 全屏障（Store + Load 序列化） |
+| \`analyzer::lfence()\` | Load 屏障 |
+| \`analyzer::sfence()\` | Store 屏障 |
+
+\`\`\`cpp
 store_data();
-sfence();
+analyzer::sfence();
 load_result();
 \`\`\`
 
-### 29.2 缓存控制
+### 29.4 缓存控制（静态）
 
 | 接口 | 说明 |
 |------|------|
-| \`cache_flush(p)\` | 刷新单条缓存行（clflush，64 字节对齐） |
-| \`cache_flush_range(p, bytes)\` | 刷新字节范围（逐缓存行刷新 + 尾部 mfence） |
+| \`analyzer::cache_flush(p)\` | 刷新单条缓存行 |
+| \`analyzer::cache_flush_range(p, bytes)\` | 刷新字节范围（逐行 + 尾部 mfence） |
 
 \`\`\`cpp
-// 冷缓存测量: 先刷出缓存, 再测访问延迟
-cache_flush_range(&data, sizeof(data));
-// 现在 data 不在任何缓存层级中
-auto r = measure_cache_hits(addrs);
+analyzer::cache_flush_range(&data, sizeof(data));
 \`\`\`
 
-### 29.3 序列化周期测量
+### 29.5 周期测量（静态）
 
 | 接口 | 说明 |
 |------|------|
-| \`rdtsc_fenced()\` | 全屏障周期读取（lfence; rdtsc; lfence，Intel 推荐） |
-| \`measure_cycles_fenced(fn)\` | 全屏障配对计时（适合短代码段，排除乱序干扰） |
-| \`measure_loop_cycles(fn)\` | 单次 rdtscp 包裹循环（开销更低，适合循环体总开销） |
+| \`analyzer::now_cycles_fenced()\` | 全屏障周期读取（lfence; rdtsc; lfence） |
+| \`analyzer::measure_cycles_fenced(fn)\` | 全屏障配对计时（短代码段精确测量） |
+| \`analyzer::measure_loop_cycles(fn)\` | 单次 rdtscp 包裹（循环总开销，低开销） |
 
 \`\`\`cpp
-// 精确测量短代码段 (排除乱序)
-uint64_t cyc = measure_cycles_fenced([]() { /* 短代码 */ });
+uint64_t cyc = analyzer::measure_cycles_fenced([]() { /* 短代码 */ });
 
-// 测量循环体总开销 (低开销)
-uint64_t total = measure_loop_cycles([]() {
+uint64_t total = analyzer::measure_loop_cycles([]() {
     for (int i = 0; i < 1000; ++i) { work(i); }
 });
 \`\`\`
 
-### 29.4 地址生成
+### 29.6 地址生成（静态）
 
 | 接口 | 说明 |
 |------|------|
-| \`address_view{addrs, count}\` | 地址视图 POD（零分配，持有指针+数量） |
-| \`make_sequential_addresses(base, count, stride)\` | 顺序地址序列（缓存友好） |
-| \`make_random_addresses(base, count, stride, seed)\` | 随机地址序列（缓存不友好，确定性可复现） |
+| \`analyzer::make_sequential_addresses(base, count, stride)\` | 顺序地址序列（缓存友好） |
+| \`analyzer::make_random_addresses(base, count, stride, seed)\` | 随机地址序列（确定性可复现） |
 
 \`\`\`cpp
 int buf[4096];
-auto seq = make_sequential_addresses(buf, 4096, sizeof(int));
-auto rnd = make_random_addresses(buf, 4096, sizeof(int), 42);  // seed=42
+auto seq = analyzer::make_sequential_addresses(buf, 4096, sizeof(int));
+auto rnd = analyzer::make_random_addresses(buf, 4096, sizeof(int), 42);
 
-// address_view 可直接索引
-for (size_t i = 0; i < seq.size(); ++i) {
-    volatile int v = *static_cast<const volatile int*>(seq[i]);
+analyzer::address_view av{seq.data(), seq.size()};
+for (size_t i = 0; i < av.size(); ++i) {
+    volatile int v = *static_cast<const volatile int*>(av[i]);
     (void)v;
 }
 \`\`\`
 
-### 29.5 缓存层级阈值
-
-| 字段/接口 | 说明 |
-|------|------|
-| \`latency_thresholds::l1_max\` | L1 命中阈值（默认 4.0 周期） |
-| \`latency_thresholds::l2_max\` | L2 命中阈值（默认 12.0 周期） |
-| \`latency_thresholds::l3_max\` | L3 命中阈值（默认 40.0 周期） |
-| \`latency_thresholds::cache_levels\` | 缓存层级数（1/2/3，默认 3） |
-| \`detect_cache_latency_thresholds()\` | 自适应检测缓存层级和阈值（1KB→16MB 扫描） |
-
-\`\`\`cpp
-// 默认三级阈值
-latency_thresholds th;
-
-// 自适应检测 (基于工作集大小扫描延迟跳变)
-latency_thresholds auto_th = detect_cache_latency_thresholds();
-// auto_th.cache_levels: 实际检测到的层级数 (1/2/3)
-// auto_th.l1_max / l2_max / l3_max: 自动标定的阈值
-
-// 模拟 1 级缓存场景 (嵌入式可能仅 1 级)
-latency_thresholds th_l1 = auto_th;
-th_l1.cache_levels = 1;
-\`\`\`
-
-### 29.6 缓存命中测量
+### 29.7 缓存命中测量（实例方法）
 
 | 接口 | 说明 |
 |------|------|
-| \`measure_cache_hits(addrs, th=默认)\` | 逐次计时 + 阈值分类，返回 \`cache_report\` |
-| \`measure_cache_batch(addrs, repeats=10)\` | 批量测量取最优 + 扣除基线，返回 \`batch_cache_result\` |
+| \`a.measure_hits(base, count, stride)\` | 一站式：内部生成地址 + 测量 + 分类 |
+| \`a.measure_hits(address_view)\` | 用预生成地址测量，返回 \`cache_report\` |
+| \`a.measure_batch(address_view, repeats=10)\` | 批量取最优 + 扣除基线，返回 \`batch_result\` |
 
 \`\`\`cpp
-auto seq = make_sequential_addresses(buf, 4096, sizeof(int));
-address_view av{seq.data(), seq.size()};
+analyzer a;
 
-// 逐次测量 (含百分位统计)
-cache_report r = measure_cache_hits(av);
-// r.l1_hit_rate, r.l2_hit_rate, r.l3_hit_rate, r.miss_rate
-// r.avg_cycles, r.p50_cycles, r.p95_cycles, r.p99_cycles
+// 一站式测量
+auto r = a.measure_hits(buf, 4096, sizeof(int));
+// r.l1_hit_rate / r.l2_hit_rate / r.l3_hit_rate / r.miss_rate
+// r.avg_cycles / r.p50_cycles / r.p95_cycles / r.p99_cycles
 
-// 批量精确测量 (扣除基线, 适合 L1/L2 延迟)
-batch_cache_result bcr = measure_cache_batch(av, 10);
-// bcr.net_cycles_per_access: 净每次访问周期
+// 预生成地址复用
+auto seq = analyzer::make_sequential_addresses(buf, 4096, sizeof(int));
+analyzer::address_view av{seq.data(), seq.size()};
+auto r2 = a.measure_hits(av);
 
-// 使用自定义阈值
-latency_thresholds th;
-th.l1_max = 5.0;  // 放宽 L1 阈值
-cache_report r2 = measure_cache_hits(av, th);
+// 批量精确测量
+auto b = a.measure_batch(av, 10);
+// b.net_cycles_per_access: 净每次访问周期
+
+// 自适应配置
+analyzer a_auto(analyzer::detect_config());
+auto r3 = a_auto.measure_hits(av);
 \`\`\`
 
-### 29.7 报告打印
+### 29.8 自适应检测与报告打印（静态）
 
 | 接口 | 说明 |
 |------|------|
-| \`print_cache_report(label, r)\` | 打印 cache_report 到 stdout |
-| \`print_cache_batch(label, r)\` | 打印 batch_cache_result 到 stdout |
-| \`print_thresholds(label, th)\` | 打印 latency_thresholds 到 stdout |
+| \`analyzer::detect_config()\` | 扫描 1KB→16MB 工作集检测缓存层级与阈值 |
+| \`analyzer::print_report(label, r)\` | 打印 \`cache_report\` 到 stdout |
+| \`analyzer::print_batch(label, r)\` | 打印 \`batch_result\` 到 stdout |
+| \`analyzer::print_config(label, c)\` | 打印 \`config\` 到 stdout |
 
 \`\`\`cpp
-cache_report r = measure_cache_hits(av);
-print_cache_report("顺序访问", r);
-// 输出: 顺序访问 | L1: 95.0%  L2:  4.5%  L3:  0.3%  Miss:  0.2% | avg=  3.5  p50=  3.0  ...
+analyzer::config c = analyzer::detect_config();
+analyzer::print_config("检测结果", c);
+
+auto r = a.measure_hits(av);
+analyzer::print_report("顺序访问", r);
+// 输出: 顺序访问 | L1: 98.9%  L2:  1.1%  L3:  0.0%  Miss:  0.0% | avg=  2.7  p50=  2.0  ...
+
+auto b = a.measure_batch(av, 10);
+analyzer::print_batch("批量测量", b);
 \`\`\`
-
-### 不要做什么
-
-| 错误做法 | 问题 | 正确做法 |
-|---------|------|---------|
-| 非 x86 平台依赖 \`cache_flush\` | 空操作，无法真正刷新缓存 | 非 x86 平台缓存测量结果仅供参考 |
-| \`measure_cache_hits\` 期望 L1 命中 100% | rdtscp 配对开销 ~50 周期干扰分类 | 已扣除基线，但极端情况仍有噪声，关注相对趋势 |
-| \`detect_cache_latency_thresholds\` 期望检测到 3 级 | L3 延迟跳变可能不明显 | 检测结果取决于 CPU 架构，2 级也是合理的 |
-| \`make_random_addresses\` 期望密码学安全随机 | 使用 xorshift64 PRNG，仅适合缓存测试 | 密码学场景用外部库 |
-| \`measure_cycles_fenced\` 测量长代码段 | lfence 开销累积 | 长代码段用 \`measure_loop_cycles\` 或 \`stopwatch\` |
-| \`cache_flush_range\` 跨页大量刷新 | 触发大量 TLB miss | 大范围刷新后需预热 TLB |
 
 ---
 `
@@ -1667,6 +1593,105 @@ std::cout << v13;            // [t_fun arity=2 target=null]
 | \`bind_front\` 参数数超过 arity | 编译期报错 | 参数数 <= arity |
 | \`reset\` 参数数与 arity 不符 | 编译期报错 | 参数数 == arity |
 | \`then_call\` 的 g 参数类型不匹配 | 编译期报错 | g 接受 R 类型参数 |
+`
+};
+
+window.DOCS_DATA['string_to_code'] = {
+  id: 'string_to_code',
+  title: "string_to_code — 字符串数字码",
+  category: 'tools',
+  icon: 'C',
+  order: 36,
+  content: `## 36. string_to_code — 字符串数字码
+
+\`#include "part/string_to_code.hpp"\`，命名空间 \`string_to_code\`。\`noexcept\`。
+
+字符串到数字码的可逆无冲突编码。短串（≤8 字节）内联 \`uint64_t\`，长串（>8 字节）用 \`uint64_t\` 数组。统一以 \`utf8_view\` 为输入输出接口 (\`utf8_view\` 可从 \`const char*\`/\`string_view\`/\`string\` 隐式构造)。
+
+### code_value — 数字码
+
+| 接口 | 说明 |
+|------|------|
+| \`code_value()\` | 默认构造，空状态 |
+| \`code_value(const utf8_view& s)\` | 编码 \`utf8_view\` 为数字码 (\`const char*\`/\`string_view\`/\`string\` 隐式转 \`utf8_view\`) |
+| \`code_value(code_value&&)\` | 移动构造 |
+| \`operator=(code_value&&)\` | 移动赋值 |
+| \`decode()\` | 解码为原字符串，返回 \`utf8_view\` (不持有内存) |
+| \`is_inline()\` | 是否为内联模式（短串 ≤8 字节） |
+| \`inline_value()\` | 内联值（仅 \`is_inline()=true\` 时有效） |
+| \`string_size()\` | 原始字符串字节长度 |
+| \`empty()\` | 是否为空 |
+| \`equals(const code_value&)\` | 无冲突等价比较 |
+| \`equals_strict(const code_value&)\` | 严格比较 (与 \`equals\` 语义相同，供语义明确场景使用) |
+| \`encode_equals(const char* data, size_t n)\` | 编码并比较: 避免构造中间 \`code_value\`，直接比较字符串与 this |
+| \`encode_inline(const char* data, size_t n)\` | 轻量编码 (短串专用): 返回 \`uint64_t\`，不构造对象 (\`n\` 必须 ≤8) |
+| \`encode_inline_n<N>(const char* data)\` | 编译期定长编码: \`N\` 为编译期常量 (1~8)，返回 \`uint64_t\` |
+
+> 注：禁止拷贝；\`decode()\` 返回的 \`utf8_view\` 不持有内存，调用方需保证 \`code_value\` 生命周期。
+
+### 自由函数
+
+| 接口 | 说明 |
+|------|------|
+| \`encode(const utf8_view& s)\` | 编码为 \`code_value\` (接受 \`const char*\`/\`string_view\`/\`string\` 隐式转换) |
+| \`equals(const code_value& a, const code_value& b)\` | 等价比较 |
+
+### 使用
+
+\`\`\`cpp
+#include "part/string_to_code.hpp"
+using namespace string_to_code;
+
+// 短串: 内联 uint64_t
+code_value v1("player");                 // const char* → utf8_view → code_value
+bool inline1 = v1.is_inline();           // true
+uint64_t key = v1.inline_value();        // 可直接做 map key
+utf8_view s1 = v1.decode();              // "player" (也可隐式转 string_view)
+
+// 长串: uint64_t 数组
+code_value v2("this_is_long_string");
+bool inline2 = v2.is_inline();           // false
+utf8_view s2 = v2.decode();             // "this_is_long_string"
+
+// 等价比较
+code_value a("test");
+code_value b("test");
+bool same = a.equals(b);                 // true
+
+// encode_equals: 避免构造中间 code_value
+code_value c("my_key");
+bool match = c.encode_equals("my_key", 6);  // true, 无需构造 code_value
+
+// encode_inline: 轻量编码, 不构造对象
+uint64_t id = code_value::encode_inline("abc", 3);  // 直接返回 uint64_t
+
+// encode_inline_n: 编译期定长
+constexpr uint64_t id2 = code_value::encode_inline_n<3>("abc");
+
+// 自由函数
+auto code = encode("hello");
+bool eq = equals(code, code_value("hello"));  // true
+
+// 各种来源隐式转 utf8_view
+code_value v3(std::string_view("from_sv"));    // string_view → utf8_view
+code_value v4{utf8_view(std::string("x"))};   // std::string → utf8_view
+// 中文 UTF-8 场景
+utf8_view cn("你好世界");
+code_value v5(cn);                      // 12 字节, 走堆分配
+\`\`\`
+
+### 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 拷贝 \`code_value\` | 禁止拷贝 | 使用移动语义 |
+| \`decode()\` 后销毁 \`code_value\` | \`utf8_view\` 悬空 | 保证 \`code_value\` 生命周期 |
+| 用 \`inline_value()\` 比较 \`is_inline()=false\` 的实例 | 返回值为前8字节缓存，非完整数据 | 用 \`equals()\` 统一比较 |
+| \`encode_inline\` 传 \`n > 8\` | 未定义行为 | \`n\` 必须 ≤8 |
+| \`code_value v(utf8_view(s))\` (圆括号) | Most Vexing Parse，被解析为函数声明 | 用列表初始化 \`code_value v{utf8_view(s)}\` |
+
+---
+
 `
 };
 

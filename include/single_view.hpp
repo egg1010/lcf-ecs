@@ -191,8 +191,42 @@
                     func(data[i + 7]);
                 }
                 for (; i < n; ++i)
+            {
+                func(data[i]);
+            }
+        }
+    }
+
+        // 迭代期可安全 hard_remove 的遍历: 回调内允许删除当前实体
+        template <typename Func>
+        void for_each_safe(Func&& func) noexcept
+        {
+            resolve_set();
+            if (!set_) [[unlikely]] return;
+            auto* pool = set_->template get_typed_pool_ptr<T>();
+            if (!pool) [[unlikely]] return;
+
+            // 构造时注册到 set_->active_iterator_, 析构时注销
+            safe_iterator it(set_);
+            safe_iterator end(set_, safe_iterator::end_tag{});
+
+            if constexpr (std::is_invocable_v<Func, entity, T&>)
+            {
+                for (; it != end; ++it)
                 {
-                    func(data[i]);
+                    entity e = *it;
+                    // 位置可能已被 swap, 需重查
+                    T* p = set_->template get_ptr_fast_inline<T>(e);
+                    if (p) [[likely]] func(e, *p);
+                }
+            }
+            else
+            {
+                for (; it != end; ++it)
+                {
+                    entity e = *it;
+                    T* p = set_->template get_ptr_fast_inline<T>(e);
+                    if (p) [[likely]] func(*p);
                 }
             }
         }

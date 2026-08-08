@@ -1,7 +1,7 @@
 // binary_writer.hpp - 原生二进制写入器
 #pragma once
 
-#include "safety.hpp"
+#include "../safety.hpp"
 #include <cstdint>
 #include <string>
 #include <string_view>

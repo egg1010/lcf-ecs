@@ -46,6 +46,7 @@ static inline void nt_fill_uint32_(uint32_t* dst, size_t count, uint32_t value) 
 namespace ecs
 {
 class manager;
+class single_class_set;
 template <typename> class query_context;
 
 // 合并存储: dense 索引 + version 同一 cache line, 减少 get_ptr 慢路径 cache miss
@@ -54,6 +55,9 @@ struct sparse_entry
     uint32_t dense;
     uint32_t version;
 };
+
+// 迭代期安全迭代器前置声明
+class safe_iterator;
 
 class single_class_set
 {
@@ -123,8 +127,36 @@ private:
     void (*on_modify_)(entity, void* component, void* user_data) noexcept = nullptr;
     void* on_modify_data_{nullptr};
 
+    // 迭代期删除支持: 活跃迭代器指针, 非迭代期为 nullptr
+    safe_iterator* active_iterator_{nullptr};
+    uint32_t iteration_depth_{0};
+
+    // 溢出缓冲: 迭代器栈缓冲满时借用, 析构后保留 capacity 复用
+    dense<entity> overflow_buffer_;
+    bool overflow_in_use_{false};
+
+    [[nodiscard]] dense<entity>* acquire_overflow_buffer_() noexcept
+    {
+        if (!overflow_in_use_) [[likely]]
+        {
+            overflow_in_use_ = true;
+            overflow_buffer_.clear();
+            return &overflow_buffer_;
+        }
+        // 嵌套迭代同时溢出: 回退到 thread_local
+        static thread_local dense<entity> fallback;
+        fallback.clear();
+        return &fallback;
+    }
+
+    void release_overflow_buffer_() noexcept
+    {
+        overflow_in_use_ = false;
+    }
+
     friend class ecs::manager;
     template <typename> friend class ecs::query_context;
+    friend class safe_iterator;
 
     // slow path 优化: 单次加载 sparse_entry (8B = dense + version),
     //   替代原 sparse_dense_at + sparse_version_at 两次独立调用
@@ -557,6 +589,8 @@ private:
 public:
     void clear() noexcept
     {
+        // 迭代期禁止清空: 会破坏迭代器位置
+        if (iteration_depth_ > 0) [[unlikely]] std::abort();
         deallocate_all_pages_();
         hot_set_clear_();
         dense_.clear();
@@ -564,6 +598,12 @@ public:
         entity_change_tracking_.clear();
         if (typed_pool_ && ops_.clear_pool) ops_.clear_pool(typed_pool_);
     }
+
+    // #E 运行时类型擦除访问 (供序列化模块运行时路径使用)
+    [[nodiscard]] void* get_raw_pool_data() noexcept { return typed_pool_data_; }
+    [[nodiscard]] const void* get_raw_pool_data() const noexcept { return typed_pool_data_; }
+    [[nodiscard]] size_t get_component_size() const noexcept { return component_size_; }
+    [[nodiscard]] int get_type_id_value() const noexcept { return type_id_; }
 
     single_class_set() noexcept = default;
 
@@ -1087,80 +1127,7 @@ public:
         return global_change_counter_;
     }
 
-    operating_message hard_remove(entity e) noexcept
-    {
-        operating_message result;
-        if (!e.is_valid() || e.parts_.index_ >= sparse_size_) [[unlikely]]
-        {
-            OM_MSG(result, false, "single_class_set::hard_remove(): invalid entity or version mismatch, index=", e.parts_.index_);
-            return result;
-        }
-        const sparse_entry* se = sparse_entry_checked_(e.parts_.index_);
-        if (!se || se->dense == dense_invalid || se->version != e.parts_.version_) [[unlikely]]
-        {
-            OM_MSG(result, false, "single_class_set::hard_remove(): invalid entity or version mismatch, index=", e.parts_.index_);
-            return result;
-        }
-
-        auto index = se->dense;
-
-        void* comp_ptr = typed_pool_ ? static_cast<char*>(typed_pool_) + index * component_size_ : nullptr;
-        if (on_remove_ && comp_ptr) [[unlikely]] on_remove_(e, comp_ptr, on_remove_data_);
-
-        auto moved_entity_id = dense_.back();
-        dense_[index] = dense_.back();
-        if (index < versions_.size() && !versions_.empty())
-        {
-            if (index < versions_.size() - 1)
-                versions_[index] = versions_.back();
-            versions_.pop_back();
-        }
-
-        if (moved_entity_id != e.parts_.index_) [[likely]]
-        {
-            // moved_entity_id 一定已构造 (它是 dense_.back() 对应的 entity)
-            // 单次更新 dense 字段, 替代原 sparse_version_at_unchecked + sparse_set_unchecked
-            // (原方案: 1 次 load version + 1 次 store {dense, version}; 现方案: 1 次 store dense)
-            sparse_table_[moved_entity_id].dense = static_cast<uint32_t>(index);
-        }
-        dense_.pop_back();
-
-        if (index < entity_change_tracking_.size() && entity_change_tracking_.size() > 0)
-        {
-            if (index < entity_change_tracking_.size() - 1)
-            {
-                entity_change_tracking_[index] = entity_change_tracking_.back();
-            }
-            entity_change_tracking_.pop_back();
-        }
-
-        if (typed_pool_)
-        {
-            if (ops_.is_trivially_copyable && typed_pool_data_ && ops_.pool_pop_back)
-            {
-                // 内联 trivial swap_pop: memcpy last→index + pop_back
-                // dense_ 已 pop_back, dense_.size() 即为 last index (pool size 与 dense_ 同步)
-                const size_t last = dense_.size();
-                if (index != last) [[likely]]
-                {
-                    auto* data = static_cast<char*>(typed_pool_data_);
-                    std::memcpy(data + index * component_size_, data + last * component_size_, component_size_);
-                }
-                ops_.pool_pop_back(typed_pool_);
-            }
-            else if (ops_.swap_pop)
-            {
-                ops_.swap_pop(typed_pool_, index);
-            }
-        }
-
-        // 直接赋值 sparse_entry, 替代 sparse_set_at_unchecked
-        // (sparse_emplace_at 内部有 bitmap 检查/析构/重建等冗余操作, 此处只需标记删除)
-        // 必须同时重置 version=0, 否则后续 add slow path 误判为 "已存在" 导致 dense_invalid 越界
-        sparse_table_[e.parts_.index_] = {dense_invalid, 0};
-        ++version_;
-        return result;
-    }
+    operating_message hard_remove(entity e) noexcept;
 
     operating_message soft_remove(entity e) noexcept
     {
@@ -1388,6 +1355,8 @@ public:
 
     void swap_dense_and_pool(size_t i, size_t j) noexcept
     {
+        // 迭代期禁止交换: 会破坏迭代器位置
+        if (iteration_depth_ > 0) [[unlikely]] std::abort();
         if (i == j) [[unlikely]] return;
         uint32_t tmp = dense_[i];
         dense_[i] = dense_[j];
@@ -1428,6 +1397,8 @@ public:
     template <typename T>
     void reorder_dense_by_indices(const dense<size_t>& sorted_indices) noexcept
     {
+        // 迭代期禁止重排: 会破坏迭代器位置
+        if (iteration_depth_ > 0) [[unlikely]] std::abort();
         const size_t n = dense_.size();
         if (n <= 1 || sorted_indices.size() < n) [[unlikely]] return;
 
@@ -1525,10 +1496,246 @@ public:
         ++version_;
     }
 
+    [[nodiscard]] uint32_t get_iteration_depth() const noexcept
+    {
+        return iteration_depth_;
+    }
+
     ~single_class_set() noexcept
     {
         if (typed_pool_ && ops_.destroy_pool) ops_.destroy_pool(typed_pool_);
     }
 };
+
+// 迭代期安全迭代器: swap_pop 后自动补访漏掉的实体
+class safe_iterator
+{
+private:
+    single_class_set* set_;
+    uint32_t index_{0};
+
+    // 补访队列: 被 swap 到已访问区的实体
+    static constexpr uint32_t INLINE_PENDING_CAP = 16;
+    entity pending_inline_[INLINE_PENDING_CAP];
+    uint32_t pending_count_{0};
+
+    // 栈缓冲溢出时借用的堆缓冲
+    dense<entity>* pending_overflow_{nullptr};
+
+    // 当前位置被 back 替换时跳过一次 ++
+    bool skip_advance_{false};
+
+    // 嵌套迭代: 保存前一个活跃迭代器
+    safe_iterator* prev_iterator_{nullptr};
+
+public:
+    safe_iterator(single_class_set* s) noexcept : set_(s)
+    {
+        prev_iterator_ = set_->active_iterator_;
+        set_->active_iterator_ = this;
+        ++set_->iteration_depth_;
+    }
+
+    struct end_tag {};
+    safe_iterator(single_class_set* s, end_tag) noexcept : set_(s) {}
+
+    safe_iterator(const safe_iterator&) = delete;
+    safe_iterator& operator=(const safe_iterator&) = delete;
+
+    ~safe_iterator() noexcept
+    {
+        if (prev_iterator_ != nullptr || set_->active_iterator_ == this)
+        {
+            set_->active_iterator_ = prev_iterator_;
+            --set_->iteration_depth_;
+        }
+        if (pending_overflow_)
+        {
+            set_->release_overflow_buffer_();
+        }
+    }
+
+    // 通知迭代器即将 swap_pop, old_last 为 swap 前的 back 位置
+    void on_swap_remove(uint32_t removed_idx, uint32_t old_last, bool is_back) noexcept
+    {
+        if (is_back) [[unlikely]] return;
+
+        if (removed_idx < index_) [[unlikely]]
+        {
+            // 被 swap 到已访问区, 加入补访
+            push_pending(entity(set_->dense_[old_last], set_->versions_[old_last]));
+        }
+        else if (removed_idx == index_) [[unlikely]]
+        {
+            // 当前位置被 back 替换 → 不前进
+            skip_advance_ = true;
+        }
+    }
+
+    void push_pending(entity e) noexcept
+    {
+        if (pending_count_ < INLINE_PENDING_CAP) [[likely]]
+        {
+            pending_inline_[pending_count_++] = e;
+            return;
+        }
+        // 栈缓冲满: 借用 set_ 的溢出缓冲
+        if (!pending_overflow_) [[unlikely]]
+        {
+            pending_overflow_ = set_->acquire_overflow_buffer_();
+        }
+        pending_overflow_->push_back(e);
+    }
+
+    [[nodiscard]] bool pending_empty() const noexcept
+    {
+        return pending_count_ == 0
+            && (!pending_overflow_ || pending_overflow_->empty());
+    }
+
+    [[nodiscard]] entity pending_back() const noexcept
+    {
+        if (pending_overflow_ && !pending_overflow_->empty()) [[unlikely]]
+            return pending_overflow_->back();
+        return pending_inline_[pending_count_ - 1];
+    }
+
+    void pending_pop() noexcept
+    {
+        if (pending_overflow_ && !pending_overflow_->empty()) [[unlikely]]
+        {
+            pending_overflow_->pop_back();
+            return;
+        }
+        --pending_count_;
+    }
+
+    [[nodiscard]] entity operator*() const noexcept
+    {
+        if (!pending_empty()) [[unlikely]]
+            return pending_back();
+        return entity(set_->dense_[index_], set_->versions_[index_]);
+    }
+
+    [[nodiscard]] uint32_t current_dense_index() const noexcept
+    {
+        if (!pending_empty()) [[unlikely]]
+        {
+            return single_class_set::dense_invalid;
+        }
+        return index_;
+    }
+
+    safe_iterator& operator++() noexcept
+    {
+        if (!pending_empty()) [[unlikely]]
+        {
+            pending_pop();
+            return *this;
+        }
+        if (skip_advance_) [[unlikely]]
+        {
+            skip_advance_ = false;
+            return *this;
+        }
+        ++index_;
+        return *this;
+    }
+
+    [[nodiscard]] bool operator!=(const safe_iterator& /*end*/) const noexcept
+    {
+        if (!pending_empty()) [[unlikely]] return true;
+        return index_ < set_->size();
+    }
+
+    [[nodiscard]] bool operator==(const safe_iterator& end) const noexcept
+    {
+        return !(*this != end);
+    }
+};
+
+// 类外定义: 依赖 safe_iterator 完整类型
+inline operating_message single_class_set::hard_remove(entity e) noexcept
+{
+    operating_message result;
+    if (!e.is_valid() || e.parts_.index_ >= sparse_size_) [[unlikely]]
+    {
+        OM_MSG(result, false, "single_class_set::hard_remove(): invalid entity or version mismatch, index=", e.parts_.index_);
+        return result;
+    }
+    const sparse_entry* se = sparse_entry_checked_(e.parts_.index_);
+    if (!se || se->dense == dense_invalid || se->version != e.parts_.version_) [[unlikely]]
+    {
+        OM_MSG(result, false, "single_class_set::hard_remove(): invalid entity or version mismatch, index=", e.parts_.index_);
+        return result;
+    }
+
+    auto index = se->dense;
+
+    // 迭代期: swap_pop 前通知活跃迭代器
+    if (active_iterator_) [[unlikely]]
+    {
+        const uint32_t old_last = static_cast<uint32_t>(dense_.size()) - 1;
+        const bool is_back = (static_cast<uint32_t>(index) == old_last);
+        active_iterator_->on_swap_remove(static_cast<uint32_t>(index), old_last, is_back);
+    }
+
+    void* comp_ptr = typed_pool_ ? static_cast<char*>(typed_pool_) + index * component_size_ : nullptr;
+    if (on_remove_ && comp_ptr) [[unlikely]] on_remove_(e, comp_ptr, on_remove_data_);
+
+    auto moved_entity_id = dense_.back();
+    dense_[index] = dense_.back();
+    if (index < versions_.size() && !versions_.empty())
+    {
+        if (index < versions_.size() - 1)
+            versions_[index] = versions_.back();
+        versions_.pop_back();
+    }
+
+    if (moved_entity_id != e.parts_.index_) [[likely]]
+    {
+        // moved_entity_id 一定已构造 (它是 dense_.back() 对应的 entity)
+        // 单次更新 dense 字段, 替代原 sparse_version_at_unchecked + sparse_set_unchecked
+        // (原方案: 1 次 load version + 1 次 store {dense, version}; 现方案: 1 次 store dense)
+        sparse_table_[moved_entity_id].dense = static_cast<uint32_t>(index);
+    }
+    dense_.pop_back();
+
+    if (index < entity_change_tracking_.size() && entity_change_tracking_.size() > 0)
+    {
+        if (index < entity_change_tracking_.size() - 1)
+        {
+            entity_change_tracking_[index] = entity_change_tracking_.back();
+        }
+        entity_change_tracking_.pop_back();
+    }
+
+    if (typed_pool_)
+    {
+        if (ops_.is_trivially_copyable && typed_pool_data_ && ops_.pool_pop_back)
+        {
+            // 内联 trivial swap_pop: memcpy last→index + pop_back
+            // dense_ 已 pop_back, dense_.size() 即为 last index (pool size 与 dense_ 同步)
+            const size_t last = dense_.size();
+            if (index != last) [[likely]]
+            {
+                auto* data = static_cast<char*>(typed_pool_data_);
+                std::memcpy(data + index * component_size_, data + last * component_size_, component_size_);
+            }
+            ops_.pool_pop_back(typed_pool_);
+        }
+        else if (ops_.swap_pop)
+        {
+            ops_.swap_pop(typed_pool_, index);
+        }
+    }
+
+    // 直接赋值 sparse_entry, 替代 sparse_set_at_unchecked
+    // (sparse_emplace_at 内部有 bitmap 检查/析构/重建等冗余操作, 此处只需标记删除)
+    // 必须同时重置 version=0, 否则后续 add slow path 误判为 "已存在" 导致 dense_invalid 越界
+    sparse_table_[e.parts_.index_] = {dense_invalid, 0};
+    ++version_;
+    return result;
+}
 
 } // namespace ecs

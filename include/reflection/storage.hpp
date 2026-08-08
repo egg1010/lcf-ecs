@@ -210,6 +210,12 @@ public:
         {
             delete m;
         }
+        else
+        {
+            // 同步维护 hash 索引表
+            detail::spinlock_guard lock(reg_lock_);
+            insert_hash_index(m->name_hash, m);
+        }
     }
 
     // 只注册类型元信息 (不自动遍历字段, 用于含 C 数组的类型需手动 REGISTER_ARRAY_FIELD)
@@ -277,6 +283,12 @@ public:
                 expected, m, std::memory_order_release, std::memory_order_acquire))
         {
             delete m;
+        }
+        else
+        {
+            // 同步维护 hash 索引表
+            detail::spinlock_guard lock(reg_lock_);
+            insert_hash_index(m->name_hash, m);
         }
     }
 
@@ -623,23 +635,27 @@ public:
     }
 
     // #10 按 name_hash 查找类型 (稳定标识, 跨 DLL/编译器)
+    // O(1) 开放寻址查找, 无锁读取 (注册阶段完成后查找)
     [[nodiscard]] const type_meta* find_type_by_hash(uint64_t hash) const noexcept
     {
-        for (size_t i = 0; i < MAX_TYPE_ID; ++i)
+        if (hash == 0)
         {
-            type_meta* m = type_entries_[i].load(std::memory_order_acquire);
-            if (m == nullptr)
+            return nullptr;
+        }
+        size_t mask = HASH_INDEX_SIZE - 1;
+        size_t idx = static_cast<size_t>(hash) & mask;
+        for (size_t i = 0; i < HASH_INDEX_SIZE; ++i)
+        {
+            const auto& slot = hash_index_[idx];
+            if (slot.hash == 0)
             {
-                continue;
+                return nullptr; // 空槽, 未注册
             }
-            if (!m->registered.load(std::memory_order_acquire))
+            if (slot.hash == hash)
             {
-                continue;
+                return slot.meta;
             }
-            if (m->name_hash == hash)
-            {
-                return m;
-            }
+            idx = (idx + 1) & mask;
         }
         return nullptr;
     }
@@ -786,6 +802,43 @@ public:
 private:
     std::atomic_flag reg_lock_{};
     std::array<std::atomic<enum_meta*>, MAX_TYPE_ID> enum_entries_{};
+
+    // #10 name_hash → type_meta* 开放寻址索引表 (线性探测)
+    // 注册阶段加 reg_lock_ 写入, 查找阶段无锁读取 (假设类型注册在初始化阶段完成)
+    // 空间换速度: 2^17 槽位 × 16 字节 = 2MB, BSS 段零初始化无磁盘开销
+    // MAX_TYPE_ID=65536 时负载因子 0.5, 线性探测平均 < 1.5 次比较
+    static constexpr size_t HASH_INDEX_SIZE = 1u << 17;
+    struct hash_index_slot
+    {
+        uint64_t hash = 0;          // 0 表示空槽
+        const type_meta* meta = nullptr;
+    };
+    std::array<hash_index_slot, HASH_INDEX_SIZE> hash_index_{};
+
+    // 插入 hash 索引 (调用方需持有 reg_lock_)
+    void insert_hash_index(uint64_t hash, const type_meta* m) noexcept
+    {
+        if (hash == 0)
+        {
+            return;
+        }
+        size_t mask = HASH_INDEX_SIZE - 1;
+        size_t idx = static_cast<size_t>(hash) & mask;
+        for (size_t i = 0; i < HASH_INDEX_SIZE; ++i)
+        {
+            if (hash_index_[idx].hash == 0)
+            {
+                hash_index_[idx].hash = hash;
+                hash_index_[idx].meta = m;
+                return;
+            }
+            if (hash_index_[idx].hash == hash)
+            {
+                return; // 已存在, 幂等
+            }
+            idx = (idx + 1) & mask;
+        }
+    }
 
     static const char* make_field_name(size_t idx) noexcept
     {

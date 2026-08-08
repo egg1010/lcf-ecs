@@ -34,7 +34,7 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64|i[3-6]86|x64")
     if(LCF_IS_MSVC OR LCF_IS_CLANG_CL)
         add_compile_options(/arch:AVX2)
     elseif(LCF_IS_MINGW)
-        add_compile_options(-msse2 -mbmi -mbmi2)
+        add_compile_options(-msse2 -mbmi -mbmi2 -mpopcnt -mtune=native)
     else()
         add_compile_options(-mavx2 -mfma -mbmi -mbmi2 -msse2)
     endif()
@@ -166,6 +166,10 @@ if(BUILD_FUNCTIONAL_TESTS)
     lcf_add_executable(test_functional test/test_functional.cpp)
     lcf_add_executable(test_single_view test/test_single_view.cpp)
     lcf_add_executable(test_multi_view test/test_multi_view.cpp)
+    lcf_add_executable(test_void_any_cross_layout_swap test/test_void_any_cross_layout_swap.cpp)
+    lcf_add_executable(test_string_to_code test/test_string_to_code.cpp)
+    lcf_add_executable(test_string_to_code_utf8_view test/test_string_to_code_utf8_view.cpp)
+    lcf_add_executable(test_safe_iter test/test_safe_iter.cpp)
 endif()
 
 if(BUILD_PERF_TESTS)
@@ -179,11 +183,16 @@ endif()
 if(BUILD_MODULE_PERF_TESTS)
     # 容器模块
     lcf_add_executable(test_dense_perf               test/test_dense_perf.cpp)
+    lcf_add_executable(test_dense_vs_vector_perf     test/test_dense_vs_vector_perf.cpp)
+    lcf_add_executable(test_dense_pool_vector_perf   test/test_dense_pool_vector_perf.cpp)
+    lcf_add_executable(test_popback_micro            test/test_popback_micro.cpp)
     lcf_add_executable(test_class_pool_perf          test/test_class_pool_perf.cpp)
     lcf_add_executable(test_ring_buffer_perf         test/test_ring_buffer_perf.cpp)
 
     # 分配器模块
     lcf_add_executable(test_allocators_perf          test/test_allocators_perf.cpp)
+    lcf_add_executable(test_list_memory_pool         test/test_list_memory_pool.cpp)
+    lcf_add_executable(test_list_vs_memory_pool_perf test/test_list_vs_memory_pool_perf.cpp)
 
     # 实体模块
     lcf_add_executable(test_entity_perf              test/test_entity_perf.cpp)
@@ -192,6 +201,9 @@ if(BUILD_MODULE_PERF_TESTS)
     # 辅助模块
     lcf_add_executable(test_type_id_perf             test/test_type_id_perf.cpp)
     lcf_add_executable(test_void_any_perf            test/test_void_any_perf.cpp)
+    lcf_add_executable(test_void_any_vs_std_any_perf test/test_void_any_vs_std_any_perf.cpp)
+    lcf_add_executable(test_void_any_cross_layout_swap_perf      test/test_void_any_cross_layout_swap_perf.cpp)
+    lcf_add_executable(test_string_to_code_perf                  test/test_string_to_code_perf.cpp)
     lcf_add_executable(test_sort_perf                test/test_sort_perf.cpp)
     lcf_add_executable(test_command_buffer_perf      test/test_command_buffer_perf.cpp)
     lcf_add_executable(test_utf8                     test/test_utf8.cpp)
@@ -230,4 +242,21 @@ if(BUILD_SERIALIZATION_TESTS)
     lcf_add_executable(test_serialization              test/test_serialization.cpp)
     lcf_add_executable(test_serialization_perf         test/test_serialization_perf.cpp)
     lcf_add_executable(test_codec_new                  test/test_codec_new.cpp)
+endif()
+
+# ============================================================================
+# Unicode 数据重新生成 (手动触发, 不加入常规构建)
+#   用法: cmake --build build --target gen_unicode_data
+#   需本机可执行 python, 并能访问 https://www.unicode.org
+# ============================================================================
+find_program(PYTHON_EXECUTABLE python python3)
+if(PYTHON_EXECUTABLE)
+    add_custom_target(gen_unicode_data
+        COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/include/part/utf8pp/gen_unicode_data.py
+                --output ${CMAKE_SOURCE_DIR}/include/part/utf8pp/unicode_data.hpp
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        COMMENT "Regenerating unicode_data.hpp from latest UCD"
+        VERBATIM
+    )
+    message(STATUS "Custom target: gen_unicode_data (手动运行以更新 Unicode 数据)")
 endif()

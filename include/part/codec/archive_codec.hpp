@@ -3,8 +3,8 @@
 // 公共逻辑层 (archive_logic) 通过此接口操作编码器, 实现逻辑复用 + 格式切换零拷贝
 #pragma once
 
-#include "operating_message.hpp"
-#include "dense.hpp"
+#include "../operating_message.hpp"
+#include "../dense.hpp"
 #include <cstdint>
 #include <string>
 #include <string_view>

@@ -1,7 +1,9 @@
-// iterators.hpp - 迭代器
+// 迭代器
 
     static constexpr size_t npos = static_cast<size_t>(-1);
 
+    // 正向迭代器: trivial 指针包装器, 遍历 cp_cache_ (char32_t 数组)
+    // 编译器可自动向量化 range-for (SSE2 4 元素/迭代, 与 u32string 同速)
     class const_iterator
     {
     public:
@@ -9,137 +11,43 @@
         using reference = char32_t;
         using pointer = const char32_t*;
         using difference_type = std::ptrdiff_t;
-        using iterator_category = std::random_access_iterator_tag;
+        using iterator_category = std::contiguous_iterator_tag;
 
         friend class utf8pp;
 
         const_iterator() noexcept = default;
-        const_iterator(const char* p, const char* end) noexcept : p_(p), end_(end) {}
+        explicit const_iterator(const char32_t* p) noexcept : p_(p) {}
+        // 兼容旧接口: 接收 const char* (reinterpret_cast 到 char32_t*)
+        explicit const_iterator(const char* p) noexcept
+            : p_(reinterpret_cast<const char32_t*>(p)) {}
 
-        const_iterator& operator++() noexcept
-        {
-            if (p_ < end_)
-            {
-                uint8_t lead = static_cast<uint8_t>(*p_);
-                uint8_t seq = detail_utf8::k_utf8_seq_len[lead];
-                if (seq == 0) seq = 1;
-                p_ += seq;
-                if (p_ > end_) p_ = end_;
-            }
-            return *this;
-        }
+        FORCE_INLINE const_iterator& operator++() noexcept { ++p_; return *this; }
+        const_iterator operator++(int) noexcept { auto t = *this; ++p_; return t; }
+        FORCE_INLINE const_iterator& operator--() noexcept { --p_; return *this; }
+        const_iterator operator--(int) noexcept { auto t = *this; --p_; return t; }
+        const_iterator& operator+=(difference_type n) noexcept { p_ += n; return *this; }
+        const_iterator& operator-=(difference_type n) noexcept { p_ -= n; return *this; }
 
-        const_iterator operator++(int) noexcept
-        {
-            const_iterator tmp = *this;
-            ++(*this);
-            return tmp;
-        }
+        [[nodiscard]] const_iterator operator+(difference_type n) const noexcept { return const_iterator(p_ + n); }
+        [[nodiscard]] friend const_iterator operator+(difference_type n, const const_iterator& it) noexcept { return const_iterator(it.p_ + n); }
+        [[nodiscard]] const_iterator operator-(difference_type n) const noexcept { return const_iterator(p_ - n); }
+        [[nodiscard]] difference_type operator-(const const_iterator& o) const noexcept { return p_ - o.p_; }
 
-        const_iterator& operator--() noexcept
-        {
-            if (p_ > begin_)
-            {
-                const uint8_t* q = reinterpret_cast<const uint8_t*>(p_);
-                const uint8_t* b = reinterpret_cast<const uint8_t*>(begin_);
-                --q;
-                while (q > b && (*q & 0xC0) == 0x80) --q;
-                p_ = reinterpret_cast<const char*>(q);
-            }
-            return *this;
-        }
+        [[nodiscard]] FORCE_INLINE char32_t operator*() const noexcept { return *p_; }
+        [[nodiscard]] char32_t operator[](difference_type n) const noexcept { return p_[n]; }
 
-        const_iterator operator--(int) noexcept
-        {
-            const_iterator tmp = *this;
-            --(*this);
-            return tmp;
-        }
-
-        const_iterator& operator+=(difference_type n) noexcept
-        {
-            if (n >= 0)
-            {
-                for (difference_type i = 0; i < n && p_ < end_; ++i) ++(*this);
-            }
-            else
-            {
-                for (difference_type i = 0; i > n && p_ > begin_; --i) --(*this);
-            }
-            return *this;
-        }
-
-        const_iterator& operator-=(difference_type n) noexcept { return *this += -n; }
-
-        [[nodiscard]] const_iterator operator+(difference_type n) const noexcept
-        {
-            const_iterator tmp = *this;
-            tmp += n;
-            return tmp;
-        }
-
-        [[nodiscard]] friend const_iterator operator+(difference_type n, const const_iterator& it) noexcept
-        {
-            return it + n;
-        }
-
-        [[nodiscard]] const_iterator operator-(difference_type n) const noexcept
-        {
-            const_iterator tmp = *this;
-            tmp -= n;
-            return tmp;
-        }
-
-        [[nodiscard]] difference_type operator-(const const_iterator& o) const noexcept
-        {
-            // 码点距离: 遍历计数 (O(n))
-            if (p_ == o.p_) return 0;
-            if (p_ < o.p_)
-            {
-                const_iterator tmp = o;
-                difference_type n = 0;
-                while (tmp.p_ > p_) { --tmp; ++n; }
-                return -n;
-            }
-            else
-            {
-                difference_type n = 0;
-                const_iterator tmp = *this;
-                while (tmp.p_ > o.p_) { --tmp; ++n; }
-                return n;
-            }
-        }
-
-        [[nodiscard]] char32_t operator*() const noexcept
-        {
-            uint32_t cp = 0;
-            size_t len = 0;
-            (void)detail_utf8::utf8_decode_one(
-                reinterpret_cast<const uint8_t*>(p_),
-                reinterpret_cast<const uint8_t*>(end_), &cp, &len);
-            return static_cast<char32_t>(cp);
-        }
-
-        [[nodiscard]] char32_t operator[](difference_type n) const noexcept
-        {
-            return *(*this + n);
-        }
-
-        [[nodiscard]] bool operator==(const const_iterator& o) const noexcept { return p_ == o.p_; }
-        [[nodiscard]] bool operator!=(const const_iterator& o) const noexcept { return p_ != o.p_; }
+        [[nodiscard]] FORCE_INLINE bool operator==(const const_iterator& o) const noexcept { return p_ == o.p_; }
+        [[nodiscard]] FORCE_INLINE bool operator!=(const const_iterator& o) const noexcept { return p_ != o.p_; }
         [[nodiscard]] bool operator<(const const_iterator& o) const noexcept { return p_ < o.p_; }
         [[nodiscard]] bool operator>(const const_iterator& o) const noexcept { return p_ > o.p_; }
         [[nodiscard]] bool operator<=(const const_iterator& o) const noexcept { return p_ <= o.p_; }
         [[nodiscard]] bool operator>=(const const_iterator& o) const noexcept { return p_ >= o.p_; }
 
-        const char* ptr() const noexcept { return p_; }
-
-        void set_begin(const char* b) noexcept { begin_ = b; }
+        const char* ptr() const noexcept { return reinterpret_cast<const char*>(p_); }
+        const char32_t* cp_ptr() const noexcept { return p_; }
 
     private:
-        const char* p_{nullptr};
-        const char* begin_{nullptr};
-        const char* end_{nullptr};
+        const char32_t* p_{nullptr};
     };
 
     class const_reverse_iterator
@@ -149,14 +57,23 @@
         using reference = char32_t;
         using pointer = const char32_t*;
         using difference_type = std::ptrdiff_t;
-        using iterator_category = std::random_access_iterator_tag;
+        // 注: operator+= 为 O(n) 线性推进, 非真正的随机访问
+        using iterator_category = std::bidirectional_iterator_tag;
 
         const_reverse_iterator() noexcept = default;
         const_reverse_iterator(const char* p, const char* begin, const char* end) noexcept
             : p_(p), begin_(begin), end_(end) {}
+        const_reverse_iterator(const char* p, const char* begin, const char* end, uint8_t uniform_len) noexcept
+            : p_(p), begin_(begin), end_(end), uniform_len_(uniform_len) {}
 
-        const_reverse_iterator& operator++() noexcept
+        FORCE_INLINE const_reverse_iterator& operator++() noexcept
         {
+            // 均匀码点快速路径: 直接 p_ -= uniform_len_
+            if (uniform_len_ != 0 && p_ > begin_)
+            {
+                p_ -= uniform_len_;
+                return *this;
+            }
             if (p_ > begin_)
             {
                 const uint8_t* q = reinterpret_cast<const uint8_t*>(p_);
@@ -175,16 +92,20 @@
             return tmp;
         }
 
-        const_reverse_iterator& operator--() noexcept
+        FORCE_INLINE const_reverse_iterator& operator--() noexcept
         {
             if (p_ < end_)
             {
+                // 分支链优于查表 (避免 load-use 延迟)
                 const uint8_t* q = reinterpret_cast<const uint8_t*>(p_);
                 uint8_t lead = *q;
-                uint8_t seq = detail_utf8::k_utf8_seq_len[lead];
-                if (seq == 0) seq = 1;
+                size_t seq;
+                if (lead < 0x80) seq = 1;
+                else if (lead < 0xE0) seq = 2;
+                else if (lead < 0xF0) seq = 3;
+                else if (lead < 0xF8) seq = 4;
+                else seq = 1;
                 q += seq;
-                if (q > reinterpret_cast<const uint8_t*>(end_)) q = reinterpret_cast<const uint8_t*>(end_);
                 p_ = reinterpret_cast<const char*>(q);
             }
             return *this;
@@ -239,17 +160,59 @@
             }
         }
 
-        [[nodiscard]] char32_t operator*() const noexcept
+        [[nodiscard]] FORCE_INLINE char32_t operator*() const noexcept
         {
+            // 均匀码点快速路径: 已知码点长度, 直接定位起始 (无需回退扫描)
+            if (uniform_len_ != 0)
+            {
+                const uint8_t* q = reinterpret_cast<const uint8_t*>(p_) - uniform_len_;
+                if (uniform_len_ == 1) return static_cast<char32_t>(q[0]);
+                if (uniform_len_ == 3) [[likely]]
+                {
+                    return static_cast<char32_t>(
+                        (static_cast<uint32_t>(q[0] & 0x0F) << 12)
+                        | (static_cast<uint32_t>(q[1] & 0x3F) << 6)
+                        | (q[2] & 0x3F));
+                }
+                if (uniform_len_ == 2)
+                {
+                    return static_cast<char32_t>(
+                        (static_cast<uint32_t>(q[0] & 0x1F) << 6) | (q[1] & 0x3F));
+                }
+                return static_cast<char32_t>(
+                    (static_cast<uint32_t>(q[0] & 0x07) << 18)
+                    | (static_cast<uint32_t>(q[1] & 0x3F) << 12)
+                    | (static_cast<uint32_t>(q[2] & 0x3F) << 6)
+                    | (q[3] & 0x3F));
+            }
+            // 反向回退到码点起始, 无校验快速解码
             const uint8_t* q = reinterpret_cast<const uint8_t*>(p_);
             const uint8_t* b = reinterpret_cast<const uint8_t*>(begin_);
-            const uint8_t* qend = reinterpret_cast<const uint8_t*>(end_);
             --q;
             while (q > b && (*q & 0xC0) == 0x80) --q;
-            uint32_t cp = 0;
-            size_t len = 0;
-            (void)detail_utf8::utf8_decode_one(q, qend, &cp, &len);
-            return static_cast<char32_t>(cp);
+            uint8_t lead = *q;
+            // 3 字节中文路径前置 [[likely]]
+            if ((lead & 0xF0) == 0xE0) [[likely]]
+            {
+                return static_cast<char32_t>(
+                    (static_cast<uint32_t>(lead & 0x0F) << 12)
+                    | (static_cast<uint32_t>(q[1] & 0x3F) << 6)
+                    | (q[2] & 0x3F));
+            }
+            // 纯 ASCII
+            if (lead < 0x80) return static_cast<char32_t>(lead);
+            // 2 字节
+            if (lead < 0xE0)
+            {
+                return static_cast<char32_t>(
+                    (static_cast<uint32_t>(lead & 0x1F) << 6) | (q[1] & 0x3F));
+            }
+            // 4 字节
+            return static_cast<char32_t>(
+                (static_cast<uint32_t>(lead & 0x07) << 18)
+                | (static_cast<uint32_t>(q[1] & 0x3F) << 12)
+                | (static_cast<uint32_t>(q[2] & 0x3F) << 6)
+                | (q[3] & 0x3F));
         }
 
         [[nodiscard]] char32_t operator[](difference_type n) const noexcept
@@ -257,8 +220,8 @@
             return *(*this + n);
         }
 
-        [[nodiscard]] bool operator==(const const_reverse_iterator& o) const noexcept { return p_ == o.p_; }
-        [[nodiscard]] bool operator!=(const const_reverse_iterator& o) const noexcept { return p_ != o.p_; }
+        [[nodiscard]] FORCE_INLINE bool operator==(const const_reverse_iterator& o) const noexcept { return p_ == o.p_; }
+        [[nodiscard]] FORCE_INLINE bool operator!=(const const_reverse_iterator& o) const noexcept { return p_ != o.p_; }
         [[nodiscard]] bool operator<(const const_reverse_iterator& o) const noexcept { return p_ > o.p_; }
         [[nodiscard]] bool operator>(const const_reverse_iterator& o) const noexcept { return p_ < o.p_; }
         [[nodiscard]] bool operator<=(const const_reverse_iterator& o) const noexcept { return p_ >= o.p_; }
@@ -269,6 +232,7 @@
         const char* p_{nullptr};
         const char* begin_{nullptr};
         const char* end_{nullptr};
+        uint8_t   uniform_len_{0};
     };
 
     using reverse_iterator = const_reverse_iterator;
@@ -321,9 +285,8 @@
 
     using byte_iterator = const_byte_iterator;
 
-    // === 字形簇迭代器 (Grapheme Cluster Iterator, UAX #29 简化版) ===
-    // 字形簇 = 用户感知的单个字符 (如 'e' + 组合重音 = 1 个字形簇, emoji ZWJ 序列 = 1 个)
-    // 简化规则: CR+LF / Hangul syllable / 组合标记延续 / Emoji+ZWJ+Emoji 不分割
+    // === 字形簇迭代器 (UAX #29 简化版) ===
+    // 字形簇 = 用户感知字符 (组合标记/ZWJ 序列不分割)
     class const_grapheme_iterator
     {
     public:
@@ -388,7 +351,7 @@
             const char* next = next_ + len;
             uint32_t prev_cp = cp;
 
-            // GB3: CR × LF
+            // 规则 GB3: CR × LF 不分割
             if (prev_cp == 0x000D && next < end_)
             {
                 uint32_t cp2 = 0; size_t len2 = 0;
@@ -396,12 +359,9 @@
                 if (cp2 == 0x000A) { next_ = next + (len2 ? len2 : 1); return; }
             }
 
-            // GB6/GB7/GB8: Hangul LVT 序列
-            // L = 0x1100-0x115F, 0xA960-0xA97F
-            // V = 0x1160-0x11A7, 0xD7B0-0xD7FF
-            // T = 0x11A8-0x11FF
-            // LV = Hangul Syllable (AC00-D7A3 中 LV 形)
-            // LVT = Hangul Syllable (AC00-D7A3 中 LVT 形)
+            // 规则 GB6/GB7/GB8: Hangul LVT 序列
+            // 码点范围 L=0x1100-0x115F/0xA960-0xA97F, V=0x1160-0x11A7/0xD7B0-0xD7FF,
+            // 范围 T=0x11A8-0x11FF, LV/LVT=0xAC00-0xD7A3
             auto is_hangul_l = [](uint32_t c) {
                 return (c >= 0x1100 && c <= 0x115F) || (c >= 0xA960 && c <= 0xA97F);
             };
@@ -424,21 +384,21 @@
                 decode_one(next, end_, cp2, len2);
                 if (len2 == 0) break;
 
-                // GB4: Control (含 CR/LF) 后断开 (除 CR LF 已处理)
+                // 规则 GB4: Control (含 CR/LF) 后断开
                 if (cp2 == 0x000D || cp2 == 0x000A ||
                     (cp2 < 0x20 && cp2 != 0x09 && cp2 != 0x0A && cp2 != 0x0D) ||
                     (cp2 >= 0x7F && cp2 <= 0x9F)) break;
 
-                // GB6: L × (L|V|LV|LVT)
+                // 规则 GB6: L × (L|V|LV|LVT)
                 if (is_hangul_l(prev_cp) &&
                     (is_hangul_l(cp2) || is_hangul_v(cp2) || is_hangul_lv_lvt(cp2)))
                 { prev_cp = cp2; cur = next; next += len2; in_hangul = true; continue; }
 
-                // GB7: (LV|V) × (V|T)
+                // 规则 GB7: (LV|V) × (V|T)
                 if ((is_hangul_lv_lvt(prev_cp) || is_hangul_v(prev_cp)) &&
                     (is_hangul_v(cp2) || is_hangul_t(cp2)))
                 {
-                    // LV/LVT only when previous is LV/LVT
+                    // 仅前缀为 LV/LVT 时按 LV/LVT 规则
                     if (is_hangul_v(prev_cp) && is_hangul_v(cp2))
                     { prev_cp = cp2; cur = next; next += len2; continue; }
                     if (is_hangul_lv_lvt(prev_cp) && !is_hangul_lvt_only(prev_cp))
@@ -447,21 +407,21 @@
                     { prev_cp = cp2; cur = next; next += len2; continue; }
                 }
 
-                // GB8: (LVT|T) × T
+                // 规则 GB8: (LVT|T) × T
                 if ((is_hangul_lvt_only(prev_cp) || is_hangul_t(prev_cp)) && is_hangul_t(cp2))
                 { prev_cp = cp2; cur = next; next += len2; continue; }
 
-                // GB9: × (Extend | ZWJ) - 不在组合标记/ZWJ 前断开
+                // 规则 GB9: × (Extend | ZWJ) 不在组合标记/ZWJ 前断开
                 if (unicode_data::is_combining_mark(cp2) || cp2 == 0x200D)
                 { prev_cp = cp2; cur = next; next += len2; continue; }
 
-                // GB9a: × SpacingMark (部分 Indic spacing marks)
-                if ((cp2 >= 0x0903 && cp2 <= 0x0939) ||  // Devanagari sign/spacing
+                // 规则 GB9a: × SpacingMark (Indic)
+                if ((cp2 >= 0x0903 && cp2 <= 0x0939) ||
                     (cp2 >= 0x093E && cp2 <= 0x094D) ||
                     (cp2 >= 0x0951 && cp2 <= 0x0954))
                 { prev_cp = cp2; cur = next; next += len2; continue; }
 
-                // GB11: \p{Extended_Pictographic} Extend* ZWJ × \p{Extended_Pictographic}
+                // 规则 GB11: Extended_Pictographic Extend* ZWJ × Extended_Pictographic
                 if (cp2 == 0x200D && unicode_data::is_extended_pictographic(prev_cp))
                 {
                     // 找 ZWJ 后的下一个
@@ -481,7 +441,7 @@
                     }
                 }
 
-                // GB999: 其他情况断开
+                // 规则 GB999: 其他情况断开
                 break;
             }
 

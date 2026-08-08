@@ -7,7 +7,7 @@
 #include "codec_binary.hpp"
 #include "codec_protobuf.hpp"
 #include "codec_flatbuffer.hpp"
-#include "dense.hpp"
+#include "../dense.hpp"
 #include <string>
 #include <string_view>
 #include <cstring>

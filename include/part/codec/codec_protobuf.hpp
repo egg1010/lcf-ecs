@@ -6,9 +6,9 @@
 #pragma once
 
 #include "archive_codec.hpp"
-#include "safety.hpp"
-#include "operating_message.hpp"
-#include "dense.hpp"
+#include "../safety.hpp"
+#include "../operating_message.hpp"
+#include "../dense.hpp"
 #include <cstdint>
 #include <cstring>
 #include <string>

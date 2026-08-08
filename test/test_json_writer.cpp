@@ -1,5 +1,5 @@
 // test_json_writer.cpp - JSON 写入器单元测试
-#include "include/part/json_writer.hpp"
+#include "include/part/codec/json_writer.hpp"
 #include "test_common.hpp"
 #include <string>
 

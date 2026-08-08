@@ -3,10 +3,10 @@
 #pragma once
 
 #include "archive_codec.hpp"
-#include "safety.hpp"
+#include "../safety.hpp"
 #include "json_writer.hpp"
 #include "json_reader.hpp"
-#include "operating_message.hpp"
+#include "../operating_message.hpp"
 #include <cstring>
 #include <string>
 #include <string_view>

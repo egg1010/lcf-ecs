@@ -1,7 +1,7 @@
 // test_utf8.cpp - utf8 功能测试 (编解码函数 + utf8pp + utf8_view + Unicode 数据)
 #include "test_common.hpp"
-#include "include/part/utf8pp.hpp"
-#include "include/part/utf8_view.hpp"
+#include "include/part/utf8pp/utf8pp.hpp"
+#include "include/part/utf8pp/utf8_view.hpp"
 #include "include/part/dense.hpp"
 #include <cmath>
 #include <unordered_map>
@@ -2632,13 +2632,13 @@ int main()
     {
         // e + U+0301 (230) + U+0323 (220)  ← 乱序
         // 排序后: e + U+0323 (220) + U+0301 (230)
-        // 合并: e + U+0301 -> é, 剩 é + U+0323
+        // 合并: e + U+0323 -> ẹ (U+1EB9), 剩 ẹ + U+0301 (无预组合)
         char32_t in[] = {U'e', U'\u0301', U'\u0323'};
         utf8pp s(in, 3);
         s.to_nfc();
         print_item("e+0301+0323 NFC size==2", s.size() == 2);
-        print_item("NFC [0]==é (U+00E9)",     s.at(0) == U'\u00E9');
-        print_item("NFC [1]==U+0323",         s.at(1) == U'\u0323');
+        print_item("NFC [0]==ẹ (U+1EB9)",    s.at(0) == U'\u1EB9');
+        print_item("NFC [1]==U+0301",        s.at(1) == U'\u0301');
     }
 
     // === 113. NFD 分解 (é -> e + U+0301) ===

@@ -1,4 +1,4 @@
-// nonmember.hpp - 非成员函数 (operator+/流/swap/to_utf8pp/字面量/hash/比较/erase/formatter)
+// 非成员函数 (operator+/流/swap/to_utf8pp/字面量/hash/比较/erase/formatter)
 #pragma once
 
 
@@ -230,7 +230,7 @@ inline void swap(utf8pp& lhs, utf8pp& rhs) noexcept { lhs.swap(rhs); }
     return utf8pp(tmp.data(), static_cast<size_t>(n2));
 }
 
-// utf8pp::format 的静态成员版本 (与 std::format 风格统一, 但用 printf 格式串)
+// 静态成员版本 format (与 std::format 风格统一, 但用 printf 格式串)
 // 用法: utf8pp::format("x=%d y=%s", 42, "hi")
 [[nodiscard]] inline utf8pp utf8pp_vformat(const char* fmt, std::va_list ap)
 {
@@ -248,7 +248,7 @@ inline void swap(utf8pp& lhs, utf8pp& rhs) noexcept { lhs.swap(rhs); }
     return utf8pp(tmp.data(), static_cast<size_t>(n2));
 }
 
-// utf8pp 类内静态方法的定义 (前向声明的 format/vformat)
+// 类内静态方法的定义 (前向声明的 format/vformat)
 [[nodiscard]] inline utf8pp utf8pp::format(const char* fmt, ...)
 {
     if (!fmt) return utf8pp();
@@ -300,7 +300,7 @@ struct hash<utf8pp>
 {
     size_t operator()(const utf8pp& s) const noexcept
     {
-        // FNV-1a 字节哈希 (分布优于朴素 *31)
+        // 哈希 FNV-1a 字节哈希 (分布优于朴素 *31)
         size_t h = 14695981039346656037ULL;
         const char* p = s.data();
         size_t n = s.byte_size();
@@ -384,18 +384,7 @@ template <typename Pred>
 }
 
 // === std::formatter 特化 (C++20 std::format 支持, 可选) ===
-// 支持: 原始输出 / width / fill / align / 大小写转换
-// 用法:
-//   std::format("{}",         utf8pp("Hello"))      → "Hello"
-//   std::format("{:10}",      utf8pp("Hi"))         → "Hi        "
-//   std::format("{:<10}",     utf8pp("Hi"))         → "Hi        "
-//   std::format("{:>10}",     utf8pp("Hi"))         → "        Hi"
-//   std::format("{:^10}",     utf8pp("Hi"))         → "    Hi    "
-//   std::format("{:*<10}",    utf8pp("Hi"))         → "Hi********"
-//   std::format("{:L}",       utf8pp("Hello"))      → "hello"  (小写)
-//   std::format("{:U}",       utf8pp("Hello"))      → "HELLO"  (大写)
-//   std::format("{:T}",       utf8pp("hello world"))→ "Hello World"
-//   std::format("{:C10}",     utf8pp("你好"))       → "  你好  " (按 display_width 对齐)
+// 支持: 原始输出 / width / fill / align / 大小写转换 / display_width 对齐
 #if __cpp_lib_format >= 201907L
 #include <format>
 template <>
@@ -428,7 +417,7 @@ struct std::formatter<utf8pp>
             align_ = it[1];
             it += 2;
         }
-        // width (数字)
+        // 宽度 width (数字)
         if (it != end && (*it >= '0' && *it <= '9'))
         {
             int w = 0;
@@ -439,7 +428,7 @@ struct std::formatter<utf8pp>
             }
             width_ = w;
         }
-        // type 标志 (大小写 / display_width)
+        // 类型标志 type (大小写 / display_width)
         while (it != end && *it != '}')
         {
             if (*it == 'U') upper_ = true;
