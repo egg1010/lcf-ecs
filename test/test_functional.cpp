@@ -580,6 +580,15 @@ int main()
         cp5.erase(std::next(cp5.begin(), 2));
         print_item("erase()", (cp5.size() == 5 && cp5[2] == 30));
 
+        // AVX2 后向移动回归: >=64KB 且非 32 倍数的头插 (旧实现覆写尾部源数据)
+        dense<uint64_t> cp_avx;
+        cp_avx.increase_capacity(8208);
+        for (size_t i = 0; i < 8193; ++i) { cp_avx.push_back(i); }
+        cp_avx.emplace(cp_avx.begin(), 999);
+        bool avx_ok = (cp_avx.size() == 8194 && cp_avx[0] == 999);
+        for (size_t i = 1; avx_ok && i < cp_avx.size(); ++i) { avx_ok = (cp_avx[i] == i - 1); }
+        print_item("AVX2 后向移动 8193 元素头插", avx_ok);
+
         dense<int> cp6 = {1, 2, 3};
         dense<int> cp7 = {10, 20};
         cp6.swap(cp7);

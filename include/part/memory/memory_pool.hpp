@@ -712,17 +712,14 @@ public:
         return p;
     }
 
-    // align > ALIGNMENT 时分配 size+align, 手动对齐, padding 前一个 sizeof(void*) 存原始指针
+    // padding 前 sizeof(void*) 统一存原始指针, deallocate_aligned 读回释放 (分配/释放必须配对)
     [[nodiscard]] void* allocate_aligned(size_t size, size_t align) noexcept
     {
         if (size == 0 || align == 0) [[unlikely]]
         {
             return nullptr;
         }
-        if (align <= ALIGNMENT) [[likely]]
-        {
-            return allocate(size);
-        }
+        align = std::bit_ceil(align);  // 对齐掩码要求 2 的幂
         size_t raw_size = size + align + sizeof(void*);
         void* raw = allocate(raw_size);
         if (!raw) [[unlikely]]

@@ -53,7 +53,7 @@ private:
         if (cp_info_state_ != 0) return;
         ensure_cp_count_slow();
     }
-    // 标记 NOINLINE: uniform 3 点采样 + SSE2 全量扫描, 仅首次访问执行
+    // 标记 NOINLINE: SSE2 全量扫描, 仅首次访问执行
     // 拆出防止 SSE2 寄存器使用污染 begin()/end() 迭代器热路径
     NOINLINE void ensure_cp_count_slow() const noexcept
     {
@@ -64,58 +64,7 @@ private:
             const_cast<utf8pp*>(this)->uniform_byte_len_ = 1;
             return;
         }
-        // 均匀码点快速路径: 3 点采样验证 (跳过全量扫描)
-        // 首/中/尾码点长度一致 + continuation 字节合法 → 均匀码点
-        {
-            const uint8_t* base = reinterpret_cast<const uint8_t*>(data_);
-            uint8_t first_byte = base[0];
-            if (first_byte >= 0x80)  // 非 ASCII lead
-            {
-                size_t first_len = detail_utf8::k_utf8_seq_len[first_byte];
-                if (first_len >= 2 && first_len <= 4 && byte_size_ % first_len == 0)
-                {
-                    size_t guess_cp = byte_size_ / first_len;
-                    if (guess_cp > 0)
-                    {
-                        const uint8_t* mid_p = base + (guess_cp / 2) * first_len;
-                        const uint8_t* last_p = base + byte_size_ - first_len;
-                        uint8_t lead_mask, lead_val;
-                        if (first_len == 3) [[likely]] { lead_mask = 0xF0; lead_val = 0xE0; }
-                        else if (first_len == 2) { lead_mask = 0xE0; lead_val = 0xC0; }
-                        else { lead_mask = 0xF8; lead_val = 0xF0; }
-                        bool uniform_ok = true;
-                        for (size_t j = 1; j < first_len; ++j)
-                        {
-                            if ((base[j] & 0xC0) != 0x80) { uniform_ok = false; break; }
-                        }
-                        if (uniform_ok && guess_cp >= 4)
-                        {
-                            if ((mid_p[0] & lead_mask) != lead_val) uniform_ok = false;
-                            else for (size_t j = 1; j < first_len; ++j)
-                            {
-                                if ((mid_p[j] & 0xC0) != 0x80) { uniform_ok = false; break; }
-                            }
-                        }
-                        if (uniform_ok)
-                        {
-                            if ((last_p[0] & lead_mask) != lead_val) uniform_ok = false;
-                            else for (size_t j = 1; j < first_len; ++j)
-                            {
-                                if ((last_p[j] & 0xC0) != 0x80) { uniform_ok = false; break; }
-                            }
-                        }
-                        if (uniform_ok)
-                        {
-                            const_cast<utf8pp*>(this)->cp_count_ = static_cast<uint32_t>(guess_cp);
-                            const_cast<utf8pp*>(this)->uniform_byte_len_ = static_cast<uint8_t>(first_len);
-                            const_cast<utf8pp*>(this)->cp_info_state_ = 3;
-                            return;
-                        }
-                    }
-                }
-            }
-        }
-        // 全量扫描 (uniform 验证失败或纯 ASCII 串): SSE2 16 字节/迭代
+        // 全量扫描精确计数 (采样猜测会误判均匀码点)
         const uint8_t* p = reinterpret_cast<const uint8_t*>(data_);
         const uint8_t* end = p + byte_size_;
         bool all_ascii = true;
@@ -245,18 +194,37 @@ private:
         uniform_byte_len_ = 0;
     }
 
+    // 精确验证 cp_offsets_ 为等差数列 i*avg (SSE2 4 项/迭代)
+    [[nodiscard]] bool check_offsets_uniform(size_t avg) const noexcept
+    {
+        size_t i = 0;
+#if LCF_UTF8_HAS_SSE2
+        const __m128i step = _mm_set1_epi32(static_cast<int>(4 * avg));
+        __m128i cur = _mm_setr_epi32(0, static_cast<int>(avg),
+                                     static_cast<int>(2 * avg), static_cast<int>(3 * avg));
+        for (; i + 4 <= cp_count_; i += 4)
+        {
+            __m128i v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(cp_offsets_ + i));
+            if (_mm_movemask_epi8(_mm_cmpeq_epi32(v, cur)) != 0xFFFF) return false;
+            cur = _mm_add_epi32(cur, step);
+        }
+#endif
+        for (; i < cp_count_; ++i)
+        {
+            if (cp_offsets_[i] != static_cast<uint32_t>(i * avg)) return false;
+        }
+        return true;
+    }
+
     // 修改后重新检测均匀码点 (state=2 时 cp_offsets_ 已更新)
-    // 抽样首/尾/中, 供 insert/erase/append 等增量维护后调用
+    // 供 insert/erase/append 等增量维护后调用
     void recheck_uniform() noexcept
     {
         uniform_byte_len_ = 0;
         if (cp_info_state_ == 2 && cp_count_ > 0 && byte_size_ % cp_count_ == 0)
         {
             size_t avg = byte_size_ / cp_count_;
-            if (avg >= 1 && avg <= 4
-                && cp_offsets_[0] == 0
-                && cp_offsets_[cp_count_ - 1] == byte_size_ - static_cast<uint32_t>(avg)
-                && (cp_count_ <= 2 || cp_offsets_[cp_count_ / 2] == static_cast<uint32_t>((cp_count_ / 2) * avg)))
+            if (avg >= 1 && avg <= 4 && check_offsets_uniform(avg))
             {
                 uniform_byte_len_ = static_cast<uint8_t>(avg);
             }
@@ -481,6 +449,7 @@ private:
             }
         }
         cp_count_ += str.cp_count_;
+        recheck_uniform();  // 内容变更后重检均匀码点
     }
 
     void replace_cp_at(size_t cp_idx, uint32_t new_cp)
@@ -526,6 +495,7 @@ private:
             {
                 cp_offsets_[i] = static_cast<uint32_t>(static_cast<int32_t>(cp_offsets_[i]) + diff);
             }
+            uniform_byte_len_ = 0;  // 码点长度变更, 串不再均匀
         }
     }
 
@@ -632,68 +602,6 @@ private:
             byte_capacity_ = static_cast<uint32_t>(byte_len);
         }
 
-        // 快速路径: 首字节非 ASCII → 2 点采样 + memcpy 并行
-        // 中文热路径: 首字节 0xE0-0xEF + byte_len%3==0 → 2 点采样验证
-        // 2 点采样 (首+尾): 比原 3 点省 1 次 4 字节读取, 用 f4 高字节验证第 2 码点 lead
-        // 采样读 s (cache hit), memcpy 也读 s, CPU 可并行执行位运算与内存拷贝
-        const uint8_t first_byte = static_cast<uint8_t>(s[0]);
-        if (first_byte >= 0x80)
-        {
-            bool uniform3_ok = false;
-            size_t guess_cp = 0;
-            if (first_byte >= 0xE0 && first_byte <= 0xEF && byte_len % 3 == 0) [[likely]]
-            {
-                guess_cp = byte_len / 3;
-                if (guess_cp >= 2)  // 至少 2 个码点 (首+尾不同)
-                {
-                    const uint8_t* p = reinterpret_cast<const uint8_t*>(s);
-                    const uint8_t* last_p = p + byte_len - 3;
-                    // 读取 4 字节: 首 3 字节 (lead+2cont) + 第 2 码点 lead
-                    // 尾部+4 读 s[byte_len+1]: C 字符串/std::string 保证 '\0' 可读
-                    uint32_t f4, l4;
-                    std::memcpy(&f4, p, 4);
-                    std::memcpy(&l4, last_p, 4);
-                    // 小端序: byte0=低位, 3 字节序列 E0 80 80 → (v & 0x00C0C0F0)==0x008080E0
-                    constexpr uint32_t mask3 = 0x00C0C0F0u;
-                    constexpr uint32_t val3  = 0x008080E0u;
-                    // 首尾验证: lead + 2 cont 字节
-                    bool head_tail_ok = ((f4 & mask3) == val3) && ((l4 & mask3) == val3);
-                    // 复用 f4 高字节验证第 2 码点 lead (0xE0-0xEF)
-                    // 替代原中间采样点, 省 1 次 4 字节读取
-                    if (head_tail_ok)
-                    {
-                        uint8_t second_lead = static_cast<uint8_t>(f4 >> 24);
-                        uniform3_ok = (second_lead >= 0xE0 && second_lead <= 0xEF);
-                    }
-                }
-                else if (guess_cp == 1)
-                {
-                    // 单码点: 只验证首 3 字节
-                    const uint8_t* p = reinterpret_cast<const uint8_t*>(s);
-                    uint32_t f4;
-                    std::memcpy(&f4, p, 4);
-                    constexpr uint32_t mask3 = 0x00C0C0F0u;
-                    constexpr uint32_t val3  = 0x008080E0u;
-                    uniform3_ok = ((f4 & mask3) == val3);
-                }
-            }
-            // 拷贝 memcpy (CPU 可与上面位运算采样并行执行, 源 s 共享 cache)
-            std::memcpy(data_, s, byte_len);
-            byte_size_ = static_cast<uint32_t>(byte_len);
-            data_[byte_size_] = '\0';
-            if (uniform3_ok) [[likely]]
-            {
-                cp_count_ = static_cast<uint32_t>(guess_cp);
-                uniform_byte_len_ = 3;
-                cp_info_state_ = 3;
-                return;
-            }
-            // 非 uniform: 走全量扫描 (设 state=0, ensure_cp_count 完成)
-            cp_info_state_ = 0;
-            ensure_cp_count();
-            return;
-        }
-
         // 融合扫描+拷贝: 单次读取源数据, 同时完成码点计数 + ASCII 检测 + memcpy
         const uint8_t* p = reinterpret_cast<const uint8_t*>(s);
         uint8_t* d = reinterpret_cast<uint8_t*>(data_);
@@ -714,42 +622,76 @@ private:
         }
     }
 
-    // 均匀码点检测: byte_size/cp_count 整除 + 首/中/尾抽样验证
-    // 供 init_from_utf8 / ensure_cp_count 调用 (无需构建 cp_offsets_)
-    // 位运算验证 lead 字节 (替代 k_utf8_seq_len 表查找)
+    // 精确验证均匀码点: lead 位置恰为 i*avg (周期掩码全量比对)
+    [[nodiscard]] bool verify_uniform_exact(size_t avg) const noexcept
+    {
+        const uint8_t* base = reinterpret_cast<const uint8_t*>(data_);
+        const uint8_t* p = base;
+        const uint8_t* end = base + byte_size_;
+#if LCF_UTF8_HAS_SSE2
+        const __m128i mask_C0 = _mm_set1_epi8(static_cast<char>(0xC0));
+        const __m128i mask_80 = _mm_set1_epi8(static_cast<char>(0x80));
+        // avg=3: 16≡1 (mod 3), 期望掩码按块索引 mod 3 轮转
+        static constexpr uint16_t k_pat3[3] = {0x9249u, 0x4924u, 0x2492u};
+        uint32_t rot = 0;
+        while (p + 16 <= end)
+        {
+            __m128i v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p));
+            __m128i is_cont = _mm_cmpeq_epi8(_mm_and_si128(v, mask_C0), mask_80);
+            uint16_t lead_mask = static_cast<uint16_t>(~_mm_movemask_epi8(is_cont));
+            uint16_t expect;
+            if (avg == 3) { expect = k_pat3[rot]; rot = (rot == 2) ? 0 : rot + 1; }
+            else if (avg == 2) { expect = 0x5555u; }
+            else { expect = 0x1111u; }  // avg == 4
+            if (lead_mask != expect) return false;
+            p += 16;
+        }
+#else
+        // SWAR 8 字节/迭代, avg=3: 8≡2 (mod 3) 掩码按块索引轮转
+        static constexpr uint8_t k_pat3[3] = {0x49u, 0x92u, 0x24u};
+        uint32_t rot = 0;
+        while (p + 8 <= end)
+        {
+            uint64_t chunk;
+            std::memcpy(&chunk, p, 8);
+            uint64_t x = chunk & 0x8080808080808080ULL;
+            uint64_t y = chunk & 0x4040404040404040ULL;
+            uint64_t cont = x & ~(y << 1);
+            uint64_t lead = cont ^ 0x8080808080808080ULL;
+            uint8_t lead_mask = static_cast<uint8_t>((lead * 0x0002040810204081ULL) >> 56);
+            uint8_t expect;
+            if (avg == 3) { expect = k_pat3[rot]; rot = (rot == 2) ? 0 : rot + 1; }
+            else if (avg == 2) { expect = 0x55u; }
+            else { expect = 0x11u; }  // avg == 4
+            if (lead_mask != expect) return false;
+            p += 8;
+        }
+#endif
+        // 尾部逐字节: lead 当且仅当偏移 % avg == 0
+        size_t off = static_cast<size_t>(p - base);
+        while (p < end)
+        {
+            bool is_lead = (*p & 0xC0) != 0x80;
+            if (is_lead != (off % avg == 0)) return false;
+            ++p;
+            ++off;
+        }
+        return true;
+    }
+
+    // 均匀码点检测: byte_size/cp_count 整除 + 全量验证 lead 位置 (供 init_from_utf8/ensure_cp_count)
     void detect_uniform_byte_len() noexcept
     {
         uniform_byte_len_ = 0;
         if (cp_count_ == 0 || byte_size_ == 0) return;
         if (byte_size_ % cp_count_ != 0) return;
         size_t avg = byte_size_ / cp_count_;
-        if (avg < 1 || avg > 4) return;
-        // 抽样验证: 首/尾码点长度 (位运算替代表查找)
-        const uint8_t* base = reinterpret_cast<const uint8_t*>(data_);
-        const uint8_t* last = base + byte_size_ - avg;
-        // 引导字节掩码: avg=1→纯 ASCII, avg=2→0xE0/0xC0, avg=3→0xF0/0xE0, avg=4→0xF8/0xF0
-        if (avg == 1)
+        // avg==1 即纯 ASCII (state=1) 不会到此; 到此即非法数据
+        if (avg < 2 || avg > 4) return;
+        if (verify_uniform_exact(avg))
         {
-            // 纯 ASCII: 首/尾字节 < 0x80
-            if ((base[0] & 0x80) || (last[0] & 0x80)) return;
+            uniform_byte_len_ = static_cast<uint8_t>(avg);
         }
-        else
-        {
-            uint8_t lead_mask, lead_val;
-            if (avg == 3) { lead_mask = 0xF0; lead_val = 0xE0; }
-            else if (avg == 2) { lead_mask = 0xE0; lead_val = 0xC0; }
-            else { lead_mask = 0xF8; lead_val = 0xF0; }  // avg == 4
-            if ((base[0] & lead_mask) != lead_val) return;
-            if ((last[0] & lead_mask) != lead_val) return;
-            // 中间抽样 (cp_count >= 4 时)
-            if (cp_count_ >= 4)
-            {
-                size_t mid_idx = cp_count_ / 2;
-                const uint8_t* mid = base + mid_idx * avg;
-                if ((mid[0] & lead_mask) != lead_val) return;
-            }
-        }
-        uniform_byte_len_ = static_cast<uint8_t>(avg);
     }
 
     void init_from_char32(const char32_t* s, size_t cp_count)
@@ -783,14 +725,11 @@ private:
         data_[byte_size_] = '\0';
         // 已构建偏移, 标记为已构建 (可能全 ASCII, 但走偏移路径不影响正确性)
         cp_info_state_ = 2;
-        // 均匀码点检测: 若所有码点等长, 用乘法替代数组查表
+        // 均匀码点检测: 所有码点等长时用乘法替代数组查表
         if (cp_count_ > 0 && byte_size_ % cp_count_ == 0)
         {
             size_t avg = byte_size_ / cp_count_;
-            if (avg >= 1 && avg <= 4
-                && cp_offsets_[0] == 0
-                && cp_offsets_[cp_count_ - 1] == byte_size_ - static_cast<uint32_t>(avg)
-                && (cp_count_ <= 2 || cp_offsets_[cp_count_ / 2] == static_cast<uint32_t>((cp_count_ / 2) * avg)))
+            if (avg >= 1 && avg <= 4 && check_offsets_uniform(avg))
             {
                 uniform_byte_len_ = static_cast<uint8_t>(avg);
             }
@@ -858,14 +797,10 @@ private:
             ++p;
         }
         // 均匀码点检测: 若所有码点等长 (如纯中文 3 字节/码点), 用乘法替代数组查表
-        // 抽样检查首/尾/中, 概率覆盖 >99.99% 非均匀串
         if (cp_count_ > 0 && byte_size_ % cp_count_ == 0)
         {
             size_t avg = byte_size_ / cp_count_;
-            if (avg >= 1 && avg <= 4
-                && cp_offsets_[0] == 0
-                && cp_offsets_[cp_count_ - 1] == byte_size_ - static_cast<uint32_t>(avg)
-                && (cp_count_ <= 2 || cp_offsets_[cp_count_ / 2] == static_cast<uint32_t>((cp_count_ / 2) * avg)))
+            if (avg >= 1 && avg <= 4 && check_offsets_uniform(avg))
             {
                 uniform_byte_len_ = static_cast<uint8_t>(avg);
             }

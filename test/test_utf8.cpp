@@ -2837,6 +2837,69 @@ int main()
         print_item("Hangul NFC 幂等", hg == hg2);
     }
 
+    // === 123. 均匀码点对抗性用例 (采样误判回归) ===
+    print_section(123, "均匀码点对抗性用例");
+    {
+        // 3 字节开头 + 字节数整除 3 的混合串
+        utf8pp m1(u8"你abc你你");          // 3+1+1+1+3+3 = 12 字节, 6 码点
+        print_item("混合串 size==6 (你abc你你)", m1.size() == 6);
+        print_item("混合串 at(1)=='a'", m1.at(1) == U'a');
+        print_item("混合串 at(3)=='c'", m1.at(3) == U'c');
+        print_item("混合串 at(5)=='你'", m1.at(5) == U'你');
+
+        // 前两码点 3 字节 + 中间 ASCII
+        utf8pp m2(u8"你你abc你");          // 3+3+1+1+1+3 = 12 字节, 6 码点
+        print_item("混合串 size==6 (你你abc你)", m2.size() == 6);
+        print_item("混合串 at(2)=='a'", m2.at(2) == U'a');
+        print_item("混合串 at(5)=='你'", m2.at(5) == U'你');
+
+        // 平均 2 字节但中间混合 1/3 字节
+        utf8pp m3(u8"Àa你ÀÀÀ");            // 2+1+3+2+2+2 = 12 字节, 6 码点
+        print_item("混合串 size==6 (Àa你ÀÀÀ)", m3.size() == 6);
+        print_item("混合串 at(1)=='a'", m3.at(1) == U'a');
+        print_item("混合串 at(2)=='你'", m3.at(2) == U'你');
+        print_item("混合串 at(5)=='À'", m3.at(5) == U'À');
+
+        // >16 字节对抗串 (命中 SSE2 块验证路径)
+        utf8pp m4(u8"你你你ab你你你你");     // 9+2+12 = 21 字节, 9 码点
+        print_item("长混合串 size==9", m4.size() == 9);
+        print_item("长混合串 at(3)=='a'", m4.at(3) == U'a');
+        print_item("长混合串 at(8)=='你'", m4.at(8) == U'你');
+
+        // 纯均匀串快速路径
+        utf8pp u1(u8"你好你好");
+        print_item("纯中文 size==4", u1.size() == 4);
+        print_item("纯中文 at(3)=='好'", u1.at(3) == U'好');
+
+        // 大均匀串 (>=64 码点, 命中预解码缓存路径)
+        utf8pp u2(size_t(100), char32_t(0x4F60));
+        print_item("100 个'你' size==100", u2.size() == 100);
+        print_item("100 个'你' at(99)=='你'", u2.at(99) == U'你');
+
+        // 混合串迭代器遍历与 at 一致
+        size_t iter_n = 0;
+        bool iter_ok = true;
+        for (char32_t cp : m1)
+        {
+            if (iter_n >= 6 || cp != m1.at(iter_n)) iter_ok = false;
+            ++iter_n;
+        }
+        print_item("混合串迭代器与 at 一致", iter_ok && iter_n == 6);
+
+        // insert 后重检均匀码点
+        utf8pp s1(u8"你你好");              // 9 字节 3 码点 (uniform=3)
+        s1.insert(1, u8"a");               // → 你a你好: 10 字节 4 码点
+        print_item("insert 后 size==4", s1.size() == 4);
+        print_item("insert 后 at(1)=='a'", s1.at(1) == U'a');
+        print_item("insert 后 at(3)=='好'", s1.at(3) == U'好');
+
+        // erase 后偏移精确
+        utf8pp s2(u8"你abc你你");
+        s2.erase(1, 3);                    // 删 abc → 你你你: 9 字节 3 码点
+        print_item("erase 后 size==3", s2.size() == 3);
+        print_item("erase 后 at(2)=='你'", s2.at(2) == U'你');
+    }
+
     print_summary("功能测试");
     return 0;
 }

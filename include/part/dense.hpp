@@ -693,16 +693,16 @@ private:
 			const __m256i* s256 = static_cast<const __m256i*>(static_cast<const void*>(s));
 			__m256i* d256 = static_cast<__m256i*>(static_cast<void*>(d));
 			const size_t ymm_count = bytes / 32;
+			const size_t processed = ymm_count * 32;
+			// 尾部余数先拷: 最高位块写入会覆写未拷的尾部源数据
+			if (processed < bytes)
+			{
+				std::memmove(d + processed, s + processed, bytes - processed);
+			}
 			// 后向单循环: 重叠移动展开有害, 保持单次 load+store
 			for (size_t i = ymm_count; i > 0; --i)
 			{
 				_mm256_storeu_si256(d256 + i - 1, _mm256_loadu_si256(s256 + i - 1));
-			}
-			const size_t processed = ymm_count * 32;
-			if (processed < bytes)
-			{
-				// 尾部从前向后处理 (已移到前面, 不重叠)
-				std::memmove(d + processed, s + processed, bytes - processed);
 			}
 			return;
 		}
@@ -725,15 +725,16 @@ private:
 		const __m256i* s256 = static_cast<const __m256i*>(static_cast<const void*>(src));
 		__m256i* d256 = static_cast<__m256i*>(static_cast<void*>(dst));
 		const size_t ymm_count = bytes / 32;
-		for (size_t i = ymm_count; i > 0; --i)
-		{
-			_mm256_storeu_si256(d256 + i - 1, _mm256_loadu_si256(s256 + i - 1));
-		}
 		const size_t processed = ymm_count * 32;
+		// 尾部余数先拷: 最高位块写入会覆写未拷的尾部源数据
 		if (processed < bytes)
 		{
 			std::memmove(reinterpret_cast<char*>(dst) + processed,
 			             reinterpret_cast<const char*>(src) + processed, bytes - processed);
+		}
+		for (size_t i = ymm_count; i > 0; --i)
+		{
+			_mm256_storeu_si256(d256 + i - 1, _mm256_loadu_si256(s256 + i - 1));
 		}
 	}
 #endif

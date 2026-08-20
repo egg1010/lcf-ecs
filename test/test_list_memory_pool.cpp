@@ -1,10 +1,12 @@
 // test_list_memory_pool.cpp - list_memory_pool 功能测试
 // 验证: 分配/硬删除/软删除/分档/大块/指针归属/重新分配/统计/碎片自愈/软删除复用
 #include "include/part/memory/list_memory_pool.hpp"
+#include "include/part/memory/memory_pool.hpp"
 #include "include/part/dense.hpp"
 #include <cstdio>
 #include <cstring>
 #include <cassert>
+#include <cstdint>
 
 using namespace memory;
 #ifdef _WIN32
@@ -495,6 +497,70 @@ static void test_soft_deallocate_mixed()
 	CHECK(pool.total_allocated_bytes() == 0);
 }
 
+// 对齐分配/释放配对回归 (旧实现小对齐不写回原始指针, 释放为野指针 free)
+static void test_aligned_allocate_deallocate()
+{
+	// list_memory_pool: 覆盖 slot 路径 (<=4032) 与大块路径 (>4032)
+	{
+		list_memory_pool pool;
+		const size_t aligns[] = {8, 16, 32, 64, 128, 256, 4096, 8192};
+		for (size_t align : aligns)
+		{
+			void* p = pool.allocate_aligned(100, align);
+			CHECK(p != nullptr);
+			CHECK((reinterpret_cast<uintptr_t>(p) & (align - 1)) == 0);
+			std::memset(p, 0xCD, 100);
+			pool.deallocate_aligned(p);
+		}
+		// 大块对齐分配 (raw_size > 4032 走大块路径)
+		void* big = pool.allocate_aligned(4000, 64);
+		CHECK(big != nullptr);
+		CHECK((reinterpret_cast<uintptr_t>(big) & 63) == 0);
+		std::memset(big, 0xEF, 4000);
+		pool.deallocate_aligned(big);
+		// 释放后池仍可正常分配
+		void* q = pool.allocate(32);
+		CHECK(q != nullptr);
+		pool.hard_deallocate(q);
+		CHECK(pool.total_allocated_bytes() == 0);
+	}
+
+	// memory_pool (TLSF) 同路径
+	{
+		memory_pool pool;
+		const size_t aligns[] = {8, 16, 32, 64, 256};
+		for (size_t align : aligns)
+		{
+			void* p = pool.allocate_aligned(128, align);
+			CHECK(p != nullptr);
+			CHECK((reinterpret_cast<uintptr_t>(p) & (align - 1)) == 0);
+			std::memset(p, 0xCD, 128);
+			pool.deallocate_aligned(p);
+		}
+		void* q = pool.allocate(48);
+		CHECK(q != nullptr);
+		pool.deallocate(q);
+	}
+
+	// 多交错分配: 验证写回的原始指针互不干扰
+	{
+		list_memory_pool pool;
+		void* ptrs[8];
+		for (int i = 0; i < 8; ++i)
+		{
+			ptrs[i] = pool.allocate_aligned(64 + i * 16, 32);
+			CHECK(ptrs[i] != nullptr);
+			CHECK((reinterpret_cast<uintptr_t>(ptrs[i]) & 31) == 0);
+			std::memset(ptrs[i], i, 64 + i * 16);
+		}
+		for (int i = 0; i < 8; ++i)
+		{
+			pool.deallocate_aligned(ptrs[i]);
+		}
+		CHECK(pool.total_allocated_bytes() == 0);
+	}
+}
+
 int main()
 {
 	// Windows 控制台 UTF-8
@@ -523,6 +589,9 @@ int main()
 	test_soft_deallocate_preserves_chunk();
 	test_soft_then_hard_deallocate();
 	test_soft_deallocate_mixed();
+
+	// 对齐分配/释放配对测试
+	test_aligned_allocate_deallocate();
 
 	printf("========================================\n");
 	printf("list_memory_pool 功能测试: %d 通过, %d 失败\n", g_pass, g_fail);
