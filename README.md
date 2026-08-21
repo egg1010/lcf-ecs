@@ -18,21 +18,6 @@
 - [文档](#文档)
 - [License](#license)
 
----
-
-## 特性
-
-- **Header-Only**：仅需 `#include`，无链接库依赖
-- **跨平台编译器**：GCC / Clang / MinGW / Clang-cl / MSVC 全覆盖
-- **SIMD 加速**：x86/x64 启用 AVX2 + FMA + BMI2，MinGW 自动回退 SSE2/BMI2，ARM64 标量回退
-- **链接时优化 (LTO)**：GCC `-flto=N`、Clang `-flto=thin`、MSVC `/GL + /LTCG`
-- **自研容器**：`class_pool`（稀疏）/ `dense<T>`（密集）替代 `std::vector`
-- **多视图查询**：`single_view` / `multi_view` / `runtime_view` / `group` / `reorder_group`
-- **反射系统**：聚合体反射、字段查询、成员偏移计算
-- **序列化框架**：JSON / Binary / Protobuf / FlatBuffer 四格式 + 编解码注册表
-- **UTF-8 字符串**：`utf8pp` 拥有串 + `utf8_view` 零拷贝视图，完整 Unicode 支持
-- **零异常设计**：禁用异常，错误经返回值/状态码传递
-
 ## 构建
 
 需要 CMake 3.20+ 和 C++20 编译器。
