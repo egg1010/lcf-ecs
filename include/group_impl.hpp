@@ -1,4 +1,5 @@
-﻿// group_impl.hpp —— group / owning_group / reorder_group 的 out-of-line 定义
+// group_impl.hpp —— group / owning_group / reorder_group 的 out-of-line 定义
+// 公共状态与掩码构建收敛于 group_base (group.hpp), 此处仅保留差异化逻辑
 // 依赖 manager 完整定义,由 component.hpp 在 manager 类定义之后 include
 #pragma once
 #include "group.hpp"
@@ -9,31 +10,24 @@
 namespace ecs
 {
 
+// check_blocks 依赖 manager 完整类型, 定义于此 (三子类共用基类版本)
+template <typename First, typename... Rest>
+[[nodiscard]] inline bool group_base<First, Rest...>::check_blocks(uint32_t entity_index) const noexcept
+{
+    for (uint32_t b = 0; b <= max_block_; ++b)
+    {
+        if (required_masks_[b] == 0) continue;
+        uint64_t mask = mgr_->get_entity_block_by_idx(entity_index, b);
+        if ((mask & required_masks_[b]) != required_masks_[b])
+            return false;
+    }
+    return true;
+}
+
 template <typename First, typename... Rest>
 inline group<First, Rest...>::group(manager* mgr, std::array<single_class_set*, N> sets) noexcept
-    : mgr_(mgr), sets_(sets)
+    : group_base<First, Rest...>(mgr, sets)
 {
-    find_smallest();
-    auto block_of = [](int tid) noexcept -> uint32_t {
-        return static_cast<uint32_t>(tid - 1) / 64;
-    };
-    max_block_ = block_of(type_id::get_type_id<First>());
-    auto update_block = [&](int tid) noexcept {
-        uint32_t b = block_of(tid);
-        if (b > max_block_) max_block_ = b;
-    };
-    (update_block(type_id::get_type_id<Rest>()), ...);
-    required_masks_.increase_capacity(max_block_ + 1, 0);
-    auto fill_mask = [&](int tid) noexcept {
-        uint32_t block = block_of(tid);
-        uint32_t offset = static_cast<uint32_t>(tid - 1) % 64;
-        required_masks_[block] |= (1ULL << offset);
-    };
-    fill_mask(type_id::get_type_id<First>());
-    (fill_mask(type_id::get_type_id<Rest>()), ...);
-    use_mask_path_ = (N >= 3) || ((max_block_ + 1) <= 5);
-    req_sets_.increase_capacity(N, nullptr);
-    for (size_t i = 0; i < N; ++i) req_sets_[i] = sets_[i];
     rebuild();
 }
 
@@ -107,40 +101,17 @@ inline void group<First, Rest...>::rebuild() noexcept
             }
         }
     }
-    for (size_t i = 0; i < N; ++i)
-    {
-        if (sets_[i]) cached_versions_[i] = sets_[i]->get_pool_version();
-    }
+    refresh_versions(cached_versions_);
 }
 
 template <typename First, typename... Rest>
 inline owning_group<First, Rest...>::owning_group(manager* mgr, std::array<single_class_set*, N> sets) noexcept
-    : mgr_(mgr), sets_(sets)
+    : group_base<First, Rest...>(mgr, sets)
 {
-    find_smallest();
-    auto block_of = [](int tid) noexcept -> uint32_t {
-        return static_cast<uint32_t>(tid - 1) / 64;
-    };
-    max_block_ = block_of(type_id::get_type_id<First>());
-    auto update_block = [&](int tid) noexcept {
-        uint32_t b = block_of(tid);
-        if (b > max_block_) max_block_ = b;
-    };
-    (update_block(type_id::get_type_id<Rest>()), ...);
-    required_masks_.increase_capacity(max_block_ + 1, 0);
-    auto fill_mask = [&](int tid) noexcept {
-        uint32_t block = block_of(tid);
-        uint32_t offset = static_cast<uint32_t>(tid - 1) % 64;
-        required_masks_[block] |= (1ULL << offset);
-    };
-    fill_mask(type_id::get_type_id<First>());
-    (fill_mask(type_id::get_type_id<Rest>()), ...);
-    use_mask_path_ = (N >= 3) || ((max_block_ + 1) <= 5);
-    req_sets_.increase_capacity(N, nullptr);
-    for (size_t i = 0; i < N; ++i) req_sets_[i] = sets_[i];
     rebuild();
 }
 
+// 主集合物理压缩: 命中条目前压 (压缩循环收敛于 group_base::compact_primary)
 template <typename First, typename... Rest>
 inline void owning_group<First, Rest...>::rebuild() noexcept
 {
@@ -150,93 +121,15 @@ inline void owning_group<First, Rest...>::rebuild() noexcept
         return;
     }
 
-    auto* primary = sets_[primary_idx_];
-    auto& indices = primary->get_entity_indices();
-    size_t n = primary->size();
-
-    size_t write = 0;
-    if (use_mask_path_)
-    {
-        for (size_t read = 0; read < n; ++read)
-        {
-            if (check_blocks(indices[read]))
-            {
-                if (read != write)
-                {
-                    primary->swap_dense_and_pool(read, write);
-                }
-                ++write;
-            }
-        }
-    }
-    else
-    {
-        for (size_t read = 0; read < n; ++read)
-        {
-            if (read + 8 < n) [[likely]]
-            {
-                uint32_t next_eid = indices[read + 8];
-                for (size_t k = 0; k < N; ++k)
-                {
-                    if (k == primary_idx_) continue;
-                    req_sets_[k]->prefetch_sparse_entry(next_eid);
-                }
-            }
-            uint32_t eid = indices[read];
-            bool has_all = true;
-            for (size_t k = 0; k < N; ++k)
-            {
-                if (k == primary_idx_) continue;
-                if (req_sets_[k]->sparse_dense_at(eid) == single_class_set::dense_invalid)
-                {
-                    has_all = false;
-                    break;
-                }
-            }
-            if (has_all)
-            {
-                if (read != write)
-                {
-                    primary->swap_dense_and_pool(read, write);
-                }
-                ++write;
-            }
-        }
-    }
-    owned_size_ = write;
-    primary->bump_pool_version();
-
-    for (size_t i = 0; i < N; ++i)
-    {
-        if (sets_[i]) cached_versions_[i] = sets_[i]->get_pool_version();
-    }
+    owned_size_ = compact_primary();
+    sets_[primary_idx_]->bump_pool_version();
+    refresh_versions(cached_versions_);
 }
 
 template <typename First, typename... Rest>
 inline reorder_group<First, Rest...>::reorder_group(manager* mgr, std::array<single_class_set*, N> sets) noexcept
-    : mgr_(mgr), sets_(sets)
+    : group_base<First, Rest...>(mgr, sets)
 {
-    find_smallest();
-    auto block_of = [](int tid) noexcept -> uint32_t {
-        return static_cast<uint32_t>(tid - 1) / 64;
-    };
-    max_block_ = block_of(type_id::get_type_id<First>());
-    auto update_block = [&](int tid) noexcept {
-        uint32_t b = block_of(tid);
-        if (b > max_block_) max_block_ = b;
-    };
-    (update_block(type_id::get_type_id<Rest>()), ...);
-    required_masks_.increase_capacity(max_block_ + 1, 0);
-    auto fill_mask = [&](int tid) noexcept {
-        uint32_t block = block_of(tid);
-        uint32_t offset = static_cast<uint32_t>(tid - 1) % 64;
-        required_masks_[block] |= (1ULL << offset);
-    };
-    fill_mask(type_id::get_type_id<First>());
-    (fill_mask(type_id::get_type_id<Rest>()), ...);
-    use_mask_path_ = (N >= 3) || ((max_block_ + 1) <= 5);
-    req_sets_.increase_capacity(N, nullptr);
-    for (size_t i = 0; i < N; ++i) req_sets_[i] = sets_[i];
     rebuild();
 }
 
@@ -250,105 +143,9 @@ inline void reorder_group<First, Rest...>::rebuild() noexcept
         return;
     }
 
-    auto* primary = sets_[primary_idx_];
-    auto& indices = primary->get_entity_indices();
-    size_t n = primary->size();
-
-    size_t write = 0;
-    if (use_mask_path_)
-    {
-        for (size_t read = 0; read < n; ++read)
-        {
-            if (check_blocks(indices[read]))
-            {
-                if (read != write)
-                {
-                    primary->swap_dense_and_pool(read, write);
-                }
-                ++write;
-            }
-        }
-    }
-    else
-    {
-        for (size_t read = 0; read < n; ++read)
-        {
-            if (read + 8 < n) [[likely]]
-            {
-                uint32_t next_eid = indices[read + 8];
-                for (size_t k = 0; k < N; ++k)
-                {
-                    if (k == primary_idx_) continue;
-                    req_sets_[k]->prefetch_sparse_entry(next_eid);
-                }
-            }
-            uint32_t eid = indices[read];
-            bool has_all = true;
-            for (size_t k = 0; k < N; ++k)
-            {
-                if (k == primary_idx_) continue;
-                if (req_sets_[k]->sparse_dense_at(eid) == single_class_set::dense_invalid)
-                {
-                    has_all = false;
-                    break;
-                }
-            }
-            if (has_all)
-            {
-                if (read != write)
-                {
-                    primary->swap_dense_and_pool(read, write);
-                }
-                ++write;
-            }
-        }
-    }
-    s->owned_size = write;
-    primary->bump_pool_version();
-
-    for (size_t i = 0; i < N; ++i)
-    {
-        if (sets_[i]) s->cached_versions[i] = sets_[i]->get_pool_version();
-    }
-}
-
-template <typename First, typename... Rest>
-[[nodiscard]] inline bool group<First, Rest...>::check_blocks(uint32_t entity_index) const noexcept
-{
-    for (uint32_t b = 0; b <= max_block_; ++b)
-    {
-        if (required_masks_[b] == 0) continue;
-        uint64_t mask = mgr_->get_entity_block_by_idx(entity_index, b);
-        if ((mask & required_masks_[b]) != required_masks_[b])
-            return false;
-    }
-    return true;
-}
-
-template <typename First, typename... Rest>
-[[nodiscard]] inline bool owning_group<First, Rest...>::check_blocks(uint32_t entity_index) const noexcept
-{
-    for (uint32_t b = 0; b <= max_block_; ++b)
-    {
-        if (required_masks_[b] == 0) continue;
-        uint64_t mask = mgr_->get_entity_block_by_idx(entity_index, b);
-        if ((mask & required_masks_[b]) != required_masks_[b])
-            return false;
-    }
-    return true;
-}
-
-template <typename First, typename... Rest>
-[[nodiscard]] inline bool reorder_group<First, Rest...>::check_blocks(uint32_t entity_index) const noexcept
-{
-    for (uint32_t b = 0; b <= max_block_; ++b)
-    {
-        if (required_masks_[b] == 0) continue;
-        uint64_t mask = mgr_->get_entity_block_by_idx(entity_index, b);
-        if ((mask & required_masks_[b]) != required_masks_[b])
-            return false;
-    }
-    return true;
+    s->owned_size = compact_primary();
+    sets_[primary_idx_]->bump_pool_version();
+    refresh_versions(s->cached_versions);
 }
 
 } // namespace ecs

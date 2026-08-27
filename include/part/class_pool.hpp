@@ -20,8 +20,6 @@
 
 // 跨平台预取/属性宏: 集中定义于 force_inline.hpp (PREFETCH_R/PREFETCH_NTA/NOINLINE/FORCE_INLINE 等)
 
-namespace ecs { class single_class_set; }
-
 // 前置声明: pool_strided_span 定义于 class_pool_views.hpp
 // 用于 strided_span_view 成员函数返回值声明
 template <typename T>
@@ -40,8 +38,6 @@ struct pool_strided_span;
 template <typename T>
 class class_pool
 {
-	friend class ecs::single_class_set;
-
 private:
 	static constexpr size_t BITS_PER_WORD = 64;
 	static constexpr size_t INLINE_CAPACITY = 64;

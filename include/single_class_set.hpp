@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include <span>
 #include <new>
 #include <cassert>
@@ -11,7 +11,6 @@
 #include "part/operating_message.hpp"
 #include "entity.hpp"
 #include "part/dense.hpp"
-#include "part/class_pool.hpp"
 #include "part/type_id.hpp"
 #include "part/tiered_sort.hpp"
 // PREFETCH_R 宏: 集中定义于 part/force_inline.hpp
@@ -143,6 +142,71 @@ private:
         void (*pool_pop_back)(void* pool) noexcept;
         void (*move_assign_element)(void* pool, size_t dst, size_t src) noexcept;
     } ops_{};
+
+    // def 池: 运行期注册类型 (type_id::register_type_def) 的字节存储
+    //   与模板池互斥复用同一批字段: typed_pool_ 指向 def_pool_t,
+    //   typed_pool_data_/component_size_ 指向数据缓冲与元素大小, ops_ 填入 def 实现
+    //   → 共享路径 (移除/回收/交换/扩容/清空/析构) 经既有 ops_ 间接调用零分支复用
+    //   契约: 元素按字节搬运 (memcpy 重定位合法, 勿存自引用指针)
+    struct def_pool_t
+    {
+        char* data{nullptr};
+        size_t size{0};
+        size_t capacity{0};
+        size_t component_size{0};
+        size_t alignment{0};
+        bool trivially_copyable{false};
+        void (*construct)(void*) noexcept{nullptr};
+        void (*destruct)(void*) noexcept{nullptr};
+
+        [[nodiscard]] void* element(size_t i) noexcept
+        {
+            return data + i * component_size;
+        }
+        [[nodiscard]] const void* element(size_t i) const noexcept
+        {
+            return data + i * component_size;
+        }
+
+        [[nodiscard]] static char* allocate_bytes(size_t bytes, size_t alignment) noexcept
+        {
+            if (bytes == 0) bytes = 1;
+            if (alignment > __STDCPP_DEFAULT_NEW_ALIGNMENT__)
+            {
+                return static_cast<char*>(
+                    ::operator new(bytes, std::align_val_t(alignment), std::nothrow));
+            }
+            return static_cast<char*>(::operator new(bytes, std::nothrow));
+        }
+
+        static void release_bytes(char* p, size_t bytes, size_t alignment) noexcept
+        {
+            if (!p) return;
+            if (alignment > __STDCPP_DEFAULT_NEW_ALIGNMENT__)
+            {
+                ::operator delete(p, bytes, std::align_val_t(alignment));
+            }
+            else
+            {
+                ::operator delete(p, bytes);
+            }
+        }
+
+        [[nodiscard]] bool reserve(size_t cap) noexcept
+        {
+            if (cap <= capacity) [[likely]] return true;
+            char* nd = allocate_bytes(cap * component_size, alignment);
+            if (!nd) [[unlikely]] return false;
+            if (data)
+            {
+                std::memcpy(nd, data, size * component_size);
+                release_bytes(data, capacity * component_size, alignment);
+            }
+            data = nd;
+            capacity = cap;
+            return true;
+        }
+    };
 
     uint64_t version_{0};
     // 变更追踪条目 (8B): 两字段均为对应 64 位全局计数器的低 32 位截断
@@ -480,6 +544,51 @@ private:
         std::memset(hot_set_, 0, sizeof(hot_set_));
     }
 
+    // === hot set 查找统一核心 (get_ptr/get_ptr_fast/get_def_ptr/query_context 共用) ===
+    // sparse 回退: 版本校验通过返回 dense 索引, 否则 dense_invalid
+    [[nodiscard]] uint32_t sparse_valid_dense_(entity e) const noexcept
+    {
+        if (e.parts_.index_ >= sparse_size_) [[unlikely]]
+            return dense_invalid;
+        const sparse_entry* se = sparse_entry_checked_(e.parts_.index_);
+        if (!se || se->dense == dense_invalid || se->version != e.parts_.version_) [[unlikely]]
+            return dense_invalid;
+        return se->dense;
+    }
+
+    // hot set 查找: 命中返回槽内 dense 索引, 未命中走 sparse 校验; epoch 由调用方提供
+    //   (query_context 传构造期缓存值, 其余传 position_epoch_)
+    [[nodiscard]] uint32_t hot_lookup_(entity e, uint32_t epoch_lo) const noexcept
+    {
+        const size_t slot = e.parts_.index_ & (hot_set_capacity_ - 1);
+        const auto& entry = hot_set_[slot];
+        const uint64_t key = make_entity_key_(e);
+        // entity_key 与 epoch_lo 两次比较无数据依赖, 可并行发射
+        if (entry.entity_key == key && entry.epoch_lo == epoch_lo) [[likely]]
+        {
+            return entry.dense_index;
+        }
+        return sparse_valid_dense_(e);
+    }
+
+    // hot set 查找 + 回填 (非 const 专用): 未命中走 sparse 校验后写入热集
+    [[nodiscard]] uint32_t hot_lookup_fill_(entity e, uint32_t epoch_lo) noexcept
+    {
+        const size_t slot = e.parts_.index_ & (hot_set_capacity_ - 1);
+        const uint64_t key = make_entity_key_(e);
+        const auto& entry = hot_set_[slot];
+        if (entry.entity_key == key && entry.epoch_lo == epoch_lo) [[likely]]
+        {
+            return entry.dense_index;
+        }
+        const uint32_t d = sparse_valid_dense_(e);
+        if (d != dense_invalid)
+        {
+            hot_set_[slot] = {key, d, epoch_lo};
+        }
+        return d;
+    }
+
     void sparse_set(uint32_t idx, uint32_t version, uint32_t dense) noexcept
     {
         sparse_set_at(idx, dense, version);
@@ -588,6 +697,119 @@ private:
                 (*pool)[d] = std::move((*pool)[s]);
             },
         };
+    }
+
+    // def 池初始化 (冷路径, add_def 首次调用时触发); 与模板池互斥, 已初始化返回 false
+    [[nodiscard]] bool init_def_pool(int def_id, const type_def& def) noexcept
+    {
+        if (typed_pool_) [[unlikely]] return false;
+        auto* p = new (std::nothrow) def_pool_t();
+        if (!p) [[unlikely]] return false;
+        p->component_size = def.size;
+        p->alignment = def.alignment;
+        p->trivially_copyable = def.trivially_copyable;
+        p->construct = def.construct;
+        p->destruct = def.destruct;
+        component_size_ = def.size;
+        if (pending_increase_capacity_ > 0)
+        {
+            if (!p->reserve(pending_increase_capacity_)) [[unlikely]]
+            {
+                delete p;
+                return false;
+            }
+            dense_.increase_capacity(pending_increase_capacity_);
+            versions_.increase_capacity(pending_increase_capacity_);
+            entity_change_tracking_.increase_capacity(pending_increase_capacity_);
+            pending_increase_capacity_ = 0;
+        }
+        typed_pool_ = p;
+        typed_pool_data_ = p->data;
+        type_id_ = def_id;
+        // def ops: void* 均为 def_pool_t*; 非平凡元素按字节重定位 + 生命周期边界调用 destruct
+        ops_ = {
+            /*.destroy_pool =*/[](void* q) noexcept {
+                auto* dp = static_cast<def_pool_t*>(q);
+                if (!dp->trivially_copyable && dp->destruct)
+                {
+                    for (size_t i = 0; i < dp->size; ++i) dp->destruct(dp->element(i));
+                }
+                def_pool_t::release_bytes(dp->data, dp->capacity * dp->component_size, dp->alignment);
+                delete dp;
+            },
+            /*.swap_pop =*/[](void* q, size_t index) noexcept {
+                auto* dp = static_cast<def_pool_t*>(q);
+                if (!dp->trivially_copyable && dp->destruct) dp->destruct(dp->element(index));
+                if (index + 1 != dp->size)
+                {
+                    std::memcpy(dp->element(index), dp->element(dp->size - 1), dp->component_size);
+                }
+                --dp->size;
+            },
+            /*.clear_pool =*/[](void* q) noexcept {
+                auto* dp = static_cast<def_pool_t*>(q);
+                if (!dp->trivially_copyable && dp->destruct)
+                {
+                    for (size_t i = 0; i < dp->size; ++i) dp->destruct(dp->element(i));
+                }
+                dp->size = 0;
+            },
+            /*.increase_capacity_pool =*/[](void* q, size_t cap) noexcept {
+                // 分配失败静默跳过 (与模板池语义一致, 后续 add 再试)
+                (void)static_cast<def_pool_t*>(q)->reserve(cap);
+            },
+            /*.swap_pool =*/[](void* q, size_t i, size_t j) noexcept {
+                auto* dp = static_cast<def_pool_t*>(q);
+                char* temp = def_pool_t::allocate_bytes(dp->component_size, dp->alignment);
+                if (temp) [[likely]]
+                {
+                    std::memcpy(temp, dp->element(i), dp->component_size);
+                    std::memcpy(dp->element(i), dp->element(j), dp->component_size);
+                    std::memcpy(dp->element(j), temp, dp->component_size);
+                    def_pool_t::release_bytes(temp, dp->component_size, dp->alignment);
+                }
+            },
+            /*.get_pool_data =*/[](void* q) noexcept -> void* {
+                return static_cast<def_pool_t*>(q)->data;
+            },
+            /*.is_trivially_copyable =*/def.trivially_copyable,
+            /*.swap_pop_trivial =*/[](void* q, size_t index, size_t comp_size) noexcept {
+                auto* dp = static_cast<def_pool_t*>(q);
+                if (index + 1 != dp->size)
+                {
+                    std::memcpy(dp->element(index), dp->element(dp->size - 1), comp_size);
+                }
+                --dp->size;
+            },
+            /*.swap_pool_trivial =*/[](void* q, size_t i, size_t j, size_t comp_size) noexcept {
+                auto* dp = static_cast<def_pool_t*>(q);
+                char* temp = def_pool_t::allocate_bytes(comp_size, dp->alignment);
+                if (temp) [[likely]]
+                {
+                    std::memcpy(temp, dp->element(i), comp_size);
+                    std::memcpy(dp->element(i), dp->element(j), comp_size);
+                    std::memcpy(dp->element(j), temp, comp_size);
+                    def_pool_t::release_bytes(temp, comp_size, dp->alignment);
+                }
+            },
+            /*.get_pool_element =*/[](void* q, size_t index) noexcept -> void* {
+                return static_cast<def_pool_t*>(q)->element(index);
+            },
+            /*.get_pool_size =*/[](void* q) noexcept -> size_t {
+                return static_cast<def_pool_t*>(q)->size;
+            },
+            /*.pool_pop_back =*/[](void* q) noexcept {
+                auto* dp = static_cast<def_pool_t*>(q);
+                if (!dp->trivially_copyable && dp->destruct) dp->destruct(dp->element(dp->size - 1));
+                --dp->size;
+            },
+            /*.move_assign_element =*/[](void* q, size_t d, size_t s) noexcept {
+                auto* dp = static_cast<def_pool_t*>(q);
+                if (!dp->trivially_copyable && dp->destruct) dp->destruct(dp->element(d));
+                std::memcpy(dp->element(d), dp->element(s), dp->component_size);
+            },
+        };
+        return true;
     }
 
     template <typename T>
@@ -1016,6 +1238,173 @@ public:
         return result;
     }
 
+    // def 组件添加: 数据按字节从 data 拷入 (长度 = 注册时的 type_def::size)
+    //   首次调用惰性初始化 def 池; 池语义与模板池互斥, 混用返回错误
+    //   路径结构与 add<T> 同构: fast path 末尾追加 / slow path 覆盖|死槽复用|追加
+    operating_message add_def(entity e, int def_id, const type_def& def, const void* data) noexcept
+    {
+        operating_message result;
+        if (type_id_ == -1) [[unlikely]]
+        {
+            if (!init_def_pool(def_id, def)) [[unlikely]]
+            {
+                OM_MSG(result, false, "single_class_set::add_def(): def pool init failed, id=", def_id);
+                return result;
+            }
+        }
+        else if (type_id_ != def_id) [[unlikely]]
+        {
+            OM_MSG(result, false, "single_class_set::add_def(): type mismatch, id=", def_id);
+            return result;
+        }
+
+        if (!e.is_valid()) [[unlikely]]
+        {
+            OM_MSG(result, false, "single_class_set::add_def(): ID is invalid, index=", e.parts_.index_);
+            return result;
+        }
+
+        auto* dp = static_cast<def_pool_t*>(typed_pool_);
+
+        // fast path: 末尾追加 (同 add<T>)
+        if (e.parts_.index_ == sparse_size_ && free_dense_.empty()) [[likely]]
+        {
+            uint32_t dense_idx = static_cast<uint32_t>(dense_.size());
+            if (dense_idx >= dense_.capacity()) [[unlikely]]
+            {
+                size_t new_cap = (dense_.capacity() == 0) ? 64 : dense_.capacity() * 2;
+                dense_.increase_capacity(new_cap);
+                versions_.increase_capacity(new_cap);
+                entity_change_tracking_.increase_capacity(new_cap);
+                if (!dp->reserve(new_cap)) [[unlikely]]
+                {
+                    OM_MSG(result, false, "single_class_set::add_def(): pool reserve failed, id=", def_id);
+                    return result;
+                }
+                typed_pool_data_ = dp->data;
+            }
+            else if (dense_idx >= dp->capacity) [[unlikely]]
+            {
+                if (!dp->reserve((dp->capacity == 0) ? 64 : dp->capacity * 2)) [[unlikely]]
+                {
+                    OM_MSG(result, false, "single_class_set::add_def(): pool reserve failed, id=", def_id);
+                    return result;
+                }
+                typed_pool_data_ = dp->data;
+            }
+            sparse_reserve_(sparse_size_ + 1);
+            sparse_[e.parts_.index_] = sparse_entry{dense_idx, e.parts_.version_};
+            sparse_size_ = static_cast<size_t>(e.parts_.index_) + 1;
+            dense_.push_back_unchecked(e.parts_.index_);
+            versions_.push_back_unchecked(e.parts_.version_);
+            std::memcpy(dp->element(dense_idx), data, dp->component_size);
+            ++dp->size;  // 与 dense_ 同步 (不变量: dp->size == dense_.size())
+            ++version_;
+            if (track_changes_enabled_) [[likely]] {
+                entity_change_tracking_.push_back_unchecked(
+                    change_tracking_entry{(uint32_t)++global_change_counter_, (uint32_t)++global_added_counter_});
+            }
+            if (on_add_) [[unlikely]] on_add_(e, dp->element(dense_idx), on_add_data_);
+            return result;
+        }
+
+        // slow path (同 add<T>): 覆盖已存在 / 复用软删除死槽 / 越界追加
+        const sparse_entry* se = sparse_entry_checked_(e.parts_.index_);
+        uint32_t ver = se ? se->version : 0;
+        uint32_t dense_idx = se ? se->dense : dense_invalid;
+
+        bool is_new_add = (ver != e.parts_.version_);
+
+        if (se != nullptr && ver == e.parts_.version_) [[likely]]
+        {
+            void* old_ptr = dp->element(dense_idx);
+            if (on_modify_) [[unlikely]]
+            {
+                on_modify_(e, old_ptr, on_modify_data_);
+            }
+            else
+            {
+                if (on_remove_) [[unlikely]] on_remove_(e, old_ptr, on_remove_data_);
+            }
+            if (!dp->trivially_copyable && dp->destruct) dp->destruct(old_ptr);
+            std::memcpy(old_ptr, data, dp->component_size);
+            if (!on_modify_ && on_add_) [[unlikely]] on_add_(e, old_ptr, on_add_data_);
+        }
+        else
+        {
+            const uint32_t reuse = pop_free_slot_();
+            if (reuse != dense_invalid) [[unlikely]]
+            {
+                dense_idx = reuse;
+                ver = e.parts_.version_;
+                dense_[reuse] = e.parts_.index_;
+                if (reuse < versions_.size())
+                {
+                    versions_[reuse] = ver;
+                }
+                if (se) [[likely]]
+                {
+                    sparse_[e.parts_.index_] = {reuse, ver};
+                }
+                else
+                {
+                    sparse_set_at(e.parts_.index_, reuse, ver);
+                }
+                std::memcpy(dp->element(reuse), data, dp->component_size);
+                if (reuse < entity_change_tracking_.size())
+                {
+                    entity_change_tracking_[reuse] =
+                        change_tracking_entry{(uint32_t)++global_change_counter_, (uint32_t)++global_added_counter_};
+                }
+                if (on_add_) [[unlikely]] on_add_(e, dp->element(reuse), on_add_data_);
+                ++version_;
+                return result;
+            }
+            dense_.push_back(e.parts_.index_);
+            dense_idx = static_cast<uint32_t>(dense_.size() - 1);
+            ver = e.parts_.version_;
+            versions_.push_back(ver);
+            if (se) [[likely]]
+            {
+                sparse_[e.parts_.index_] = {dense_idx, ver};
+            }
+            else
+            {
+                sparse_set_at(e.parts_.index_, dense_idx, ver);
+            }
+            if (dense_idx >= dp->capacity) [[unlikely]]
+            {
+                if (!dp->reserve((dense_idx + 1) * 2)) [[unlikely]]
+                {
+                    OM_MSG(result, false, "single_class_set::add_def(): pool reserve failed, id=", def_id);
+                    return result;
+                }
+                typed_pool_data_ = dp->data;
+            }
+            std::memcpy(dp->element(dense_idx), data, dp->component_size);
+            ++dp->size;  // 与 dense_ 同步 (不变量: dp->size == dense_.size())
+            if (on_add_) [[unlikely]] on_add_(e, dp->element(dense_idx), on_add_data_);
+        }
+        ++version_;
+        if (track_changes_enabled_) [[unlikely]] {
+            uint32_t preserved_added = (dense_idx < entity_change_tracking_.size())
+                ? entity_change_tracking_[dense_idx].added_version : 0;
+            uint32_t new_added = is_new_add ? (uint32_t)++global_added_counter_ : preserved_added;
+            if (dense_idx < entity_change_tracking_.size())
+            {
+                entity_change_tracking_[dense_idx] =
+                    change_tracking_entry{(uint32_t)++global_change_counter_, new_added};
+            }
+            else
+            {
+                entity_change_tracking_.push_back(
+                    change_tracking_entry{(uint32_t)++global_change_counter_, new_added});
+            }
+        }
+        typed_pool_data_ = dp->data;
+        return result;
+    }
+
     template <typename T>
     operating_message add_batch(std::span<const entity> entities, std::span<const T> components) noexcept
     {
@@ -1036,24 +1425,8 @@ public:
         {
             return nullptr;
         }
-        // hot set 快速路径: 16B 紧凑布局, 2 次独立比较 (entity_key + pool_version_lo)
-        //   entity_key = index|version 64-bit 单指令比较, 与 pool_version_lo 无依赖可并行
-        const size_t slot = e.parts_.index_ & (hot_set_capacity_ - 1);
-        const auto& entry = hot_set_[slot];
-        const uint64_t key = make_entity_key_(e);
-        const uint32_t epoch_lo = position_epoch_;
-        if (entry.entity_key == key && entry.epoch_lo == epoch_lo) [[likely]]
-        {
-            return &(*get_typed_pool<T>())[entry.dense_index];
-        }
-        // slow path: 单次 is_constructed_at + 单次 sparse_entry 加载 (原方案 2 次各自检查)
-        if (e.parts_.index_ >= sparse_size_) [[unlikely]]
-            return nullptr;
-        const sparse_entry* se = sparse_entry_checked_(e.parts_.index_);
-        if (!se || se->dense == dense_invalid || se->version != e.parts_.version_) [[unlikely]]
-            return nullptr;
-        hot_set_[slot] = {key, se->dense, epoch_lo};
-        return &(*get_typed_pool<T>())[se->dense];
+        const uint32_t d = hot_lookup_fill_(e, position_epoch_);
+        return d == dense_invalid ? nullptr : &(*get_typed_pool<T>())[d];
     }
 
     template <typename T>
@@ -1061,20 +1434,8 @@ public:
     {
         if (!e.is_valid() || type_id_ != type_id::get_type_id<T>()) [[unlikely]]
             return nullptr;
-        const size_t slot = e.parts_.index_ & (hot_set_capacity_ - 1);
-        const auto& entry = hot_set_[slot];
-        const uint64_t key = make_entity_key_(e);
-        const uint32_t epoch_lo = position_epoch_;
-        if (entry.entity_key == key && entry.epoch_lo == epoch_lo) [[likely]]
-        {
-            return &(*get_typed_pool<T>())[entry.dense_index];
-        }
-        if (e.parts_.index_ >= sparse_size_) [[unlikely]]
-            return nullptr;
-        const sparse_entry* se = sparse_entry_checked_(e.parts_.index_);
-        if (!se || se->dense == dense_invalid || se->version != e.parts_.version_) [[unlikely]]
-            return nullptr;
-        return &(*get_typed_pool<T>())[se->dense];
+        const uint32_t d = hot_lookup_(e, position_epoch_);
+        return d == dense_invalid ? nullptr : &(*get_typed_pool<T>())[d];
     }
 
     // 信任路径: 跳过类型检查 (调用方保证类型匹配), 经缓存的 typed_pool_data_ 寻址
@@ -1083,21 +1444,8 @@ public:
     {
         if (!typed_pool_data_) [[unlikely]]
             return &(*get_typed_pool<T>())[sparse_dense_at(e.parts_.index_)];
-        const size_t slot = e.parts_.index_ & (hot_set_capacity_ - 1);
-        const auto& entry = hot_set_[slot];
-        const uint64_t key = make_entity_key_(e);
-        const uint32_t epoch_lo = position_epoch_;
-        if (entry.entity_key == key && entry.epoch_lo == epoch_lo) [[likely]]
-        {
-            return static_cast<T*>(typed_pool_data_) + entry.dense_index;
-        }
-        if (e.parts_.index_ >= sparse_size_) [[unlikely]]
-            return nullptr;
-        const sparse_entry* se = sparse_entry_checked_(e.parts_.index_);
-        if (!se || se->dense == dense_invalid || se->version != e.parts_.version_) [[unlikely]]
-            return nullptr;
-        hot_set_[slot] = {key, se->dense, epoch_lo};
-        return static_cast<T*>(typed_pool_data_) + se->dense;
+        const uint32_t d = hot_lookup_fill_(e, position_epoch_);
+        return d == dense_invalid ? nullptr : static_cast<T*>(typed_pool_data_) + d;
     }
 
     template <typename T>
@@ -1105,20 +1453,40 @@ public:
     {
         if (!typed_pool_data_) [[unlikely]]
             return &(*get_typed_pool<T>())[sparse_dense_at(e.parts_.index_)];
-        const size_t slot = e.parts_.index_ & (hot_set_capacity_ - 1);
-        const auto& entry = hot_set_[slot];
-        const uint64_t key = make_entity_key_(e);
-        const uint32_t epoch_lo = position_epoch_;
-        if (entry.entity_key == key && entry.epoch_lo == epoch_lo) [[likely]]
-        {
-            return static_cast<const T*>(typed_pool_data_) + entry.dense_index;
-        }
-        if (e.parts_.index_ >= sparse_size_) [[unlikely]]
-            return nullptr;
-        const sparse_entry* se = sparse_entry_checked_(e.parts_.index_);
-        if (!se || se->dense == dense_invalid || se->version != e.parts_.version_) [[unlikely]]
-            return nullptr;
-        return static_cast<const T*>(typed_pool_data_) + se->dense;
+        const uint32_t d = hot_lookup_(e, position_epoch_);
+        return d == dense_invalid ? nullptr : static_cast<const T*>(typed_pool_data_) + d;
+    }
+
+    // def 组件指针查询: hot set 快速路径 (同 get_ptr_fast<T>), 经 typed_pool_data_ 寻址
+    [[nodiscard]] void* get_def_ptr(entity e) noexcept
+    {
+        if (!typed_pool_data_) [[unlikely]] return nullptr;
+        const uint32_t d = hot_lookup_fill_(e, position_epoch_);
+        return d == dense_invalid
+            ? nullptr
+            : static_cast<char*>(typed_pool_data_) + size_t(d) * component_size_;
+    }
+
+    [[nodiscard]] const void* get_def_ptr(entity e) const noexcept
+    {
+        if (!typed_pool_data_) [[unlikely]] return nullptr;
+        const uint32_t d = hot_lookup_(e, position_epoch_);
+        return d == dense_invalid
+            ? nullptr
+            : static_cast<const char*>(typed_pool_data_) + size_t(d) * component_size_;
+    }
+
+    // def 组件按 dense 索引直接访问 (遍历用)
+    [[nodiscard]] void* get_def_element(size_t dense_index) noexcept
+    {
+        if (!typed_pool_data_ || dense_index >= dense_.size()) [[unlikely]] return nullptr;
+        return static_cast<char*>(typed_pool_data_) + dense_index * component_size_;
+    }
+
+    [[nodiscard]] const void* get_def_element(size_t dense_index) const noexcept
+    {
+        if (!typed_pool_data_ || dense_index >= dense_.size()) [[unlikely]] return nullptr;
+        return static_cast<const char*>(typed_pool_data_) + dense_index * component_size_;
     }
 
     // raw: 无任何边界检查, 调用方保证 idx 有效. 直接读 sparse_[idx].dense
@@ -1888,7 +2256,8 @@ inline operating_message single_class_set::hard_remove(entity e) noexcept
         active_iterator_->on_swap_remove(static_cast<uint32_t>(index), old_last, is_back);
     }
 
-    void* comp_ptr = typed_pool_ ? static_cast<char*>(typed_pool_) + index * component_size_ : nullptr;
+    void* comp_ptr = typed_pool_data_
+        ? static_cast<char*>(typed_pool_data_) + index * component_size_ : nullptr;
     if (on_remove_ && comp_ptr) [[unlikely]] on_remove_(e, comp_ptr, on_remove_data_);
 
     auto moved_entity_id = dense_.back();

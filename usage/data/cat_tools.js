@@ -204,16 +204,18 @@ if (!validate_format(dyn_fmt, 2)) { /* 格式非法 */ }
 
 基于 \`operating_message\` 现有接口组合的零侵入工具集（全部 \`noexcept\`，无异常，复用 \`dense\`/\`ring_buffer\`/\`time\`/\`fnv1a\`）。
 
+依赖 \`dense\`/\`ring_buffer\`/\`time\`/\`fnv1a\` 的接口（\`om_prefix\`/\`om_write_prefixed\`/\`om_scope_timer\`/\`om_scope_cycles\`/\`om_error_table\`/\`om_once\`/\`om_stats\`/\`om_history\`/\`om_logger\`/\`om_try_recover\` 等）位于 \`part/om_extensions.hpp\`，需额外包含；其余在 \`part/operating_message.hpp\`。
+
 #### RAII 守卫
 
 | 类型 | 说明 |
 |------|------|
 | \`message_recording_guard(enable)\` | 作用域内临时开启/关闭 \`message_recording_enabled()\`，析构自动恢复 |
 | \`min_level_guard(om, lv)\` | 作用域内临时调整 \`om\` 的 \`min_level_\`，析构自动恢复 |
-| \`om_prefix(prefix)\` | 推入模块前缀到前缀栈，析构弹出（配合 \`om_write_prefixed\`） |
+| \`om_prefix(prefix)\` | 推入模块前缀到前缀栈，析构弹出（配合 \`om_write_prefixed\`；\`om_extensions.hpp\`） |
 | \`om_indent\` | 推入一层缩进，析构弹出（配合 \`om_write_indented\`） |
-| \`om_scope_timer(om, name)\` | RAII 作用域计时器（墙钟 us，析构写入消息） |
-| \`om_scope_cycles(om, name)\` | RAII 作用域计时器（CPU 周期，析构写入消息） |
+| \`om_scope_timer(om, name)\` | RAII 作用域计时器（墙钟 us，析构写入消息；\`om_extensions.hpp\`） |
+| \`om_scope_cycles(om, name)\` | RAII 作用域计时器（CPU 周期，析构写入消息；\`om_extensions.hpp\`） |
 
 \`\`\`cpp
 {
@@ -400,6 +402,7 @@ window.DOCS_DATA['type_id'] = {
   content: `## 17. type_id — 类型ID
 
 为每种类型分配唯一整数 ID（编译时确定，线程安全）。
+另支持运行期按名字注册自定义类型，注册 ID 与模板类型 ID 互不冲突。
 
 ### 接口
 
@@ -407,15 +410,58 @@ window.DOCS_DATA['type_id'] = {
 |------|------|
 | \`type_id::get_type_id<T>()\` | 获取类型 T 的唯一 ID（静态函数，线程安全） |
 | \`type_id::current_max_id()\` | 返回当前已分配的最大 type_id（静态函数） |
+| \`type_id::mask_block_of(tid)\` | type_id 所在实体掩码块索引 \`(tid-1)/64\`（constexpr） |
+| \`type_id::mask_offset_of(tid)\` | type_id 在掩码块内的位偏移 \`(tid-1)%64\`（constexpr） |
+| \`type_id::mask_type_of(block, offset)\` | 掩码块/偏移反查 type_id（上两者的逆映射，constexpr） |
+| \`type_id::register_type_def(name, def)\` | 按名字注册自定义类型，返回类型 ID；同名重复注册返回已有 ID |
+| \`type_id::get_def_type_id(name)\` | 按名字查询类型 ID（含注册类型与绑定名）；未注册返回 -1 |
+| \`type_id::bind_def_name(name, id)\` | 将名字绑定到既有类型 ID（模板类型的稳定名/别名）；同名同 ID 幂等，同名异 ID 返回 false |
+| \`type_id::get_type_def(id)\` | 按 ID 查询自定义类型的存储语义；非注册 ID 或纯绑定名返回 nullptr |
+| \`type_id::get_def_type_name(id)\` | 按 ID 反查名字；非注册 ID 返回空串 |
+
+### type_def 字段
+
+| 字段 | 说明 |
+|------|------|
+| \`size\` | 元素字节大小（必须 > 0） |
+| \`alignment\` | 对齐要求（必须为 2 的幂） |
+| \`trivially_copyable\` | true 时按 memcpy 方式搬运数据 |
+| \`construct\` / \`destruct\` | 非平凡类型的构造/析构函数指针（\`void(*)(void*) noexcept\`） |
 
 ### 使用
 
 \`\`\`cpp
+// 模板类型 ID
 int id1 = type_id::get_type_id<int>();
 int id2 = type_id::get_type_id<double>();
 assert(type_id::get_type_id<int>() == id1);  // 同类型 ID 相同
 
 int max_id = type_id::current_max_id();  // 已分配的最大 ID
+\`\`\`
+
+\`\`\`cpp
+// 注册 trivially copyable 自定义类型
+type_def def;
+def.size = 12;
+def.alignment = 4;
+def.trivially_copyable = true;
+
+int id = type_id::register_type_def("Velocity", def);
+assert(type_id::get_def_type_id("Velocity") == id);        // 按名查询
+assert(type_id::register_type_def("Velocity", def) == id); // 重复注册幂等
+
+// 非平凡类型需提供构造/析构
+type_def nontrivial;
+nontrivial.size = 16;
+nontrivial.alignment = 8;
+nontrivial.trivially_copyable = false;
+nontrivial.construct = my_construct;  // void(*)(void*) noexcept
+nontrivial.destruct = my_destruct;    // void(*)(void*) noexcept
+int id2x = type_id::register_type_def("Matrix", nontrivial);
+
+// 按 ID 反查
+const type_def* q = type_id::get_type_def(id);
+std::string_view name = type_id::get_def_type_name(id);  // "Velocity"
 \`\`\`
 
 ---
@@ -513,7 +559,7 @@ window.DOCS_DATA['time'] = {
   order: 28,
   content: `## 28. timer — 计时与定时触发
 
-\`#include "part/time.hpp"\`，全局命名空间。\`noexcept\`。
+\`#include "part/time.hpp"\`（计时器本体）与 \`#include "part/timer_scheduler.hpp"\`（调度器与时间字面量），全局命名空间。\`noexcept\`。
 
 时间测量与定时触发：墙钟时间（纳秒/微秒/毫秒/秒）与 CPU 周期测量，配对计时，定时调度器。x86/x64 提供 \`rdtsc\`/\`rdtscp\`，其他平台返回 0。
 
@@ -570,7 +616,7 @@ double elapsed_ns = timer::measure_nanoseconds([]() { /* 被测代码 */ });
 uint64_t elapsed_cyc = timer::measure_cycles([]() { /* 被测代码 */ });
 \`\`\`
 
-### 28.4 时间字面量 — 配合 scheduler 使用
+### 28.4 时间字面量 — 配合 scheduler 使用（timer_scheduler.hpp）
 
 | 字面量 | 说明 |
 |------|------|
@@ -585,7 +631,7 @@ double b = 16_ms;    // 16000000.0
 double c = 1_sec;    // 1000000000.0
 \`\`\`
 
-### 28.5 timer::scheduler — 定时触发器
+### 28.5 timer::scheduler — 定时触发器（timer_scheduler.hpp）
 
 | 接口 | 说明 |
 |------|------|

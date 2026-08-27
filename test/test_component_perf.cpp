@@ -19,7 +19,7 @@ static void build_manager(manager& mgr, size_t n, mt19937& rng)
     uniform_int_distribution<int> ri(0, 100);
     for (size_t i = 0; i < n; ++i)
     {
-        entity e(static_cast<uint32_t>(i), 1);
+        entity e = mgr.create_entity();
         mgr.add(Pos{rf(rng), rf(rng), rf(rng)}, e);
         mgr.add(Vel{rf(rng), rf(rng), rf(rng)}, e);
         mgr.add(Hp{ri(rng)}, e);
@@ -116,46 +116,59 @@ static void test_manager_add(size_t n)
     mt19937 rng(42);
     uniform_real_distribution<float> rf(-1000, 1000);
 
-    // 2.1 add<T> (单组件)
+    // 2.1 add<T> (单组件) — 实体创建在计时外 (手构未注册实体会越界写掩码, 禁止)
     {
-        double ns = best_ns(REPEAT, [&]() {
+        double best = 1e18;
+        for (int r = 0; r < REPEAT; ++r)
+        {
             manager mgr;
+            vector<entity> ents(n);
+            for (size_t i = 0; i < n; ++i) ents[i] = mgr.create_entity();
+            timer t;
             for (size_t i = 0; i < n; ++i)
-                mgr.add(Pos{rf(rng), rf(rng), rf(rng)}, entity(static_cast<uint32_t>(i), 1));
-            compiler_barrier();
-            return 0;
-        });
-        print_ns("add<Pos>", n, ns / static_cast<double>(n));
+                mgr.add(Pos{rf(rng), rf(rng), rf(rng)}, ents[i]);
+            const double ns = t.elapsed_nanoseconds();
+            if (ns < best) best = ns;
+        }
+        print_ns("add<Pos>", n, best / static_cast<double>(n));
     }
 
     // 2.2 add<T> (反参序, IsEntity)
     {
-        double ns = best_ns(REPEAT, [&]() {
+        double best = 1e18;
+        for (int r = 0; r < REPEAT; ++r)
+        {
             manager mgr;
+            vector<entity> ents(n);
+            for (size_t i = 0; i < n; ++i) ents[i] = mgr.create_entity();
+            timer t;
             for (size_t i = 0; i < n; ++i)
-                mgr.add(Pos{rf(rng), rf(rng), rf(rng)}, entity(static_cast<uint32_t>(i), 1));
-            compiler_barrier();
-            return 0;
-        });
-        print_ns("add(Pos, e) reversed", n, ns / static_cast<double>(n));
+                mgr.add(Pos{rf(rng), rf(rng), rf(rng)}, ents[i]);
+            const double ns = t.elapsed_nanoseconds();
+            if (ns < best) best = ns;
+        }
+        print_ns("add(Pos, e) reversed", n, best / static_cast<double>(n));
     }
 
-    // 2.3 add_batch<T> (批量插入)
+    // 2.3 add_batch<T> (批量插入) — 实体须注册到同一 manager
     {
-        vector<entity> ents(n);
         vector<Pos> comps(n);
         for (size_t i = 0; i < n; ++i)
         {
-            ents[i] = entity(static_cast<uint32_t>(i), 1);
             comps[i] = Pos{rf(rng), rf(rng), rf(rng)};
         }
-        double ns = best_ns(REPEAT, [&]() {
+        double best = 1e18;
+        for (int r = 0; r < REPEAT; ++r)
+        {
             manager mgr;
+            vector<entity> ents(n);
+            for (size_t i = 0; i < n; ++i) ents[i] = mgr.create_entity();
+            timer t;
             mgr.add_batch<Pos>(span<const entity>(ents.data(), n), span<const Pos>(comps.data(), n));
-            compiler_barrier();
-            return 0;
-        });
-        print_ns("add_batch<Pos>", n, ns / static_cast<double>(n));
+            const double ns = t.elapsed_nanoseconds();
+            if (ns < best) best = ns;
+        }
+        print_ns("add_batch<Pos>", n, best / static_cast<double>(n));
     }
 
     // 2.4 addc<T> (多实体单组件)
@@ -181,32 +194,46 @@ static void test_manager_remove(size_t n)
     mt19937 rng(42);
     uniform_real_distribution<float> rf(-1000, 1000);
 
-    // 3.1 soft_remove<T>
+    // 3.1 soft_remove<T> — 构建 (create+add) 在计时外
     {
-        double ns = best_ns(REPEAT, [&]() {
+        double best = 1e18;
+        for (int r = 0; r < REPEAT; ++r)
+        {
             manager mgr;
+            vector<entity> ents(n);
             for (size_t i = 0; i < n; ++i)
-                mgr.add(Pos{rf(rng), rf(rng), rf(rng)}, entity(static_cast<uint32_t>(i), 1));
+            {
+                ents[i] = mgr.create_entity();
+                mgr.add(Pos{rf(rng), rf(rng), rf(rng)}, ents[i]);
+            }
+            timer t;
             for (size_t i = 0; i < n; ++i)
-                mgr.soft_remove<Pos>(entity(static_cast<uint32_t>(i), 1));
-            compiler_barrier();
-            return 0;
-        });
-        print_ns("soft_remove<Pos>", n, ns / static_cast<double>(n));
+                mgr.soft_remove<Pos>(ents[i]);
+            const double ns = t.elapsed_nanoseconds();
+            if (ns < best) best = ns;
+        }
+        print_ns("soft_remove<Pos>", n, best / static_cast<double>(n));
     }
 
     // 3.2 hard_remove<T>
     {
-        double ns = best_ns(REPEAT, [&]() {
+        double best = 1e18;
+        for (int r = 0; r < REPEAT; ++r)
+        {
             manager mgr;
+            vector<entity> ents(n);
             for (size_t i = 0; i < n; ++i)
-                mgr.add(Pos{rf(rng), rf(rng), rf(rng)}, entity(static_cast<uint32_t>(i), 1));
+            {
+                ents[i] = mgr.create_entity();
+                mgr.add(Pos{rf(rng), rf(rng), rf(rng)}, ents[i]);
+            }
+            timer t;
             for (size_t i = 0; i < n; ++i)
-                mgr.hard_remove<Pos>(entity(static_cast<uint32_t>(i), 1));
-            compiler_barrier();
-            return 0;
-        });
-        print_ns("hard_remove<Pos>", n, ns / static_cast<double>(n));
+                mgr.hard_remove<Pos>(ents[i]);
+            const double ns = t.elapsed_nanoseconds();
+            if (ns < best) best = ns;
+        }
+        print_ns("hard_remove<Pos>", n, best / static_cast<double>(n));
     }
 
     print_footer();

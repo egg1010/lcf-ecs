@@ -1,8 +1,9 @@
 // type_name.hpp - 稳定类型名注册 + 实体引用字段注册 + 枚举注册
+// 名字→id 的存储/查找统一收敛于 type_id 的 def 表 (字节编码, 非 hash):
+//   模板类型经 register_type_name / register_type_factory / register_type_alias 绑定
 #pragma once
 
 #include "../part/type_id.hpp"
-#include "../part/fnv1a.hpp"
 #include "../part/dense.hpp"
 #include "../reflection/query.hpp"
 #include <array>
@@ -14,16 +15,6 @@
 namespace serialize {
 
 namespace detail {
-
-struct type_name_entry {
-    int         type_id;
-    const char* name;
-};
-
-inline dense<type_name_entry>& type_name_registry() noexcept {
-    static dense<type_name_entry> registry;
-    return registry;
-}
 
 struct enum_entry {
     int         type_id;
@@ -37,44 +28,19 @@ inline dense<enum_entry>& enum_registry() noexcept {
 
 } // namespace detail
 
-// 注册稳定类型名
+// 注册稳定类型名 (绑定到 type_id 统一名字表)
 template<typename T>
 void register_type_name(const char* stable_name) noexcept {
-    int tid = type_id::get_type_id<T>();
-    auto& reg = detail::type_name_registry();
-    for (size_t i = 0; i < reg.size(); ++i)
-    {
-        if (reg[i].type_id == tid)
-        {
-            reg[i].name = stable_name;
-            return;
-        }
-    }
-    reg.push_back({tid, stable_name});
+    type_id::bind_def_name(stable_name, type_id::get_type_id<T>());
 }
 
 [[nodiscard]] inline const char* lookup_type_name(int tid) noexcept {
-    auto& reg = detail::type_name_registry();
-    for (size_t i = 0; i < reg.size(); ++i)
-    {
-        if (reg[i].type_id == tid)
-        {
-            return reg[i].name;
-        }
-    }
-    return nullptr;
+    const std::string_view sv = type_id::get_def_type_name(tid);
+    return sv.empty() ? nullptr : sv.data();
 }
 
 [[nodiscard]] inline int lookup_type_id(const char* name) noexcept {
-    auto& reg = detail::type_name_registry();
-    for (size_t i = 0; i < reg.size(); ++i)
-    {
-        if (std::strcmp(reg[i].name, name) == 0)
-        {
-            return reg[i].type_id;
-        }
-    }
-    return -1;
+    return type_id::get_def_type_id(name);
 }
 
 // 枚举注册 (序列化为整数)
@@ -169,7 +135,8 @@ template<typename T>
 // ============================================================================
 // #E 运行时类型工厂注册表
 // 双轨架构: 编译期 Ts... fold 路径 + 运行时 registry 遍历路径
-// 存档格式存稳定类型名(字符串), registry 内部用 name_hash(uint64) 索引 O(1) 查找
+// 存档格式存稳定类型名(字符串); 名字→id 经 type_id 统一名字表解析 (字节编码, 零碰撞),
+// factory 表内部用 type_id → registry 索引的稠密映射 O(1) 定位条目
 // save_fn/load_fn 是模板实例化的函数指针, 编译器对每个具体 T 生成优化函数体
 // 运行时仅一次间接调用(~1 cycle), 相比序列化的 us~ms 级开销可忽略
 // ============================================================================
@@ -182,7 +149,6 @@ namespace detail {
 struct type_factory_entry {
     int          type_id;           // type_id::get_type_id<T>()
     const char*  name;              // 稳定类型名 (存档格式)
-    uint64_t     name_hash;         // fnv1a_runtime(name), O(1) 查找
     void(*save_fn)(serialization*, void* w);   // w 为 json_writer*/binary_writer*
     void(*load_fn)(serialization*, void* r, const entity_remap*, uint32_t saved_cv);
     size_t       type_size;         // sizeof(T)
@@ -194,61 +160,53 @@ inline dense<type_factory_entry>& type_factory_registry() noexcept {
     return registry;
 }
 
-// name_hash → registry 索引的开放寻址表 (O(1) 查找)
-// 空间换速度: 注册阶段写入, 查找阶段无锁读取
-struct factory_hash_slot {
-    uint64_t hash = 0;       // 0 表示空槽
-    uint32_t index = 0;      // registry 数组索引
-};
-
-inline constexpr size_t FACTORY_HASH_SIZE = 1u << 12;  // 4096, 类型数 <1000 时负载因子 < 0.25
-
-inline std::array<factory_hash_slot, FACTORY_HASH_SIZE>& factory_hash_table() noexcept {
-    static std::array<factory_hash_slot, FACTORY_HASH_SIZE> table{};
-    return table;
+// type_id → registry 索引的稠密映射 (按 type_id 索引, -1 表示未注册)
+inline dense<int32_t>& factory_id_index() noexcept {
+    static dense<int32_t> index;
+    return index;
 }
 
-// 插入 hash 索引 (注册时调用)
-inline void insert_factory_hash(uint64_t hash, uint32_t index) noexcept {
-    if (hash == 0) return;
-    auto& table = factory_hash_table();
-    size_t mask = FACTORY_HASH_SIZE - 1;
-    size_t idx = static_cast<size_t>(hash) & mask;
-    for (size_t i = 0; i < FACTORY_HASH_SIZE; ++i) {
-        if (table[idx].hash == 0) {
-            table[idx].hash = hash;
-            table[idx].index = index;
-            return;
-        }
-        if (table[idx].hash == hash) return; // 幂等
-        idx = (idx + 1) & mask;
-    }
-}
-
-// 按 name_hash 查找 registry 索引 (O(1), 无锁)
-[[nodiscard]] inline const type_factory_entry* find_factory_by_hash(uint64_t hash) noexcept {
-    if (hash == 0) return nullptr;
-    auto& table = factory_hash_table();
+// 幂等确保 factory 条目存在 (id→索引映射维护于此), 返回 registry 索引
+inline uint32_t ensure_factory_entry(int tid, const char* name,
+                                      size_t type_size, bool trivial) noexcept {
     auto& reg = type_factory_registry();
-    size_t mask = FACTORY_HASH_SIZE - 1;
-    size_t idx = static_cast<size_t>(hash) & mask;
-    for (size_t i = 0; i < FACTORY_HASH_SIZE; ++i) {
-        const auto& slot = table[idx];
-        if (slot.hash == 0) return nullptr;
-        if (slot.hash == hash) {
-            return slot.index < reg.size() ? &reg[slot.index] : nullptr;
-        }
-        idx = (idx + 1) & mask;
+    auto& idx = factory_id_index();
+    if (tid >= 0 && tid < static_cast<int>(idx.size())
+        && idx[tid] >= 0 && static_cast<size_t>(idx[tid]) < reg.size())
+    {
+        return static_cast<uint32_t>(idx[tid]);
     }
-    return nullptr;
+    type_factory_entry entry{};
+    entry.type_id = tid;
+    entry.name = name;
+    entry.type_size = type_size;
+    entry.is_trivially_copyable = trivial;
+    if (static_cast<int>(idx.size()) <= tid)
+    {
+        idx.increase_capacity(static_cast<size_t>(tid) + 1, -1);
+    }
+    const uint32_t new_idx = static_cast<uint32_t>(reg.size());
+    idx[tid] = static_cast<int32_t>(new_idx);
+    reg.push_back(entry);
+    return new_idx;
 }
 
-// 按类型名查找 (运行时 hash 后 O(1) 查找)
+// 按 type_id 查找 factory 条目 (O(1) 稠密索引)
+[[nodiscard]] inline const type_factory_entry* find_factory_by_id(int tid) noexcept {
+    auto& idx = factory_id_index();
+    if (tid < 0 || tid >= static_cast<int>(idx.size())) return nullptr;
+    const int32_t i = idx[tid];
+    auto& reg = type_factory_registry();
+    if (i < 0 || static_cast<size_t>(i) >= reg.size()) return nullptr;
+    return &reg[i];
+}
+
+// 按类型名查找 (名字→id 经 type_id 统一表, 再经稠密索引定位)
 [[nodiscard]] inline const type_factory_entry* find_factory_by_name(std::string_view name) noexcept {
     if (name.empty()) return nullptr;
-    // 运行时 hash (load 时从存档字符串名计算)
-    uint64_t hash = fnv1a_runtime(name.data(), name.size());
-    return find_factory_by_hash(hash);
+    const int id = type_id::get_def_type_id(name);
+    if (id < 0) return nullptr;
+    return find_factory_by_id(id);
 }
 
 // ============================================================================
@@ -265,19 +223,6 @@ struct visiting_entry {
 inline dense<visiting_entry>& visiting_stack() noexcept {
     thread_local dense<visiting_entry> stack;
     return stack;
-}
-
-// #C3 类型别名表 (向后兼容)
-// 前置定义: register_type_factory 需在注册时同步别名 hash 到索引表
-struct type_alias_entry {
-    uint64_t    old_name_hash;  // fnv1a_runtime(old_name)
-    int         type_id;        // type_id::get_type_id<T>()
-    const char* old_name;       // 旧名 (调试用)
-};
-
-inline dense<type_alias_entry>& type_alias_registry() noexcept {
-    static dense<type_alias_entry> registry;
-    return registry;
 }
 
 inline void push_visiting(const void* ptr, int type_id = 0) noexcept {
@@ -324,89 +269,31 @@ struct visiting_guard {
 };
 
 // 注册类型工厂 (显式注册, 幂等)
-// 模板实例化生成 save_fn/load_fn 函数指针, 编译器对每个 T 优化
+// 名字→id 经 type_id 统一绑定; save_fn/load_fn 由 serializer.hpp 填充
 template<typename T>
 void register_type_factory(const char* stable_name) noexcept {
     int tid = type_id::get_type_id<T>();
-    auto& reg = detail::type_factory_registry();
-
-    // 幂等检查
-    for (size_t i = 0; i < reg.size(); ++i) {
-        if (reg[i].type_id == tid) {
-            reg[i].name = stable_name;
-            reg[i].name_hash = fnv1a_runtime(stable_name);
-            detail::insert_factory_hash(reg[i].name_hash, static_cast<uint32_t>(i));
-            return;
-        }
-    }
-
-    uint32_t idx = static_cast<uint32_t>(reg.size());
-    detail::type_factory_entry entry;
-    entry.type_id = tid;
-    entry.name = stable_name;
-    entry.name_hash = fnv1a_runtime(stable_name);
-    entry.save_fn = nullptr;  // 由 serializer.hpp 的 register_factory_for_type 填充
-    entry.load_fn = nullptr;
-    entry.type_size = sizeof(T);
-    entry.is_trivially_copyable = std::is_trivially_copyable_v<T>;
-    reg.push_back(entry);
-    detail::insert_factory_hash(reg[idx].name_hash, idx);
-
-    // #C3 应用该类型已注册的别名 (将旧名 hash 也指向此 factory entry)
-    auto& aliases = detail::type_alias_registry();
-    for (size_t i = 0; i < aliases.size(); ++i) {
-        if (aliases[i].type_id == tid) {
-            detail::insert_factory_hash(aliases[i].old_name_hash, idx);
-        }
-    }
+    type_id::bind_def_name(stable_name, tid);
+    const uint32_t i = detail::ensure_factory_entry(
+        tid, stable_name, sizeof(T), std::is_trivially_copyable_v<T>);
+    detail::type_factory_registry()[i].name = stable_name;
 }
-
-// ============================================================================
-// #C3 类型别名查询 (entry / registry 已在前置 detail 块定义)
-// ============================================================================
 
 namespace detail {
 
+// #C3 别名判定: 名字解析到目标 type_id 即为该类型的 (别名) 名
 [[nodiscard]] inline bool is_alias_of(int type_id, std::string_view name) noexcept {
     if (name.empty()) return false;
-    uint64_t hash = fnv1a_runtime(name.data(), name.size());
-    auto& reg = type_alias_registry();
-    for (size_t i = 0; i < reg.size(); ++i) {
-        if (reg[i].type_id == type_id && reg[i].old_name_hash == hash) {
-            return true;
-        }
-    }
-    return false;
+    return type_id::get_def_type_id(name) == type_id;
 }
 
 } // namespace detail
 
 // 注册类型别名 (旧名 → 当前类型 T)
-// 必须在 register_type_name<T> / register_type_factory<T> 之后调用
+// 经 type_id 统一名字表绑定, 与注册顺序无关
 template<typename T>
 void register_type_alias(const char* old_name) noexcept {
-    int tid = type_id::get_type_id<T>();
-    uint64_t hash = fnv1a_runtime(old_name);
-    auto& reg = detail::type_alias_registry();
-
-    // 幂等检查
-    for (size_t i = 0; i < reg.size(); ++i) {
-        if (reg[i].old_name_hash == hash) {
-            reg[i].type_id = tid;
-            reg[i].old_name = old_name;
-            return;
-        }
-    }
-    reg.push_back({hash, tid, old_name});
-
-    // 若 T 的 factory 已注册, 立即将别名 hash 加入 hash 表
-    auto& fac_reg = detail::type_factory_registry();
-    for (size_t i = 0; i < fac_reg.size(); ++i) {
-        if (fac_reg[i].type_id == tid) {
-            detail::insert_factory_hash(hash, static_cast<uint32_t>(i));
-            break;
-        }
-    }
+    type_id::bind_def_name(old_name, type_id::get_type_id<T>());
 }
 
 } // namespace serialize

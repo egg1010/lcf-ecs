@@ -146,6 +146,16 @@ window.DOCS_DATA['single_class_set'] = {
 | \`add_batch(const class_pool<entity>&, const class_pool<T>&)\` | 批量添加（左值引用） |
 | \`add_batch(class_pool<entity>&&, class_pool<T>&&)\` | 批量添加（右值引用，移动语义） |
 
+### 运行期 def 组件（type_id::register_type_def 注册的类型）
+
+| 接口 | 说明 |
+|------|------|
+| \`add_def(entity, def_id, const type_def&, const void* data)\` | 添加 def 组件（数据按字节拷入，长度为注册时的 \`type_def::size\`；首次调用惰性初始化 def 池） |
+| \`get_def_ptr(entity)\` | 获取 def 组件指针（hot set 快速路径） |
+| \`get_def_ptr(entity) const\` | const 版本 |
+| \`get_def_element(dense_index)\` | 按 dense 索引直接访问（遍历用） |
+| \`get_def_element(dense_index) const\` | const 版本 |
+
 ### 获取组件
 
 | 接口 | 说明 |
@@ -166,7 +176,7 @@ window.DOCS_DATA['single_class_set'] = {
 
 | 接口 | 说明 |
 |------|------|
-| \`hard_remove(entity)\` | 硬删除（交换删除，O(1)） |
+| \`hard_remove(entity)\` | 硬删除（交换删除，O(1)；def 池与模板池通用） |
 | \`soft_remove(entity)\` | 软删除（仅清除 sparse 条目，不移动组件；死槽登记后可被 \`add\` 复用；墓碑数超阈值时自动回收） |
 | \`compact()\` | 密度回收：活条目前压、墓碑物理移除并补发 \`on_remove\` 回调（迭代期禁止调用） |
 | \`clear()\` | 清空所有数据 |
@@ -264,6 +274,24 @@ ECS 核心管理类，管理实体和所有组件集合。
 | \`add_batch<T>(const std::array<entity, N>&, const std::array<T, N>&)\` | 批量添加（array 入参，编译期固定长度） |
 | \`add_batch<T>(const entity*, const T*, size_t)\` | 批量添加（裸指针 + 长度，内部转 span） |
 
+### 运行期 def 组件
+
+配合 \`type_id::register_type_def\` 注册的类型使用（\`type_def\` 见 type_id 页），数据按字节存取，与模板组件共用掩码/视图/信号机制。
+
+| 接口 | 说明 |
+|------|------|
+| \`add_def(entity, def_id, const void* data)\` | 按 ID 添加 def 组件（data 长度为注册时的 \`type_def::size\`） |
+| \`add_def(entity, name, const void* data)\` | 按名字添加（内部反查 ID） |
+| \`get_def_ptr(entity, def_id)\` | 按 ID 获取 def 组件指针 |
+| \`get_def_ptr(entity, def_id) const\` | const 版本 |
+| \`get_def_ptr(entity, name)\` | 按名字获取 |
+| \`get_def_ptr(entity, name) const\` | const 版本 |
+| \`hard_remove_def(entity, def_id)\` | 按 ID 硬删除 |
+| \`hard_remove_def(entity, name)\` | 按名字硬删除 |
+| \`soft_remove_def(entity, def_id)\` | 按 ID 软删除 |
+| \`soft_remove_def(entity, name)\` | 按名字软删除 |
+| \`get_single_class_set_by_id(type_id)\` | 按 ID 获取组件集合（def/模板通用） |
+
 ### 获取组件
 
 | 接口 | 说明 |
@@ -322,7 +350,7 @@ ECS 核心管理类，管理实体和所有组件集合。
 | \`get_component_container<T>()\` | 获取类型化组件池指针 |
 | \`reserve_component_capacity<T>(capacity)\` | 预留组件容量 |
 | \`add/add_batch/hard_remove/soft_remove\` | 返回 \`operating_message\`（值类型） |
-| \`get_component_meta(int type_id)\` | 获取组件元数据（含 \`mask_block\`/\`mask_offset\` 掩码位信息） |
+| \`get_component_meta(int type_id)\` | 获取组件元数据（含组件大小） |
 | \`get_single_class_set_by_id(int type_id)\` | 通过 type_id 获取组件集合（运行时视图用） |
 | \`get_entity_manager()\` | 获取 \`entity_manager&\` 引用（暴露掩码 / 状态 / 标志接口） |
 | \`get_entity_manager() const\` | const 版本 |
@@ -510,6 +538,17 @@ mgr.addc(e1, Position{1, 2}, Velocity{3, 4, 5}, Health{100, 200});
 // 获取组件
 Position* p = mgr.get_ptr<Position>(e1);
 
+// 运行期 def 组件: 注册类型 (一次性, 冷路径) 后按名/ID 存取
+type_def def;
+def.size = 12; def.alignment = 4; def.trivially_copyable = true;
+int did = type_id::register_type_def("VelocityDef", def);
+float vel[3] = {1.0f, 2.0f, 3.0f};
+mgr.add_def(e1, did, vel);                  // 按 ID 添加
+mgr.add_def(e2, "VelocityDef", vel);         // 按名字添加
+float* v = static_cast<float*>(mgr.get_def_ptr(e1, did));   // v[0]==1.0f
+mgr.hard_remove_def(e1, did);                // 硬删除
+mgr.soft_remove_def(e2, "VelocityDef");      // 按名软删除
+
 // 批量查询组件
 class_pool<Position*> results;
 results.reserve_exact(entities.size());
@@ -619,17 +658,15 @@ mgr.register_system(ecs::system_context{
 
 ### 实体掩码（无上限）
 
-基于 \`multi_block_bitmask\` 的动态位掩码存储，无组件类型上限。通过 \`reserve_blocks(n)\` 预分配掩码块数。
+基于 \`multi_block_bitmask\` 的动态位掩码存储，无组件类型上限。掩码位置（块索引/块内偏移）由 \`type_id::mask_block_of(tid)\` / \`type_id::mask_offset_of(tid)\` 计算。通过 \`reserve_blocks(n)\` 预分配掩码块数。
 
 #### \`component_meta\` 结构体
 
-每个已注册组件类型对应一份元数据，存储其掩码位置。
+每个已注册组件类型对应一份元数据。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | \`size\` | \`size_t\` | 组件类型大小（字节） |
-| \`mask_block\` | \`uint32_t\` | 掩码块索引 \`(type_id-1)/64\`（type_id=1..64 落入块 0） |
-| \`mask_offset\` | \`uint32_t\` | 块内位偏移 \`(type_id-1)%64\`（0..63） |
 
 #### manager 接口
 
@@ -638,8 +675,8 @@ mgr.register_system(ecs::system_context{
 | \`get_entity_mask(entity)\` | 获取实体块 0 掩码（\`uint64_t\`，type_id 1-64；等价于 \`get_entity_block(e, 0)\`） |
 | \`get_entity_block(entity, uint32_t block_idx)\` | 获取实体指定块的掩码（\`uint64_t\`，block_idx 块对应 type_id \`block_idx*64+1\` 到 \`block_idx*64+64\`） |
 | \`get_entity_block_by_idx(uint32_t entity_index, uint32_t block_idx)\` | 同上，接受 entity_index 而非 entity 句柄 |
-| \`get_component_bit<T>()\` | 获取组件 T 的掩码位（\`mask_block==0\` 时返回 \`1ULL<<offset\`，否则返回 0） |
-| \`get_component_meta(int type_id)\` | 获取 \`component_meta*\`（含 \`mask_block\`/\`mask_offset\`，type_id 越界返回 nullptr） |
+| \`get_component_bit<T>()\` | 获取组件 T 的掩码位（块 0 类型返回 \`1ULL<<offset\`，其余返回 0） |
+| \`get_component_meta(int type_id)\` | 获取 \`component_meta*\`（含组件大小，type_id 越界返回 nullptr） |
 | \`reserve_mask_blocks(uint32_t num_blocks)\` | 预分配每实体掩码块数（每块 64 种组件；注册组件前调用；\`register_component_meta\` 在 type_id 超出时自动扩容） |
 | \`num_mask_blocks() const\` | 当前每实体掩码块数 |
 | \`get_entity_manager()\` | 获取 \`entity_manager&\`，可继续调用 \`set_mask_bit\` / \`clear_mask_bit\` / \`get_mask\` / \`get_block\` / \`set_entity_flag\` 等 |
@@ -652,11 +689,11 @@ if ((mask & pos_bit) != 0)
     // 实体拥有 Position 组件
 }
 
-// 通过 component_meta 查询任意 type_id 的掩码位置
-const auto* meta = mgr.get_component_meta(type_id::get_type_id<Velocity>());
-if (meta && meta->mask_block == 0)
+// 任意 type_id 的掩码位 (块 0 类型)
+int vel_id = type_id::get_type_id<Velocity>();
+if (type_id::mask_block_of(vel_id) == 0)
 {
-    uint64_t vel_bit = 1ULL << meta->mask_offset;
+    uint64_t vel_bit = 1ULL << type_id::mask_offset_of(vel_id);
     bool has_vel = (mgr.get_entity_mask(e) & vel_bit) != 0;
 }
 
@@ -3317,19 +3354,34 @@ register_field_default<PlayerInfo>("title", "\\"default\\"");
 
 ### 12.14.3 CRC32C 校验与加密管线
 
-保存管线时序：\`serialize → checksum → compress → encrypt → on_save\`；加载反向。加密破坏 magic，解密必须在格式检测之前。
+保存管线时序：\`serialize → checksum → compress → encrypt → on_save\`；加载反向。
 
 | 接口 | 说明 |
 |------|------|
 | \`set_checksum_enabled(b)\` | 启用（默认）/禁用 CRC32C 校验，启用后数据前添加 8 字节 \`LCCS\` 前缀（magic + uint32 checksum） |
 | \`set_encryption(encrypt_fn, decrypt_fn)\` | 注册加密/解密函数对，签名 \`std::string(*)(const std::string&)\` |
 
+**机制说明**
+
+启用校验时，保存产物整体包一层前缀：\`[LCCS 4B][CRC32C 4B][原格式数据]\`。校验覆盖纯序列化产物（不含前缀自身），算在压缩与加密之前——校验的是逻辑内容而非传输形态，更换压缩/加密方案不影响校验值。加密在最外层（密文会摧毁一切 magic 标识），因此加载时解密最先执行。
+
+加载侧按严格逆序剥离，\`LCCS\` 前缀在两个可能的深度浮出，各剥离一次：
+
+| 存档形态 | 解密后的内容 | 第一次剥离 | 解压 | 第二次剥离 |
+|---------|-------------|----------|------|----------|
+| 未压缩 | \`LCCS+校验+数据\` | 命中，剥掉 | 跳过 | 不命中，跳过 |
+| 压缩过 | 压缩乱码 | 不命中，跳过 | 解压 | 命中，剥掉 |
+
+剥离为探测式：前 4 字节不是 \`LCCS\` 即原样放行。由此获得三项兼容性——加载无前缀的旧存档、加载 \`set_checksum_enabled(false)\` 存出的数据、以及剥离阶段结束后"偏移 0 必为格式 magic"的恒定前提。
+
+格式检测（\`detect_codec\`）只消费剥离后的裸数据，按各格式 magic（JSON 用首字符 \`{\`）选择解码器，不认识 \`LCCS\`。若需直接检查存档的格式 magic（如外部工具校验），先 \`set_checksum_enabled(false)\` 保存，或自行跳过前 8 字节；\`save_to_string\` 的默认产物以 \`LCCS\` 开头。
+
 \`\`\`cpp
 // 校验默认启用, 加载时自动检测损坏
 serialization s(mgr);
 s.save_to_file<Hp>("save.json");  // 数据含 LCCS 前缀
 
-// 禁用校验 (如测试二进制 magic 时)
+// 禁用校验 (如外部工具直接读取格式 magic 时)
 s.set_checksum_enabled(false);
 
 // 加密管线

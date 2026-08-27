@@ -176,6 +176,8 @@ if(BUILD_FUNCTIONAL_TESTS)
     lcf_add_executable(test_void_any_cross_layout_swap test/test_void_any_cross_layout_swap.cpp)
     lcf_add_executable(test_string_to_code test/test_string_to_code.cpp)
     lcf_add_executable(test_string_to_code_utf8_view test/test_string_to_code_utf8_view.cpp)
+    lcf_add_executable(test_type_def test/test_type_def.cpp)
+    lcf_add_executable(test_type_def_set test/test_type_def_set.cpp)
     lcf_add_executable(test_safe_iter test/test_safe_iter.cpp)
 endif()
 
@@ -207,6 +209,8 @@ if(BUILD_MODULE_PERF_TESTS)
 
     # 辅助模块
     lcf_add_executable(test_type_id_perf             test/test_type_id_perf.cpp)
+    lcf_add_executable(test_type_def_perf            test/test_type_def_perf.cpp)
+    lcf_add_executable(test_type_def_set_perf        test/test_type_def_set_perf.cpp)
     lcf_add_executable(test_void_any_perf            test/test_void_any_perf.cpp)
     lcf_add_executable(test_void_any_vs_std_any_perf test/test_void_any_vs_std_any_perf.cpp)
     lcf_add_executable(test_void_any_cross_layout_swap_perf      test/test_void_any_cross_layout_swap_perf.cpp)

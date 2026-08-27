@@ -1,9 +1,8 @@
-﻿#pragma once
+#pragma once
 #include <tuple>
 #include <array>
 #include <limits>
-#include "single_class_set.hpp"
-#include "entity.hpp"
+#include "group.hpp"
 
 namespace ecs
 {
@@ -24,48 +23,23 @@ struct reorder_state
 };
 
 template <typename First, typename... Rest>
-class reorder_group
+class reorder_group : public group_base<First, Rest...>
 {
 private:
-    static constexpr size_t N = 1 + sizeof...(Rest);
-    using AllTypes = std::tuple<First, Rest...>;
+    using Base = group_base<First, Rest...>;
+    using Base::N;
+    using typename Base::AllTypes;
+    using Base::sets_;
+    using Base::primary_idx_;
+    using Base::all_sets_valid;
+    using Base::compact_primary;
+    using Base::refresh_versions;
+    using Base::has_all_impl;
 
-    manager*                       mgr_;
-    std::array<single_class_set*, N> sets_;
-    size_t                         primary_idx_{0};
     reorder_state<N>               state_;
     reorder_state<N>*              shared_{nullptr};
-    dense<uint64_t>              required_masks_;
-    uint32_t                       max_block_{0};
-    bool                           use_mask_path_{false};
-    dense<single_class_set*>     req_sets_;
 
     reorder_state<N>* st() noexcept { return shared_ ? shared_ : &state_; }
-
-    [[nodiscard]] bool check_blocks(uint32_t entity_index) const noexcept;
-
-    void find_smallest() noexcept
-    {
-        size_t min_size = std::numeric_limits<size_t>::max();
-        primary_idx_ = 0;
-        for (size_t i = 0; i < N; ++i)
-        {
-            if (sets_[i] && sets_[i]->size() < min_size)
-            {
-                min_size = sets_[i]->size();
-                primary_idx_ = i;
-            }
-        }
-    }
-
-    [[nodiscard]] bool all_sets_valid() const noexcept
-    {
-        for (size_t i = 0; i < N; ++i)
-        {
-            if (!sets_[i]) return false;
-        }
-        return true;
-    }
 
     void ensure_fresh() noexcept
     {
@@ -173,20 +147,6 @@ private:
         }
     }
 
-    template <size_t... Is>
-    [[nodiscard]] bool has_all_impl(entity e, std::index_sequence<Is...>) const noexcept
-    {
-        return (... && (sets_[Is] && sets_[Is]->template get_ptr_fast<
-            std::tuple_element_t<Is, AllTypes>>(e) != nullptr));
-    }
-
-    template <size_t... Is>
-    [[nodiscard]] bool contains_impl(entity e, std::index_sequence<Is...>) const noexcept
-    {
-        return (... && (sets_[Is] && sets_[Is]->template get_ptr_fast<
-            std::tuple_element_t<Is, AllTypes>>(e) != nullptr));
-    }
-
 public:
     reorder_group(manager* mgr, std::array<single_class_set*, N> sets) noexcept;
 
@@ -204,22 +164,14 @@ public:
     [[nodiscard]] bool contains(entity e) noexcept
     {
         ensure_fresh();
-        return all_sets_valid() && contains_impl(e, std::index_sequence_for<First, Rest...>{});
-    }
-
-    template <typename T, size_t I = 0>
-    [[nodiscard]] static constexpr size_t find_type_index() noexcept
-    {
-        if constexpr (I >= N) return N;
-        else if constexpr (std::is_same_v<std::tuple_element_t<I, AllTypes>, T>) return I;
-        else return find_type_index<T, I + 1>();
+        return all_sets_valid() && has_all_impl(e, std::index_sequence_for<First, Rest...>{});
     }
 
     template <typename T>
     [[nodiscard]] T* get(entity e) noexcept
     {
         ensure_fresh();
-        constexpr size_t idx = find_type_index<T>();
+        constexpr size_t idx = Base::template find_type_index<T>();
         if constexpr (idx < N)
             return sets_[idx]->template get_ptr_fast<T>(e);
         return nullptr;

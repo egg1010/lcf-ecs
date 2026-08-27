@@ -41,9 +41,7 @@ class command_buffer;
 
 struct component_meta
 {
-    size_t   size{0};
-    uint32_t mask_block{0};   // 掩码块索引 (type_id-1)/64
-    uint32_t mask_offset{0};  // 块内位偏移 (type_id-1)%64
+    size_t size{0};   // 组件字节大小; 掩码布局经 type_id::mask_block_of/mask_offset_of 计算
 };
 
 // 系统上下文（48 bytes，内联 4 个依赖）
@@ -165,10 +163,9 @@ private:
         }
     }
 
-    template <typename T>
-    void register_component_meta() noexcept
+    // 组件元数据填充 (size + 掩码块预留); 模板轨道 (sizeof(T)) 与 def 轨道 (type_def::size) 共用
+    void fill_component_meta(int type_id, size_t comp_size) noexcept
     {
-        int type_id = type_id::get_type_id<T>();
         if (type_id < static_cast<int>(component_metas_.size()) &&
             component_metas_[type_id].size != 0) [[likely]]
         {
@@ -177,27 +174,44 @@ private:
         ensure_type_exists(type_id);
         if (component_metas_[type_id].size == 0) [[unlikely]]
         {
-            component_metas_[type_id].size = sizeof(T);
-            component_metas_[type_id].mask_block = static_cast<uint32_t>(type_id - 1) / 64;
-            component_metas_[type_id].mask_offset = static_cast<uint32_t>(type_id - 1) % 64;
-            if (component_metas_[type_id].mask_block >= entity_manager_.num_mask_blocks())
-                entity_manager_.reserve_mask_blocks(component_metas_[type_id].mask_block + 1);
+            component_metas_[type_id].size = comp_size;
+            const uint32_t block = type_id::mask_block_of(type_id);
+            if (block >= entity_manager_.num_mask_blocks())
+                entity_manager_.reserve_mask_blocks(block + 1);
         }
     }
 
-    void set_entity_mask_bit(entity entitys, uint32_t block_idx, uint32_t bit_offset) noexcept
+    template <typename T>
+    void register_component_meta() noexcept
     {
-        if (entitys.is_valid()) [[likely]]
+        fill_component_meta(type_id::get_type_id<T>(), sizeof(T));
+    }
+
+    // def 组件元数据 (懒注册, 首次 add_def 时触发)
+    void register_def_component_meta(int def_id) noexcept
+    {
+        const type_def* d = type_id::get_type_def(def_id);
+        if (!d) [[unlikely]] return;
+        fill_component_meta(def_id, d->size);
+    }
+
+    // 实体掩码位置位/清位: 布局经 type_id 算术计算, 直接落 multi_block_bitmask
+    //   块未预留时跳过 (防御未注册类型, 清位无害, 置位由注册路径保证块已预留)
+    void set_entity_mask_for_type(entity entitys, int tid) noexcept
+    {
+        if (entitys.is_valid() && type_id::mask_block_of(tid) < entity_manager_.num_mask_blocks()) [[likely]]
         {
-            entity_manager_.set_mask_bit_no_bounds_check(entitys.parts_.index_, block_idx, bit_offset);
+            entity_manager_.set_mask_bit_no_bounds_check(entitys.parts_.index_,
+                type_id::mask_block_of(tid), type_id::mask_offset_of(tid));
         }
     }
 
-    void clear_entity_mask_bit(entity entitys, uint32_t block_idx, uint32_t bit_offset) noexcept
+    void clear_entity_mask_for_type(entity entitys, int tid) noexcept
     {
-        if (entitys.is_valid()) [[likely]]
+        if (entitys.is_valid() && type_id::mask_block_of(tid) < entity_manager_.num_mask_blocks()) [[likely]]
         {
-            entity_manager_.clear_mask_bit_no_bounds_check(entitys.parts_.index_, block_idx, bit_offset);
+            entity_manager_.clear_mask_bit_no_bounds_check(entitys.parts_.index_,
+                type_id::mask_block_of(tid), type_id::mask_offset_of(tid));
         }
     }
 
@@ -208,7 +222,7 @@ private:
         int type_id = type_id::get_type_id<DecayedT>();
         register_component_meta<DecayedT>();
         components_c_[type_id].add(entitys, std::forward<T>(component));
-        set_entity_mask_bit(entitys, component_metas_[type_id].mask_block, component_metas_[type_id].mask_offset);
+        set_entity_mask_for_type(entitys, type_id);
         push_change_record(0, entitys.parts_.index_, static_cast<uint32_t>(type_id), static_cast<uint32_t>(components_c_[type_id].size() - 1));
         if (!components_c_[type_id].on_add_) push_comp_signal(0, entitys.parts_.index_, static_cast<uint32_t>(type_id));
     }
@@ -259,7 +273,7 @@ public:
         int type_id = type_id::get_type_id<DecayedT>();
         register_component_meta<DecayedT>();
         operating_message result = components_c_[type_id].add(entitys, std::forward<T>(component));
-        set_entity_mask_bit(entitys, component_metas_[type_id].mask_block, component_metas_[type_id].mask_offset);
+        set_entity_mask_for_type(entitys, type_id);
         if (!components_c_[type_id].on_add_) push_comp_signal(0, entitys.parts_.index_, static_cast<uint32_t>(type_id));
         return result;
     }
@@ -272,11 +286,9 @@ public:
         register_component_meta<DecayedT>();
         ensure_type_exists(type_id);
         operating_message result = components_c_[type_id].add_batch(entities, components);
-        uint32_t block = component_metas_[type_id].mask_block;
-        uint32_t offset = component_metas_[type_id].mask_offset;
         for (const auto& e : entities)
         {
-            set_entity_mask_bit(e, block, offset);
+            set_entity_mask_for_type(e, type_id);
         }
         return result;
     }
@@ -475,11 +487,7 @@ public:
         single_class_set* set = get_single_class_set<T>();
         if (set)
         {
-            int type_id = type_id::get_type_id<T>();
-            if (type_id < static_cast<int>(component_metas_.size()))
-            {
-                clear_entity_mask_bit(entitys, component_metas_[type_id].mask_block, component_metas_[type_id].mask_offset);
-            }
+            clear_entity_mask_for_type(entitys, type_id::get_type_id<T>());
             // soft_remove 仅逻辑隐藏,组件未析构,不触发 on_remove_ 也不入队
             return set->soft_remove(entitys);
         }
@@ -495,10 +503,7 @@ public:
         if (set)
         {
             int type_id = type_id::get_type_id<T>();
-            if (type_id < static_cast<int>(component_metas_.size()))
-            {
-                clear_entity_mask_bit(entitys, component_metas_[type_id].mask_block, component_metas_[type_id].mask_offset);
-            }
+            clear_entity_mask_for_type(entitys, type_id);
             push_change_record(1, entitys.parts_.index_, static_cast<uint32_t>(type_id), 0);
             // 即时回调与延迟队列互斥:注册了 on_remove_ 则同步触发,否则入队
             if (!set->on_remove_) push_comp_signal(1, entitys.parts_.index_, static_cast<uint32_t>(type_id));
@@ -597,13 +602,13 @@ public:
     template <typename T>
     [[nodiscard]] uint64_t get_component_bit() const noexcept
     {
-        int type_id = type_id::get_type_id<T>();
-        if (type_id >= static_cast<int>(component_metas_.size())) [[unlikely]]
+        const int tid = type_id::get_type_id<T>();
+        if (tid >= static_cast<int>(component_metas_.size())
+            || type_id::mask_block_of(tid) != 0) [[unlikely]]
+        {
             return 0;
-        const auto& meta = component_metas_[type_id];
-        if (meta.mask_block == 0) [[likely]]
-            return 1ULL << meta.mask_offset;
-        return 0;
+        }
+        return 1ULL << type_id::mask_offset_of(tid);
     }
 
     [[nodiscard]] entity_manager& get_entity_manager() noexcept
@@ -667,8 +672,8 @@ public:
         // 仅遍历实体实际拥有的组件类型 (O(实体组件数) 而非 O(类型总数))
         // 迭代副本 block, hard_remove 修改原掩码不影响循环
         entity_manager_.for_each_set_bit(entitys.parts_.index_, [&](uint32_t block_idx, uint32_t bit_offset) {
-            size_t type_id = static_cast<size_t>(block_idx) * 64 + bit_offset + 1;
-            if (type_id >= components_c_.size()) [[unlikely]] return;
+            const int type_id = type_id::mask_type_of(block_idx, bit_offset);
+            if (type_id >= static_cast<int>(components_c_.size())) [[unlikely]] return;
             single_class_set& set = components_c_[type_id];
             if (!set.on_remove_) push_comp_signal(1, entitys.parts_.index_, static_cast<uint32_t>(type_id));
             set.hard_remove(entitys);
@@ -939,6 +944,128 @@ public:
         return &components_c_[type_id];
     }
 
+    [[nodiscard]] const single_class_set* get_single_class_set_by_id(int type_id) const noexcept
+    {
+        if (type_id < 0 || type_id >= static_cast<int>(components_c_.size())) [[unlikely]]
+            return nullptr;
+        return &components_c_[type_id];
+    }
+
+    // === 运行期 def 组件 (type_id::register_type_def 注册的类型) ===
+    // data 长度须为注册时的 type_def::size 字节; 池按字节存储, 与模板组件互不影响
+
+    operating_message add_def(entity entitys, int def_id, const void* data) noexcept
+    {
+        operating_message result;
+        const type_def* d = type_id::get_type_def(def_id);
+        if (!d) [[unlikely]]
+        {
+            OM_MSG(result, false, "manager::add_def(): unknown def id ", def_id);
+            return result;
+        }
+        register_def_component_meta(def_id);
+        single_class_set& set = components_c_[def_id];
+        result = set.add_def(entitys, def_id, *d, data);
+        if (result) [[likely]]
+        {
+            set_entity_mask_for_type(entitys, def_id);
+            if (!set.on_add_) push_comp_signal(0, entitys.parts_.index_,
+                                                static_cast<uint32_t>(def_id));
+        }
+        return result;
+    }
+
+    operating_message add_def(entity entitys, std::string_view name, const void* data) noexcept
+    {
+        const int id = type_id::get_def_type_id(name);
+        if (id < 0) [[unlikely]]
+        {
+            operating_message result;
+            OM_MSG(result, false, "manager::add_def(): unregistered def name");
+            return result;
+        }
+        return add_def(entitys, id, data);
+    }
+
+    [[nodiscard]] void* get_def_ptr(entity entitys, int def_id) noexcept
+    {
+        if (!entitys.is_valid()) [[unlikely]] return nullptr;
+        single_class_set* set = get_single_class_set_by_id(def_id);
+        return set ? set->get_def_ptr(entitys) : nullptr;
+    }
+
+    [[nodiscard]] const void* get_def_ptr(entity entitys, int def_id) const noexcept
+    {
+        if (!entitys.is_valid()) [[unlikely]] return nullptr;
+        const single_class_set* set = get_single_class_set_by_id(def_id);
+        return set ? set->get_def_ptr(entitys) : nullptr;
+    }
+
+    [[nodiscard]] void* get_def_ptr(entity entitys, std::string_view name) noexcept
+    {
+        const int id = type_id::get_def_type_id(name);
+        return id < 0 ? nullptr : get_def_ptr(entitys, id);
+    }
+
+    [[nodiscard]] const void* get_def_ptr(entity entitys, std::string_view name) const noexcept
+    {
+        const int id = type_id::get_def_type_id(name);
+        return id < 0 ? nullptr : get_def_ptr(entitys, id);
+    }
+
+    operating_message hard_remove_def(entity entitys, int def_id) noexcept
+    {
+        operating_message result;
+        single_class_set* set = get_single_class_set_by_id(def_id);
+        if (set && set->get_type_id_value() == def_id)
+        {
+            clear_entity_mask_for_type(entitys, def_id);
+            push_change_record(1, entitys.parts_.index_, static_cast<uint32_t>(def_id), 0);
+            if (!set->on_remove_) push_comp_signal(1, entitys.parts_.index_,
+                                                   static_cast<uint32_t>(def_id));
+            return set->hard_remove(entitys);
+        }
+        OM_MSG(result, false, "manager::hard_remove_def(): def set does not exist, id=", def_id);
+        return result;
+    }
+
+    operating_message hard_remove_def(entity entitys, std::string_view name) noexcept
+    {
+        const int id = type_id::get_def_type_id(name);
+        if (id < 0) [[unlikely]]
+        {
+            operating_message result;
+            OM_MSG(result, false, "manager::hard_remove_def(): unregistered def name");
+            return result;
+        }
+        return hard_remove_def(entitys, id);
+    }
+
+    operating_message soft_remove_def(entity entitys, int def_id) noexcept
+    {
+        operating_message result;
+        single_class_set* set = get_single_class_set_by_id(def_id);
+        if (set && set->get_type_id_value() == def_id)
+        {
+            clear_entity_mask_for_type(entitys, def_id);
+            return set->soft_remove(entitys);
+        }
+        OM_MSG(result, false, "manager::soft_remove_def(): def set does not exist, id=", def_id);
+        return result;
+    }
+
+    operating_message soft_remove_def(entity entitys, std::string_view name) noexcept
+    {
+        const int id = type_id::get_def_type_id(name);
+        if (id < 0) [[unlikely]]
+        {
+            operating_message result;
+            OM_MSG(result, false, "manager::soft_remove_def(): unregistered def name");
+            return result;
+        }
+        return soft_remove_def(entitys, id);
+    }
+
     void set_on_entity_created(void (*fn)(entity, void*) noexcept, void* user_data = nullptr) noexcept
     {
         entity_manager_.on_entity_created_ = fn;
@@ -1111,35 +1238,17 @@ public:
     {
         if (!set_ || e.parts_.index_ >= sparse_size_) [[unlikely]]
             return nullptr;
-        const size_t slot = e.parts_.index_ & (single_class_set::hot_set_capacity_ - 1);
-        const auto& entry = set_->hot_set_[slot];
-        const uint64_t key = single_class_set::make_entity_key_(e);
-        if (entry.entity_key == key && entry.epoch_lo == position_epoch_) [[likely]]
-        {
-            return &pool_data_[entry.dense_index];
-        }
-        const sparse_entry* se = set_->sparse_entry_checked_(e.parts_.index_);
-        if (!se || se->dense == single_class_set::dense_invalid || se->version != e.parts_.version_) [[unlikely]]
-            return nullptr;
-        set_->hot_set_[slot] = {key, se->dense, position_epoch_};
-        return &pool_data_[se->dense];
+        // 查找算法委托 single_class_set 统一核心 (epoch 传构造期缓存值)
+        const uint32_t d = set_->hot_lookup_fill_(e, position_epoch_);
+        return d == single_class_set::dense_invalid ? nullptr : &pool_data_[d];
     }
 
     [[nodiscard]] const T* get_ptr(entity e) const noexcept
     {
         if (!set_ || e.parts_.index_ >= sparse_size_) [[unlikely]]
             return nullptr;
-        const size_t slot = e.parts_.index_ & (single_class_set::hot_set_capacity_ - 1);
-        const auto& entry = set_->hot_set_[slot];
-        const uint64_t key = single_class_set::make_entity_key_(e);
-        if (entry.entity_key == key && entry.epoch_lo == position_epoch_) [[likely]]
-        {
-            return &pool_data_[entry.dense_index];
-        }
-        const sparse_entry* se = set_->sparse_entry_checked_(e.parts_.index_);
-        if (!se || se->dense == single_class_set::dense_invalid || se->version != e.parts_.version_) [[unlikely]]
-            return nullptr;
-        return &pool_data_[se->dense];
+        const uint32_t d = set_->hot_lookup_(e, position_epoch_);
+        return d == single_class_set::dense_invalid ? nullptr : &pool_data_[d];
     }
 
     void prefetch_sparse(entity e) const noexcept

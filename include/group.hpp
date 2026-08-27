@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include <tuple>
 #include <array>
 #include <limits>
@@ -12,25 +12,50 @@ namespace ecs
 
 class manager;
 
+// group 家族公共基类: 掩码构建 / 主集合选择 / 块检查 / 压缩 / 版本刷新
+//   group / owning_group / reorder_group 共用 (原三份重复实现收敛)
+//   check_blocks 涉及 manager 完整类型, out-of-line 定义于 group_impl.hpp
 template <typename First, typename... Rest>
-class group
+class group_base
 {
-private:
+protected:
     static constexpr size_t N = 1 + sizeof...(Rest);
     using AllTypes = std::tuple<First, Rest...>;
 
     manager*                       mgr_;
     std::array<single_class_set*, N> sets_;
     size_t                         primary_idx_{0};
-    dense<uint32_t>              cached_;
-    dense<std::array<uint32_t, N>> dense_mappings_;
-    std::array<uint64_t, N>        cached_versions_{};
     dense<uint64_t>              required_masks_;
     uint32_t                       max_block_{0};
     bool                           use_mask_path_{false};
     dense<single_class_set*>     req_sets_;
 
-    [[nodiscard]] bool check_blocks(uint32_t entity_index) const noexcept;
+    group_base(manager* mgr, std::array<single_class_set*, N> sets) noexcept
+        : mgr_(mgr), sets_(sets)
+    {
+        find_smallest();
+        build_required_masks_();
+    }
+
+    // 必需类型掩码构建 (type id → multi_block_bitmask 布局经 type_id 统一辅助)
+    void build_required_masks_() noexcept
+    {
+        const int ids[N] = { type_id::get_type_id<First>(), type_id::get_type_id<Rest>()... };
+        for (size_t i = 0; i < N; ++i)
+        {
+            const uint32_t b = type_id::mask_block_of(ids[i]);
+            if (b > max_block_) max_block_ = b;
+        }
+        required_masks_.increase_capacity(max_block_ + 1, 0);
+        for (size_t i = 0; i < N; ++i)
+        {
+            required_masks_[type_id::mask_block_of(ids[i])]
+                |= 1ULL << type_id::mask_offset_of(ids[i]);
+        }
+        use_mask_path_ = (N >= 3) || ((max_block_ + 1) <= 5);
+        req_sets_.increase_capacity(N, nullptr);
+        for (size_t i = 0; i < N; ++i) req_sets_[i] = sets_[i];
+    }
 
     void find_smallest() noexcept
     {
@@ -54,6 +79,116 @@ private:
         }
         return true;
     }
+
+    [[nodiscard]] bool check_blocks(uint32_t entity_index) const noexcept;
+
+    // 主集合压缩: 命中条目前压 (物理重排), 返回压缩后条数
+    //   owning_group / reorder_group 的 rebuild 共用
+    size_t compact_primary() noexcept
+    {
+        auto* primary = sets_[primary_idx_];
+        auto& indices = primary->get_entity_indices();
+        const size_t n = primary->size();
+        size_t write = 0;
+        if (use_mask_path_)
+        {
+            for (size_t read = 0; read < n; ++read)
+            {
+                if (check_blocks(indices[read]))
+                {
+                    if (read != write)
+                    {
+                        primary->swap_dense_and_pool(read, write);
+                    }
+                    ++write;
+                }
+            }
+        }
+        else
+        {
+            for (size_t read = 0; read < n; ++read)
+            {
+                if (read + 8 < n) [[likely]]
+                {
+                    uint32_t next_eid = indices[read + 8];
+                    for (size_t k = 0; k < N; ++k)
+                    {
+                        if (k == primary_idx_) continue;
+                        req_sets_[k]->prefetch_sparse_entry(next_eid);
+                    }
+                }
+                uint32_t eid = indices[read];
+                bool has_all = true;
+                for (size_t k = 0; k < N; ++k)
+                {
+                    if (k == primary_idx_) continue;
+                    if (req_sets_[k]->sparse_dense_at(eid) == single_class_set::dense_invalid)
+                    {
+                        has_all = false;
+                        break;
+                    }
+                }
+                if (has_all)
+                {
+                    if (read != write)
+                    {
+                        primary->swap_dense_and_pool(read, write);
+                    }
+                    ++write;
+                }
+            }
+        }
+        return write;
+    }
+
+    // 重建后刷新版本缓存 (各子类缓存位置不同, 数组由调用方提供)
+    void refresh_versions(std::array<uint64_t, N>& vers) noexcept
+    {
+        for (size_t i = 0; i < N; ++i)
+        {
+            if (sets_[i]) vers[i] = sets_[i]->get_pool_version();
+        }
+    }
+
+    template <size_t... Is>
+    [[nodiscard]] bool has_all_impl(entity e, std::index_sequence<Is...>) const noexcept
+    {
+        return (... && (sets_[Is] && sets_[Is]->template get_ptr_fast<
+            std::tuple_element_t<Is, AllTypes>>(e) != nullptr));
+    }
+
+public:
+    template <typename T, size_t I = 0>
+    [[nodiscard]] static constexpr size_t find_type_index() noexcept
+    {
+        if constexpr (I >= N) return N;
+        else if constexpr (std::is_same_v<std::tuple_element_t<I, AllTypes>, T>) return I;
+        else return find_type_index<T, I + 1>();
+    }
+};
+
+template <typename First, typename... Rest>
+class group : public group_base<First, Rest...>
+{
+private:
+    using Base = group_base<First, Rest...>;
+    using Base::N;
+    using typename Base::AllTypes;
+    using Base::mgr_;
+    using Base::sets_;
+    using Base::primary_idx_;
+    using Base::required_masks_;
+    using Base::max_block_;
+    using Base::use_mask_path_;
+    using Base::req_sets_;
+    using Base::check_blocks;
+    using Base::all_sets_valid;
+    using Base::refresh_versions;
+    using Base::has_all_impl;
+
+    dense<uint32_t>              cached_;
+    dense<std::array<uint32_t, N>> dense_mappings_;
+    std::array<uint64_t, N>        cached_versions_{};
 
     void ensure_fresh() noexcept
     {
@@ -265,13 +400,6 @@ private:
         }
     }
 
-    template <size_t... Is>
-    [[nodiscard]] bool contains_impl(entity e, std::index_sequence<Is...>) const noexcept
-    {
-        return (... && (sets_[Is] && sets_[Is]->template get_ptr_fast<
-            std::tuple_element_t<Is, AllTypes>>(e) != nullptr));
-    }
-
 public:
     group(manager* mgr, std::array<single_class_set*, N> sets) noexcept;
 
@@ -283,22 +411,14 @@ public:
     [[nodiscard]] bool contains(entity e) noexcept
     {
         ensure_fresh();
-        return all_sets_valid() && contains_impl(e, std::index_sequence_for<First, Rest...>{});
-    }
-
-    template <typename T, size_t I = 0>
-    [[nodiscard]] static constexpr size_t find_type_index() noexcept
-    {
-        if constexpr (I >= N) return N;
-        else if constexpr (std::is_same_v<std::tuple_element_t<I, AllTypes>, T>) return I;
-        else return find_type_index<T, I + 1>();
+        return all_sets_valid() && has_all_impl(e, std::index_sequence_for<First, Rest...>{});
     }
 
     template <typename T>
     [[nodiscard]] T* get(entity e) noexcept
     {
         ensure_fresh();
-        constexpr size_t idx = find_type_index<T>();
+        constexpr size_t idx = Base::template find_type_index<T>();
         if constexpr (idx < N)
             return sets_[idx]->template get_ptr_fast<T>(e);
         return nullptr;
@@ -334,46 +454,21 @@ public:
 };
 
 template <typename First, typename... Rest>
-class owning_group
+class owning_group : public group_base<First, Rest...>
 {
 private:
-    static constexpr size_t N = 1 + sizeof...(Rest);
-    using AllTypes = std::tuple<First, Rest...>;
+    using Base = group_base<First, Rest...>;
+    using Base::N;
+    using typename Base::AllTypes;
+    using Base::sets_;
+    using Base::primary_idx_;
+    using Base::all_sets_valid;
+    using Base::compact_primary;
+    using Base::refresh_versions;
+    using Base::has_all_impl;
 
-    manager*                       mgr_;
-    std::array<single_class_set*, N> sets_;
-    size_t                         primary_idx_{0};
     size_t                         owned_size_{0};
     std::array<uint64_t, N>        cached_versions_{};
-    dense<uint64_t>              required_masks_;
-    uint32_t                       max_block_{0};
-    bool                           use_mask_path_{false};
-    dense<single_class_set*>     req_sets_;
-
-    [[nodiscard]] bool check_blocks(uint32_t entity_index) const noexcept;
-
-    void find_smallest() noexcept
-    {
-        size_t min_size = std::numeric_limits<size_t>::max();
-        primary_idx_ = 0;
-        for (size_t i = 0; i < N; ++i)
-        {
-            if (sets_[i] && sets_[i]->size() < min_size)
-            {
-                min_size = sets_[i]->size();
-                primary_idx_ = i;
-            }
-        }
-    }
-
-    [[nodiscard]] bool all_sets_valid() const noexcept
-    {
-        for (size_t i = 0; i < N; ++i)
-        {
-            if (!sets_[i]) return false;
-        }
-        return true;
-    }
 
     void ensure_fresh() noexcept
     {
@@ -566,20 +661,6 @@ private:
         }
     }
 
-    template <size_t... Is>
-    [[nodiscard]] bool has_all_impl(entity e, std::index_sequence<Is...>) const noexcept
-    {
-        return (... && (sets_[Is] && sets_[Is]->template get_ptr_fast<
-            std::tuple_element_t<Is, AllTypes>>(e) != nullptr));
-    }
-
-    template <size_t... Is>
-    [[nodiscard]] bool contains_impl(entity e, std::index_sequence<Is...>) const noexcept
-    {
-        return (... && (sets_[Is] && sets_[Is]->template get_ptr_fast<
-            std::tuple_element_t<Is, AllTypes>>(e) != nullptr));
-    }
-
 public:
     owning_group(manager* mgr, std::array<single_class_set*, N> sets) noexcept;
 
@@ -591,22 +672,14 @@ public:
     [[nodiscard]] bool contains(entity e) noexcept
     {
         ensure_fresh();
-        return all_sets_valid() && contains_impl(e, std::index_sequence_for<First, Rest...>{});
-    }
-
-    template <typename T, size_t I = 0>
-    [[nodiscard]] static constexpr size_t find_type_index() noexcept
-    {
-        if constexpr (I >= N) return N;
-        else if constexpr (std::is_same_v<std::tuple_element_t<I, AllTypes>, T>) return I;
-        else return find_type_index<T, I + 1>();
+        return all_sets_valid() && has_all_impl(e, std::index_sequence_for<First, Rest...>{});
     }
 
     template <typename T>
     [[nodiscard]] T* get(entity e) noexcept
     {
         ensure_fresh();
-        constexpr size_t idx = find_type_index<T>();
+        constexpr size_t idx = Base::template find_type_index<T>();
         if constexpr (idx < N)
             return sets_[idx]->template get_ptr_fast<T>(e);
         return nullptr;

@@ -129,15 +129,13 @@ public:
     }
 
     // === #A2 加密 ===
-    // 管线时序: save serialize→checksum→compress→encrypt→on_save; load 反向
     // 加密破坏 magic, 解密必须在 detect_codec 之前
     void set_encryption(encrypt_fn e, decrypt_fn d) noexcept {
         encrypt_cb_ = e; decrypt_cb_ = d;
     }
 
     // === #A1 CRC32C 校验 ===
-    // 启用后在序列化数据前添加 8 字节 LCCS 前缀 (magic + checksum)
-    // 加载时自动校验, 检测存档损坏
+    // 启用后数据前添加 8 字节 LCCS 前缀, 加载时自动校验
     void set_checksum_enabled(bool e) noexcept { enable_checksum_ = e; }
     [[nodiscard]] bool is_checksum_enabled() const noexcept { return enable_checksum_; }
 
@@ -216,7 +214,7 @@ public:
         {
             r = save_to_json<Ts...>(out);
         }
-        // #A1/#A2 管线: serialize→checksum→compress→encrypt→on_save
+        // 变换顺序固定, 勿调 (完整时序见 usage 12.14.3)
         if (r && enable_checksum_)
         {
             apply_checksum_wrapper(out);
@@ -487,7 +485,7 @@ public:
         {
             r = save_to_json_runtime(out);
         }
-        // #A1/#A2 管线: serialize→checksum→compress→encrypt→on_save
+        // 变换顺序固定, 勿调 (完整时序见 usage 12.14.3)
         if (r && enable_checksum_)
         {
             apply_checksum_wrapper(out);
@@ -697,9 +695,7 @@ private:
     }
 
     // === #A1 LCCS 校验和前缀 (8 字节: magic "LCCS" + uint32 checksum) ===
-    // 管线位置: serialize→[LCCS wrap]→compress→encrypt
-    // 加载时: decrypt→decompress→[LCCS strip+validate]→detect_codec
-    // 无 LCCS 前缀时 strip 为 no-op, 向后兼容旧存档
+    // 布局/管线见 usage 12.14.3; 无前缀时 strip 为 no-op (兼容旧存档)
     void apply_checksum_wrapper(std::string& out) noexcept
     {
         uint32_t cs = detail::compute_crc32c(out);
@@ -711,6 +707,7 @@ private:
         out = std::move(wrapped);
     }
 
+    // 探测式剥离: 前 4 字节非 LCCS 即原样放行, 校验失败返回错误
     [[nodiscard]] operating_message strip_and_validate_checksum(std::string& content) noexcept
     {
         if (content.size() < 8)
@@ -2179,7 +2176,8 @@ private:
     template<typename T>
     void register_factory_for_type() noexcept {
         // 先确保稳定类型名已注册
-        const char* name = lookup_type_name(type_id::get_type_id<T>());
+        int tid = type_id::get_type_id<T>();
+        const char* name = lookup_type_name(tid);
         if (!name)
         {
             // 未注册稳定名, 用 typeid 兜底 (运行时 hash, 跨编译器不稳定)
@@ -2187,37 +2185,17 @@ private:
             static std::string fallback = typeid(T).name();
             name = fallback.c_str();
         }
+        type_id::bind_def_name(name, tid);
 
-        // 检查是否已注册
-        auto& reg = detail::type_factory_registry();
-        int tid = type_id::get_type_id<T>();
-        for (size_t i = 0; i < reg.size(); ++i)
-        {
-            if (reg[i].type_id == tid)
-            {
-                // 已注册, 仅更新函数指针 (确保 trampoline 已绑定)
-                reg[i].save_fn = reinterpret_cast<void(*)(serialization*, void*)>(
-                    &json_save_trampoline<T>);
-                reg[i].load_fn = reinterpret_cast<void(*)(serialization*, void*,
-                    const detail::entity_remap*, uint32_t)>(&json_load_trampoline<T>);
-                return;
-            }
-        }
-
-        // 首次注册
-        uint32_t idx = static_cast<uint32_t>(reg.size());
-        detail::type_factory_entry entry;
-        entry.type_id = tid;
+        // 幂等注册 (id→索引映射维护于 ensure_factory_entry)
+        const uint32_t idx = detail::ensure_factory_entry(
+            tid, name, sizeof(T), std::is_trivially_copyable_v<T>);
+        auto& entry = detail::type_factory_registry()[idx];
         entry.name = name;
-        entry.name_hash = fnv1a_runtime(name);
         entry.save_fn = reinterpret_cast<void(*)(serialization*, void*)>(
             &json_save_trampoline<T>);
         entry.load_fn = reinterpret_cast<void(*)(serialization*, void*,
             const detail::entity_remap*, uint32_t)>(&json_load_trampoline<T>);
-        entry.type_size = sizeof(T);
-        entry.is_trivially_copyable = std::is_trivially_copyable_v<T>;
-        reg.push_back(entry);
-        detail::insert_factory_hash(reg[idx].name_hash, idx);
     }
 
     // ====================================================================

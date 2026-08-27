@@ -299,10 +299,11 @@ static void test_serializer_four_formats()
         mgr.add<PbVec3>(e1, PbVec3(1.0f, 2.0f, 3.0f));
         mgr.add<PbVec3>(e2, PbVec3(4.0f, 5.0f, 6.0f));
 
-        // 保存
+        // 保存 (禁用校验和前缀, 验证裸格式 magic; 完整管线由 save/load 往返覆盖)
         serialization saver(mgr);
         saver.set_archive_version(2);
         saver.set_metadata("author", "test");
+        saver.set_checksum_enabled(false);
         std::string data;
         operating_message r = saver.save_to_string<PbVec3>(data, c.fmt);
         bool save_ok = r && !data.empty();
@@ -348,13 +349,15 @@ static void test_serializer_four_formats()
         print_item(label_meta.c_str(), meta && *meta == "test");
     }
 
-    // 格式自动检测: 用 protobuf save, 用 detect 确认
+    // 格式自动检测: 用 protobuf save (禁校验和前缀, detect_codec 消费裸格式),
+    // 用 detect 确认; 带前缀场景由 load_from_string 的剥离管线覆盖
     {
         manager mgr;
         entity e = mgr.create_entity();
         mgr.add<PbVec3>(e, PbVec3(7.0f, 8.0f, 9.0f));
 
         serialization saver(mgr);
+        saver.set_checksum_enabled(false);
         std::string data;
         saver.save_to_string<PbVec3>(data, serialization::format::protobuf);
 
