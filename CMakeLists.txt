@@ -114,6 +114,11 @@ if(WIN32)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX)
 endif()
 
+if(LCF_STACK_MINIMAL)
+    add_compile_definitions(LCF_MINIMAL_STACK=1)
+    message(STATUS "Stack: LCF_MINIMAL_STACK=1 (大栈缓冲堆化)")
+endif()
+
 if(LCF_IS_GCC OR LCF_IS_CLANG)
     add_compile_options(-Wall -Wextra)
 endif()
@@ -129,6 +134,7 @@ else()
 endif()
 
 # 构建选项
+option(LCF_STACK_MINIMAL "LCF_MINIMAL_STACK=1 全模块最低栈占用 (大缓冲堆化) / Minimal stack" OFF)
 option(BUILD_FUNCTIONAL_TESTS "构建功能测试 (test_functional) / Build functional tests"      ON)
 option(BUILD_PERF_TESTS       "构建性能测试 (test_perf) / Build performance test (full)"    ON)
 option(BUILD_SCS_PERF_TESTS   "构建 single_class_set 性能测试 / Build scs perf test"        ON)
@@ -164,6 +170,7 @@ endfunction()
 
 if(BUILD_FUNCTIONAL_TESTS)
     lcf_add_executable(test_functional test/test_functional.cpp)
+    lcf_add_executable(test_container_bug_hunt test/test_container_bug_hunt.cpp)
     lcf_add_executable(test_single_view test/test_single_view.cpp)
     lcf_add_executable(test_multi_view test/test_multi_view.cpp)
     lcf_add_executable(test_void_any_cross_layout_swap test/test_void_any_cross_layout_swap.cpp)

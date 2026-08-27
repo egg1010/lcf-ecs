@@ -62,8 +62,9 @@ private:
 	static constexpr size_t SMALL_CAPACITY_THRESHOLD = 1024;
 	static constexpr size_t MEDIUM_CAPACITY_THRESHOLD = 65536;
 
+	// 返回真实容量: 虚标容量而不分配会让追加解引用空指针
 	[[nodiscard]] static constexpr size_t round_up_to_default(size_t n) noexcept {
-		return n == 0 ? DEFAULT_CAPACITY : n;
+		return n;
 	}
 
 	[[nodiscard]] static constexpr size_t calculate_new_capacity(size_t current) noexcept {
@@ -426,7 +427,8 @@ public:
 
 	explicit class_pool(size_t capacity) noexcept;
 	class_pool(size_t count, const T& value) noexcept;
-	template <typename InputIt>
+	// 迭代器约束: 防止 pool(count, value) 的整型参数被误推导为迭代器
+	template <typename InputIt> requires std::input_iterator<InputIt>
 	class_pool(InputIt first, InputIt last) noexcept;
 	class_pool(std::initializer_list<T> init) noexcept;
 	class_pool(const class_pool& other) noexcept;
@@ -459,7 +461,7 @@ public:
 		return data_ptr_[index];
 	}
 
-	// 越界保护访问: index 越界时访问 error_index
+	// 越界保护访问: index 越界时改访问 error_index
 	[[nodiscard]] constexpr T& get(size_t index, size_t error_index) noexcept
 	{
 		return data_ptr_[index < index_ ? index : error_index];

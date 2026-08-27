@@ -498,7 +498,7 @@ class_pool<T>::class_pool(size_t count, const T& value) noexcept
 }
 
 template <typename T>
-template <typename InputIt>
+template <typename InputIt> requires std::input_iterator<InputIt>
 class_pool<T>::class_pool(InputIt first, InputIt last) noexcept
 	: data_ptr_(nullptr)
 	, sparse_bits_(nullptr)
@@ -1742,6 +1742,8 @@ void class_pool<T>::soft_dense_delete(size_t start, size_t end) noexcept {
 	const size_t start_word = start / BITS_PER_WORD;
 	const size_t end_word = (end - 1) / BITS_PER_WORD;
 
+	// 按实际清除位数计数: 重复计数会让 hole_count_ 虚高, 填回后无法恢复 dense
+	size_t cleared_total = 0;
 	for (size_t w = start_word; w <= end_word; ++w) {
 		uint64_t mask = ~0ull;
 		if (w == start_word) {
@@ -1750,11 +1752,16 @@ void class_pool<T>::soft_dense_delete(size_t start, size_t end) noexcept {
 		if (w == end_word) {
 			mask &= (end % BITS_PER_WORD == 0) ? ~0ull : ((1ull << (end % BITS_PER_WORD)) - 1);
 		}
+		cleared_total += std::popcount(sparse_bits_[w] & mask);
 		sparse_bits_[w] &= ~mask;
 	}
 
-	hole_count_ += (end - start);
-	is_dense_ = 0;
+	if (cleared_total > 0) {
+		if (hole_count_ != static_cast<size_t>(-1)) {
+			hole_count_ += cleared_total;
+		}
+		is_dense_ = 0;
+	}
 }
 
 template <typename T>
@@ -1941,8 +1948,7 @@ void class_pool<T>::append_bulk(const T* src, size_t count) noexcept {
 	size_t end = index_ + count;
 	bulk_set_bits(index_, end);
 	index_ = end;
-	is_dense_ = 1;
-	hole_count_ = 0;
+	// 追加不改变 dense/sparse 状态 (与 append_n 一致): 有洞时误置 dense 会让遍历访问已销毁槽位
 }
 
 template <typename T>
@@ -1963,8 +1969,7 @@ void class_pool<T>::append_bulk_move(T* src, size_t count) noexcept {
 	size_t end = index_ + count;
 	bulk_set_bits(index_, end);
 	index_ = end;
-	is_dense_ = 1;
-	hole_count_ = 0;
+	// 追加不改变 dense/sparse 状态
 }
 
 template <typename T>
@@ -1982,8 +1987,7 @@ void class_pool<T>::append_incrementing(size_t count, uint64_t& counter) noexcep
 	size_t end = index_ + count;
 	bulk_set_bits(index_, end);
 	index_ = end;
-	is_dense_ = 1;
-	hole_count_ = 0;
+	// 追加不改变 dense/sparse 状态
 }
 
 template <typename T>
@@ -2000,8 +2004,7 @@ void class_pool<T>::append_generated(size_t count, F&& generator) noexcept {
 	size_t end = index_ + count;
 	bulk_set_bits(index_, end);
 	index_ = end;
-	is_dense_ = 1;
-	hole_count_ = 0;
+	// 追加不改变 dense/sparse 状态
 }
 
 template <typename T>
@@ -2020,8 +2023,7 @@ void class_pool<T>::append_indices_from(const EntityLike* entities, size_t count
 	size_t end = index_ + count;
 	bulk_set_bits(index_, end);
 	index_ = end;
-	is_dense_ = 1;
-	hole_count_ = 0;
+	// 追加不改变 dense/sparse 状态 (与 append_n 一致): 有洞时误置 dense 会让遍历访问已销毁槽位
 }
 
 template <typename T>
@@ -2086,8 +2088,8 @@ void class_pool<T>::fill_bulk(const T& value, size_t start, size_t count) noexce
 		}
 	}
 	bulk_set_bits(start, end);
-	is_dense_ = 1;
-	hole_count_ = 0;
+	// 区间外洞可能仍在, 重算状态与位图一致
+	recompute_is_dense();
 }
 
 template <typename T>
@@ -2105,8 +2107,8 @@ void class_pool<T>::prepare_dense(size_t new_size) noexcept {
 		bulk_set_bits(index_, new_size);
 		index_ = new_size;
 	}
-	is_dense_ = 1;
-	hole_count_ = 0;
+	// 预备段不填已有洞, 重算状态与位图一致
+	recompute_is_dense();
 }
 
 template <typename T>

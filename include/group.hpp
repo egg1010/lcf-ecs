@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <tuple>
 #include <array>
 #include <limits>
@@ -109,10 +109,10 @@ private:
                 uint32_t eid1 = indices[m1[primary_idx_]];
                 uint32_t eid2 = indices[m2[primary_idx_]];
                 uint32_t eid3 = indices[m3[primary_idx_]];
-                entity e0(eid0, primary->sparse_version_at_public(eid0));
-                entity e1(eid1, primary->sparse_version_at_public(eid1));
-                entity e2(eid2, primary->sparse_version_at_public(eid2));
-                entity e3(eid3, primary->sparse_version_at_public(eid3));
+                entity e0(eid0, primary->sparse_version_at(eid0));
+                entity e1(eid1, primary->sparse_version_at(eid1));
+                entity e2(eid2, primary->sparse_version_at(eid2));
+                entity e3(eid3, primary->sparse_version_at(eid3));
                 func(e0, d0[m0[0]], d1[m0[1]]);
                 func(e1, d0[m1[0]], d1[m1[1]]);
                 func(e2, d0[m2[0]], d1[m2[1]]);
@@ -132,7 +132,7 @@ private:
             if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
             {
                 uint32_t eid = indices[m[primary_idx_]];
-                uint32_t ver = primary->sparse_version_at_public(eid);
+                uint32_t ver = primary->sparse_version_at(eid);
                 entity e(eid, ver);
                 func(e, d0[m[0]], d1[m[1]]);
             }
@@ -188,14 +188,14 @@ private:
                 uint32_t eid5 = indices[m5[primary_idx_]];
                 uint32_t eid6 = indices[m6[primary_idx_]];
                 uint32_t eid7 = indices[m7[primary_idx_]];
-                entity e0(eid0, primary->sparse_version_at_public(eid0));
-                entity e1(eid1, primary->sparse_version_at_public(eid1));
-                entity e2(eid2, primary->sparse_version_at_public(eid2));
-                entity e3(eid3, primary->sparse_version_at_public(eid3));
-                entity e4(eid4, primary->sparse_version_at_public(eid4));
-                entity e5(eid5, primary->sparse_version_at_public(eid5));
-                entity e6(eid6, primary->sparse_version_at_public(eid6));
-                entity e7(eid7, primary->sparse_version_at_public(eid7));
+                entity e0(eid0, primary->sparse_version_at(eid0));
+                entity e1(eid1, primary->sparse_version_at(eid1));
+                entity e2(eid2, primary->sparse_version_at(eid2));
+                entity e3(eid3, primary->sparse_version_at(eid3));
+                entity e4(eid4, primary->sparse_version_at(eid4));
+                entity e5(eid5, primary->sparse_version_at(eid5));
+                entity e6(eid6, primary->sparse_version_at(eid6));
+                entity e7(eid7, primary->sparse_version_at(eid7));
                 func(e0, std::get<Is>(data_ptrs)[m0[Is]]...);
                 func(e1, std::get<Is>(data_ptrs)[m1[Is]]...);
                 func(e2, std::get<Is>(data_ptrs)[m2[Is]]...);
@@ -231,10 +231,10 @@ private:
                 uint32_t eid1 = indices[m1[primary_idx_]];
                 uint32_t eid2 = indices[m2[primary_idx_]];
                 uint32_t eid3 = indices[m3[primary_idx_]];
-                entity e0(eid0, primary->sparse_version_at_public(eid0));
-                entity e1(eid1, primary->sparse_version_at_public(eid1));
-                entity e2(eid2, primary->sparse_version_at_public(eid2));
-                entity e3(eid3, primary->sparse_version_at_public(eid3));
+                entity e0(eid0, primary->sparse_version_at(eid0));
+                entity e1(eid1, primary->sparse_version_at(eid1));
+                entity e2(eid2, primary->sparse_version_at(eid2));
+                entity e3(eid3, primary->sparse_version_at(eid3));
                 func(e0, std::get<Is>(data_ptrs)[m0[Is]]...);
                 func(e1, std::get<Is>(data_ptrs)[m1[Is]]...);
                 func(e2, std::get<Is>(data_ptrs)[m2[Is]]...);
@@ -254,7 +254,7 @@ private:
             if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
             {
                 uint32_t eid = indices[m[primary_idx_]];
-                uint32_t ver = primary->sparse_version_at_public(eid);
+                uint32_t ver = primary->sparse_version_at(eid);
                 entity e(eid, ver);
                 func(e, std::get<Is>(data_ptrs)[m[Is]]...);
             }
@@ -418,16 +418,16 @@ private:
                 uint32_t eid1 = indices[i + 1];
                 uint32_t eid2 = indices[i + 2];
                 uint32_t eid3 = indices[i + 3];
-                uint32_t od0 = other_set->sparse_dense_at_public(eid0);
-                uint32_t od1 = other_set->sparse_dense_at_public(eid1);
-                uint32_t od2 = other_set->sparse_dense_at_public(eid2);
-                uint32_t od3 = other_set->sparse_dense_at_public(eid3);
+                uint32_t od0 = other_set->sparse_dense_at(eid0);
+                uint32_t od1 = other_set->sparse_dense_at(eid1);
+                uint32_t od2 = other_set->sparse_dense_at(eid2);
+                uint32_t od3 = other_set->sparse_dense_at(eid3);
                 if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
                 {
-                    entity e0(eid0, primary->sparse_version_at_public(eid0));
-                    entity e1(eid1, primary->sparse_version_at_public(eid1));
-                    entity e2(eid2, primary->sparse_version_at_public(eid2));
-                    entity e3(eid3, primary->sparse_version_at_public(eid3));
+                    entity e0(eid0, primary->sparse_version_at(eid0));
+                    entity e1(eid1, primary->sparse_version_at(eid1));
+                    entity e2(eid2, primary->sparse_version_at(eid2));
+                    entity e3(eid3, primary->sparse_version_at(eid3));
                     func(e0, pool0_data[i],     pool1_data[od0]);
                     func(e1, pool0_data[i + 1], pool1_data[od1]);
                     func(e2, pool0_data[i + 2], pool1_data[od2]);
@@ -444,10 +444,10 @@ private:
             for (; i < owned_size_; ++i)
             {
                 uint32_t eid = indices[i];
-                uint32_t od = other_set->sparse_dense_at_public(eid);
+                uint32_t od = other_set->sparse_dense_at(eid);
                 if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
                 {
-                    uint32_t ver = primary->sparse_version_at_public(eid);
+                    uint32_t ver = primary->sparse_version_at(eid);
                     entity e(eid, ver);
                     func(e, pool0_data[i], pool1_data[od]);
                 }
@@ -474,16 +474,16 @@ private:
                 uint32_t eid1 = indices[i + 1];
                 uint32_t eid2 = indices[i + 2];
                 uint32_t eid3 = indices[i + 3];
-                uint32_t od0 = other_set->sparse_dense_at_public(eid0);
-                uint32_t od1 = other_set->sparse_dense_at_public(eid1);
-                uint32_t od2 = other_set->sparse_dense_at_public(eid2);
-                uint32_t od3 = other_set->sparse_dense_at_public(eid3);
+                uint32_t od0 = other_set->sparse_dense_at(eid0);
+                uint32_t od1 = other_set->sparse_dense_at(eid1);
+                uint32_t od2 = other_set->sparse_dense_at(eid2);
+                uint32_t od3 = other_set->sparse_dense_at(eid3);
                 if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
                 {
-                    entity e0(eid0, primary->sparse_version_at_public(eid0));
-                    entity e1(eid1, primary->sparse_version_at_public(eid1));
-                    entity e2(eid2, primary->sparse_version_at_public(eid2));
-                    entity e3(eid3, primary->sparse_version_at_public(eid3));
+                    entity e0(eid0, primary->sparse_version_at(eid0));
+                    entity e1(eid1, primary->sparse_version_at(eid1));
+                    entity e2(eid2, primary->sparse_version_at(eid2));
+                    entity e3(eid3, primary->sparse_version_at(eid3));
                     func(e0, pool0_data[od0], pool1_data[i]);
                     func(e1, pool0_data[od1], pool1_data[i + 1]);
                     func(e2, pool0_data[od2], pool1_data[i + 2]);
@@ -500,10 +500,10 @@ private:
             for (; i < owned_size_; ++i)
             {
                 uint32_t eid = indices[i];
-                uint32_t od = other_set->sparse_dense_at_public(eid);
+                uint32_t od = other_set->sparse_dense_at(eid);
                 if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
                 {
-                    uint32_t ver = primary->sparse_version_at_public(eid);
+                    uint32_t ver = primary->sparse_version_at(eid);
                     entity e(eid, ver);
                     func(e, pool0_data[od], pool1_data[i]);
                 }
@@ -543,7 +543,7 @@ private:
                 {
                     if (i + 8 < owned_size_) [[likely]]
                         sets_[k]->prefetch_sparse_entry(indices[i + 8]);
-                    dense_idx[k] = sets_[k]->sparse_dense_at_public(eid);
+                    dense_idx[k] = sets_[k]->sparse_dense_at(eid);
                 }
             }
 
@@ -554,7 +554,7 @@ private:
             std::apply([&](auto&... refs) {
                 if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
                 {
-                    uint32_t ver = primary->sparse_version_at_public(eid);
+                    uint32_t ver = primary->sparse_version_at(eid);
                     entity e(eid, ver);
                     func(e, refs...);
                 }

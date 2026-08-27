@@ -1,6 +1,13 @@
 // 非成员函数 (operator+/流/swap/to_utf8pp/字面量/hash/比较/erase/formatter)
 #pragma once
 
+#include <new>
+#include <string>
+
+// 通用模块不依赖 ecs 配置头, 宏未定义时按默认栈策略
+#ifndef LCF_MINIMAL_STACK
+#define LCF_MINIMAL_STACK 0
+#endif
 
 // === 非成员 operator+ 系列 ===
 [[nodiscard]] inline utf8pp operator+(const utf8pp& lhs, const utf8pp& rhs)
@@ -115,11 +122,30 @@ inline std::ostream& operator<<(std::ostream& os, const utf8pp& s)
 inline std::istream& operator>>(std::istream& is, utf8pp& s)
 {
     s.clear();
+#if LCF_MINIMAL_STACK
+    // 堆缓冲读流, 堆失败退化为小栈块
+    char* buf = static_cast<char*>(::operator new(4096, std::nothrow));
+    if (buf) [[likely]]
+    {
+        while (is.read(buf, 4096) || is.gcount() > 0)
+        {
+            s.append(buf, static_cast<size_t>(is.gcount()));
+        }
+        ::operator delete(buf, 4096);
+        return is;
+    }
+    char small[256];
+    while (is.read(small, sizeof(small)) || is.gcount() > 0)
+    {
+        s.append(small, static_cast<size_t>(is.gcount()));
+    }
+#else
     char buf[4096];
     while (is.read(buf, sizeof(buf)) || is.gcount() > 0)
     {
         s.append(buf, static_cast<size_t>(is.gcount()));
     }
+#endif
     return is;
 }
 
@@ -216,6 +242,18 @@ inline void swap(utf8pp& lhs, utf8pp& rhs) noexcept { lhs.swap(rhs); }
     if (!fmt) return utf8pp();
     std::va_list ap;
     va_start(ap, fmt);
+#if LCF_MINIMAL_STACK
+    std::va_list probe;
+    va_copy(probe, ap);
+    int n = std::vsnprintf(nullptr, 0, fmt, probe);
+    va_end(probe);
+    if (n < 0) { va_end(ap); return utf8pp(); }
+    std::string tmp(static_cast<size_t>(n), '\0');
+    int n2 = std::vsnprintf(tmp.data(), tmp.size() + 1, fmt, ap);
+    va_end(ap);
+    if (n2 < 0) return utf8pp();
+    return utf8pp(tmp.data(), static_cast<size_t>(n2));
+#else
     char buf[1024];
     int n = std::vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
@@ -228,6 +266,7 @@ inline void swap(utf8pp& lhs, utf8pp& rhs) noexcept { lhs.swap(rhs); }
     va_end(ap);
     if (n2 < 0) return utf8pp();
     return utf8pp(tmp.data(), static_cast<size_t>(n2));
+#endif
 }
 
 // 静态成员版本 format (与 std::format 风格统一, 但用 printf 格式串)
@@ -235,6 +274,20 @@ inline void swap(utf8pp& lhs, utf8pp& rhs) noexcept { lhs.swap(rhs); }
 [[nodiscard]] inline utf8pp utf8pp_vformat(const char* fmt, std::va_list ap)
 {
     if (!fmt) return utf8pp();
+#if LCF_MINIMAL_STACK
+    std::va_list probe;
+    va_copy(probe, ap);
+    int n = std::vsnprintf(nullptr, 0, fmt, probe);
+    va_end(probe);
+    if (n < 0) return utf8pp();
+    std::string tmp(static_cast<size_t>(n), '\0');
+    std::va_list ap2;
+    va_copy(ap2, ap);
+    int n2 = std::vsnprintf(tmp.data(), tmp.size() + 1, fmt, ap2);
+    va_end(ap2);
+    if (n2 < 0) return utf8pp();
+    return utf8pp(tmp.data(), static_cast<size_t>(n2));
+#else
     char buf[1024];
     int n = std::vsnprintf(buf, sizeof(buf), fmt, ap);
     if (n < 0) return utf8pp();
@@ -246,6 +299,7 @@ inline void swap(utf8pp& lhs, utf8pp& rhs) noexcept { lhs.swap(rhs); }
     va_end(ap2);
     if (n2 < 0) return utf8pp();
     return utf8pp(tmp.data(), static_cast<size_t>(n2));
+#endif
 }
 
 // 类内静态方法的定义 (前向声明的 format/vformat)
@@ -254,6 +308,18 @@ inline void swap(utf8pp& lhs, utf8pp& rhs) noexcept { lhs.swap(rhs); }
     if (!fmt) return utf8pp();
     std::va_list ap;
     va_start(ap, fmt);
+#if LCF_MINIMAL_STACK
+    std::va_list probe;
+    va_copy(probe, ap);
+    int n = std::vsnprintf(nullptr, 0, fmt, probe);
+    va_end(probe);
+    if (n < 0) { va_end(ap); return utf8pp(); }
+    std::string tmp(static_cast<size_t>(n), '\0');
+    int n2 = std::vsnprintf(tmp.data(), tmp.size() + 1, fmt, ap);
+    va_end(ap);
+    if (n2 < 0) return utf8pp();
+    return utf8pp(tmp.data(), static_cast<size_t>(n2));
+#else
     char buf[1024];
     int n = std::vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
@@ -265,6 +331,7 @@ inline void swap(utf8pp& lhs, utf8pp& rhs) noexcept { lhs.swap(rhs); }
     va_end(ap);
     if (n2 < 0) return utf8pp();
     return utf8pp(tmp.data(), static_cast<size_t>(n2));
+#endif
 }
 
 [[nodiscard]] inline utf8pp utf8pp::vformat(const char* fmt, std::va_list ap)

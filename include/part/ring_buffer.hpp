@@ -212,6 +212,26 @@ public:
         return emplace_slow(std::forward<Args>(args)...);
     }
 
+    // 槽位原地构造并返回指针, 供大对象零栈填充 (失败返回 nullptr)
+    template <typename... Args>
+    [[nodiscard]] T* emplace_get(Args&&... args) noexcept
+    {
+        chunk* t = active_tail_;
+        if (t) [[likely]]
+        {
+            uint32_t w = t->write;
+            if (w < SLOTS) [[likely]]
+            {
+                T* slot = &t->slots[w];
+                new (slot) T(std::forward<Args>(args)...);
+                t->write = w + 1;
+                ++total_count_;
+                return slot;
+            }
+        }
+        return emplace_get_slow(std::forward<Args>(args)...);
+    }
+
 private:
     template <typename U>
     NOINLINE bool push_slow(U&& event) noexcept
@@ -260,6 +280,28 @@ private:
         active_tail_ = c;
         ++total_count_;
         return true;
+    }
+
+    template <typename... Args>
+    NOINLINE T* emplace_get_slow(Args&&... args) noexcept
+    {
+        chunk* c = traits::instance.acquire();
+        T* slot = &c->slots[0];
+        new (slot) T(std::forward<Args>(args)...);
+        c->write = 1;
+        c->read  = 0;
+        c->next  = nullptr;
+        if (active_tail_) [[likely]]
+        {
+            active_tail_->next = c;
+        }
+        else
+        {
+            active_head_ = c;
+        }
+        active_tail_ = c;
+        ++total_count_;
+        return slot;
     }
 
 public:

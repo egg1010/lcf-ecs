@@ -1,4 +1,4 @@
-// group_impl.hpp —— group / owning_group / reorder_group 的 out-of-line 定义
+﻿// group_impl.hpp —— group / owning_group / reorder_group 的 out-of-line 定义
 // 依赖 manager 完整定义,由 component.hpp 在 manager 类定义之后 include
 #pragma once
 #include "group.hpp"
@@ -64,7 +64,7 @@ inline void group<First, Rest...>::rebuild() noexcept
             for (size_t k = 0; k < N; ++k)
             {
                 if (k == primary_idx_) continue;
-                entry[k] = sets_[k]->sparse_dense_at_public(eid);
+                entry[k] = sets_[k]->sparse_dense_at(eid);
             }
             cached_.push_back(static_cast<uint32_t>(i));
             dense_mappings_.push_back(entry);
@@ -92,7 +92,7 @@ inline void group<First, Rest...>::rebuild() noexcept
             for (size_t k = 0; k < N; ++k)
             {
                 if (k == primary_idx_) continue;
-                uint32_t d = req_sets_[k]->sparse_dense_at_public(eid);
+                uint32_t d = req_sets_[k]->sparse_dense_at(eid);
                 if (d == single_class_set::dense_invalid)
                 {
                     has_all = false;
@@ -187,7 +187,7 @@ inline void owning_group<First, Rest...>::rebuild() noexcept
             for (size_t k = 0; k < N; ++k)
             {
                 if (k == primary_idx_) continue;
-                if (req_sets_[k]->sparse_dense_at_public(eid) == single_class_set::dense_invalid)
+                if (req_sets_[k]->sparse_dense_at(eid) == single_class_set::dense_invalid)
                 {
                     has_all = false;
                     break;
@@ -287,7 +287,7 @@ inline void reorder_group<First, Rest...>::rebuild() noexcept
             for (size_t k = 0; k < N; ++k)
             {
                 if (k == primary_idx_) continue;
-                if (req_sets_[k]->sparse_dense_at_public(eid) == single_class_set::dense_invalid)
+                if (req_sets_[k]->sparse_dense_at(eid) == single_class_set::dense_invalid)
                 {
                     has_all = false;
                     break;

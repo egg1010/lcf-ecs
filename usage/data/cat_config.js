@@ -10,15 +10,18 @@ window.DOCS_DATA['config'] = {
 
 ### 13.1 栈内存控制（\`config/ecs_config.hpp\`）
 
-嵌入式 / RTOS 环境通过 \`LCF_MINIMAL_STACK\` 关闭栈分配，将基数排序的大数组从栈分配切换到堆分配。桌面环境默认 \`0\`，保留栈分配。
+嵌入式 / RTOS 环境通过 \`LCF_MINIMAL_STACK\` 关闭栈分配，将各模块的大栈缓冲切换到堆分配。桌面环境默认 \`0\`，保留栈分配。
 
 | 宏 | 默认值 | 说明 |
 |------|--------|------|
-| \`LCF_MINIMAL_STACK\` | \`0\` | \`1\` 关闭栈分配：基数排序直方图（16KB×2）与 \`count_stack\`（16KB×2）改走堆分配 |
+| \`LCF_MINIMAL_STACK\` | \`0\` | \`1\` 全模块大栈缓冲堆化（排序直方图、流读取、格式化、组件交换、消息历史） |
 
 \`\`\`cmake
 # 嵌入式项目在 CMakeLists.txt 中定义
 target_compile_definitions(my_target PRIVATE LCF_MINIMAL_STACK=1)
+
+# 或使用项目提供的 CMake 开关
+cmake -S . -B build -DLCF_STACK_MINIMAL=ON
 \`\`\`
 
 | 受控点 | 栈占用（默认） | 嵌入式回退 |
@@ -27,6 +30,10 @@ target_compile_definitions(my_target PRIVATE LCF_MINIMAL_STACK=1)
 | \`radix_count_pass\` bc≤1024 分支 | 16KB（h0-h1 局部直方图） | \`::operator new\` 堆分配，失败回退单直方图 |
 | \`radix_sort_entries_with_cfg\` count_stack | 16KB（2048 个 size_t） | \`::operator new\` 堆分配 |
 | \`radix_sort_indices_with_cfg\` count_stack | 16KB（2048 个 size_t） | \`::operator new\` 堆分配 |
+| \`utf8pp operator>>\` 流读取缓冲 | 4KB | 堆分配，失败回退 256B 小块分批读取 |
+| \`utf8pp_format\` / \`utf8pp::format\` 格式化缓冲 | 1KB×3 | 探长后 \`std::string\` 堆格式化 |
+| \`single_class_set\` 组件交换缓冲 | 256B×2 | \`swap_pool\` 成员交换 / 堆分配（失败回退 64B 分块） |
+| \`om_history_push\` 消息历史临时对象 | 262B | \`ring_buffer::emplace_get\` 槽位原地填充（默认配置同样生效） |
 
 ### 13.2 void_any 存储策略（\`config/void_any_config.hpp\`）
 

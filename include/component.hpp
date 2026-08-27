@@ -339,7 +339,7 @@ public:
     {
         if (!entitys.is_valid()) [[unlikely]] return nullptr;
         single_class_set* set = get_single_class_set<T>();
-        return set ? set->get_ptr_fast_inline<T>(entitys) : nullptr;
+        return set ? set->get_ptr_fast<T>(entitys) : nullptr;
     }
 
     template <typename T>
@@ -347,28 +347,28 @@ public:
     {
         if (!entitys.is_valid()) [[unlikely]] return nullptr;
         const single_class_set* set = get_single_class_set<T>();
-        return set ? set->get_ptr_fast_inline<T>(entitys) : nullptr;
+        return set ? set->get_ptr_fast<T>(entitys) : nullptr;
     }
 
     template <typename T>
     [[nodiscard]] T* get_ptr_fast(entity entitys) noexcept
     {
         single_class_set* set = get_single_class_set<T>();
-        return set ? set->get_ptr_fast_inline<T>(entitys) : nullptr;
+        return set ? set->get_ptr_fast<T>(entitys) : nullptr;
     }
 
     template <typename T>
     [[nodiscard]] const T* get_ptr_fast(entity entitys) const noexcept
     {
         const single_class_set* set = get_single_class_set<T>();
-        return set ? set->get_ptr_fast_inline<T>(entitys) : nullptr;
+        return set ? set->get_ptr_fast<T>(entitys) : nullptr;
     }
 
     template <typename T>
     void prefetch_ptr(entity entitys) const noexcept
     {
         const single_class_set* set = get_single_class_set<T>();
-        if (set) set->prefetch_ptr(entitys);
+        if (set) set->prefetch_sparse_entry(entitys.parts_.index_);
     }
 
     template <typename T>
@@ -448,13 +448,13 @@ public:
     template <typename T>
     void prefetch_ptr_cached(single_class_set* set, entity e) const noexcept
     {
-        if (set) set->prefetch_ptr(e);
+        if (set) set->prefetch_sparse_entry(e.parts_.index_);
     }
 
     template <typename T>
     void prefetch_ptr_cached(const single_class_set* set, entity e) const noexcept
     {
-        if (set) set->prefetch_ptr(e);
+        if (set) set->prefetch_sparse_entry(e.parts_.index_);
     }
 
     template <typename T>
@@ -759,7 +759,7 @@ public:
             for (size_t i = 0; i < n; ++i)
             {
                 uint32_t eid = t_indices[i];
-                uint32_t od = (eid < other_sparse_size) ? set_other->sparse_dense_at_public(eid) : UINT32_MAX;
+                uint32_t od = (eid < other_sparse_size) ? set_other->sparse_dense_at(eid) : UINT32_MAX;
                 other_values.push_back(od != UINT32_MAX ? other_pool_data[od] : default_other);
             }
             Other* ov_data = other_values.data();
@@ -775,8 +775,8 @@ public:
                 [t_indices_ptr = t_indices.data(), set_other, other_sparse_size, other_pool_data, &default_other, &cmp](size_t a, size_t b) {
                     uint32_t eid_a = t_indices_ptr[a];
                     uint32_t eid_b = t_indices_ptr[b];
-                    uint32_t od_a = (eid_a < other_sparse_size) ? set_other->sparse_dense_at_public(eid_a) : UINT32_MAX;
-                    uint32_t od_b = (eid_b < other_sparse_size) ? set_other->sparse_dense_at_public(eid_b) : UINT32_MAX;
+                    uint32_t od_a = (eid_a < other_sparse_size) ? set_other->sparse_dense_at(eid_a) : UINT32_MAX;
+                    uint32_t od_b = (eid_b < other_sparse_size) ? set_other->sparse_dense_at(eid_b) : UINT32_MAX;
                     Other& ra = (od_a != UINT32_MAX) ? other_pool_data[od_a] : default_other;
                     Other& rb = (od_b != UINT32_MAX) ? other_pool_data[od_b] : default_other;
                     return cmp(ra, rb);
@@ -1097,14 +1097,14 @@ class query_context
     single_class_set* set_;
     size_t sparse_size_;
     T* pool_data_;
-    uint64_t pool_version_;
+    uint32_t position_epoch_;
 
 public:
     query_context(manager& mgr) noexcept
         : set_(mgr.get_single_class_set<T>())
         , sparse_size_(set_ ? set_->sparse_size_ : 0)
         , pool_data_(set_ ? set_->get_typed_pool<T>()->data() : nullptr)
-        , pool_version_(set_ ? set_->get_pool_version() : 0)
+        , position_epoch_(set_ ? set_->position_epoch_ : 0)
     {}
 
     [[nodiscard]] T* get_ptr(entity e) noexcept
@@ -1114,15 +1114,14 @@ public:
         const size_t slot = e.parts_.index_ & (single_class_set::hot_set_capacity_ - 1);
         const auto& entry = set_->hot_set_[slot];
         const uint64_t key = single_class_set::make_entity_key_(e);
-        const uint32_t pool_ver_lo = static_cast<uint32_t>(pool_version_);
-        if (entry.entity_key == key && entry.pool_version_lo == pool_ver_lo) [[likely]]
+        if (entry.entity_key == key && entry.epoch_lo == position_epoch_) [[likely]]
         {
             return &pool_data_[entry.dense_index];
         }
         const sparse_entry* se = set_->sparse_entry_checked_(e.parts_.index_);
         if (!se || se->dense == single_class_set::dense_invalid || se->version != e.parts_.version_) [[unlikely]]
             return nullptr;
-        set_->hot_set_[slot] = {key, se->dense, pool_ver_lo};
+        set_->hot_set_[slot] = {key, se->dense, position_epoch_};
         return &pool_data_[se->dense];
     }
 
@@ -1133,8 +1132,7 @@ public:
         const size_t slot = e.parts_.index_ & (single_class_set::hot_set_capacity_ - 1);
         const auto& entry = set_->hot_set_[slot];
         const uint64_t key = single_class_set::make_entity_key_(e);
-        const uint32_t pool_ver_lo = static_cast<uint32_t>(pool_version_);
-        if (entry.entity_key == key && entry.pool_version_lo == pool_ver_lo) [[likely]]
+        if (entry.entity_key == key && entry.epoch_lo == position_epoch_) [[likely]]
         {
             return &pool_data_[entry.dense_index];
         }
@@ -1148,8 +1146,8 @@ public:
     {
         if (!set_ || e.parts_.index_ >= sparse_size_) [[unlikely]]
             return;
-        if (e.parts_.index_ < set_->sparse_table_.capacity())
-            PREFETCH_R(&set_->sparse_table_[e.parts_.index_]);
+        if (e.parts_.index_ < set_->sparse_cap_)
+            PREFETCH_R(&set_->sparse_[e.parts_.index_]);
     }
 
     void prefetch_data(entity e) const noexcept

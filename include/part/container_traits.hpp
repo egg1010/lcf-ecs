@@ -27,7 +27,7 @@ struct container_ops_table
     int key_type_id{-1};
 
     size_t (*size_fn)(const void*) noexcept{nullptr};
-    void* (*at_index_fn)(void*, size_t) noexcept{nullptr};
+    void* (*get_index_fn)(void*, size_t) noexcept{nullptr};
     void* (*at_key_fn)(void*, const void* key) noexcept{nullptr};
     void (*push_back_fn)(void*, const void* element) noexcept{nullptr};
     void (*insert_kv_fn)(void*, const void* key, const void* val) noexcept{nullptr};
@@ -96,7 +96,7 @@ struct container_traits_impl<T>
         };
         if constexpr (indexable_container<T>)
         {
-            t.at_index_fn = [](void* c, size_t i) noexcept -> void*
+            t.get_index_fn = [](void* c, size_t i) noexcept -> void*
             {
                 T* cont = static_cast<T*>(c);
                 return i < cont->size() ? &(*cont)[i] : nullptr;

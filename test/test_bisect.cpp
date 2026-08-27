@@ -100,16 +100,16 @@ int main()
         utf8pp s("Hi中😀"); // H i 中 😀
         print_item("size() == 4", s.size() == 4);
 
-        print_item("at(0) == 'H'", s.at(0) == char32_t('H'));
-        print_item("at(1) == 'i'", s.at(1) == char32_t('i'));
-        print_item("at(2) == '中' (U+4E2D)", s.at(2) == char32_t(0x4E2D));
-        print_item("at(3) == U+1F600", s.at(3) == char32_t(0x1F600));
+        print_item("get(0) == 'H'", s.get(0) == char32_t('H'));
+        print_item("get(1) == 'i'", s.get(1) == char32_t('i'));
+        print_item("get(2) == '中' (U+4E2D)", s.get(2) == char32_t(0x4E2D));
+        print_item("get(3) == U+1F600", s.get(3) == char32_t(0x1F600));
 
-        print_item("operator[] == at", s[0] == s.at(0));
+        print_item("operator[] == at", s[0] == s.get(0));
         print_item("front() == 'H'", s.front() == char32_t('H'));
         print_item("back() == U+1F600", s.back() == char32_t(0x1F600));
 
-        print_item("at 越界返回 U+FFFD", s.at(100) == char32_t(0xFFFD));
+        print_item("get 越界返回 U+FFFD", s.get(100) == char32_t(0xFFFD));
     }
 
     // === 7. utf8pp 字节访问 ===
@@ -152,9 +152,9 @@ int main()
         s.push_back(char32_t(0x1F600)); // 😀
         print_item("push_back 3 码点", s.size() == 3);
         print_item("byte_size == 8", s.byte_size() == 8);
-        print_item("at(0) == 'A'", s.at(0) == char32_t('A'));
-        print_item("at(1) == '中'", s.at(1) == char32_t(0x4E2D));
-        print_item("at(2) == U+1F600", s.at(2) == char32_t(0x1F600));
+        print_item("get(0) == 'A'", s.get(0) == char32_t('A'));
+        print_item("get(1) == '中'", s.get(1) == char32_t(0x4E2D));
+        print_item("get(2) == U+1F600", s.get(2) == char32_t(0x1F600));
 
         utf8pp s2;
         s2.append("Hello");
@@ -165,7 +165,7 @@ int main()
         utf8pp s3;
         s3 += char32_t('X');
         s3 += "YZ";
-        print_item("operator+= 混合", s3.size() == 3 && s3.at(0) == char32_t('X'));
+        print_item("operator+= 混合", s3.size() == 3 && s3.get(0) == char32_t('X'));
     }
 
     // === 10. utf8pp 修改: insert / erase ===
@@ -173,26 +173,26 @@ int main()
     {
         utf8pp s("Hlo");
         s.insert(1, char32_t('e')); // "Helo"
-        print_item("insert 后 'He'", s.at(0) == char32_t('H') && s.at(1) == char32_t('e'));
+        print_item("insert 后 'He'", s.get(0) == char32_t('H') && s.get(1) == char32_t('e'));
 
         s.insert(3, char32_t('l')); // "Hello"
-        print_item("insert 后 'Hello'", s.size() == 5 && s.at(4) == char32_t('o'));
+        print_item("insert 后 'Hello'", s.size() == 5 && s.get(4) == char32_t('o'));
 
         utf8pp s2(u8"你好世界");
         s2.insert(1, char32_t('X')); // 你 X 好世界
         print_item("中文 insert 后 size == 5", s2.size() == 5);
-        print_item("insert 后 at(1) == 'X'", s2.at(1) == char32_t('X'));
-        print_item("insert 后 at(2) == '好'", s2.at(2) == char32_t(0x597D));
+        print_item("insert 后 get(1) == 'X'", s2.get(1) == char32_t('X'));
+        print_item("insert 后 get(2) == '好'", s2.get(2) == char32_t(0x597D));
 
         s2.erase(1); // 删除 'X'
         print_item("erase 后 size == 4", s2.size() == 4);
-        print_item("erase 后 at(1) == '好'", s2.at(1) == char32_t(0x597D));
+        print_item("erase 后 get(1) == '好'", s2.get(1) == char32_t(0x597D));
         print_item("erase 后 byte_size 恢复", s2.byte_size() == 12);
 
         // 批量 erase
         utf8pp s3("ABCDEF");
         s3.erase(1, 3); // 删除 BCD → "AEF"
-        print_item("批量 erase 后 'AEF'", s3.size() == 3 && s3.at(0) == char32_t('A') && s3.at(1) == char32_t('E'));
+        print_item("批量 erase 后 'AEF'", s3.size() == 3 && s3.get(0) == char32_t('A') && s3.get(1) == char32_t('E'));
     }
 
     // === 11. utf8pp substr ===
@@ -201,11 +201,11 @@ int main()
         utf8pp s(u8"你好世界");
         utf8pp sub = s.substr(1, 2); // 好世
         print_item("substr size == 2", sub.size() == 2);
-        print_item("substr at(0) == '好'", sub.at(0) == char32_t(0x597D));
-        print_item("substr at(1) == '世'", sub.at(1) == char32_t(0x4E16));
+        print_item("substr get(0) == '好'", sub.get(0) == char32_t(0x597D));
+        print_item("substr get(1) == '世'", sub.get(1) == char32_t(0x4E16));
 
         utf8pp sub2 = s.substr(2); // 世界
-        print_item("substr 默认 npos", sub2.size() == 2 && sub2.at(0) == char32_t(0x4E16));
+        print_item("substr 默认 npos", sub2.size() == 2 && sub2.get(0) == char32_t(0x4E16));
 
         utf8pp sub3 = s.substr(100);
         print_item("substr 越界返回空", sub3.empty());
@@ -266,7 +266,7 @@ int main()
 
         s.strip_bom();
         print_item("strip BOM 后 byte_size == 2", s.byte_size() == 2);
-        print_item("strip BOM 后内容 'Hi'", s.at(0) == char32_t('H') && s.at(1) == char32_t('i'));
+        print_item("strip BOM 后内容 'Hi'", s.get(0) == char32_t('H') && s.get(1) == char32_t('i'));
 
         utf8pp s2("Hello");
         print_item("无 BOM", !s2.has_bom());
@@ -286,10 +286,10 @@ int main()
     do { extern "C" int _heapchk(void); int _hr = _heapchk(); if (_hr != 0) std::cout << "HEAP_BAD before section 17 hr=" << _hr << "\n"; } while(0); print_section(17, "utf8pp 字面量运算符");
     {
         auto s = "Hello"_u8;
-        print_item("_u8 字面量构造", s.size() == 5 && s.at(0) == char32_t('H'));
+        print_item("_u8 字面量构造", s.size() == 5 && s.get(0) == char32_t('H'));
 
         auto s2 = u8"你好"_u8;
-        print_item("_u8 中文", s2.size() == 2 && s2.at(0) == char32_t(0x4F60));
+        print_item("_u8 中文", s2.size() == 2 && s2.get(0) == char32_t(0x4F60));
     }
 
     // === 18. utf8pp 大规模操作 ===
@@ -319,7 +319,7 @@ int main()
         print_item("operator= const char*", s.size() == 5);
 
         s = std::string_view("World");
-        print_item("operator= string_view", s.size() == 5 && s.at(0) == char32_t('W'));
+        print_item("operator= string_view", s.size() == 5 && s.get(0) == char32_t('W'));
 
         utf8pp s2;
         s2 = s;
@@ -966,7 +966,7 @@ int main()
 
         utf8pp s5(u8"你好");
         s5.insert(1, "X"); // 你X好
-        print_item("中文 insert(const char*)", s5.size() == 3 && s5.at(1) == char32_t('X'));
+        print_item("中文 insert(const char*)", s5.size() == 3 && s5.get(1) == char32_t('X'));
     }
 
     // === 40. replace 字符串重载 + compare 子串 ===
@@ -1038,7 +1038,7 @@ int main()
         // SSO 满 → append 触发扩容
         utf8pp s7(s);
         s7.append("X");
-        print_item("SSO 满 append 触发扩容", s7.size() == 23 && s7.at(22) == char32_t('X'));
+        print_item("SSO 满 append 触发扩容", s7.size() == 23 && s7.get(22) == char32_t('X'));
         print_item("SSO 满 append 非 SSO", !s7.is_sso());
 
         // SSO 满 → erase + shrink_to_fit 回退
@@ -1186,7 +1186,7 @@ int main()
         print_item("reserve_cp 扩容", s.cp_capacity() > before);
         // 预留后操作正常
         s.assign_cp(50, char32_t('Z'));
-        print_item("reserve_cp 后 assign_cp 正常", s.size() == 50 && s.at(0) == char32_t('Z'));
+        print_item("reserve_cp 后 assign_cp 正常", s.size() == 50 && s.get(0) == char32_t('Z'));
         // 已有内容 reserve_cp 不丢失
         utf8pp s2("Hello");
         s2.reserve_cp(64);

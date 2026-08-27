@@ -1268,17 +1268,17 @@ struct om_record
 
 using om_history = ring_buffer<om_record, 1024>;
 
-// 推入一条消息到历史
+// 推入一条消息到历史 (槽位原地填充, 不经过栈临时对象)
 inline void om_history_push(om_history& hist, const operating_message& om,
                             msg_level lv = msg_level::info) noexcept
 {
-    om_record rec;
-    rec.level = lv;
-    rec.code = om.code();
+    om_record* rec = hist.emplace_get();
+    if (!rec) [[unlikely]] { return; }
+    rec->level = lv;
+    rec->code = om.code();
     std::string_view sv = om.read_message();
-    rec.msg_len = static_cast<uint16_t>(sv.size() < 256 ? sv.size() : 256);
-    std::memcpy(rec.msg_buf, sv.data(), rec.msg_len);
-    (void)hist.push(rec);
+    rec->msg_len = static_cast<uint16_t>(sv.size() < 256 ? sv.size() : 256);
+    std::memcpy(rec->msg_buf, sv.data(), rec->msg_len);
 }
 
 // 排空历史, 逐条调用 handler(level, code, msg_view)

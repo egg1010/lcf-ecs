@@ -57,17 +57,17 @@
         [[nodiscard]] bool contains(entity e) const noexcept
         {
             // 合并 dense+version 查找: 单次 sparse_entry 加载,
-            //   替代原 sparse_dense_at_public + sparse_version_at_public 两次独立查找
+            //   替代原 sparse_dense_at + sparse_version_at 两次独立查找
             if (!set_ || !e.is_valid()) [[unlikely]] return false;
             uint32_t ver = 0;
-            uint32_t dense = set_->sparse_dense_version_public(e.parts_.index_, ver);
+            uint32_t dense = set_->sparse_find(e.parts_.index_, ver);
             if (dense == single_class_set::dense_invalid) [[unlikely]] return false;
             return ver == e.parts_.version_;
         }
 
         [[nodiscard]] T* get_component_for_entity(entity e) noexcept
         {
-            return set_ ? set_->template get_ptr_fast_inline<T>(e) : nullptr;
+            return set_ ? set_->template get_ptr_fast<T>(e) : nullptr;
         }
 
         [[nodiscard]] entity get_first_entity() const noexcept
@@ -166,7 +166,7 @@
                     for (size_t i = 0; i < n; ++i)
                     {
                         uint32_t eid = indices[i];
-                        uint32_t ver = set_->sparse_version_at_public(eid);
+                        uint32_t ver = set_->sparse_version_at(eid);
                         entity e(eid, ver);
                         func(e, (*pool)[i]);
                     }
@@ -216,7 +216,7 @@
                 {
                     entity e = *it;
                     // 位置可能已被 swap, 需重查
-                    T* p = set_->template get_ptr_fast_inline<T>(e);
+                    T* p = set_->template get_ptr_fast<T>(e);
                     if (p) [[likely]] func(e, *p);
                 }
             }
@@ -225,7 +225,7 @@
                 for (; it != end; ++it)
                 {
                     entity e = *it;
-                    T* p = set_->template get_ptr_fast_inline<T>(e);
+                    T* p = set_->template get_ptr_fast<T>(e);
                     if (p) [[likely]] func(*p);
                 }
             }
@@ -353,7 +353,7 @@
                         size_t idx = sorted_indices_[i];
                         sorted_pool_copy_.push_back(pool_data[idx]);
                         uint32_t eid = indices[idx];
-                        uint32_t ver = base_.set_->sparse_version_at_public(eid);
+                        uint32_t ver = base_.set_->sparse_version_at(eid);
                         sorted_entities_.push_back(entity(eid, ver));
                     }
                 }
@@ -538,7 +538,7 @@
                                 PREFETCH_R(&data[sorted_indices_[i + 32]]);
                             size_t idx = sorted_indices_[i];
                             uint32_t eid = indices[idx];
-                            uint32_t ver = base_.set_->sparse_version_at_public(eid);
+                            uint32_t ver = base_.set_->sparse_version_at(eid);
                             entity e(eid, ver);
                             func(e, data[idx]);
                         }
@@ -689,7 +689,7 @@
                         for (size_t i = 0; i < n; ++i)
                         {
                             uint32_t eid = indices[i];
-                            uint32_t ver = base_.set_->sparse_version_at_public(eid);
+                            uint32_t ver = base_.set_->sparse_version_at(eid);
                             entity e(eid, ver);
                             func(e, data[i]);
                         }
@@ -839,7 +839,7 @@
                         {
                             size_t idx = changed_indices_[i];
                             uint32_t eid = indices[idx];
-                            uint32_t ver = base_.set_->sparse_version_at_public(eid);
+                            uint32_t ver = base_.set_->sparse_version_at(eid);
                             entity e(eid, ver);
                             func(e, data[idx]);
                         }
@@ -896,6 +896,8 @@
                 const auto* trk = base_.set_->get_entity_change_tracking_data();
                 uint64_t* obs = last_observed_added_.data();
                 added_indices_.reserve_exact(n);
+                // 环回安全序数比较: added_version 为 32 位截断, 跨度 < 2^31 时判定正确
+                const uint32_t base32 = static_cast<uint32_t>(baseline_added_counter_);
                 const size_t n8 = n & ~size_t{7};
                 size_t i = 0;
                 for (; i < n8; i += 8)
@@ -905,7 +907,9 @@
                     {
                         size_t ii = i + k;
                         uint64_t cur = trk[ii].added_version;
-                        if (cur > baseline_added_counter_ && cur != obs[ii])
+                        const bool added_after_base =
+                            static_cast<int32_t>(static_cast<uint32_t>(cur) - base32) > 0;
+                        if (added_after_base && cur != obs[ii])
                         {
                             obs[ii] = cur;
                             added_indices_.push_back(ii);
@@ -915,7 +919,9 @@
                 for (; i < n; ++i)
                 {
                     uint64_t cur = trk[i].added_version;
-                    if (cur > baseline_added_counter_ && cur != obs[i])
+                    const bool added_after_base =
+                        static_cast<int32_t>(static_cast<uint32_t>(cur) - base32) > 0;
+                    if (added_after_base && cur != obs[i])
                     {
                         obs[i] = cur;
                         added_indices_.push_back(i);
@@ -981,7 +987,7 @@
                         {
                             size_t idx = added_indices_[i];
                             uint32_t eid = indices[idx];
-                            uint32_t ver = base_.set_->sparse_version_at_public(eid);
+                            uint32_t ver = base_.set_->sparse_version_at(eid);
                             entity e(eid, ver);
                             func(e, data[idx]);
                         }

@@ -104,8 +104,8 @@
             pools_aligned_ = false;
 
             auto get_sparse_cached = [&](single_class_set* s, uint32_t idx) -> uint64_t {
-                uint32_t dense = s->sparse_dense_at_public(idx);
-                uint32_t ver = s->sparse_version_at_public(idx);
+                uint32_t dense = s->sparse_dense_at(idx);
+                uint32_t ver = s->sparse_version_at(idx);
                 return (static_cast<uint64_t>(dense) << 32) | ver;
             };
 
@@ -403,14 +403,14 @@
                             (PREFETCH_R(&std::get<Is>(data_ptrs)[i + pd]), ...);
                             primary->prefetch_sparse_entry(indices[i + pd]);
                             uint32_t eid = indices[i];
-                            uint32_t ver = primary->sparse_version_at_public(eid);
+                            uint32_t ver = primary->sparse_version_at(eid);
                             entity e(eid, ver);
                             func(e, std::get<Is>(data_ptrs)[i]...);
                         }
                         for (; i < n; ++i)
                         {
                             uint32_t eid = indices[i];
-                            uint32_t ver = primary->sparse_version_at_public(eid);
+                            uint32_t ver = primary->sparse_version_at(eid);
                             entity e(eid, ver);
                             func(e, std::get<Is>(data_ptrs)[i]...);
                         }
@@ -657,7 +657,7 @@
             for (size_t i = 0; i < indices.size(); ++i)
                 {
                     uint32_t eid = indices[i];
-                    uint32_t ver = primary->sparse_version_at_public(eid);
+                    uint32_t ver = primary->sparse_version_at(eid);
                     entity e(eid, ver);
                     if (contains_impl(e, std::index_sequence_for<First, Rest...>{})) return e;
                 }
@@ -673,7 +673,7 @@
                 {
                     size_t idx = i - 1;
                     uint32_t eid = indices[idx];
-                uint32_t ver = primary->sparse_version_at_public(eid);
+                uint32_t ver = primary->sparse_version_at(eid);
                 entity e(eid, ver);
                 if (contains_impl(e, std::index_sequence_for<First, Rest...>{})) return e;
             }
@@ -846,7 +846,7 @@
                     {
                         size_t primary_i = sorted_indices_[i];
                         uint32_t eid = indices[primary_i];
-                        uint32_t ver = primary->sparse_version_at_public(eid);
+                        uint32_t ver = primary->sparse_version_at(eid);
                         sorted_entities_.push_back(entity(eid, ver));
                         (std::get<Is>(sorted_pool_copies_).push_back(
                             (*std::get<Is>(original_pools))[primary_i]), ...);
@@ -863,7 +863,7 @@
                         if (((m[Is] != UINT32_MAX) && ...))
                         {
                             uint32_t eid = indices[primary_i];
-                            uint32_t ver = primary->sparse_version_at_public(eid);
+                            uint32_t ver = primary->sparse_version_at(eid);
                             sorted_entities_.push_back(entity(eid, ver));
                             (std::get<Is>(sorted_pool_copies_).push_back(
                                 (*std::get<Is>(original_pools))[m[Is]]), ...);
@@ -1140,7 +1140,7 @@
                         if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
                         {
                             uint32_t eid = indices[primary_i];
-                            uint32_t ver = primary->sparse_version_at_public(eid);
+                            uint32_t ver = primary->sparse_version_at(eid);
                             entity e(eid, ver);
                             func(e, (*std::get<Is>(pools))[primary_i]...);
                         }
@@ -1169,7 +1169,7 @@
                         if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
                         {
                             uint32_t eid = indices[primary_i];
-                            uint32_t ver = primary->sparse_version_at_public(eid);
+                            uint32_t ver = primary->sparse_version_at(eid);
                             entity e(eid, ver);
                             func(e, (*std::get<Is>(pools))[m[Is]]...);
                         }
@@ -1269,7 +1269,7 @@
                     if (i + 8 < n) [[likely]]
                         primary->prefetch_sparse_entry(indices[i + 8]);
                     uint32_t eid = indices[i];
-                    uint32_t ver = primary->sparse_version_at_public(eid);
+                    uint32_t ver = primary->sparse_version_at(eid);
                     entity e(eid, ver);
                     if (base_.contains_impl(e, std::index_sequence_for<First, Rest...>{}))
                         changed_indices_.push_back(i);
@@ -1299,7 +1299,7 @@
                         primary->prefetch_sparse_entry(indices[changed_indices_[i + 8]]);
                     size_t primary_i = changed_indices_[i];
                     uint32_t eid = indices[primary_i];
-                    uint32_t ver = primary->sparse_version_at_public(eid);
+                    uint32_t ver = primary->sparse_version_at(eid);
                     entity e(eid, ver);
 
                     auto comps = std::make_tuple(
@@ -1380,11 +1380,11 @@
                     if (i + 8 < n) [[likely]]
                         primary->prefetch_sparse_entry(indices[i + 8]);
                     uint32_t eid = indices[i];
-                    uint32_t ver = primary->sparse_version_at_public(eid);
+                    uint32_t ver = primary->sparse_version_at(eid);
                     entity e(eid, ver);
                     if (!base_.contains_impl(e, std::index_sequence_for<First, Rest...>{})) continue;
 
-                    uint32_t dense_idx = track_set->get_dense_at(e.parts_.index_);
+                    uint32_t dense_idx = track_set->sparse_dense_at(e.parts_.index_);
                     uint64_t cur = track_set->get_entity_change_version(dense_idx);
                     if (i >= last_observed_versions_.size() || cur != last_observed_versions_[i])
                     {
@@ -1414,7 +1414,7 @@
                         primary->prefetch_sparse_entry(indices[changed_indices_[i + 8]]);
                     size_t primary_i = changed_indices_[i];
                     uint32_t eid = indices[primary_i];
-                    uint32_t ver = primary->sparse_version_at_public(eid);
+                    uint32_t ver = primary->sparse_version_at(eid);
                     entity e(eid, ver);
                     auto comps = std::make_tuple(base_.template get_component<Is>(e, primary_i)...);
                     if ((... && (std::get<Is>(comps) != nullptr))) [[likely]]
@@ -1493,13 +1493,17 @@
                     if (i + 8 < n) [[likely]]
                         primary->prefetch_sparse_entry(indices[i + 8]);
                     uint32_t eid = indices[i];
-                    uint32_t ver = primary->sparse_version_at_public(eid);
+                    uint32_t ver = primary->sparse_version_at(eid);
                     entity e(eid, ver);
                     if (!base_.contains_impl(e, std::index_sequence_for<First, Rest...>{})) continue;
 
-                    uint32_t dense_idx = track_set->get_dense_at(e.parts_.index_);
+                    uint32_t dense_idx = track_set->sparse_dense_at(e.parts_.index_);
                     uint64_t cur = track_set->get_entity_added_version(dense_idx);
-                    if (cur > baseline_added_counter_ && (i >= last_observed_added_.size() || cur != last_observed_added_[i]))
+                    // 环回安全序数比较: added_version 为 32 位截断, 跨度 < 2^31 时判定正确
+                    const bool added_after_base =
+                        static_cast<int32_t>(static_cast<uint32_t>(cur)
+                            - static_cast<uint32_t>(baseline_added_counter_)) > 0;
+                    if (added_after_base && (i >= last_observed_added_.size() || cur != last_observed_added_[i]))
                     {
                         if (i < last_observed_added_.size())
                             last_observed_added_[i] = cur;
@@ -1527,7 +1531,7 @@
                         primary->prefetch_sparse_entry(indices[added_indices_[i + 8]]);
                     size_t primary_i = added_indices_[i];
                     uint32_t eid = indices[primary_i];
-                    uint32_t ver = primary->sparse_version_at_public(eid);
+                    uint32_t ver = primary->sparse_version_at(eid);
                     entity e(eid, ver);
                     auto comps = std::make_tuple(base_.template get_component<Is>(e, primary_i)...);
                     if ((... && (std::get<Is>(comps) != nullptr))) [[likely]]
@@ -1587,7 +1591,7 @@
             for (size_t i = 0; i < indices.size(); ++i)
             {
                 uint32_t eid = indices[i];
-                uint32_t ver = primary->sparse_version_at_public(eid);
+                uint32_t ver = primary->sparse_version_at(eid);
                 entity e(eid, ver);
                 if (contains_impl(e, std::index_sequence_for<First, Rest...>{}))
                 {

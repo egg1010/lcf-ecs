@@ -40,19 +40,20 @@ public:
         return ops_->size_fn(cont_);
     }
 
-    [[nodiscard]] void* at(size_t index) const noexcept
+    // 越界保护访问: index 越界或容器无效时返回 nullptr
+    [[nodiscard]] void* get(size_t index) const noexcept
     {
-        if (!valid() || !ops_->at_index_fn)
+        if (!valid() || !ops_->get_index_fn)
         {
             return nullptr;
         }
-        return ops_->at_index_fn(cont_, index);
+        return ops_->get_index_fn(cont_, index);
     }
 
     template<typename T>
-    [[nodiscard]] T* at_as(size_t index) const noexcept
+    [[nodiscard]] T* get_as(size_t index) const noexcept
     {
-        void* p = at(index);
+        void* p = get(index);
         return p ? static_cast<T*>(p) : nullptr;
     }
 
@@ -93,14 +94,14 @@ public:
     template<typename F>
     void for_each(F&& f) const noexcept
     {
-        if (!valid() || !ops_->at_index_fn)
+        if (!valid() || !ops_->get_index_fn)
         {
             return;
         }
         size_t n = size();
         for (size_t i = 0; i < n; ++i)
         {
-            void* elem = ops_->at_index_fn(cont_, i);
+            void* elem = ops_->get_index_fn(cont_, i);
             if (elem) f(elem, i);
         }
     }

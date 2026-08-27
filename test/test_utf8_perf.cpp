@@ -127,8 +127,8 @@ int main()
         (void)total;
     }
 
-    // === 2.2 at() O(1) 随机访问 ===
-    print_perf_sub("2.2 at() O(1) 随机访问");
+    // === 2.2 get() O(1) 随机访问 ===
+    print_perf_sub("2.2 get() O(1) 随机访问");
     {
         std::string s;
         for (int i = 0; i < 1024; ++i) { s += "你好"; }
@@ -139,10 +139,10 @@ int main()
         char32_t sink = 0;
         for (size_t i = 0; i < N; ++i)
         {
-            sink = u.at(i % u.size());
+            sink = u.get(i % u.size());
         }
         double ms = t.elapsed_milliseconds();
-        print_perf("utf8pp at() 随机访问", N, ms);
+        print_perf("utf8pp get() 随机访问", N, ms);
         (void)sink;
     }
 
@@ -678,10 +678,10 @@ int main()
         char32_t sink = 0;
         for (size_t i = 0; i < N; ++i)
         {
-            sink = v.at(i % v.size());
+            sink = v.get(i % v.size());
         }
         double ms = t.elapsed_milliseconds();
-        print_perf("at() 随机访问", N, ms);
+        print_perf("get() 随机访问", N, ms);
         lcf_sink(sink);
     }
 
@@ -1078,9 +1078,9 @@ int main()
 
         timer t1;
         char32_t sink1 = 0;
-        for (size_t i = 0; i < N; ++i) sink1 = u.at(i % u.size());
+        for (size_t i = 0; i < N; ++i) sink1 = u.get(i % u.size());
         double ms1 = t1.elapsed_milliseconds();
-        print_perf("utf8pp::at (码点 O(1))", N, ms1);
+        print_perf("utf8pp::get (码点 O(1))", N, ms1);
         lcf_sink(sink1);
 
         timer t2;

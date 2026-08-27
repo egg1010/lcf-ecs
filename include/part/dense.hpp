@@ -116,8 +116,9 @@ private:
 	static constexpr size_t alloc_align =
 		(alignof(T) > __STDCPP_DEFAULT_NEW_ALIGNMENT__) ? alignof(T) : __STDCPP_DEFAULT_NEW_ALIGNMENT__;
 
+	// 返回真实容量: 虚标容量而不分配会让追加解引用空指针
 	[[nodiscard]] static constexpr size_t round_up_to_default(size_t n) noexcept {
-		return n == 0 ? DEFAULT_CAPACITY : n;
+		return n;
 	}
 
 	[[nodiscard]] static constexpr size_t calculate_new_capacity(size_t current) noexcept {
@@ -824,7 +825,8 @@ public:
 		}
 	}
 
-	template <typename InputIt>
+	// 迭代器约束: 防止 pool(count, value) 的整型参数被误推导为迭代器
+	template <typename InputIt> requires std::input_iterator<InputIt>
 	dense(InputIt first, InputIt last) noexcept
 		: data_ptr_(nullptr)
 		, maximum_quantity_(0)
@@ -938,6 +940,7 @@ public:
 		return std::assume_aligned<alloc_align>(data_ptr_)[index];
 	}
 
+	// 越界保护访问: index 越界时改访问 error_index
 	[[nodiscard]] DENSE_ALWAYS_INLINE constexpr T& get(size_t index, size_t error_index) noexcept {
 		return data_ptr_[index < index_ ? index : error_index];
 	}

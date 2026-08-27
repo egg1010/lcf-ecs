@@ -123,7 +123,8 @@
     // 预解码缓存非空: 直接数组访问 (与 u32string 同速)
     // 均匀码点: O(1) 乘法 + 内联解码 (无 cp_offsets_ 查表)
     // 非均匀: ensure_cp_info + cp_offsets_[cp_idx] 查表
-    [[nodiscard]] FORCE_INLINE char32_t at(size_t cp_idx) const noexcept
+    // 越界保护访问: cp_idx 越界时返回 U+FFFD
+    [[nodiscard]] FORCE_INLINE char32_t get(size_t cp_idx) const noexcept
     {
         // 最快路径: 预解码缓存已构建
         if (cp_cache_) [[likely]]
@@ -152,7 +153,7 @@
         }
         // 慢路径: state==0, 首次访问
         ensure_cp_count();
-        return at(cp_idx);
+        return get(cp_idx);
     }
 
     // 无边界检查 (越界 UB, 与 std::string::operator[] 语义一致)
@@ -178,11 +179,11 @@
         return operator[](cp_idx);
     }
 
-    [[nodiscard]] char32_t front() const noexcept { return at(0); }
+    [[nodiscard]] char32_t front() const noexcept { return get(0); }
     [[nodiscard]] char32_t back() const noexcept
     {
         ensure_cp_count();
-        return at(cp_count_ > 0 ? cp_count_ - 1 : 0);
+        return get(cp_count_ > 0 ? cp_count_ - 1 : 0);
     }
 
     // === 字节指针访问 ===

@@ -21,9 +21,9 @@ inline T* get_component_ptr_from_set(single_class_set* set,
 {
     if (!set) return nullptr;
     // 合并 dense+version 查找: 单次 sparse_entry 加载,
-    //   替代原 sparse_dense_at_public + sparse_version_at_public 两次独立查找
+    //   替代原 sparse_dense_at + sparse_version_at 两次独立查找
     uint32_t entry_ver = 0;
-    const uint32_t dense = set->sparse_dense_version_public(idx, entry_ver);
+    const uint32_t dense = set->sparse_find(idx, entry_ver);
     if (dense == single_class_set::dense_invalid) return nullptr;
     if (entry_ver != ver) return nullptr;
     auto* pool = set->template get_typed_pool_ptr<T>();
@@ -240,7 +240,7 @@ inline entity runtime_view::get_first_entity() noexcept
         {
             uint32_t idx = indices[i];
             if (!query_.check_blocks(idx, mgr_)) continue;
-            uint32_t entry = primary->sparse_version_at_public(idx);
+            uint32_t entry = primary->sparse_version_at(idx);
             return entity(idx, entry);
         }
         return entity{};
@@ -301,7 +301,7 @@ inline void runtime_view::build_cached_hits() noexcept
             uint32_t idx = indices[i];
             if (query_.check_blocks(idx, mgr_))
             {
-                uint32_t ver = primary->sparse_version_at_public(idx);
+                uint32_t ver = primary->sparse_version_at(idx);
                 // i 是 primary set 的 dense 索引 (indices 是 primary 的 dense_ 数组)
                 cached_hits_.emplace_back(entity{idx, ver}, static_cast<uint32_t>(i));
             }
@@ -370,7 +370,7 @@ inline void runtime_view::for_each_hit_impl(Func&& func) noexcept
                 uint32_t idx = indices[i];
                 if (idx >= max_sparse) [[unlikely]] continue;
                 if (visited[idx]) continue;
-                uint32_t ver = set->sparse_version_at_public(idx);
+                uint32_t ver = set->sparse_version_at(idx);
                 bool excluded = false;
                 for (size_t j = 0; j < query_.exc_sets_.size(); ++j)
                 {
@@ -398,7 +398,7 @@ inline void runtime_view::for_each_hit_impl(Func&& func) noexcept
     {
         // 4x 循环展开, 最大化 ILP
         // check_blocks 是纯位运算, 4 次独立调用可并行发射
-        // sparse_version_at_public 是随机访问, 4 次并行发射隐藏 load latency
+        // sparse_version_at 是随机访问, 4 次并行发射隐藏 load latency
         // 软件预取: 提前加载下一批 sparse_entry, 隐藏 sparse_table 随机访问延迟
         const size_t n4 = n & ~size_t{3};
         size_t i = 0;
@@ -421,22 +421,22 @@ inline void runtime_view::for_each_hit_impl(Func&& func) noexcept
             bool hit3 = query_.check_blocks(idx3, mgr_);
             if (hit0)
             {
-                entity e(idx0, primary->sparse_version_at_public(idx0));
+                entity e(idx0, primary->sparse_version_at(idx0));
                 func(e, i);
             }
             if (hit1)
             {
-                entity e(idx1, primary->sparse_version_at_public(idx1));
+                entity e(idx1, primary->sparse_version_at(idx1));
                 func(e, i + 1);
             }
             if (hit2)
             {
-                entity e(idx2, primary->sparse_version_at_public(idx2));
+                entity e(idx2, primary->sparse_version_at(idx2));
                 func(e, i + 2);
             }
             if (hit3)
             {
-                entity e(idx3, primary->sparse_version_at_public(idx3));
+                entity e(idx3, primary->sparse_version_at(idx3));
                 func(e, i + 3);
             }
         }
@@ -444,7 +444,7 @@ inline void runtime_view::for_each_hit_impl(Func&& func) noexcept
         {
             uint32_t idx = indices[i];
             if (!query_.check_blocks(idx, mgr_)) continue;
-            uint32_t entry = primary->sparse_version_at_public(idx);
+            uint32_t entry = primary->sparse_version_at(idx);
             entity e(idx, entry);
             func(e, i);
         }
@@ -478,7 +478,7 @@ inline void runtime_view::for_each_hit_range(size_t start, size_t end, Func&& fu
         {
             uint32_t idx = indices[i];
             if (!query_.check_blocks(idx, mgr_)) continue;
-            uint32_t entry = primary->sparse_version_at_public(idx);
+            uint32_t entry = primary->sparse_version_at(idx);
             entity e(idx, entry);
             func(e);
         }
@@ -692,8 +692,8 @@ inline void runtime_view::sort_by_component(Compare&& cmp) noexcept
         for_each_hit_impl([&](entity e, size_t) {
             uint32_t idx = e.parts_.index_;
             if (idx >= sort_sparse_sz) return;
-            uint32_t dense = sort_set->sparse_dense_at_public(idx);
-            uint32_t ver = sort_set->sparse_version_at_public(idx);
+            uint32_t dense = sort_set->sparse_dense_at(idx);
+            uint32_t ver = sort_set->sparse_version_at(idx);
             if (dense == 0xFFFFFFFFu || ver != e.parts_.version_) return;
             if (!sort_pool || dense >= sort_pool->size()) return;
             sorted_entities_.push_back(e);
@@ -740,7 +740,7 @@ inline size_t runtime_view::count() noexcept
 inline void runtime_view::iterator::advance_to_valid() noexcept
 {
     // cached_hits_ 快速路径: 已预过滤, 直接索引 O(1)
-    //   跳过 check_blocks + sparse_version_at_public 的逐实体计算
+    //   跳过 check_blocks + sparse_version_at 的逐实体计算
     if (hits_) [[likely]]
     {
         if (index_ < hits_size_) [[likely]]
@@ -765,13 +765,13 @@ inline void runtime_view::iterator::advance_to_valid() noexcept
     {
         while (index_ < n)
         {
-            // 预取后续实体的 sparse_entry, 隐藏 sparse_table_ 随机访问延迟
+            // 预取后续实体的 sparse_entry, 隐藏稀疏数组随机访问延迟
             if (index_ + 8 < n) [[likely]]
                 primary->prefetch_sparse_entry(indices[index_ + 8]);
             uint32_t idx = indices[index_];
             if (query_->check_blocks(idx, mgr_))
             {
-                uint32_t ver = primary->sparse_version_at_public(idx);
+                uint32_t ver = primary->sparse_version_at(idx);
                 current_ = entity(idx, ver);
                 return;
             }

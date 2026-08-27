@@ -341,8 +341,8 @@ size_t n = utf8_to_codepoints("你好", 6, cps, 16);  // n = 2
 utf8pp s("Hello你好");     // 从 UTF-8 C 字符串构造
 s.size();                  // 7 (码点数)
 s.byte_size();             // 11 (字节数: 5 + 6)
-s.at(0);                   // 'H'
-s.at(5);                   // '你' (U+4F60)
+s.get(0);                  // 'H'
+s.get(5);                  // '你' (U+4F60)
 
 // 码点级迭代
 for (char32_t cp : s) { /* 遍历每个码点 */ }
@@ -703,8 +703,8 @@ v1.empty();                      // false
 
 // === 访问 ===
 v1.byte_at(0);                   // 'H'
-v1.at(0);                        // 'H'
-v1.at(5);                        // '你' (U+4F60)
+v1.get(0);                       // 'H'
+v1.get(5);                       // '你' (U+4F60)
 v1.front();                      // 'H'
 v1.back();                       // '好'
 

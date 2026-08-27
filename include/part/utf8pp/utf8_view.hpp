@@ -193,7 +193,8 @@ public:
     [[nodiscard]] constexpr operator std::string_view() const noexcept { return byte_view(); }
 
     // === 码点访问 (O(n), 需要遍历) ===
-    [[nodiscard]] char32_t at(size_t cp_idx) const noexcept
+    // 越界保护访问: cp_idx 越界时返回 U+FFFD
+    [[nodiscard]] char32_t get(size_t cp_idx) const noexcept
     {
         const uint8_t* p = reinterpret_cast<const uint8_t*>(data_);
         const uint8_t* end = p + byte_size_;
@@ -205,8 +206,8 @@ public:
         return static_cast<char32_t>(cp);
     }
 
-    [[nodiscard]] char32_t operator[](size_t cp_idx) const noexcept { return at(cp_idx); }
-    [[nodiscard]] char32_t front() const noexcept { return at(0); }
+    [[nodiscard]] char32_t operator[](size_t cp_idx) const noexcept { return get(cp_idx); }
+    [[nodiscard]] char32_t front() const noexcept { return get(0); }
     [[nodiscard]] char32_t back() const noexcept
     {
         if (byte_size_ == 0) return U'\uFFFD';
@@ -508,7 +509,7 @@ public:
         while (i > 0)
         {
             --i;
-            char32_t cur = at(i);
+            char32_t cur = get(i);
             for (char32_t c : str) if (c == cur) return i;
         }
         return npos;
@@ -547,7 +548,7 @@ public:
         while (i > 0)
         {
             --i;
-            if (at(i) != cp) return i;
+            if (get(i) != cp) return i;
         }
         return npos;
     }
@@ -560,7 +561,7 @@ public:
         while (i > 0)
         {
             --i;
-            char32_t cur = at(i);
+            char32_t cur = get(i);
             bool found = false;
             for (char32_t c : str) if (c == cur) { found = true; break; }
             if (!found) return i;

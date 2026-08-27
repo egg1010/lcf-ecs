@@ -1,4 +1,4 @@
-// test_perf.cpp - lcf-ecs 性能测试 (Performance Benchmark)
+﻿// test_perf.cpp - lcf-ecs 性能测试 (Performance Benchmark)
 // 支持: MinGW GCC / Linux GCC / Clang / MSVC, 启用 LTO
 //   - MinGW GCC: 不启用 AVX2 (vmovdqa 32 字节栈对齐 vs MinGW ABI 16 字节对齐
 //     → 随机崩溃 0xC0000005). MinGW ABI 遵循 Windows x64 ABI 规范, 仅保证 16 字节
@@ -1481,23 +1481,23 @@ int main()
         t.reset();
         for (size_t i = 0; i < scs_count; ++i)
         {
-            lcf_sink(scs.get_dense_at(static_cast<uint32_t>(i)));
+            lcf_sink(scs.sparse_dense_at(static_cast<uint32_t>(i)));
         }
         print_perf("get_dense_at", scs_count, t.elapsed_milliseconds());
 
         t.reset();
         for (size_t i = 0; i < scs_count; ++i)
         {
-            lcf_sink(scs.sparse_dense_at_public(static_cast<uint32_t>(i)));
+            lcf_sink(scs.sparse_dense_at(static_cast<uint32_t>(i)));
         }
-        print_perf("sparse_dense_at_public", scs_count, t.elapsed_milliseconds());
+        print_perf("sparse_dense_at", scs_count, t.elapsed_milliseconds());
 
         t.reset();
         for (size_t i = 0; i < scs_count; ++i)
         {
-            lcf_sink(scs.sparse_version_at_public(static_cast<uint32_t>(i)));
+            lcf_sink(scs.sparse_version_at(static_cast<uint32_t>(i)));
         }
-        print_perf("sparse_version_at_public", scs_count, t.elapsed_milliseconds());
+        print_perf("sparse_version_at", scs_count, t.elapsed_milliseconds());
 
         t.reset();
         for (size_t i = 0; i < scs_count; ++i)
@@ -1524,9 +1524,9 @@ int main()
         t.reset();
         for (size_t i = 0; i < scs_count; ++i)
         {
-            scs.prefetch_ptr(ents[i]);
+            scs.prefetch_sparse_entry(ents[i].parts_.index_);
         }
-        print_perf("prefetch_ptr", scs_count, t.elapsed_milliseconds());
+        print_perf("prefetch_sparse_entry", scs_count, t.elapsed_milliseconds());
 
         t.reset();
         for (size_t i = 0; i < scs_count; ++i)
@@ -1578,7 +1578,7 @@ int main()
         t.reset();
         for (int i = 0; i < 1000000; ++i)
         {
-            lcf_sink_all(scs.size(), scs.empty(), scs.get_type_id());
+            lcf_sink_all(scs.size(), scs.empty(), scs.get_type_id_value());
         }
         print_perf("size/empty/type_id", 1000000 * 3, t.elapsed_milliseconds());
 

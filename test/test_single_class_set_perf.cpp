@@ -369,11 +369,11 @@ static void test_query(size_t n) noexcept
             for (size_t i = 0; i < n; ++i)
             {
                 size_t oi = opaque(i);
-                T* p = set.template get_ptr_fast_inline<T>(seq_ents[oi]);
+                T* p = set.template get_ptr_fast<T>(seq_ents[oi]);
                 touch_ptr(p);
             }
         });
-        print_ns("get_ptr_fast_inline (sequential)", n, ns / static_cast<double>(n));
+        print_ns("get_ptr_fast (sequential)", n, ns / static_cast<double>(n));
     }
 
     {
@@ -430,11 +430,11 @@ static void test_query(size_t n) noexcept
             volatile uint32_t sink = 0;
             for (size_t i = 0; i < n; ++i)
             {
-                sink = set.sparse_dense_at_public(opaque(static_cast<uint32_t>(i)));
+                sink = set.sparse_dense_at(opaque(static_cast<uint32_t>(i)));
             }
             (void)sink;
         });
-        print_ns("sparse_dense_at_public", n, ns / static_cast<double>(n));
+        print_ns("sparse_dense_at", n, ns / static_cast<double>(n));
     }
 
     {
@@ -442,11 +442,11 @@ static void test_query(size_t n) noexcept
             volatile uint32_t sink = 0;
             for (size_t i = 0; i < n; ++i)
             {
-                sink = set.sparse_version_at_public(opaque(static_cast<uint32_t>(i)));
+                sink = set.sparse_version_at(opaque(static_cast<uint32_t>(i)));
             }
             (void)sink;
         });
-        print_ns("sparse_version_at_public", n, ns / static_cast<double>(n));
+        print_ns("sparse_version_at", n, ns / static_cast<double>(n));
     }
 
     {
@@ -568,7 +568,7 @@ static void test_iterate(size_t n) noexcept
             volatile uint32_t sink = 0;
             for (uint32_t i = 0; i < n; ++i)
             {
-                sink = set.sparse_dense_at_public(i);
+                sink = set.sparse_dense_at(i);
             }
             (void)sink;
         });
@@ -583,7 +583,7 @@ static void test_iterate(size_t n) noexcept
             volatile uint32_t sink = 0;
             for (size_t i = 0; i < n; ++i)
             {
-                sink = set.sparse_dense_at_public(rnd_idx[i]);
+                sink = set.sparse_dense_at(rnd_idx[i]);
             }
             (void)sink;
         });
@@ -613,11 +613,11 @@ static void test_prefetch(size_t n) noexcept
         double ns = best_ns(REPEAT, [&]() {
             for (size_t i = 0; i < n; ++i)
             {
-                set.prefetch_ptr(rnd_ents[i]);
+                set.prefetch_sparse_entry(rnd_ents[i].parts_.index_);
             }
             compiler_barrier();
         });
-        print_ns("prefetch_ptr (single)", n, ns / static_cast<double>(n));
+        print_ns("prefetch_sparse_entry (single)", n, ns / static_cast<double>(n));
     }
 
     {
@@ -632,11 +632,11 @@ static void test_prefetch(size_t n) noexcept
         double ns = best_ns(REPEAT, [&]() {
             for (size_t i = 0; i < n; ++i)
             {
-                set.prefetch_component(static_cast<uint32_t>(i));
+                set.prefetch_sparse_entry(static_cast<uint32_t>(i));
             }
             compiler_barrier();
         });
-        print_ns("prefetch_component", n, ns / static_cast<double>(n));
+        print_ns("prefetch_sparse_entry", n, ns / static_cast<double>(n));
     }
 
     {
@@ -676,7 +676,7 @@ static void test_prefetch(size_t n) noexcept
             for (size_t i = 0; i < n; ++i)
             {
                 if (i + PF_DIST < n)
-                    set.prefetch_ptr(rnd_ents[i + PF_DIST]);
+                    set.prefetch_sparse_entry(rnd_ents[i + PF_DIST].parts_.index_);
                 T* p = set.template get_ptr_fast<T>(rnd_ents[i]);
                 touch_ptr(p);
             }
@@ -745,7 +745,7 @@ static void test_hot_set(size_t n) noexcept
         double ns = best_ns(REPEAT, [&]() {
             for (size_t i = 0; i < n; ++i)
             {
-                T* p = set.template get_ptr_fast_inline<T>(entity(static_cast<uint32_t>(opaque(i)), 1));
+                T* p = set.template get_ptr_fast<T>(entity(static_cast<uint32_t>(opaque(i)), 1));
                 touch_ptr(p);
             }
         });
@@ -759,7 +759,7 @@ static void test_hot_set(size_t n) noexcept
         for (int r = 0; r < 3; ++r)
             for (size_t i = 0; i < HOT; ++i)
             {
-                T* p = set.template get_ptr_fast_inline<T>(entity(static_cast<uint32_t>(i), 1));
+                T* p = set.template get_ptr_fast<T>(entity(static_cast<uint32_t>(i), 1));
                 touch_ptr(p);
             }
         size_t ops = 1000000;
@@ -767,7 +767,7 @@ static void test_hot_set(size_t n) noexcept
             for (size_t i = 0; i < ops; ++i)
             {
                 size_t idx = opaque(i) % HOT;
-                T* p = set.template get_ptr_fast_inline<T>(entity(static_cast<uint32_t>(idx), 1));
+                T* p = set.template get_ptr_fast<T>(entity(static_cast<uint32_t>(idx), 1));
                 touch_ptr(p);
             }
         });
@@ -784,7 +784,7 @@ static void test_hot_set(size_t n) noexcept
             for (int r = 0; r < 3; ++r)
                 for (size_t i = 0; i < CONFLICT; ++i)
                 {
-                    T* p = set.template get_ptr_fast_inline<T>(entity(ents[i], 1));
+                    T* p = set.template get_ptr_fast<T>(entity(ents[i], 1));
                     touch_ptr(p);
                 }
             size_t ops = 1000000;
@@ -792,7 +792,7 @@ static void test_hot_set(size_t n) noexcept
                 for (size_t i = 0; i < ops; ++i)
                 {
                     size_t idx = opaque(i) % CONFLICT;
-                    T* p = set.template get_ptr_fast_inline<T>(entity(ents[idx], 1));
+                    T* p = set.template get_ptr_fast<T>(entity(ents[idx], 1));
                     touch_ptr(p);
                 }
             });
@@ -813,13 +813,13 @@ static void test_hot_set(size_t n) noexcept
             for (int r = 0; r < 2; ++r)
                 for (size_t i = 0; i < ws; ++i)
                 {
-                    T* p = set.template get_ptr_fast_inline<T>(entity(static_cast<uint32_t>(i), 1));
+                    T* p = set.template get_ptr_fast<T>(entity(static_cast<uint32_t>(i), 1));
                     touch_ptr(p);
                 }
             auto s = benchmark_precise_cycles(1000, 100, [&]() {
                 for (size_t i = 0; i < ws; ++i)
                 {
-                    T* p = set.template get_ptr_fast_inline<T>(entity(static_cast<uint32_t>(opaque(i)), 1));
+                    T* p = set.template get_ptr_fast<T>(entity(static_cast<uint32_t>(opaque(i)), 1));
                     touch_ptr(p);
                 }
             });
@@ -917,7 +917,7 @@ static void test_cache_hierarchy(size_t n) noexcept
         for (size_t i = 0; i < n; ++i) rnd_idx[i] = static_cast<uint32_t>(i);
         std::shuffle(rnd_idx.begin(), rnd_idx.end(), gen);
 
-        // 直接周期测量: 随机查 sparse_dense_at_public, 取 3 次最小值
+        // 直接周期测量: 随机查 sparse_dense_at, 取 3 次最小值
         double cpu_ghz = cpu_ghz_cached();
         uint64_t total_cyc = 0;
         constexpr int TRIALS = 3;
@@ -926,20 +926,20 @@ static void test_cache_hierarchy(size_t n) noexcept
             // 预热 (让 sparse_table 部分进入缓存)
             volatile uint32_t warmup = 0;
             for (size_t i = 0; i < std::min(n, size_t{1024}); ++i)
-                warmup = set.sparse_dense_at_public(rnd_idx[i]);
+                warmup = set.sparse_dense_at(rnd_idx[i]);
             (void)warmup;
 
             uint64_t c0 = rdtscp();
             volatile uint32_t sink = 0;
             for (size_t i = 0; i < n; ++i)
-                sink = set.sparse_dense_at_public(rnd_idx[i]);
+                sink = set.sparse_dense_at(rnd_idx[i]);
             (void)sink;
             uint64_t c1 = rdtscp();
             if (trial == 0 || (c1 - c0) < total_cyc) total_cyc = c1 - c0;
         }
         double avg_cyc = static_cast<double>(total_cyc) / static_cast<double>(n);
         double avg_ns = (cpu_ghz > 0) ? avg_cyc / cpu_ghz : 0;
-        std::cout << "    sparse_dense_at_public 随机访问 (" << n << " 次, 取 " << TRIALS << " 次最小):\n";
+        std::cout << "    sparse_dense_at 随机访问 (" << n << " 次, 取 " << TRIALS << " 次最小):\n";
         std::cout << "      avg=" << std::fixed << std::setprecision(2) << avg_cyc << " cyc"
                   << " (" << std::setprecision(3) << avg_ns << " ns/call)\n";
     }
@@ -1089,20 +1089,20 @@ static void test_stats_distribution(size_t n) noexcept
     {
         size_t idx = 0;
         auto s = benchmark_precise_cycles(10000, 1000, [&]() {
-            T* p = set.template get_ptr_fast_inline<T>(entity(static_cast<uint32_t>(idx), 1));
+            T* p = set.template get_ptr_fast<T>(entity(static_cast<uint32_t>(idx), 1));
             touch_ptr(p);
             idx = (idx + 1) % n;
         });
-        print_dist("get_ptr_fast_inline (seq)", s, "cyc");
+        print_dist("get_ptr_fast (seq)", s, "cyc");
     }
 
     {
         std::uniform_int_distribution<uint32_t> d(0, static_cast<uint32_t>(n - 1));
         auto s = benchmark_precise_cycles(10000, 1000, [&]() {
-            T* p = set.template get_ptr_fast_inline<T>(entity(d(gen), 1));
+            T* p = set.template get_ptr_fast<T>(entity(d(gen), 1));
             touch_ptr(p);
         });
-        print_dist("get_ptr_fast_inline (rnd)", s, "cyc");
+        print_dist("get_ptr_fast (rnd)", s, "cyc");
     }
 
     {

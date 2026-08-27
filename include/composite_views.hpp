@@ -1,4 +1,4 @@
-// composite_views.hpp —— manager 类内片段,由 component.hpp 在 manager 类内部 include
+﻿// composite_views.hpp —— manager 类内片段,由 component.hpp 在 manager 类内部 include
 // 不要单独 include 此文件
     template <typename T, typename... ExcludeTypes>
     class single_view_without
@@ -28,7 +28,7 @@
             {
                 for (auto* set : exclude_sets_)
                 {
-                    if (set && set->sparse_dense_at_public(idx) != single_class_set::dense_invalid)
+                    if (set && set->sparse_dense_at(idx) != single_class_set::dense_invalid)
                         return true;
                 }
                 return false;
@@ -114,7 +114,7 @@
                         PREFETCH_R(&(*pool)[i + 32]);
                     }
                     uint32_t idx = indices[i];
-                    uint32_t ver = set_->sparse_version_at_public(idx);
+                    uint32_t ver = set_->sparse_version_at(idx);
                     if (is_excluded(idx)) [[unlikely]] continue;
                     entity e(idx, ver);
                     func(e, (*pool)[i]);
@@ -185,7 +185,7 @@
                     PREFETCH_R(&(*pool)[i + 32]);
                 }
                 uint32_t idx = indices[i];
-                uint32_t ver = set_->sparse_version_at_public(idx);
+                uint32_t ver = set_->sparse_version_at(idx);
                 entity e(idx, ver);
                 auto& comp = (*pool)[i];
                 if constexpr (sizeof...(GetTypes) == 0)
@@ -264,12 +264,12 @@
                     for (size_t i = 0; i < idx_a.size(); ++i)
                     {
                         uint32_t eid = idx_a[i];
-                        uint32_t a_ver = set_a_->sparse_version_at_public(eid);
+                        uint32_t a_ver = set_a_->sparse_version_at(eid);
                         entity e(eid, a_ver);
                         B* b = nullptr;
                         if (pool_b && eid < b_sparse_size)
                         {
-                            uint32_t bd = set_b_->sparse_dense_at_public(eid);
+                            uint32_t bd = set_b_->sparse_dense_at(eid);
                             if (bd != UINT32_MAX) b = &(*pool_b)[bd];
                         }
                         if constexpr (std::is_invocable_v<Func, entity, A*, B*>)
@@ -295,10 +295,10 @@
                         uint32_t eid = idx_b[i];
                         if (set_a_ && eid < a_sparse_size)
                         {
-                            uint32_t ad = set_a_->sparse_dense_at_public(eid);
+                            uint32_t ad = set_a_->sparse_dense_at(eid);
                             if (ad != UINT32_MAX) continue;
                         }
-                        uint32_t b_ver = set_b_->sparse_version_at_public(eid);
+                        uint32_t b_ver = set_b_->sparse_version_at(eid);
                         entity e(eid, b_ver);
                         if constexpr (std::is_invocable_v<Func, entity, A*, B*>)
                         {
@@ -447,9 +447,9 @@
             auto* pool = set->template get_typed_pool_ptr<T>();
             if (!pool) return false;
             if (e.parts_.index_ >= set->get_sparse_size()) return false;
-            const uint32_t dense_idx = set->sparse_dense_at_public(e.parts_.index_);
+            const uint32_t dense_idx = set->sparse_dense_at(e.parts_.index_);
             if (dense_idx == single_class_set::dense_invalid) return false;
-            if (set->sparse_version_at_public(e.parts_.index_) != e.parts_.version_) return false;
+            if (set->sparse_version_at(e.parts_.index_) != e.parts_.version_) return false;
             for (size_t i = 0; i < filtered_.size(); ++i)
             {
                 if (filtered_[i] == dense_idx) return pred_((*pool)[dense_idx]);
@@ -513,7 +513,7 @@
                 if constexpr (std::is_invocable_v<Func, entity, T&>)
                 {
                     uint32_t idx = indices[dense_index];
-                    uint32_t ver = set->sparse_version_at_public(idx);
+                    uint32_t ver = set->sparse_version_at(idx);
                     entity e(idx, ver);
                     func(e, (*pool)[dense_index]);
                 }
@@ -551,7 +551,7 @@
                 if (!pred_((*pool_a)[i])) continue;
                 uint32_t eid = indices[i];
                 if (eid >= b_sparse_size) continue;
-                uint32_t b_dense = set_b->sparse_dense_at_public(eid);
+                uint32_t b_dense = set_b->sparse_dense_at(eid);
                 if (b_dense != UINT32_MAX)
                 {
                     filtered_.push_back((static_cast<uint64_t>(i) << 32) | b_dense);
@@ -579,9 +579,9 @@
             auto* pool_a = set_a->template get_typed_pool_ptr<T>();
             if (!pool_a) return false;
             if (e.parts_.index_ >= set_a->get_sparse_size()) return false;
-            const uint32_t dense_idx = set_a->sparse_dense_at_public(e.parts_.index_);
+            const uint32_t dense_idx = set_a->sparse_dense_at(e.parts_.index_);
             if (dense_idx == single_class_set::dense_invalid) return false;
-            if (set_a->sparse_version_at_public(e.parts_.index_) != e.parts_.version_) return false;
+            if (set_a->sparse_version_at(e.parts_.index_) != e.parts_.version_) return false;
             if (!pred_((*pool_a)[dense_idx])) return false;
             if (!set_b->template get_ptr_fast<B>(e)) return false;
             for (size_t i = 0; i < filtered_.size(); ++i)
@@ -642,7 +642,7 @@
                 if constexpr (std::is_invocable_v<Func, entity, T&, B&>)
                 {
                     uint32_t idx = indices[a_dense];
-                    uint32_t ver = set_a->sparse_version_at_public(idx);
+                    uint32_t ver = set_a->sparse_version_at(idx);
                     entity e(idx, ver);
                     func(e, (*pool_a)[a_dense], (*pool_b)[b_dense]);
                 }
@@ -681,7 +681,7 @@
                 uint64_t b_dense = UINT32_MAX;
                 if (set_b && eid < b_sparse_size)
                 {
-                    uint32_t bd = set_b->sparse_dense_at_public(eid);
+                    uint32_t bd = set_b->sparse_dense_at(eid);
                     if (bd != UINT32_MAX) b_dense = bd;
                 }
                 filtered_.push_back((static_cast<uint64_t>(i) << 32) | b_dense);
@@ -727,9 +727,9 @@
             auto* pool_a = set_a->template get_typed_pool_ptr<T>();
             if (!pool_a) return false;
             if (e.parts_.index_ >= set_a->get_sparse_size()) return false;
-            const uint32_t dense_idx = set_a->sparse_dense_at_public(e.parts_.index_);
+            const uint32_t dense_idx = set_a->sparse_dense_at(e.parts_.index_);
             if (dense_idx == single_class_set::dense_invalid) return false;
-            if (set_a->sparse_version_at_public(e.parts_.index_) != e.parts_.version_) return false;
+            if (set_a->sparse_version_at(e.parts_.index_) != e.parts_.version_) return false;
             if (pred_((*pool_a)[dense_idx]))
             {
                 for (size_t i = 0; i < filtered_.size(); ++i)

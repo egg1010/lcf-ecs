@@ -112,14 +112,14 @@ window.DOCS_DATA['single_class_set'] = {
   order: 3,
   content: `## 3. ecs::single_class_set — 单组件集合
 
-管理单一类型组件的存储。使用 \`class_pool<sparse_entry>\` 稀疏表，替代传统的连续稀疏数组。
+管理单一类型组件的存储。稀疏表为扁平 \`sparse_entry\` 数组（8B/条目：dense 索引 + version），\`dense_invalid\` 兼作墓碑标记，单次内存访问完成判活与取值。
 
 ### sparse 访问
 
 | 接口 | 说明 |
 |------|------|
-| \`sparse_dense_at_public(uint32_t idx)\` | 获取稀疏条目的 dense 索引，不存在返回 \`dense_invalid\` (0xFFFFFFFF) |
-| \`sparse_version_at_public(uint32_t idx)\` | 获取稀疏条目的 version，不存在返回 0 |
+| \`sparse_dense_at(uint32_t idx)\` | 获取稀疏条目的 dense 索引，不存在返回 \`dense_invalid\` (0xFFFFFFFF) |
+| \`sparse_version_at(uint32_t idx)\` | 获取稀疏条目的 version，不存在返回 0 |
 | \`dense_invalid\` | 无效 dense 索引常量（0xFFFFFFFF） |
 | \`get_sparse_size()\` | 稀疏表已使用的最大索引+1 |
 | \`clear_hot_set()\` | 清空热集缓存（调试用，正常使用无需手动调用） |
@@ -152,15 +152,12 @@ window.DOCS_DATA['single_class_set'] = {
 |------|------|
 | \`get_ptr<T>(entity)\` | 获取组件指针（带有效性、type_id、版本号检查） |
 | \`get_ptr<T>(entity) const\` | const 版本 |
-| \`get_ptr_fast<T>(entity)\` | 快速获取（跳过 type_id 检查） |
+| \`get_ptr_fast<T>(entity)\` | 快速获取（跳过 type_id 检查，经缓存指针寻址） |
 | \`get_ptr_fast<T>(entity) const\` | const 版本 |
 | \`get_ptr_raw<T>(entity)\` | 零检查获取（调用者保证 entity 有效） |
 | \`get_ptr_raw<T>(entity) const\` | const 版本 |
 | \`get_version(uint32_t entity_index)\` | 获取实体版本号 |
 | \`get_version_unchecked(uint32_t entity_index)\` | 无检查获取版本号 |
-| \`get_dense_at(uint32_t entity_index)\` | 通过 entity index 获取 dense 索引 |
-| \`prefetch_component(uint32_t entity_index)\` | 预取 sparse 条目（按 entity index） |
-| \`prefetch_ptr(entity)\` | 预取 sparse 条目（按 entity） |
 | \`prefetch_ptr_batch(const entity*, size_t)\` | 批量预取 sparse 条目 |
 | \`prefetch_ptr_data<T>(entity)\` | 预取组件数据（按 entity，需先加载 sparse 条目） |
 | \`get_ptr_batch(const entity*, T**, size_t)\` | 批量查询组件指针（管线化预取，大规模 sparse 表自动走排序预取路径） |
@@ -170,17 +167,22 @@ window.DOCS_DATA['single_class_set'] = {
 | 接口 | 说明 |
 |------|------|
 | \`hard_remove(entity)\` | 硬删除（交换删除，O(1)） |
-| \`soft_remove(entity)\` | 软删除（仅清除 sparse 条目，不移动组件。副作用：组件池和 dense 数组留下"空洞"，\`size()\` 仍包含已删除组件，遍历时通过版本号跳过。若需紧凑布局，使用 \`hard_remove\`） |
+| \`soft_remove(entity)\` | 软删除（仅清除 sparse 条目，不移动组件；死槽登记后可被 \`add\` 复用；墓碑数超阈值时自动回收） |
+| \`compact()\` | 密度回收：活条目前压、墓碑物理移除并补发 \`on_remove\` 回调（迭代期禁止调用） |
 | \`clear()\` | 清空所有数据 |
+
+> \`soft_remove\` 墓碑的物理移除延迟到 \`compact\`（手动或阈值自动触发，阈值为 \`max(n/4, 64)\`）；\`remove→add\` 循环通过死槽复用保持物理槽位有界。
 
 ### 容量与查询
 
 | 接口 | 说明 |
 |------|------|
-| \`size()\` | 组件数量 |
+| \`size()\` | 物理槽位数（含软删除墓碑） |
+| \`live_count()\` | 活条目数（O(n) 扫描） |
+| \`tombstone_count()\` | 软删除墓碑数（O(n) 扫描） |
 | \`empty()\` | 是否为空 |
 | \`increase_capacity(capacity)\` | 预留容量 |
-| \`get_type_id()\` | 获取类型 ID 引用 |
+| \`get_type_id_value()\` | 获取类型 ID 值 |
 | \`get_typed_pool_ptr<T>()\` | 获取类型化组件池指针（带 type_id 检查） |
 | \`get_typed_pool_ptr<T>() const\` | const 版本 |
 | \`add/remove\` 系列接口返回值 | 返回 \`operating_message\`（值类型） |
@@ -199,8 +201,9 @@ set.add(e1, Position{10, 20});
 
 Position* p = set.get_ptr<Position>(e1);
 Position* pf = set.get_ptr_fast<Position>(e1);  // 快速
-set.soft_remove(e1);  // 软删除（O(1)，但留下空洞，size() 不变）
-set.hard_remove(e1);  // 硬删除（swap-pop，size() 减少）
+set.soft_remove(e1);  // 软删除（O(1)，墓碑延迟回收，add 自动复用死槽）
+set.compact();        // 密度回收（活条目前压，墓碑物理移除；超阈值时 soft_remove 自动触发）
+set.hard_remove(e1);  // 硬删除（swap-pop，立即移除）
 
 // 批量添加
 class_pool<entity> ents = {entity(2,1), entity(3,1)};
@@ -212,11 +215,12 @@ set.add_batch(ents, comps);
 
 | 错误做法 | 问题 | 正确做法 |
 |---------|------|---------|
-| \`soft_remove\` 后依赖 \`size()\` 和连续遍历 | 留下空洞，\`size()\` 不减少，dense 数组不连续 | 若需紧凑布局，使用 \`hard_remove\` |
-| 在需要频繁增删时只用 \`hard_remove\` | 每次交换删除 O(1) 但破坏顺序 | 可接受顺序变化时用 \`hard_remove\`，需保持顺序时用 \`soft_remove\` 后定期重建 |
+| \`soft_remove\` 后依赖 \`size()\` 统计存活数 | \`size()\` 为物理槽位数（含墓碑） | 用 \`live_count()\` 获取存活数，\`tombstone_count()\` 获取墓碑数 |
+| 迭代中调用 \`compact()\` | 会破坏迭代器位置 | 手动 \`compact()\` 在迭代外调用；自动回收在迭代期自动延后 |
+| 在需要频繁增删时只用 \`hard_remove\` | 每次交换删除 O(1) 但破坏顺序 | 可接受顺序变化时用 \`hard_remove\`，需保持顺序时用 \`soft_remove\`（自动回收保持密度） |
 | 拷贝 \`single_class_set\` | 禁止拷贝 | 使用移动语义 |
 | 批量增删后手动调用 \`clear_hot_set\` | 不必要，pool_version 自动递增已使缓存失效 | 正常使用无需手动调用；调试场景可用 \`clear_hot_set()\` 强制清空 |
-| 依赖 \`sparse_dense_at_public\` 返回值判断条目是否存在 | 需检查返回值是否等于 \`dense_invalid\` | 检查 \`sparse_dense_at_public(idx) != dense_invalid\`，或使用 \`get_ptr\` 系列接口 |
+| 依赖 \`sparse_dense_at\` 返回值判断条目是否存在 | 需检查返回值是否等于 \`dense_invalid\` | 检查 \`sparse_dense_at(idx) != dense_invalid\`，或使用 \`get_ptr\` 系列接口 |
 
 ---
 `
@@ -329,10 +333,12 @@ ECS 核心管理类，管理实体和所有组件集合。
 
 | 接口 | 说明 |
 |------|------|
-| \`sparse_dense_at_public(uint32_t idx) const\` | 读取稀疏条目的 dense 索引，不存在返回 \`dense_invalid\` |
-| \`sparse_version_at_public(uint32_t idx) const\` | 读取稀疏条目的 version，不存在返回 0 |
+| \`sparse_dense_at(uint32_t idx) const\` | 读取稀疏条目的 dense 索引，不存在返回 \`dense_invalid\` |
+| \`sparse_version_at(uint32_t idx) const\` | 读取稀疏条目的 version，不存在返回 0 |
+| \`sparse_find(uint32_t idx, uint32_t& out_version) const\` | 合并查询：单次加载 sparse_entry，返回 dense 索引并输出 version |
 | \`dense_invalid\` | 无效 dense 索引常量（\`0xFFFFFFFFu\`），public 静态成员 |
 | \`get_sparse_size() const\` | 稀疏表已覆盖的最大索引+1 |
+| \`prefetch_sparse_entry(uint32_t idx) const\` | 预取 sparse 条目 |
 | \`clear_hot_set()\` | 清空热集缓存（调试用，正常使用无需手动调用） |
 | \`bump_pool_version()\` | 递增池版本号，使所有热集缓存自动失效 |
 
@@ -340,8 +346,8 @@ ECS 核心管理类，管理实体和所有组件集合。
 auto* set = mgr.get_single_class_set<Position>();
 
 // 查询实体的 dense 索引和 version
-uint32_t dense = set->sparse_dense_at_public(entity_index);
-uint32_t ver   = set->sparse_version_at_public(entity_index);
+uint32_t ver = 0;
+uint32_t dense = set->sparse_find(entity_index, ver);
 
 if (dense == single_class_set::dense_invalid)
 {
@@ -2381,8 +2387,8 @@ window.DOCS_DATA['reflection_usage'] = {
 | \`category()\` | 容器类别（\`sequential\`/\`none\`） |
 | \`element_type_id()\` | 元素类型 id |
 | \`size()\` | 元素数 |
-| \`at(index)\` | 取元素 \`void*\`，越界返回 nullptr |
-| \`at_as<T>(index)\` | 类型安全取元素 |
+| \`get(index)\` | 取元素 \`void*\`，越界返回 nullptr |
+| \`get_as<T>(index)\` | 类型安全取元素 |
 | \`push_back(element)\` | 追加元素（\`const void*\`） |
 | \`push_back<T>(value)\` | 模板版本 |
 | \`clear()\` | 清空容器 |
@@ -2712,7 +2718,7 @@ vec.push_back(20);
 auto ccv = reflect::as_container(&vec, type_id::get_type_id<dense<int>>());
 ccv.valid();                // true
 ccv.size();                 // 2
-int* p0 = ccv.at_as<int>(0);  // *p0 == 10
+int* p0 = ccv.get_as<int>(0);  // *p0 == 10
 ccv.for_each([](void* elem, size_t idx) {
     std::cout << idx << ": " << *static_cast<int*>(elem) << "\\n";
 });

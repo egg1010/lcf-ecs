@@ -116,16 +116,16 @@ int main()
         utf8pp s("Hi中😀"); // H i 中 😀
         print_item("size() == 4", s.size() == 4);
 
-        print_item("at(0) == 'H'", s.at(0) == char32_t('H'));
-        print_item("at(1) == 'i'", s.at(1) == char32_t('i'));
-        print_item("at(2) == '中' (U+4E2D)", s.at(2) == char32_t(0x4E2D));
-        print_item("at(3) == U+1F600", s.at(3) == char32_t(0x1F600));
+        print_item("get(0) == 'H'", s.get(0) == char32_t('H'));
+        print_item("get(1) == 'i'", s.get(1) == char32_t('i'));
+        print_item("get(2) == '中' (U+4E2D)", s.get(2) == char32_t(0x4E2D));
+        print_item("get(3) == U+1F600", s.get(3) == char32_t(0x1F600));
 
-        print_item("operator[] == at", s[0] == s.at(0));
+        print_item("operator[] == at", s[0] == s.get(0));
         print_item("front() == 'H'", s.front() == char32_t('H'));
         print_item("back() == U+1F600", s.back() == char32_t(0x1F600));
 
-        print_item("at 越界返回 U+FFFD", s.at(100) == char32_t(0xFFFD));
+        print_item("get 越界返回 U+FFFD", s.get(100) == char32_t(0xFFFD));
     }
 
     // === 7. utf8pp 字节访问 ===
@@ -171,9 +171,9 @@ int main()
         s.push_back(char32_t(0x1F600)); // 😀
         print_item("push_back 3 码点", s.size() == 3);
         print_item("byte_size == 8", s.byte_size() == 8);
-        print_item("at(0) == 'A'", s.at(0) == char32_t('A'));
-        print_item("at(1) == '中'", s.at(1) == char32_t(0x4E2D));
-        print_item("at(2) == U+1F600", s.at(2) == char32_t(0x1F600));
+        print_item("get(0) == 'A'", s.get(0) == char32_t('A'));
+        print_item("get(1) == '中'", s.get(1) == char32_t(0x4E2D));
+        print_item("get(2) == U+1F600", s.get(2) == char32_t(0x1F600));
 
         utf8pp s2;
         s2.append("Hello");
@@ -184,7 +184,7 @@ int main()
         utf8pp s3;
         s3 += char32_t('X');
         s3 += "YZ";
-        print_item("operator+= 混合", s3.size() == 3 && s3.at(0) == char32_t('X'));
+        print_item("operator+= 混合", s3.size() == 3 && s3.get(0) == char32_t('X'));
     }
 
     // === 10. utf8pp 修改: insert / erase ===
@@ -192,26 +192,26 @@ int main()
     {
         utf8pp s("Hlo");
         s.insert(1, char32_t('e')); // "Helo"
-        print_item("insert 后 'He'", s.at(0) == char32_t('H') && s.at(1) == char32_t('e'));
+        print_item("insert 后 'He'", s.get(0) == char32_t('H') && s.get(1) == char32_t('e'));
 
         s.insert(3, char32_t('l')); // "Hello"
-        print_item("insert 后 'Hello'", s.size() == 5 && s.at(4) == char32_t('o'));
+        print_item("insert 后 'Hello'", s.size() == 5 && s.get(4) == char32_t('o'));
 
         utf8pp s2(u8"你好世界");
         s2.insert(1, char32_t('X')); // 你 X 好世界
         print_item("中文 insert 后 size == 5", s2.size() == 5);
-        print_item("insert 后 at(1) == 'X'", s2.at(1) == char32_t('X'));
-        print_item("insert 后 at(2) == '好'", s2.at(2) == char32_t(0x597D));
+        print_item("insert 后 get(1) == 'X'", s2.get(1) == char32_t('X'));
+        print_item("insert 后 get(2) == '好'", s2.get(2) == char32_t(0x597D));
 
         s2.erase(1); // 删除 'X'
         print_item("erase 后 size == 4", s2.size() == 4);
-        print_item("erase 后 at(1) == '好'", s2.at(1) == char32_t(0x597D));
+        print_item("erase 后 get(1) == '好'", s2.get(1) == char32_t(0x597D));
         print_item("erase 后 byte_size 恢复", s2.byte_size() == 12);
 
         // 批量 erase
         utf8pp s3("ABCDEF");
         s3.erase(1, 3); // 删除 BCD → "AEF"
-        print_item("批量 erase 后 'AEF'", s3.size() == 3 && s3.at(0) == char32_t('A') && s3.at(1) == char32_t('E'));
+        print_item("批量 erase 后 'AEF'", s3.size() == 3 && s3.get(0) == char32_t('A') && s3.get(1) == char32_t('E'));
     }
 
     // === 11. utf8pp substr ===
@@ -220,11 +220,11 @@ int main()
         utf8pp s(u8"你好世界");
         utf8pp sub = s.substr(1, 2); // 好世
         print_item("substr size == 2", sub.size() == 2);
-        print_item("substr at(0) == '好'", sub.at(0) == char32_t(0x597D));
-        print_item("substr at(1) == '世'", sub.at(1) == char32_t(0x4E16));
+        print_item("substr get(0) == '好'", sub.get(0) == char32_t(0x597D));
+        print_item("substr get(1) == '世'", sub.get(1) == char32_t(0x4E16));
 
         utf8pp sub2 = s.substr(2); // 世界
-        print_item("substr 默认 npos", sub2.size() == 2 && sub2.at(0) == char32_t(0x4E16));
+        print_item("substr 默认 npos", sub2.size() == 2 && sub2.get(0) == char32_t(0x4E16));
 
         utf8pp sub3 = s.substr(100);
         print_item("substr 越界返回空", sub3.empty());
@@ -285,7 +285,7 @@ int main()
 
         s.strip_bom();
         print_item("strip BOM 后 byte_size == 2", s.byte_size() == 2);
-        print_item("strip BOM 后内容 'Hi'", s.at(0) == char32_t('H') && s.at(1) == char32_t('i'));
+        print_item("strip BOM 后内容 'Hi'", s.get(0) == char32_t('H') && s.get(1) == char32_t('i'));
 
         utf8pp s2("Hello");
         print_item("无 BOM", !s2.has_bom());
@@ -305,10 +305,10 @@ int main()
     print_section(17, "utf8pp 字面量运算符");
     {
         auto s = "Hello"_u8;
-        print_item("_u8 字面量构造", s.size() == 5 && s.at(0) == char32_t('H'));
+        print_item("_u8 字面量构造", s.size() == 5 && s.get(0) == char32_t('H'));
 
         auto s2 = u8"你好"_u8;
-        print_item("_u8 中文", s2.size() == 2 && s2.at(0) == char32_t(0x4F60));
+        print_item("_u8 中文", s2.size() == 2 && s2.get(0) == char32_t(0x4F60));
     }
 
     // === 18. utf8pp 大规模操作 ===
@@ -338,7 +338,7 @@ int main()
         print_item("operator= const char*", s.size() == 5);
 
         s = std::string_view("World");
-        print_item("operator= string_view", s.size() == 5 && s.at(0) == char32_t('W'));
+        print_item("operator= string_view", s.size() == 5 && s.get(0) == char32_t('W'));
 
         utf8pp s2;
         s2 = s;
@@ -992,7 +992,7 @@ int main()
 
         utf8pp s5(u8"你好");
         s5.insert(1, "X"); // 你X好
-        print_item("中文 insert(const char*)", s5.size() == 3 && s5.at(1) == char32_t('X'));
+        print_item("中文 insert(const char*)", s5.size() == 3 && s5.get(1) == char32_t('X'));
     }
 
     // === 46. replace 字符串重载 + compare 子串 ===
@@ -1067,7 +1067,7 @@ int main()
         // SSO 满 → append 触发扩容 (104 字节超出 SSO)
         utf8pp s7(s);
         s7.append("X");
-        print_item("SSO 满 append 触发扩容", s7.size() == 104 && s7.at(103) == char32_t('X'));
+        print_item("SSO 满 append 触发扩容", s7.size() == 104 && s7.get(103) == char32_t('X'));
         print_item("SSO 满 append 非 SSO", !s7.is_sso());
 
         // SSO 满 → erase + shrink_to_fit 回退 SSO
@@ -1217,7 +1217,7 @@ int main()
         print_item("reserve_cp 扩容", s.cp_capacity() > before);
         // 预留后操作正常
         s.assign_cp(50, char32_t('Z'));
-        print_item("reserve_cp 后 assign_cp 正常", s.size() == 50 && s.at(0) == char32_t('Z'));
+        print_item("reserve_cp 后 assign_cp 正常", s.size() == 50 && s.get(0) == char32_t('Z'));
         // 已有内容 reserve_cp 不丢失
         utf8pp s2("Hello");
         s2.reserve_cp(64);
@@ -1401,7 +1401,7 @@ int main()
         print_item("utf8pp → view → utf8pp 往返", roundtrip == s);
 
         // utf8_view 码点访问与 utf8pp 一致
-        print_item("view at(5) == '世'", uv.at(5) == s.at(5));
+        print_item("view get(5) == '世'", uv.get(5) == s.get(5));
         print_item("view size == utf8pp size", uv.size() == s.size());
 
         // binary_view
@@ -1499,7 +1499,7 @@ int main()
     {
         // initializer_list<char32_t>
         utf8pp s1 = {char32_t('H'), char32_t('i'), char32_t(0x4E2D)};
-        print_item("initializer_list 构造", s1.size() == 3 && s1.at(2) == char32_t(0x4E2D));
+        print_item("initializer_list 构造", s1.size() == 3 && s1.get(2) == char32_t(0x4E2D));
         print_item("initializer_list byte_size == 5", s1.byte_size() == 5);  // H(1)+i(1)+中(3)=5
 
         // operator= initializer_list
@@ -2060,31 +2060,31 @@ int main()
 
         print_item("byte_at(0) == 'H'", v.byte_at(0) == 'H');
         print_item("byte_at(1) == 'e'", v.byte_at(1) == 'e');
-        print_item("byte_at 越界 == '\\0'", v.byte_at(100) == '\0');
+        print_item("byte_get 越界 == '\\0'", v.byte_at(100) == '\0');
     }
 
     // === 84. 码点访问 (O(n)) ===
     print_section(84, "utf8_view 码点访问");
     {
         utf8_view v("Hello");
-        print_item("at(0) == 'H'", v.at(0) == char32_t('H'));
-        print_item("at(4) == 'o'", v.at(4) == char32_t('o'));
-        print_item("at 越界 == U+FFFD", v.at(100) == char32_t(0xFFFD));
-        print_item("operator[] == at", v[1] == v.at(1));
+        print_item("get(0) == 'H'", v.get(0) == char32_t('H'));
+        print_item("get(4) == 'o'", v.get(4) == char32_t('o'));
+        print_item("get 越界 == U+FFFD", v.get(100) == char32_t(0xFFFD));
+        print_item("operator[] == at", v[1] == v.get(1));
         print_item("front() == 'H'", v.front() == char32_t('H'));
         print_item("back() == 'o'", v.back() == char32_t('o'));
 
         utf8_view cn(u8"你好世界");
-        print_item("中文 at(0) == 你", cn.at(0) == char32_t(0x4F60));
-        print_item("中文 at(1) == 好", cn.at(1) == char32_t(0x597D));
-        print_item("中文 at(2) == 世", cn.at(2) == char32_t(0x4E16));
-        print_item("中文 at(3) == 界", cn.at(3) == char32_t(0x754C));
+        print_item("中文 get(0) == 你", cn.get(0) == char32_t(0x4F60));
+        print_item("中文 get(1) == 好", cn.get(1) == char32_t(0x597D));
+        print_item("中文 get(2) == 世", cn.get(2) == char32_t(0x4E16));
+        print_item("中文 get(3) == 界", cn.get(3) == char32_t(0x754C));
         print_item("中文 front == 你", cn.front() == char32_t(0x4F60));
         print_item("中文 back == 界", cn.back() == char32_t(0x754C));
 
         utf8_view emoji(u8"😀👍");
-        print_item("Emoji at(0) == U+1F600", emoji.at(0) == char32_t(0x1F600));
-        print_item("Emoji at(1) == U+1F44D", emoji.at(1) == char32_t(0x1F44D));
+        print_item("Emoji get(0) == U+1F600", emoji.get(0) == char32_t(0x1F600));
+        print_item("Emoji get(1) == U+1F44D", emoji.get(1) == char32_t(0x1F44D));
     }
 
     // === 85. 迭代器 ===
@@ -2482,20 +2482,20 @@ int main()
     {
         const char bad[] = {(char)0xFF, 'A', 0};
         utf8_view v(bad, 2);
-        print_item("非法字节 at(0) == U+FFFD", v.at(0) == char32_t(0xFFFD));
-        print_item("非法后 at(1) == 'A'", v.at(1) == char32_t('A'));
+        print_item("非法字节 get(0) == U+FFFD", v.get(0) == char32_t(0xFFFD));
+        print_item("非法后 get(1) == 'A'", v.get(1) == char32_t('A'));
         print_item("非法 size == 2", v.size() == 2);
 
         const char bad2[] = {(char)0xC0, (char)0x80, 0}; // 非 shortest form
         utf8_view v2(bad2, 2);
-        print_item("非最短形式 at(0) == U+FFFD", v2.at(0) == char32_t(0xFFFD));
+        print_item("非最短形式 get(0) == U+FFFD", v2.get(0) == char32_t(0xFFFD));
     }
 
     // === 105. 边界条件 ===
     print_section(105, "utf8_view 边界条件");
     {
         utf8_view empty;
-        print_item("空 at(0) == U+FFFD", empty.at(0) == char32_t(0xFFFD));
+        print_item("空 get(0) == U+FFFD", empty.get(0) == char32_t(0xFFFD));
         print_item("空 front() == U+FFFD", empty.front() == char32_t(0xFFFD));
         print_item("空 back() == U+FFFD", empty.back() == char32_t(0xFFFD));
         print_item("空 substr == 空", empty.substr(0).empty());
@@ -2505,7 +2505,7 @@ int main()
         print_item("空 starts_with(view) true", empty.starts_with(utf8_view()));
 
         utf8_view single("A");
-        print_item("单字符 at(0) == 'A'", single.at(0) == char32_t('A'));
+        print_item("单字符 get(0) == 'A'", single.get(0) == char32_t('A'));
         print_item("单字符 front == back", single.front() == single.back());
         print_item("单字符 substr(0,1) == A", single.substr(0, 1) == utf8_view("A"));
         print_item("单字符 substr(0,10) == A", single.substr(0, 10) == utf8_view("A"));
@@ -2596,12 +2596,12 @@ int main()
         print_item("input size==2", s.size() == 2);
         s.to_nfc();
         print_item("NFC size==1",   s.size() == 1);
-        print_item("NFC at(0)==é (U+00E9)", s.at(0) == U'\u00E9');
+        print_item("NFC get(0)==é (U+00E9)", s.get(0) == U'\u00E9');
 
         // 已是 NFC 不变
         utf8pp already(U"\u00E9");
         already.to_nfc();
-        print_item("é NFC unchanged size==1", already.size() == 1 && already.at(0) == U'\u00E9');
+        print_item("é NFC unchanged size==1", already.size() == 1 && already.get(0) == U'\u00E9');
     }
 
     // === 111. NFC canonical ordering (乱序组合标记排序) ===
@@ -2614,17 +2614,17 @@ int main()
         utf8pp s(in, 3);
         s.to_nfc();
         print_item("ordering size==3", s.size() == 3);
-        print_item("ordering [0]==q",       s.at(0) == U'q');
-        print_item("ordering [1]==U+0323",  s.at(1) == U'\u0323');
-        print_item("ordering [2]==U+0301",  s.at(2) == U'\u0301');
+        print_item("ordering [0]==q",       s.get(0) == U'q');
+        print_item("ordering [1]==U+0323",  s.get(1) == U'\u0323');
+        print_item("ordering [2]==U+0301",  s.get(2) == U'\u0301');
     }
     {
         // 反向: q + U+0323 (220) + U+0301 (230)  ← 已有序
         char32_t in[] = {U'q', U'\u0323', U'\u0301'};
         utf8pp s(in, 3);
         s.to_nfc();
-        print_item("ordered input unchanged [1]==U+0323", s.at(1) == U'\u0323');
-        print_item("ordered input unchanged [2]==U+0301", s.at(2) == U'\u0301');
+        print_item("ordered input unchanged [1]==U+0323", s.get(1) == U'\u0323');
+        print_item("ordered input unchanged [2]==U+0301", s.get(2) == U'\u0301');
     }
 
     // === 112. NFC 乱序输入 + 合并 (e + U+0301 + U+0323) ===
@@ -2637,8 +2637,8 @@ int main()
         utf8pp s(in, 3);
         s.to_nfc();
         print_item("e+0301+0323 NFC size==2", s.size() == 2);
-        print_item("NFC [0]==ẹ (U+1EB9)",    s.at(0) == U'\u1EB9');
-        print_item("NFC [1]==U+0301",        s.at(1) == U'\u0301');
+        print_item("NFC [0]==ẹ (U+1EB9)",    s.get(0) == U'\u1EB9');
+        print_item("NFC [1]==U+0301",        s.get(1) == U'\u0301');
     }
 
     // === 113. NFD 分解 (é -> e + U+0301) ===
@@ -2648,8 +2648,8 @@ int main()
         print_item("é size==1", s.size() == 1);
         s.to_nfd();
         print_item("NFD size==2",   s.size() == 2);
-        print_item("NFD [0]==e",    s.at(0) == U'e');
-        print_item("NFD [1]==U+0301", s.at(1) == U'\u0301');
+        print_item("NFD [0]==e",    s.get(0) == U'e');
+        print_item("NFD [1]==U+0301", s.get(1) == U'\u0301');
     }
 
     // === 114. NFC 副本接口 nfc() ===
@@ -2659,7 +2659,7 @@ int main()
         utf8pp s(cps, 2);
         utf8pp n = s.nfc();
         print_item("nfc() size==1", n.size() == 1);
-        print_item("nfc() at(0)==ä (U+00E4)", n.at(0) == U'\u00E4');
+        print_item("nfc() get(0)==ä (U+00E4)", n.get(0) == U'\u00E4');
         print_item("original unchanged size==2", s.size() == 2);
     }
 
@@ -2703,14 +2703,14 @@ int main()
         utf8pp s(cps, 2);
         s.to_nfc();
         print_item("NFC Hangul size==1", s.size() == 1);
-        print_item("NFC Hangul at(0)==가 (U+AC00)", s.at(0) == char32_t(0xAC00));
+        print_item("NFC Hangul get(0)==가 (U+AC00)", s.get(0) == char32_t(0xAC00));
 
         // L+V+T → LVT
         char32_t cps2[] = {char32_t(0x1100), char32_t(0x1161), char32_t(0x11A8)};
         utf8pp s2(cps2, 3);
         s2.to_nfc();
         print_item("NFC Hangul LVT size==1", s2.size() == 1);
-        print_item("NFC Hangul LVT at(0)==각 (U+AC01)", s2.at(0) == char32_t(0xAC01));
+        print_item("NFC Hangul LVT get(0)==각 (U+AC01)", s2.get(0) == char32_t(0xAC01));
     }
 
     // === 118. NFD Hangul (가 → L+V) ===
@@ -2719,8 +2719,8 @@ int main()
         utf8pp s(size_t(1), char32_t(0xAC00)); // 가
         s.to_nfd();
         print_item("NFD Hangul size==2", s.size() == 2);
-        print_item("NFD Hangul [0]==ㄱ", s.at(0) == char32_t(0x1100));
-        print_item("NFD Hangul [1]==ㅏ", s.at(1) == char32_t(0x1161));
+        print_item("NFD Hangul [0]==ㄱ", s.get(0) == char32_t(0x1100));
+        print_item("NFD Hangul [1]==ㅏ", s.get(1) == char32_t(0x1161));
     }
 
     // === 119. NFKD 全角 ASCII → 半角 ===
@@ -2739,9 +2739,9 @@ int main()
         utf8pp s(full, 3);
         s.to_nfkd();
         print_item("NFKD ＡＢＣ → ABC size==3", s.size() == 3);
-        print_item("NFKD [0]==A", s.at(0) == U'A');
-        print_item("NFKD [1]==B", s.at(1) == U'B');
-        print_item("NFKD [2]==C", s.at(2) == U'C');
+        print_item("NFKD [0]==A", s.get(0) == U'A');
+        print_item("NFKD [1]==B", s.get(1) == U'B');
+        print_item("NFKD [2]==C", s.get(2) == U'C');
     }
 
     // === 120. NFKD 连字 (ﬁ → fi) / 罗马数字 / 圆圈数字 / 上标 ===
@@ -2752,44 +2752,44 @@ int main()
         utf8pp s(&lig, 1);
         s.to_nfkd();
         print_item("NFKD ﬁ → fi size==2", s.size() == 2);
-        print_item("NFKD ﬁ [0]==f", s.at(0) == U'f');
-        print_item("NFKD ﬁ [1]==i", s.at(1) == U'i');
+        print_item("NFKD ﬁ [0]==f", s.get(0) == U'f');
+        print_item("NFKD ﬁ [1]==i", s.get(1) == U'i');
 
         // ﬀ → ff
         char32_t lig2 = U'\uFB00';
         utf8pp s2(&lig2, 1);
         s2.to_nfkd();
         print_item("NFKD ﬀ → ff size==2", s2.size() == 2);
-        print_item("NFKD ﬀ [0]==f", s2.at(0) == U'f');
+        print_item("NFKD ﬀ [0]==f", s2.get(0) == U'f');
 
         // Ⅳ → IV
         char32_t rn = U'\u2163';
         utf8pp s3(&rn, 1);
         s3.to_nfkd();
         print_item("NFKD Ⅳ → IV size==2", s3.size() == 2);
-        print_item("NFKD Ⅳ [0]==I", s3.at(0) == U'I');
-        print_item("NFKD Ⅳ [1]==V", s3.at(1) == U'V');
+        print_item("NFKD Ⅳ [0]==I", s3.get(0) == U'I');
+        print_item("NFKD Ⅳ [1]==V", s3.get(1) == U'V');
 
         // ① → 1
         char32_t circ = U'\u2460';
         utf8pp s4(&circ, 1);
         s4.to_nfkd();
         print_item("NFKD ① → 1 size==1", s4.size() == 1);
-        print_item("NFKD ① [0]=='1'", s4.at(0) == U'1');
+        print_item("NFKD ① [0]=='1'", s4.get(0) == U'1');
 
         // ² → 2
         char32_t sup = U'\u00B2';
         utf8pp s5(&sup, 1);
         s5.to_nfkd();
         print_item("NFKD ² → 2 size==1", s5.size() == 1);
-        print_item("NFKD ² [0]=='2'", s5.at(0) == U'2');
+        print_item("NFKD ² [0]=='2'", s5.get(0) == U'2');
 
         // ｱ → ア (半角片假名)
         char32_t half = U'\uFF71';
         utf8pp s6(&half, 1);
         s6.to_nfkd();
         print_item("NFKD ｱ → ア size==1", s6.size() == 1);
-        print_item("NFKD ｱ [0]==ア (U+30A2)", s6.at(0) == char32_t(0x30A2));
+        print_item("NFKD ｱ [0]==ア (U+30A2)", s6.get(0) == char32_t(0x30A2));
     }
 
     // === 121. NFKC + 副本接口 ===
@@ -2799,23 +2799,23 @@ int main()
         char32_t full_a = U'\uFF21';
         utf8pp s(&full_a, 1);
         s.to_nfkc();
-        print_item("NFKC Ａ → A", s.size() == 1 && s.at(0) == U'A');
+        print_item("NFKC Ａ → A", s.size() == 1 && s.get(0) == U'A');
 
         // 混合: 全角 Ａ + 组合重音 → NFKC 后分解为 A, 再与 U+0301 组合为 Á (U+00C1)
         char32_t mix[] = {char32_t(0xFF21), char32_t(0x0301)};
         utf8pp s2(mix, 2);
         s2.to_nfkc();
         print_item("NFKC Ａ+´ → Á size==1", s2.size() == 1);
-        print_item("NFKC Ａ+´ [0]==Á (U+00C1)", s2.at(0) == U'\u00C1');
+        print_item("NFKC Ａ+´ [0]==Á (U+00C1)", s2.get(0) == U'\u00C1');
 
         // 副本接口 nfkd()
         char32_t lig = U'\uFB02'; // ﬂ
         utf8pp s3(&lig, 1);
         utf8pp k = s3.nfkd();
         print_item("nfkd() ﬂ → fl size==2", k.size() == 2);
-        print_item("nfkd() [0]==f", k.at(0) == U'f');
-        print_item("nfkd() [1]==l", k.at(1) == U'l');
-        print_item("original unchanged", s3.size() == 1 && s3.at(0) == U'\uFB02');
+        print_item("nfkd() [0]==f", k.get(0) == U'f');
+        print_item("nfkd() [1]==l", k.get(1) == U'l');
+        print_item("original unchanged", s3.size() == 1 && s3.get(0) == U'\uFB02');
     }
 
     // === 122. 规范化幂等性 (NFC(NFC(x)) == NFC(x)) ===
@@ -2843,45 +2843,45 @@ int main()
         // 3 字节开头 + 字节数整除 3 的混合串
         utf8pp m1(u8"你abc你你");          // 3+1+1+1+3+3 = 12 字节, 6 码点
         print_item("混合串 size==6 (你abc你你)", m1.size() == 6);
-        print_item("混合串 at(1)=='a'", m1.at(1) == U'a');
-        print_item("混合串 at(3)=='c'", m1.at(3) == U'c');
-        print_item("混合串 at(5)=='你'", m1.at(5) == U'你');
+        print_item("混合串 get(1)=='a'", m1.get(1) == U'a');
+        print_item("混合串 get(3)=='c'", m1.get(3) == U'c');
+        print_item("混合串 get(5)=='你'", m1.get(5) == U'你');
 
         // 前两码点 3 字节 + 中间 ASCII
         utf8pp m2(u8"你你abc你");          // 3+3+1+1+1+3 = 12 字节, 6 码点
         print_item("混合串 size==6 (你你abc你)", m2.size() == 6);
-        print_item("混合串 at(2)=='a'", m2.at(2) == U'a');
-        print_item("混合串 at(5)=='你'", m2.at(5) == U'你');
+        print_item("混合串 get(2)=='a'", m2.get(2) == U'a');
+        print_item("混合串 get(5)=='你'", m2.get(5) == U'你');
 
         // 平均 2 字节但中间混合 1/3 字节
         utf8pp m3(u8"Àa你ÀÀÀ");            // 2+1+3+2+2+2 = 12 字节, 6 码点
         print_item("混合串 size==6 (Àa你ÀÀÀ)", m3.size() == 6);
-        print_item("混合串 at(1)=='a'", m3.at(1) == U'a');
-        print_item("混合串 at(2)=='你'", m3.at(2) == U'你');
-        print_item("混合串 at(5)=='À'", m3.at(5) == U'À');
+        print_item("混合串 get(1)=='a'", m3.get(1) == U'a');
+        print_item("混合串 get(2)=='你'", m3.get(2) == U'你');
+        print_item("混合串 get(5)=='À'", m3.get(5) == U'À');
 
         // >16 字节对抗串 (命中 SSE2 块验证路径)
         utf8pp m4(u8"你你你ab你你你你");     // 9+2+12 = 21 字节, 9 码点
         print_item("长混合串 size==9", m4.size() == 9);
-        print_item("长混合串 at(3)=='a'", m4.at(3) == U'a');
-        print_item("长混合串 at(8)=='你'", m4.at(8) == U'你');
+        print_item("长混合串 get(3)=='a'", m4.get(3) == U'a');
+        print_item("长混合串 get(8)=='你'", m4.get(8) == U'你');
 
         // 纯均匀串快速路径
         utf8pp u1(u8"你好你好");
         print_item("纯中文 size==4", u1.size() == 4);
-        print_item("纯中文 at(3)=='好'", u1.at(3) == U'好');
+        print_item("纯中文 get(3)=='好'", u1.get(3) == U'好');
 
         // 大均匀串 (>=64 码点, 命中预解码缓存路径)
         utf8pp u2(size_t(100), char32_t(0x4F60));
         print_item("100 个'你' size==100", u2.size() == 100);
-        print_item("100 个'你' at(99)=='你'", u2.at(99) == U'你');
+        print_item("100 个'你' get(99)=='你'", u2.get(99) == U'你');
 
         // 混合串迭代器遍历与 at 一致
         size_t iter_n = 0;
         bool iter_ok = true;
         for (char32_t cp : m1)
         {
-            if (iter_n >= 6 || cp != m1.at(iter_n)) iter_ok = false;
+            if (iter_n >= 6 || cp != m1.get(iter_n)) iter_ok = false;
             ++iter_n;
         }
         print_item("混合串迭代器与 at 一致", iter_ok && iter_n == 6);
@@ -2890,14 +2890,14 @@ int main()
         utf8pp s1(u8"你你好");              // 9 字节 3 码点 (uniform=3)
         s1.insert(1, u8"a");               // → 你a你好: 10 字节 4 码点
         print_item("insert 后 size==4", s1.size() == 4);
-        print_item("insert 后 at(1)=='a'", s1.at(1) == U'a');
-        print_item("insert 后 at(3)=='好'", s1.at(3) == U'好');
+        print_item("insert 后 get(1)=='a'", s1.get(1) == U'a');
+        print_item("insert 后 get(3)=='好'", s1.get(3) == U'好');
 
         // erase 后偏移精确
         utf8pp s2(u8"你abc你你");
         s2.erase(1, 3);                    // 删 abc → 你你你: 9 字节 3 码点
         print_item("erase 后 size==3", s2.size() == 3);
-        print_item("erase 后 at(2)=='你'", s2.at(2) == U'你');
+        print_item("erase 后 get(2)=='你'", s2.get(2) == U'你');
     }
 
     print_summary("功能测试");

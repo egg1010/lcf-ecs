@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <tuple>
 #include <array>
 #include <limits>
@@ -100,11 +100,11 @@ private:
             for (size_t i = 0; i < s->owned_size; ++i)
             {
                 uint32_t eid = indices[i];
-                uint32_t od = other_set->sparse_dense_at_public(eid);
+                uint32_t od = other_set->sparse_dense_at(eid);
 
                 if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
                 {
-                    uint32_t ver = primary->sparse_version_at_public(eid);
+                    uint32_t ver = primary->sparse_version_at(eid);
                     entity e(eid, ver);
                     func(e, pool0_data[i], pool1_data[od]);
                 }
@@ -119,11 +119,11 @@ private:
             for (size_t i = 0; i < s->owned_size; ++i)
             {
                 uint32_t eid = indices[i];
-                uint32_t od = other_set->sparse_dense_at_public(eid);
+                uint32_t od = other_set->sparse_dense_at(eid);
 
                 if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
                 {
-                    uint32_t ver = primary->sparse_version_at_public(eid);
+                    uint32_t ver = primary->sparse_version_at(eid);
                     entity e(eid, ver);
                     func(e, pool0_data[od], pool1_data[i]);
                 }
@@ -155,13 +155,13 @@ private:
             auto comps = std::forward_as_tuple(
                 (Is == primary_idx_)
                     ? std::get<Is>(pools)[i]
-                    : std::get<Is>(pools)[sets_[Is]->sparse_dense_at_public(eid)]...
+                    : std::get<Is>(pools)[sets_[Is]->sparse_dense_at(eid)]...
             );
 
             std::apply([&](auto&... refs) {
                 if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
                 {
-                    uint32_t ver = primary->sparse_version_at_public(eid);
+                    uint32_t ver = primary->sparse_version_at(eid);
                     entity e(eid, ver);
                     func(e, refs...);
                 }

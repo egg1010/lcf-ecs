@@ -832,10 +832,10 @@ int main()
         print_item("container_view size == 3", cv.size() == 3);
 
         // at
-        int* p0 = cv.at_as<int>(0);
-        int* p1 = cv.at_as<int>(1);
-        print_item("at(0) == 10", p0 && *p0 == 10);
-        print_item("at(1) == 20", p1 && *p1 == 20);
+        int* p0 = cv.get_as<int>(0);
+        int* p1 = cv.get_as<int>(1);
+        print_item("get(0) == 10", p0 && *p0 == 10);
+        print_item("get(1) == 20", p1 && *p1 == 20);
 
         // for_each
         int sum = 0;

@@ -1,4 +1,4 @@
-#include "test_common.hpp"
+﻿#include "test_common.hpp"
 #include "include/part/class_pool_views.hpp"
 
 // 功能测试 - 验证 ECS 各接口的正确性
@@ -1814,10 +1814,10 @@ int main()
     std::cout << "\n  [其他]\n";
     {
         single_class_set scs;
-        print_item("get_type_id() 初始", scs.get_type_id() == -1);
+        print_item("get_type_id() 初始", scs.get_type_id_value() == -1);
 
         scs.add(entity(0, 1), Health{50, 100});
-        print_item("get_type_id() 添加后", scs.get_type_id() == type_id::get_type_id<Health>());
+        print_item("get_type_id() 添加后", scs.get_type_id_value() == type_id::get_type_id<Health>());
 
         dense<Health>* tpp = scs.get_typed_pool_ptr<Health>();
         print_item("get_typed_pool_ptr()", (tpp && tpp->size() == 1));
