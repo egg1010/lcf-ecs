@@ -62,8 +62,8 @@ class safe_iterator;
 // Global hot memory pool
 [[nodiscard]] inline memory::memory_pool& global_hot_memory_pool() noexcept
 {
-    static memory::memory_pool pool;
-    return pool;
+    static memory::memory_pool hot_memory_pool;
+    return hot_memory_pool;
 }
 
 class single_class_set
