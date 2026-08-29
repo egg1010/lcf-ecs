@@ -67,7 +67,8 @@ public:
         {
             detail::abort_with_location("invoke_virtual: query_view invalid");
         }
-        int given_ids[] = { type_id::get_type_id<std::decay_t<Args>>()... };
+        // 首元素 0 占位: 零参数时避免零长度数组 (MSVC 拒绝, GCC 扩展容忍)
+        int given_ids[] = { 0, type_id::get_type_id<std::decay_t<Args>>()... };
         const method_meta* m = nullptr;
         size_t n = meta_->method_count.load(std::memory_order_acquire);
         for (size_t i = 0; i < n; ++i)
@@ -86,7 +87,7 @@ public:
                 bool exact = true;
                 for (uint8_t j = 0; j < mm.arg_count; ++j)
                 {
-                    if (mm.arg_type_ids[j] != given_ids[j])
+                    if (mm.arg_type_ids[j] != given_ids[j + 1])
                     {
                         exact = false;
                         break;

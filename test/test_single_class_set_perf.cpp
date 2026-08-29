@@ -4,6 +4,7 @@
 #include <bit>
 #include <span>
 #include <cstdio>
+#include <numeric>
 
 // opaque: 使值对编译器不透明, 阻止常量折叠和死代码消除
 #if defined(_MSC_VER)

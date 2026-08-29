@@ -4,12 +4,11 @@
 
 #include "../part/dense.hpp"
 #include "../part/safety.hpp"
+#include "../entity.hpp"
 #include <cstdint>
 #include <cstring>
 #include <string>
 #include <string_view>
-
-namespace ecs { struct entity; }
 
 namespace serialize {
 
@@ -44,7 +43,8 @@ struct metadata_entry {
 // 性能: ~30GB/s, 比软件 CRC32 快两个数量级, 零外部依赖
 // 项目已要求 AVX2, SSE4.2 是其子集, 可无条件使用
 // ====================================================================
-#if defined(__SSE4_2__) || defined(__AVX2__) || (defined(_M_X64) && !defined(__MINGW32__))
+// clang (MSVC ABI) 定义 _M_X64 但无 -msse4.2 时 CRC intrinsic 需 target 特性, 排除
+#if defined(__SSE4_2__) || defined(__AVX2__) || (defined(_MSC_VER) && !defined(__clang__) && defined(_M_X64))
 #define LCF_HAS_HW_CRC32C 1
 #include <immintrin.h>
 [[nodiscard]] inline uint32_t compute_crc32c(const char* data, size_t len) noexcept

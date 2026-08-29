@@ -69,7 +69,7 @@
                 }
                 auto& other_indices = sets_[k]->get_entity_indices();
                 const uint32_t* oi = other_indices.data();
-                if (__builtin_memcmp(pi, oi, byte_count) != 0)
+                if (std::memcmp(pi, oi, byte_count) != 0)
                 {
                     fast_aligned = false;
                     break;

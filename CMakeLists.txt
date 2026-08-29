@@ -2,14 +2,6 @@ cmake_minimum_required(VERSION 3.20)
 
 project(lcf-ecs LANGUAGES CXX VERSION 1.0.0)
 
-set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
-
-if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
-    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
-endif()
-
 # 编译器检测: LCF_IS_GCC / LCF_IS_CLANG / LCF_IS_MSVC / LCF_IS_MINGW
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     set(LCF_IS_GCC ON)
@@ -25,12 +17,61 @@ elseif(MSVC)
     set(LCF_IS_MSVC ON)
 endif()
 
+# ====================================================================
+# INTERFACE 导出: header-only 库, 消费者 3 行接入 (GCC/Clang/MSVC 通用)
+#   add_subdirectory(lcf-ecs)
+#   add_executable(app main.cpp)
+#   target_link_libraries(app lcf-ecs)
+# 消费者环境保持纯净: 纯 -O2 无指令集 flags, 无需显式链接任何库文件,
+# 必需选项 (C++20 / MSVC 预处理器与编码 / clang builtins) 由本 target 注入,
+# SIMD 路径经运行时检测自动回退标量
+# ====================================================================
+add_library(lcf-ecs INTERFACE)
+target_compile_features(lcf-ecs INTERFACE cxx_std_20)
+target_include_directories(lcf-ecs INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+if(LCF_IS_MSVC OR LCF_IS_CLANG_CL)
+    # /Zc:preprocessor: 传统 MSVC 预处理器把 __VA_ARGS__ 视为单一参数, 破坏反射宏
+    # /utf-8: 头文件含 UTF-8 中文注释, 无 BOM 源码需显式指定编码
+    target_compile_options(lcf-ecs INTERFACE /Zc:preprocessor /utf-8)
+endif()
+if(WIN32 AND LCF_IS_CLANG AND NOT LCF_IS_CLANG_CL)
+    # clang (MSVC ABI, GNU 前端): __builtin_cpu_supports 引用 __cpu_model 符号,
+    # Windows 下不自动链接 clang builtins runtime, 由 INTERFACE 注入 (消费者零感知)
+    target_link_options(lcf-ecs INTERFACE -lclang_rt.builtins-x86_64)
+endif()
+
+# 被其他项目 add_subdirectory 引入时: 只导出 INTERFACE target, 立即返回,
+# 不设置任何全局选项/构建类型/测试目标, 消费者编译环境完全由其自身控制
+if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    return()
+endif()
+
+# ====================================================================
+# 以下仅顶层构建 (开发测试, 原行为不变)
+# ====================================================================
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
+# 移植性基线: 禁用全部指令集 flags 与 LTO, 验证纯 -O0 (Debug) 无额外命令下
+#   所有模块可编译运行, SIMD 路径经运行时检测回退标量
+option(LCF_NO_ISA "禁用指令集 flags (纯 -O0 移植性基线) / Disable ISA flags for portability baseline" OFF)
+if(LCF_NO_ISA)
+    set(LCF_ENABLE_LTO OFF CACHE BOOL "LTO disabled by LCF_NO_ISA" FORCE)
+endif()
+
 # 指令集: x86/x64 启用 AVX2/BMI/FMA; ARM64 使用标量回退
 # MinGW GCC gotcha: -mavx2 生成 vmovdqa 需 32 字节栈对齐, 但 MinGW x64 ABI 仅保证
 #   16 字节 → 随机 #GP 崩溃. GCC 不自动插入动态栈对齐 prologue.
 #   解决: MinGW GCC 仅用 SSE2/BMI2; 代码内 AVX2 路径有 #ifdef __AVX2__ 标量回退.
 #   MSVC /arch:AVX2 与 SysV ABI 无此问题 (自动插入对齐 prologue).
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64|i[3-6]86|x64")
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64|i[3-6]86|x64" AND NOT LCF_NO_ISA)
     if(LCF_IS_MSVC OR LCF_IS_CLANG_CL)
         add_compile_options(/arch:AVX2)
     elseif(LCF_IS_MINGW)
@@ -107,7 +148,9 @@ if(LCF_IS_MINGW)
 endif()
 
 if(LCF_IS_MSVC OR LCF_IS_CLANG_CL)
-    add_compile_options(/MP /utf-8)
+    # /Zc:preprocessor: 标准预处理器, 传统 MSVC 预处理器将 __VA_ARGS__ 视为单一参数,
+    # 破坏 REFLECT_FOR_EACH_DATA 等可变参数宏的正确展开
+    add_compile_options(/MP /utf-8 /Zc:preprocessor)
 endif()
 
 if(WIN32)
@@ -154,6 +197,8 @@ message(STATUS "  serialization tests          : ${BUILD_SERIALIZATION_TESTS}")
 function(lcf_add_executable target_name source_file)
     add_executable(${target_name} ${source_file})
     target_include_directories(${target_name} PRIVATE ${CMAKE_SOURCE_DIR})
+    # 链接 INTERFACE 库: 获得 include/ 路径与 clang builtins 链接选项
+    target_link_libraries(${target_name} PRIVATE lcf-ecs)
     if(LCF_IS_MSVC OR LCF_IS_CLANG_CL)
         target_compile_options(${target_name} PRIVATE /utf-8)
     endif()
@@ -194,6 +239,14 @@ if(BUILD_MODULE_PERF_TESTS)
     lcf_add_executable(test_dense_perf               test/test_dense_perf.cpp)
     lcf_add_executable(test_dense_vs_vector_perf     test/test_dense_vs_vector_perf.cpp)
     lcf_add_executable(test_dense_pool_vector_perf   test/test_dense_pool_vector_perf.cpp)
+    # 移植性基线: 显式关闭指令集 (target 级覆盖全局 -mavx2 等), 等价纯 -O2 编译
+    lcf_add_executable(test_dense_portable_perf      test/test_dense_portable_perf.cpp)
+    if(NOT LCF_IS_MSVC AND NOT LCF_IS_CLANG_CL)
+        target_compile_options(test_dense_portable_perf PRIVATE
+            -mno-avx2 -mno-fma -mno-bmi -mno-bmi2 -mno-popcnt)
+    endif()
+    # 同源对照: 全局指令集 flags (AVX2/FMA/BMI) 下编译
+    lcf_add_executable(test_dense_portable_perf_isa  test/test_dense_portable_perf.cpp)
     lcf_add_executable(test_popback_micro            test/test_popback_micro.cpp)
     lcf_add_executable(test_class_pool_perf          test/test_class_pool_perf.cpp)
     lcf_add_executable(test_ring_buffer_perf         test/test_ring_buffer_perf.cpp)

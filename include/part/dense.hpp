@@ -13,7 +13,10 @@
 #include <utility>
 #include <concepts>
 #include <functional>
-#if defined(__AVX2__) || defined(__BMI__) || (defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64)))
+// immintrin 守卫与下方 gnu::target("avx2") 函数的激活条件对齐
+// (GCC x86-64: __AVX2__ 未定义时 target 定向函数仍激活, 需要 __m256i 类型)
+#if defined(__AVX2__) || defined(__BMI__) || (defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))) \
+	|| (defined(__GNUC__) && defined(__x86_64__) && !defined(__clang__))
 #include <immintrin.h>
 #endif
 
@@ -235,7 +238,7 @@ private:
 	// 但 vmovdqu (非对齐) 安全, 通过 target 属性仅在此函数内启用 AVX2.
 	// 仅用于 erase 等大块重叠移动场景 (libc memmove 的 4x 展开收益有限).
 #if defined(__GNUC__) && defined(__x86_64__) && !defined(__AVX2__) && !defined(__clang__)
-	[[gnu::target("avx2")]]
+	LCF_TARGET_AVX2
 	static void copy_trivial_data_avx2(char* dst, const char* src, size_t bytes) noexcept {
 		const __m256i* s = static_cast<const __m256i*>(static_cast<const void*>(src));
 		__m256i* d = static_cast<__m256i*>(static_cast<void*>(dst));
@@ -265,7 +268,7 @@ private:
 	template <typename U>
 		requires (sizeof(U) <= 8 && std::is_trivially_copyable_v<U>)
 #if !defined(__AVX2__) && defined(__GNUC__) && !defined(__clang__)
-	[[gnu::target("avx2")]]
+	LCF_TARGET_AVX2
 #endif
 	static void fill_small_trivial_avx2(U* dst, const U& value, size_t count) noexcept
 	{
@@ -278,19 +281,19 @@ private:
 		}
 		else if constexpr (sizeof(U) == 2)
 		{
-			int16_t v; __builtin_memcpy(&v, &value, 2);
+			int16_t v; std::memcpy(&v, &value, 2);
 			broadcast = _mm256_set1_epi16(v);
 			elem_per_ymm = 16;
 		}
 		else if constexpr (sizeof(U) == 4)
 		{
-			int32_t v; __builtin_memcpy(&v, &value, 4);
+			int32_t v; std::memcpy(&v, &value, 4);
 			broadcast = _mm256_set1_epi32(v);
 			elem_per_ymm = 8;
 		}
 		else
 		{
-			int64_t v; __builtin_memcpy(&v, &value, 8);
+			int64_t v; std::memcpy(&v, &value, 8);
 			broadcast = _mm256_set1_epi64x(v);
 			elem_per_ymm = 4;
 		}
@@ -316,8 +319,9 @@ private:
 	}
 
 	// 广播填充用 AVX2: 仅写 DRAM, 倍增法需读+写 = 2x DRAM 流量
-#if !defined(__AVX2__) && defined(__GNUC__) && !defined(__clang__)
-	[[gnu::target("avx2")]]
+	// 无 -mavx2 时 (GCC/Clang) 以 target 属性定向启用; clang 也需要, 否则 intrinsics 报错
+#if !defined(__AVX2__) && (defined(__GNUC__) || defined(__clang__))
+	LCF_TARGET_AVX2
 #endif
 	static void fill_medium_trivial_avx2(char* dst, const char& value,
 	                                      size_t bytes, size_t elem_size) noexcept
@@ -410,12 +414,12 @@ private:
 		size_t filled = initial;
 		while (filled * 2 <= count)
 		{
-			__builtin_memmove(dst + filled, dst, filled * sizeof(U));
+			std::memmove(dst + filled, dst, filled * sizeof(U));
 			filled *= 2;
 		}
 		if (filled < count)
 		{
-			__builtin_memmove(dst + filled, dst, (count - filled) * sizeof(U));
+			std::memmove(dst + filled, dst, (count - filled) * sizeof(U));
 		}
 	}
 #else
@@ -499,12 +503,12 @@ private:
 			size_t filled = 1;
 			while (filled * 2 <= count)
 			{
-				__builtin_memmove(dst + filled, dst, filled * sizeof(U));
+				std::memmove(dst + filled, dst, filled * sizeof(U));
 				filled *= 2;
 			}
 			if (filled < count)
 			{
-				__builtin_memmove(dst + filled, dst, (count - filled) * sizeof(U));
+				std::memmove(dst + filled, dst, (count - filled) * sizeof(U));
 			}
 		}
 #else
@@ -512,12 +516,12 @@ private:
 		size_t filled = 1;
 		while (filled * 2 <= count)
 		{
-			__builtin_memmove(dst + filled, dst, filled * sizeof(U));
+			std::memmove(dst + filled, dst, filled * sizeof(U));
 			filled *= 2;
 		}
 		if (filled < count)
 		{
-			__builtin_memmove(dst + filled, dst, (count - filled) * sizeof(U));
+			std::memmove(dst + filled, dst, (count - filled) * sizeof(U));
 		}
 #endif
 	}
@@ -535,12 +539,12 @@ private:
 		size_t filled = 1;
 		while (filled * 2 <= count)
 		{
-			__builtin_memmove(dst + filled, dst, filled * sizeof(U));
+			std::memmove(dst + filled, dst, filled * sizeof(U));
 			filled *= 2;
 		}
 		if (filled < count)
 		{
-			__builtin_memmove(dst + filled, dst, (count - filled) * sizeof(U));
+			std::memmove(dst + filled, dst, (count - filled) * sizeof(U));
 		}
 	}
 #endif
@@ -605,7 +609,7 @@ private:
 
 	// 前向移动 (dst < src, 从前向后扫描): 用于 erase
 #if defined(__GNUC__) && defined(__x86_64__) && !defined(__AVX2__) && !defined(__clang__)
-	[[gnu::target("avx2")]]
+	LCF_TARGET_AVX2
 #endif
 	static void move_trivial_forward(T* dst, const T* src, size_t count) noexcept {
 		if (count == 0) { return; }
@@ -650,7 +654,7 @@ private:
 	}
 
 #if defined(__GNUC__) && defined(__x86_64__) && !defined(__AVX2__) && !defined(__clang__)
-	[[gnu::target("avx2")]]
+	LCF_TARGET_AVX2
 	static void move_trivial_forward_avx2_helper(T* dst, const T* src, size_t bytes) noexcept {
 		const __m256i* s256 = static_cast<const __m256i*>(static_cast<const void*>(src));
 		__m256i* d256 = static_cast<__m256i*>(static_cast<void*>(dst));
@@ -679,7 +683,7 @@ private:
 	// 后向不展开 - store-to-load forwarding stall
 	// 阈值: sizeof(T) <= 8: 64KB; <= 16: 32KB; > 16: 2KB
 #if defined(__GNUC__) && defined(__x86_64__) && !defined(__AVX2__) && !defined(__clang__)
-	[[gnu::target("avx2")]]
+	LCF_TARGET_AVX2
 #endif
 	static void move_trivial_backward(T* dst, const T* src, size_t count) noexcept {
 		if (count == 0) { return; }
@@ -721,7 +725,7 @@ private:
 	}
 
 #if defined(__GNUC__) && defined(__x86_64__) && !defined(__AVX2__) && !defined(__clang__)
-	[[gnu::target("avx2")]]
+	LCF_TARGET_AVX2
 	static void move_trivial_backward_avx2_helper(T* dst, const T* src, size_t bytes) noexcept {
 		const __m256i* s256 = static_cast<const __m256i*>(static_cast<const void*>(src));
 		__m256i* d256 = static_cast<__m256i*>(static_cast<void*>(dst));
@@ -753,8 +757,8 @@ private:
 				if (new_capacity * sizeof(T) >= 65536) {
 					DENSE_PREFETCH_R(new_data);
 				}
-				// __builtin_memcpy: GCC 内联小拷贝, 大块走 ERMS
-				__builtin_memcpy(std::assume_aligned<alloc_align>(new_data),
+				// std::memcpy: GCC/Clang 内联小拷贝, 大块走 ERMS
+				std::memcpy(std::assume_aligned<alloc_align>(new_data),
 				                 std::assume_aligned<alloc_align>(data_ptr_),
 				                 index_ * sizeof(T));
 			}
@@ -809,11 +813,11 @@ public:
 				data_ptr_[0] = value;
 				size_t filled = 1;
 				while (filled * 2 <= count) {
-					__builtin_memmove(data_ptr_ + filled, data_ptr_, filled * sizeof(T));
+					std::memmove(data_ptr_ + filled, data_ptr_, filled * sizeof(T));
 					filled *= 2;
 				}
 				if (filled < count) {
-					__builtin_memmove(data_ptr_ + filled, data_ptr_, (count - filled) * sizeof(T));
+					std::memmove(data_ptr_ + filled, data_ptr_, (count - filled) * sizeof(T));
 				}
 			}
 			else {
@@ -856,7 +860,7 @@ public:
 		if (maximum_quantity_ > 0) [[likely]] {
 			data_ptr_ = allocate_data(maximum_quantity_);
 			if constexpr (std::is_trivially_copyable_v<T>) {
-				__builtin_memcpy(std::assume_aligned<alloc_align>(data_ptr_),
+				std::memcpy(std::assume_aligned<alloc_align>(data_ptr_),
 				                 std::assume_aligned<alloc_align>(other.data_ptr_),
 				                 index_ * sizeof(T));
 			}
@@ -889,7 +893,7 @@ public:
 			if constexpr (std::is_trivially_copyable_v<T>) {
 				const size_t bytes = other.index_ * sizeof(T);
 				if (bytes != 0) [[likely]] {
-					__builtin_memcpy(std::assume_aligned<alloc_align>(data_ptr_),
+					std::memcpy(std::assume_aligned<alloc_align>(data_ptr_),
 					                 std::assume_aligned<alloc_align>(other.data_ptr_),
 					                 bytes);
 				}
@@ -1018,7 +1022,7 @@ public:
 		if (index_ < maximum_quantity_ && index_ > 0) [[likely]] {
 			T* new_data = allocate_data(index_);
 			if constexpr (std::is_trivially_copyable_v<T>) {
-				__builtin_memcpy(std::assume_aligned<alloc_align>(new_data),
+				std::memcpy(std::assume_aligned<alloc_align>(new_data),
 				                 std::assume_aligned<alloc_align>(data_ptr_),
 				                 index_ * sizeof(T));
 			}
@@ -1055,7 +1059,7 @@ public:
 			// 缩容 ERMS 比 AVX2 4x 展开快 (POD4 1MB 慢 7%)
 			const size_t bytes = index_ * sizeof(T);
 			if (bytes != 0) [[likely]] {
-				__builtin_memcpy(std::assume_aligned<alloc_align>(new_data),
+				std::memcpy(std::assume_aligned<alloc_align>(new_data),
 				                 std::assume_aligned<alloc_align>(data_ptr_),
 				                 bytes);
 			}
@@ -1182,7 +1186,7 @@ public:
 	// 无容量检查的追加 (unchecked), 调用方需确保 capacity 足够
 	DENSE_ALWAYS_INLINE void push_back_unchecked(const T& value) noexcept {
 		if constexpr (sizeof(T) > 128) {
-			if (index_ >= maximum_quantity_) { __builtin_unreachable(); }
+			if (index_ >= maximum_quantity_) { LCF_UNREACHABLE(); }
 		}
 		T* DENSE_RESTRICT p = std::assume_aligned<alloc_align>(data_ptr_) + index_;
 		if constexpr (std::is_trivially_copyable_v<T>) {
@@ -1195,7 +1199,7 @@ public:
 
 	DENSE_ALWAYS_INLINE void push_back_unchecked(T&& value) noexcept {
 		if constexpr (sizeof(T) > 128) {
-			if (index_ >= maximum_quantity_) { __builtin_unreachable(); }
+			if (index_ >= maximum_quantity_) { LCF_UNREACHABLE(); }
 		}
 		T* DENSE_RESTRICT p = std::assume_aligned<alloc_align>(data_ptr_) + index_;
 		if constexpr (std::is_trivially_copyable_v<T>) {
@@ -1209,7 +1213,7 @@ public:
 	template <typename... Args>
 	DENSE_ALWAYS_INLINE void emplace_back_unchecked(Args&&... args) noexcept {
 		if constexpr (sizeof(T) > 128) {
-			if (index_ >= maximum_quantity_) { __builtin_unreachable(); }
+			if (index_ >= maximum_quantity_) { LCF_UNREACHABLE(); }
 		}
 		new (std::assume_aligned<alloc_align>(data_ptr_) + index_) T(std::forward<Args>(args)...);
 		++index_;
@@ -1217,7 +1221,7 @@ public:
 
 	DENSE_ALWAYS_INLINE void emplace_back_unchecked(const T& value) noexcept {
 		if constexpr (sizeof(T) > 128) {
-			if (index_ >= maximum_quantity_) { __builtin_unreachable(); }
+			if (index_ >= maximum_quantity_) { LCF_UNREACHABLE(); }
 		}
 		T* DENSE_RESTRICT p = std::assume_aligned<alloc_align>(data_ptr_) + index_;
 		if constexpr (std::is_trivially_copyable_v<T>) {
@@ -1230,7 +1234,7 @@ public:
 
 	DENSE_ALWAYS_INLINE void emplace_back_unchecked(T&& value) noexcept {
 		if constexpr (sizeof(T) > 128) {
-			if (index_ >= maximum_quantity_) { __builtin_unreachable(); }
+			if (index_ >= maximum_quantity_) { LCF_UNREACHABLE(); }
 		}
 		T* DENSE_RESTRICT p = std::assume_aligned<alloc_align>(data_ptr_) + index_;
 		if constexpr (std::is_trivially_copyable_v<T>) {
@@ -1244,7 +1248,7 @@ public:
 	template <typename... Args>
 	DENSE_ALWAYS_INLINE void emplace_back_dense_unchecked(Args&&... args) noexcept {
 		if constexpr (sizeof(T) > 128) {
-			if (index_ >= maximum_quantity_) { __builtin_unreachable(); }
+			if (index_ >= maximum_quantity_) { LCF_UNREACHABLE(); }
 		}
 		new (std::assume_aligned<alloc_align>(data_ptr_) + index_) T(std::forward<Args>(args)...);
 		++index_;
@@ -1252,7 +1256,7 @@ public:
 
 	DENSE_ALWAYS_INLINE void emplace_back_dense_unchecked(const T& value) noexcept {
 		if constexpr (sizeof(T) > 128) {
-			if (index_ >= maximum_quantity_) { __builtin_unreachable(); }
+			if (index_ >= maximum_quantity_) { LCF_UNREACHABLE(); }
 		}
 		T* DENSE_RESTRICT p = std::assume_aligned<alloc_align>(data_ptr_) + index_;
 		if constexpr (std::is_trivially_copyable_v<T>) {
@@ -1265,7 +1269,7 @@ public:
 
 	DENSE_ALWAYS_INLINE void emplace_back_dense_unchecked(T&& value) noexcept {
 		if constexpr (sizeof(T) > 128) {
-			if (index_ >= maximum_quantity_) { __builtin_unreachable(); }
+			if (index_ >= maximum_quantity_) { LCF_UNREACHABLE(); }
 		}
 		T* DENSE_RESTRICT p = std::assume_aligned<alloc_align>(data_ptr_) + index_;
 		if constexpr (std::is_trivially_copyable_v<T>) {
@@ -1292,17 +1296,25 @@ public:
 			if (n < 64) {
 				for (size_t i = 0; i < n; ++i) { dst[i] = value; }
 			}
+#if (defined(__GNUC__) || defined(__clang__)) && defined(__x86_64__)
+			// AVX2 广播填充仅 GCC/Clang 提供; MSVC 走下方倍增/标量分支
 			else if constexpr (sizeof(T) == 16 || sizeof(T) == 32) {
 				const size_t bytes = n * sizeof(T);
-				if (bytes >= 8192) {
+#if !defined(__AVX2__)
+				// 无 -mavx2 编译 (纯 -O2 基线): 运行时检测, CPU 不支持时倍增法回退
+				if (bytes >= 8192 || !__builtin_cpu_supports("avx2"))
+#else
+				if (bytes >= 8192)
+#endif
+				{
 					dst[0] = value;
 					size_t filled = 1;
 					while (filled * 2 <= n) {
-						__builtin_memmove(dst + filled, dst, filled * sizeof(T));
+						std::memmove(dst + filled, dst, filled * sizeof(T));
 						filled *= 2;
 					}
 					if (filled < n) {
-						__builtin_memmove(dst + filled, dst, (n - filled) * sizeof(T));
+						std::memmove(dst + filled, dst, (n - filled) * sizeof(T));
 					}
 				}
 				else {
@@ -1311,6 +1323,7 @@ public:
 					                         bytes, sizeof(T));
 				}
 			}
+#endif
 			else if constexpr (sizeof(T) >= 32 && sizeof(T) % 32 == 0) {
 				// 仅写 DRAM, 倍增法需读+写 = 2x DRAM 流量
 				fill_large_trivial(dst, value, n);
@@ -1319,11 +1332,11 @@ public:
 				dst[0] = value;
 				size_t filled = 1;
 				while (filled * 2 <= n) {
-					__builtin_memmove(dst + filled, dst, filled * sizeof(T));
+					std::memmove(dst + filled, dst, filled * sizeof(T));
 					filled *= 2;
 				}
 				if (filled < n) {
-					__builtin_memmove(dst + filled, dst, (n - filled) * sizeof(T));
+					std::memmove(dst + filled, dst, (n - filled) * sizeof(T));
 				}
 			}
 		}
@@ -1426,11 +1439,11 @@ public:
 			dst[0] = value;
 			size_t filled = 1;
 			while (filled * 2 <= count) {
-				__builtin_memmove(dst + filled, dst, filled * sizeof(T));
+				std::memmove(dst + filled, dst, filled * sizeof(T));
 				filled *= 2;
 			}
 			if (filled < count) {
-				__builtin_memmove(dst + filled, dst, (count - filled) * sizeof(T));
+				std::memmove(dst + filled, dst, (count - filled) * sizeof(T));
 			}
 		}
 		else {

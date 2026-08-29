@@ -358,7 +358,7 @@ private:
         ++free_block_count_;
     }
 
-    [[gnu::noinline]] void merge_adjacent_blocks(block_header* block) noexcept
+    NOINLINE void merge_adjacent_blocks(block_header* block) noexcept
     {
         uint8_t* next_block_ptr = reinterpret_cast<uint8_t*>(block) + HEADER_SIZE + block_size(block);
         block_header* next_block = reinterpret_cast<block_header*>(next_block_ptr);

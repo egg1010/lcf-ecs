@@ -72,7 +72,7 @@
                 uint64_t y = chunk & 0x4040404040404040ULL;
                 uint64_t cont = x & ~(y << 1);
                 uint64_t lead_mask = cont ^ 0x8080808080808080ULL;
-                new_cps += __builtin_popcountll(lead_mask);
+                new_cps += std::popcount(lead_mask);
                 q += 8;
             }
             while (q < qend) { if ((*q & 0xC0) != 0x80) ++new_cps; ++q; }
@@ -112,7 +112,7 @@
                     uint64_t y = chunk & 0x4040404040404040ULL;
                     uint64_t cont = x & ~(y << 1);
                     uint64_t lead_mask = cont ^ 0x8080808080808080ULL;
-                    new_cps += __builtin_popcountll(lead_mask);
+                    new_cps += std::popcount(lead_mask);
                     q += 8;
                 }
                 while (q < qend) { if ((*q & 0xC0) != 0x80) ++new_cps; ++q; }
@@ -146,7 +146,7 @@
                 size_t chunk_off = static_cast<size_t>(q - base);
                 while (lead_mask)
                 {
-                    int bit = __builtin_ctzll(lead_mask);
+                    int bit = std::countr_zero(lead_mask);
                     cp_offsets_[cp_count_++] = static_cast<uint32_t>(chunk_off + (static_cast<size_t>(bit) >> 3));
                     lead_mask &= lead_mask - 1;
                 }

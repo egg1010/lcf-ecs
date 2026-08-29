@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <cstring>
+#include <bit>
 #include "../force_inline.hpp"
 
 // 指令集 SSE2 检测: x86/x64 启用, ARM64 标量回退
@@ -204,7 +205,7 @@ size_t count_codepoints(const uint8_t* p, const uint8_t* end) noexcept
             __m128i cont1 = _mm_cmpeq_epi8(m1, mask_80);
             uint32_t cont_mask = (static_cast<uint32_t>(_mm_movemask_epi8(cont1)) << 16)
                                | static_cast<uint16_t>(_mm_movemask_epi8(cont0));
-            count += 32 - static_cast<size_t>(__builtin_popcount(cont_mask));
+            count += 32 - static_cast<size_t>(std::popcount(cont_mask));
         }
         p += 32;
     }
@@ -222,7 +223,7 @@ size_t count_codepoints(const uint8_t* p, const uint8_t* end) noexcept
             __m128i m = _mm_and_si128(v, mask_C0);
             __m128i cont = _mm_cmpeq_epi8(m, mask_80);
             uint16_t cont_mask = static_cast<uint16_t>(_mm_movemask_epi8(cont));
-            count += 16 - static_cast<size_t>(__builtin_popcount(cont_mask));
+            count += 16 - static_cast<size_t>(std::popcount(cont_mask));
         }
         p += 16;
     }
@@ -256,10 +257,10 @@ size_t count_codepoints(const uint8_t* p, const uint8_t* end) noexcept
         uint64_t nc1 = (x1 | (x1 << 1)) & 0x8080808080808080ULL;
         uint64_t nc2 = (x2 | (x2 << 1)) & 0x8080808080808080ULL;
         uint64_t nc3 = (x3 | (x3 << 1)) & 0x8080808080808080ULL;
-        count += static_cast<size_t>(__builtin_popcountll(nc0))
-              + static_cast<size_t>(__builtin_popcountll(nc1))
-              + static_cast<size_t>(__builtin_popcountll(nc2))
-              + static_cast<size_t>(__builtin_popcountll(nc3));
+        count += static_cast<size_t>(std::popcount(nc0))
+              + static_cast<size_t>(std::popcount(nc1))
+              + static_cast<size_t>(std::popcount(nc2))
+              + static_cast<size_t>(std::popcount(nc3));
         p += 32;
     }
     while (p + 8 <= end)
@@ -268,7 +269,7 @@ size_t count_codepoints(const uint8_t* p, const uint8_t* end) noexcept
         std::memcpy(&chunk, p, 8);
         uint64_t x = chunk ^ 0x8080808080808080ULL;
         uint64_t non_cont = (x | (x << 1)) & 0x8080808080808080ULL;
-        count += static_cast<size_t>(__builtin_popcountll(non_cont));
+        count += static_cast<size_t>(std::popcount(non_cont));
         p += 8;
     }
     while (p < end)
@@ -314,7 +315,7 @@ size_t count_codepoints_and_ascii(const uint8_t* p, const uint8_t* end, bool& al
         __m128i cont1 = _mm_cmpeq_epi8(m1, mask_80);
         uint32_t cont_mask = (static_cast<uint32_t>(_mm_movemask_epi8(cont1)) << 16)
                            | static_cast<uint16_t>(_mm_movemask_epi8(cont0));
-        count += 32 - static_cast<size_t>(__builtin_popcount(cont_mask));
+        count += 32 - static_cast<size_t>(std::popcount(cont_mask));
         p += 32;
         break;
     }
@@ -329,7 +330,7 @@ size_t count_codepoints_and_ascii(const uint8_t* p, const uint8_t* end, bool& al
         __m128i cont1 = _mm_cmpeq_epi8(m1, mask_80);
         uint32_t cont_mask = (static_cast<uint32_t>(_mm_movemask_epi8(cont1)) << 16)
                            | static_cast<uint16_t>(_mm_movemask_epi8(cont0));
-        count += 32 - static_cast<size_t>(__builtin_popcount(cont_mask));
+        count += 32 - static_cast<size_t>(std::popcount(cont_mask));
         p += 32;
     }
     // 尾部 16 字节 SSE2
@@ -347,7 +348,7 @@ size_t count_codepoints_and_ascii(const uint8_t* p, const uint8_t* end, bool& al
             __m128i m = _mm_and_si128(v, mask_C0);
             __m128i cont = _mm_cmpeq_epi8(m, mask_80);
             uint16_t cont_mask = static_cast<uint16_t>(_mm_movemask_epi8(cont));
-            count += 16 - static_cast<size_t>(__builtin_popcount(cont_mask));
+            count += 16 - static_cast<size_t>(std::popcount(cont_mask));
         }
         p += 16;
     }
@@ -397,7 +398,7 @@ size_t fused_count_copy_and_ascii(const uint8_t* src, uint8_t* dst, size_t len, 
         __m128i cont1 = _mm_cmpeq_epi8(m1, mask_80);
         uint32_t cont_mask = (static_cast<uint32_t>(_mm_movemask_epi8(cont1)) << 16)
                            | static_cast<uint16_t>(_mm_movemask_epi8(cont0));
-        count += 32 - static_cast<size_t>(__builtin_popcount(cont_mask));
+        count += 32 - static_cast<size_t>(std::popcount(cont_mask));
         p += 32;
         d += 32;
         // 阶段 2: 非 ASCII 快速计数 + 拷贝 (跳过 hi_mask 计算)
@@ -413,7 +414,7 @@ size_t fused_count_copy_and_ascii(const uint8_t* src, uint8_t* dst, size_t len, 
             __m128i cont1b = _mm_cmpeq_epi8(m1b, mask_80);
             uint32_t cont_maskb = (static_cast<uint32_t>(_mm_movemask_epi8(cont1b)) << 16)
                                  | static_cast<uint16_t>(_mm_movemask_epi8(cont0b));
-            count += 32 - static_cast<size_t>(__builtin_popcount(cont_maskb));
+            count += 32 - static_cast<size_t>(std::popcount(cont_maskb));
             p += 32;
             d += 32;
         }
@@ -435,7 +436,7 @@ size_t fused_count_copy_and_ascii(const uint8_t* src, uint8_t* dst, size_t len, 
             __m128i m = _mm_and_si128(v, mask_C0);
             __m128i cont = _mm_cmpeq_epi8(m, mask_80);
             uint16_t cont_mask = static_cast<uint16_t>(_mm_movemask_epi8(cont));
-            count += 16 - static_cast<size_t>(__builtin_popcount(cont_mask));
+            count += 16 - static_cast<size_t>(std::popcount(cont_mask));
         }
         p += 16;
         d += 16;
@@ -480,10 +481,10 @@ size_t fused_count_copy_and_ascii(const uint8_t* src, uint8_t* dst, size_t len, 
             uint64_t nc1 = (x1 | (x1 << 1)) & 0x8080808080808080ULL;
             uint64_t nc2 = (x2 | (x2 << 1)) & 0x8080808080808080ULL;
             uint64_t nc3 = (x3 | (x3 << 1)) & 0x8080808080808080ULL;
-            count += static_cast<size_t>(__builtin_popcountll(nc0))
-                  + static_cast<size_t>(__builtin_popcountll(nc1))
-                  + static_cast<size_t>(__builtin_popcountll(nc2))
-                  + static_cast<size_t>(__builtin_popcountll(nc3));
+            count += static_cast<size_t>(std::popcount(nc0))
+                  + static_cast<size_t>(std::popcount(nc1))
+                  + static_cast<size_t>(std::popcount(nc2))
+                  + static_cast<size_t>(std::popcount(nc3));
         }
         else
         {
@@ -503,7 +504,7 @@ size_t fused_count_copy_and_ascii(const uint8_t* src, uint8_t* dst, size_t len, 
             all_ascii = false;
             uint64_t x = chunk ^ 0x8080808080808080ULL;
             uint64_t non_cont = (x | (x << 1)) & 0x8080808080808080ULL;
-            count += static_cast<size_t>(__builtin_popcountll(non_cont));
+            count += static_cast<size_t>(std::popcount(non_cont));
         }
         else
         {
@@ -548,10 +549,10 @@ size_t count_codepoints_and_ascii(const uint8_t* p, const uint8_t* end, bool& al
             uint64_t nc1 = (x1 | (x1 << 1)) & 0x8080808080808080ULL;
             uint64_t nc2 = (x2 | (x2 << 1)) & 0x8080808080808080ULL;
             uint64_t nc3 = (x3 | (x3 << 1)) & 0x8080808080808080ULL;
-            count += static_cast<size_t>(__builtin_popcountll(nc0))
-                  + static_cast<size_t>(__builtin_popcountll(nc1))
-                  + static_cast<size_t>(__builtin_popcountll(nc2))
-                  + static_cast<size_t>(__builtin_popcountll(nc3));
+            count += static_cast<size_t>(std::popcount(nc0))
+                  + static_cast<size_t>(std::popcount(nc1))
+                  + static_cast<size_t>(std::popcount(nc2))
+                  + static_cast<size_t>(std::popcount(nc3));
         }
         else
         {
@@ -569,7 +570,7 @@ size_t count_codepoints_and_ascii(const uint8_t* p, const uint8_t* end, bool& al
             all_ascii = false;
             uint64_t x = chunk ^ 0x8080808080808080ULL;
             uint64_t non_cont = (x | (x << 1)) & 0x8080808080808080ULL;
-            count += static_cast<size_t>(__builtin_popcountll(non_cont));
+            count += static_cast<size_t>(std::popcount(non_cont));
         }
         else
         {
@@ -616,7 +617,7 @@ const uint8_t* advance_codepoints(const uint8_t* p, const uint8_t* end, size_t n
                 if (hi != 0)
                 {
                     // 遇到非 ASCII, 跳过已有的 ASCII 字节
-                    int bit = __builtin_ctzll(hi);
+                    int bit = std::countr_zero(hi);
                     size_t ascii_in_chunk = static_cast<size_t>(bit) >> 3;
                     p += ascii_in_chunk;
                     n -= ascii_in_chunk;
@@ -699,7 +700,7 @@ size_t utf8_to_codepoints(const char* __restrict src, size_t src_len,
                 uint64_t hi = chunk & 0x8080808080808080ULL;
                 if (hi == 0) { p += 8; continue; }
                 // 找到首个 bit7=1 的字节
-                int bit = __builtin_ctzll(hi);
+                int bit = std::countr_zero(hi);
                 p += static_cast<size_t>(bit) >> 3;
                 break;
             }

@@ -377,8 +377,9 @@ public:
         {
             detail::abort_with_location("invoke: query_view invalid");
         }
-        int given_ids[] = { type_id::get_type_id<std::decay_t<Args>>()... };
-        const method_meta* m = find_overload(name, given_ids, sizeof...(Args));
+        // 首元素 0 占位: 零参数时避免零长度数组 (MSVC 拒绝, GCC 扩展容忍)
+        int given_ids[] = { 0, type_id::get_type_id<std::decay_t<Args>>()... };
+        const method_meta* m = find_overload(name, given_ids + 1, sizeof...(Args));
         if (m == nullptr)
         {
             detail::abort_with_location("invoke: method not found");
@@ -411,8 +412,9 @@ public:
             {
                 return false;
             }
-            int given_ids[] = { type_id::get_type_id<std::decay_t<Args>>()... };
-            const method_meta* m = find_overload(name, given_ids, sizeof...(Args));
+            // 首元素 0 占位: 零参数时避免零长度数组 (MSVC 拒绝, GCC 扩展容忍)
+            int given_ids[] = { 0, type_id::get_type_id<std::decay_t<Args>>()... };
+            const method_meta* m = find_overload(name, given_ids + 1, sizeof...(Args));
             if (!m)
             {
                 return false;
@@ -427,8 +429,9 @@ public:
             {
                 return std::optional<R>{};
             }
-            int given_ids[] = { type_id::get_type_id<std::decay_t<Args>>()... };
-            const method_meta* m = find_overload(name, given_ids, sizeof...(Args));
+            // 首元素 0 占位: 零参数时避免零长度数组 (MSVC 拒绝, GCC 扩展容忍)
+            int given_ids[] = { 0, type_id::get_type_id<std::decay_t<Args>>()... };
+            const method_meta* m = find_overload(name, given_ids + 1, sizeof...(Args));
             if (!m)
             {
                 return std::optional<R>{};

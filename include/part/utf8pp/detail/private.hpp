@@ -761,7 +761,7 @@ private:
             size_t base_off = static_cast<size_t>(p - base);
             while (lead_mask)
             {
-                int bit = __builtin_ctz(lead_mask);
+                int bit = std::countr_zero(lead_mask);
                 cp_offsets_[cp_count_++] = static_cast<uint32_t>(base_off + static_cast<size_t>(bit));
                 lead_mask &= lead_mask - 1;
             }
@@ -780,7 +780,7 @@ private:
             size_t base_off = static_cast<size_t>(p - base);
             while (lead_mask)
             {
-                int bit = __builtin_ctzll(lead_mask);
+                int bit = std::countr_zero(lead_mask);
                 cp_offsets_[cp_count_++] = static_cast<uint32_t>(base_off + (static_cast<size_t>(bit) >> 3));
                 lead_mask &= lead_mask - 1;
             }

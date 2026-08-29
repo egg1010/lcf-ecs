@@ -44,6 +44,21 @@
 // restrict 限定符: __restrict 在 MSVC/GCC/Clang 均被识别 (C++ 扩展)
 #define LCF_RESTRICT __restrict
 
+// 不可达路径: MSVC 用 __assume(0), GCC/Clang 用 __builtin_unreachable()
+#if defined(_MSC_VER) && !defined(__clang__)
+#define LCF_UNREACHABLE() __assume(0)
+#else
+#define LCF_UNREACHABLE() __builtin_unreachable()
+#endif
+
+// 函数级 AVX2 定向: GCC/Clang 用 gnu::target 激活定向函数;
+// MSVC 忽略 (intrinsics 不受 /arch 限制, 由运行时检测守卫调用)
+#if defined(_MSC_VER) && !defined(__clang__)
+#define LCF_TARGET_AVX2
+#else
+#define LCF_TARGET_AVX2 [[gnu::target("avx2")]]
+#endif
+
 // 预取指令
 #if defined(__GNUC__) || defined(__clang__)
 #define LCF_PREFETCH_R(ptr) __builtin_prefetch(ptr, 0, 3)   // 读, L1 (高局部性)

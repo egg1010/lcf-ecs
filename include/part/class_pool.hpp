@@ -26,9 +26,10 @@ template <typename T>
 struct pool_strided_span;
 
 // 清除最低设置位 (BMI1 BLSR 指令, 不可用时回退到标量)
+// clang (MSVC ABI) 定义 _MSC_VER 但无 -mbmi 时 intrinsic 需 target 特性, 排除
 [[nodiscard]] static inline uint64_t clear_lowest_bit(uint64_t x) noexcept
 {
-#if defined(__BMI__) || (defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64)))
+#if defined(__BMI__) || (defined(_MSC_VER) && !defined(__clang__) && (defined(_M_IX86) || defined(_M_X64)))
     return _blsr_u64(x);
 #else
     return x & (x - 1);
