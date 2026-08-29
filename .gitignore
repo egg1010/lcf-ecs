@@ -1,6 +1,5 @@
 
 
-# 忽略所有 build 文件夹
 build/
 build_clang/
 build_msvc/
@@ -10,6 +9,11 @@ build_gcc/
 build_dbg/
 build_o1/
 build_o2/
+build_msvc_od/
+build_clang_o0/
+build_gcc_o2/
+build_clang_o2/
+build_msvc_o2/
 
 .vscode
 

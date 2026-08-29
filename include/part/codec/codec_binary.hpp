@@ -104,7 +104,7 @@ public:
         // 二进制格式无类型信息, 无法安全跳过未知字段
         // 标记错误: 调用方应按已知字段类型使用 read_xxx 或 skip(n)
         skip_unsupported_ = true;
-        err_msg_.write_message(false,
+        err_msg_.write(false,
             "binary 格式不支持 skip_value (无类型信息), 请按字段类型读取");
     }
 
@@ -119,7 +119,7 @@ public:
         operating_message res;
         if (r_.has_error())
         {
-            res.write_message(false, "binary_reader error");
+            res.write(false, "binary_reader error");
         }
         return res;
     }
@@ -165,7 +165,7 @@ inline operating_message binary_codec::validate(std::string_view data) const noe
     if (r.has_error())
     {
         operating_message res;
-        res.write_message(false, "二进制 magic/头校验失败");
+        res.write(false, "二进制 magic/头校验失败");
         return res;
     }
 
@@ -175,7 +175,7 @@ inline operating_message binary_codec::validate(std::string_view data) const noe
     if (r.has_error())
     {
         operating_message res;
-        res.write_message(false, "二进制版本字段读取失败");
+        res.write(false, "二进制版本字段读取失败");
         return res;
     }
 
@@ -184,7 +184,7 @@ inline operating_message binary_codec::validate(std::string_view data) const noe
     if (r.has_error())
     {
         operating_message res;
-        res.write_message(false, "二进制元数据字段读取失败");
+        res.write(false, "二进制元数据字段读取失败");
         return res;
     }
 
@@ -193,7 +193,7 @@ inline operating_message binary_codec::validate(std::string_view data) const noe
     if (r.has_error())
     {
         operating_message res;
-        res.write_message(false, "二进制实体字段读取失败");
+        res.write(false, "二进制实体字段读取失败");
         return res;
     }
 
@@ -202,7 +202,7 @@ inline operating_message binary_codec::validate(std::string_view data) const noe
     if (r.has_error())
     {
         operating_message res;
-        res.write_message(false, "二进制类型计数读取失败");
+        res.write(false, "二进制类型计数读取失败");
         return res;
     }
 
@@ -210,7 +210,7 @@ inline operating_message binary_codec::validate(std::string_view data) const noe
     if (type_count > 65536)
     {
         operating_message res;
-        res.write_message(false, "二进制类型计数异常: ", type_count);
+        res.write(false, "二进制类型计数异常: ", type_count);
         return res;
     }
 
@@ -222,14 +222,14 @@ inline operating_message binary_codec::validate(std::string_view data) const noe
         if (r.has_error())
         {
             operating_message res;
-            res.write_message(false, "二进制类型 #", i, " 头部读取失败");
+            res.write(false, "二进制类型 #", i, " 头部读取失败");
             return res;
         }
         r.skip(data_len);
         if (r.has_error())
         {
             operating_message res;
-            res.write_message(false, "二进制类型 #", i, " 数据越界 (len=", data_len, ")");
+            res.write(false, "二进制类型 #", i, " 数据越界 (len=", data_len, ")");
             return res;
         }
     }

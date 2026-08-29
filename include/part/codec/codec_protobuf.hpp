@@ -322,7 +322,7 @@ public:
         if (data.size() < 4 || std::memcmp(data.data(), "LCPB", 4) != 0)
         {
             err_ = true;
-            err_msg_.write_message(false, "protobuf: magic 不匹配");
+            err_msg_.write(false, "protobuf: magic 不匹配");
             return;
         }
         stack_.increase_capacity(8);

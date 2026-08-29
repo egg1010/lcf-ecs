@@ -13,6 +13,7 @@
 #include "part/dense.hpp"
 #include "part/type_id.hpp"
 #include "part/tiered_sort.hpp"
+#include "part/memory/memory_pool.hpp"
 // PREFETCH_R 宏: 集中定义于 part/force_inline.hpp
 
 
@@ -58,14 +59,21 @@ struct sparse_entry
 // 迭代期安全迭代器前置声明
 class safe_iterator;
 
+// Global hot memory pool
+[[nodiscard]] inline memory::memory_pool& global_hot_memory_pool() noexcept
+{
+    static memory::memory_pool pool;
+    return pool;
+}
+
 class single_class_set
 {
 public:
     static constexpr uint32_t dense_invalid = 0xFFFFFFFFu;
 
 private:
-    // 2048 * 16B = 32KB: 桌面级 L1D (48KB) 驻留, 缓存容量为 256 版的 8 倍
-    static constexpr size_t hot_set_capacity_ = 2048;
+    // 2048 * 16B = 32KB: 桌面级 L1D (48KB) 驻留
+    static constexpr size_t default_hot_set_capacity_ = 2048;
 
     // flat 稀疏表: dense_invalid 即墓碑标记, 单次内存访问完成判活+取值 (原 class_pool 需 bitmap+数据两次访问)
     sparse_entry* sparse_{nullptr};
@@ -111,7 +119,31 @@ private:
         uint32_t dense_index;
         uint32_t epoch_lo;         // (uint32_t)position_epoch_
     };
-    hot_entry_ hot_set_[hot_set_capacity_]{};
+
+    // 热集存储: Global hot memory pool 分配, 容量 = mask + 1 (2 的幂)
+    struct hot_set_storage_
+    {
+        size_t mask;
+        hot_entry_* entries;
+    };
+    hot_set_storage_ hot_{};
+
+    void hot_set_allocate_(size_t entries) noexcept
+    {
+        hot_.entries = static_cast<hot_entry_*>(
+            global_hot_memory_pool().allocate_zeroed(entries * sizeof(hot_entry_)));
+        hot_.mask = entries - 1;
+    }
+
+    void hot_set_release_() noexcept
+    {
+        if (hot_.entries)
+        {
+            global_hot_memory_pool().deallocate(hot_.entries, (hot_.mask + 1) * sizeof(hot_entry_));
+            hot_.entries = nullptr;
+            hot_.mask = 0;
+        }
+    }
 
     // 位置纪元: 与 version_ (视图缓存失效) 解耦, 仅槽位变动操作递增
     uint32_t position_epoch_{0};
@@ -525,23 +557,28 @@ private:
 
     void hot_set_update_(uint32_t entity_index, uint32_t dense_index, uint32_t version) noexcept
     {
-        const size_t slot = entity_index & (hot_set_capacity_ - 1);
-        hot_set_[slot] = {make_entity_key_(entity{entity_index, version}), dense_index, position_epoch_};
+        if (!hot_.entries) [[unlikely]] { return; }
+        const size_t slot = entity_index & hot_.mask;
+        hot_.entries[slot] = {make_entity_key_(entity{entity_index, version}), dense_index, position_epoch_};
     }
 
     void hot_set_invalidate_(uint32_t entity_index) noexcept
     {
-        const size_t slot = entity_index & (hot_set_capacity_ - 1);
+        if (!hot_.entries) [[unlikely]] { return; }
+        const size_t slot = entity_index & hot_.mask;
         // 仅当 entity_index 匹配时清空 (检查 entity_key 低 32 位)
-        if (static_cast<uint32_t>(hot_set_[slot].entity_key) == entity_index)
+        if (static_cast<uint32_t>(hot_.entries[slot].entity_key) == entity_index)
         {
-            hot_set_[slot] = {0, 0, 0};
+            hot_.entries[slot] = {0, 0, 0};
         }
     }
 
     void hot_set_clear_() noexcept
     {
-        std::memset(hot_set_, 0, sizeof(hot_set_));
+        if (hot_.entries)
+        {
+            std::memset(hot_.entries, 0, (hot_.mask + 1) * sizeof(hot_entry_));
+        }
     }
 
     // === hot set 查找统一核心 (get_ptr/get_ptr_fast/get_def_ptr/query_context 共用) ===
@@ -560,8 +597,9 @@ private:
     //   (query_context 传构造期缓存值, 其余传 position_epoch_)
     [[nodiscard]] uint32_t hot_lookup_(entity e, uint32_t epoch_lo) const noexcept
     {
-        const size_t slot = e.parts_.index_ & (hot_set_capacity_ - 1);
-        const auto& entry = hot_set_[slot];
+        if (!hot_.entries) [[unlikely]] { return sparse_valid_dense_(e); }
+        const size_t slot = e.parts_.index_ & hot_.mask;
+        const auto& entry = hot_.entries[slot];
         const uint64_t key = make_entity_key_(e);
         // entity_key 与 epoch_lo 两次比较无数据依赖, 可并行发射
         if (entry.entity_key == key && entry.epoch_lo == epoch_lo) [[likely]]
@@ -574,9 +612,10 @@ private:
     // hot set 查找 + 回填 (非 const 专用): 未命中走 sparse 校验后写入热集
     [[nodiscard]] uint32_t hot_lookup_fill_(entity e, uint32_t epoch_lo) noexcept
     {
-        const size_t slot = e.parts_.index_ & (hot_set_capacity_ - 1);
+        if (!hot_.entries) [[unlikely]] { return sparse_valid_dense_(e); }
+        const size_t slot = e.parts_.index_ & hot_.mask;
         const uint64_t key = make_entity_key_(e);
-        const auto& entry = hot_set_[slot];
+        const auto& entry = hot_.entries[slot];
         if (entry.entity_key == key && entry.epoch_lo == epoch_lo) [[likely]]
         {
             return entry.dense_index;
@@ -584,7 +623,7 @@ private:
         const uint32_t d = sparse_valid_dense_(e);
         if (d != dense_invalid)
         {
-            hot_set_[slot] = {key, d, epoch_lo};
+            hot_.entries[slot] = {key, d, epoch_lo};
         }
         return d;
     }
@@ -873,7 +912,7 @@ private:
             const entity& e = entities[i];
             if (!e.is_valid()) [[unlikely]]
             {
-                OM_MSG(result, false, "single_class_set::add_batch(): invalid entity index ", e.parts_.index_);
+                result.write(false, "single_class_set::add_batch(): invalid entity index ", e.parts_.index_);
                 return result;
             }
             if (e.parts_.index_ > max_index) max_index = e.parts_.index_;
@@ -1069,15 +1108,20 @@ public:
     [[nodiscard]] size_t get_component_size() const noexcept { return component_size_; }
     [[nodiscard]] int get_type_id_value() const noexcept { return type_id_; }
 
-    single_class_set() noexcept = default;
+    single_class_set() noexcept
+    {
+        hot_set_allocate_(default_hot_set_capacity_);
+    }
 
     explicit single_class_set(size_t capacity) noexcept
+        : single_class_set()
     {
         increase_capacity(capacity);
     }
 
     template <typename T>
     single_class_set(entity e, T&& object, size_t r_size = 1024) noexcept
+        : single_class_set()
     {
         increase_capacity(r_size);
         add(e, std::forward<T>(object));
@@ -1096,13 +1140,13 @@ public:
         }
         else if (type_id_ != tid) [[unlikely]]
         {
-            OM_MSG(result, false, "single_class_set::add(): type mismatch");
+            result.write(false, "single_class_set::add(): type mismatch");
             return result;
         }
 
         if (!e.is_valid()) [[unlikely]]
         {
-            OM_MSG(result, false, "single_class_set::add(): ID is invalid, index=", e.parts_.index_);
+            result.write(false, "single_class_set::add(): ID is invalid, index=", e.parts_.index_);
             return result;
         }
 
@@ -1248,19 +1292,19 @@ public:
         {
             if (!init_def_pool(def_id, def)) [[unlikely]]
             {
-                OM_MSG(result, false, "single_class_set::add_def(): def pool init failed, id=", def_id);
+                result.write(false, "single_class_set::add_def(): def pool init failed, id=", def_id);
                 return result;
             }
         }
         else if (type_id_ != def_id) [[unlikely]]
         {
-            OM_MSG(result, false, "single_class_set::add_def(): type mismatch, id=", def_id);
+            result.write(false, "single_class_set::add_def(): type mismatch, id=", def_id);
             return result;
         }
 
         if (!e.is_valid()) [[unlikely]]
         {
-            OM_MSG(result, false, "single_class_set::add_def(): ID is invalid, index=", e.parts_.index_);
+            result.write(false, "single_class_set::add_def(): ID is invalid, index=", e.parts_.index_);
             return result;
         }
 
@@ -1278,7 +1322,7 @@ public:
                 entity_change_tracking_.increase_capacity(new_cap);
                 if (!dp->reserve(new_cap)) [[unlikely]]
                 {
-                    OM_MSG(result, false, "single_class_set::add_def(): pool reserve failed, id=", def_id);
+                    result.write(false, "single_class_set::add_def(): pool reserve failed, id=", def_id);
                     return result;
                 }
                 typed_pool_data_ = dp->data;
@@ -1287,7 +1331,7 @@ public:
             {
                 if (!dp->reserve((dp->capacity == 0) ? 64 : dp->capacity * 2)) [[unlikely]]
                 {
-                    OM_MSG(result, false, "single_class_set::add_def(): pool reserve failed, id=", def_id);
+                    result.write(false, "single_class_set::add_def(): pool reserve failed, id=", def_id);
                     return result;
                 }
                 typed_pool_data_ = dp->data;
@@ -1376,7 +1420,7 @@ public:
             {
                 if (!dp->reserve((dense_idx + 1) * 2)) [[unlikely]]
                 {
-                    OM_MSG(result, false, "single_class_set::add_def(): pool reserve failed, id=", def_id);
+                    result.write(false, "single_class_set::add_def(): pool reserve failed, id=", def_id);
                     return result;
                 }
                 typed_pool_data_ = dp->data;
@@ -1411,7 +1455,7 @@ public:
         if (entities.size() != components.size()) [[unlikely]]
         {
             operating_message result;
-            OM_MSG(result, false, "single_class_set::add_batch(): entities and components size mismatch");
+            result.write(false, "single_class_set::add_batch(): entities and components size mismatch");
             return result;
         }
         return add_batch_impl<T>(entities, entities.size(),
@@ -1679,13 +1723,13 @@ public:
         operating_message result;
         if (!e.is_valid() || e.parts_.index_ >= sparse_size_) [[unlikely]]
         {
-            OM_MSG(result, false, "single_class_set::soft_remove(): invalid entity or version mismatch, index=", e.parts_.index_);
+            result.write(false, "single_class_set::soft_remove(): invalid entity or version mismatch, index=", e.parts_.index_);
             return result;
         }
         const sparse_entry* se = sparse_entry_checked_(e.parts_.index_);
         if (!se || se->dense == dense_invalid || se->version != e.parts_.version_) [[unlikely]]
         {
-            OM_MSG(result, false, "single_class_set::soft_remove(): invalid entity or version mismatch, index=", e.parts_.index_);
+            result.write(false, "single_class_set::soft_remove(): invalid entity or version mismatch, index=", e.parts_.index_);
             return result;
         }
 
@@ -1705,13 +1749,12 @@ public:
         operating_message result;
         if (iteration_depth_ > 0) [[unlikely]]
         {
-            OM_MSG(result, false, "single_class_set::compact(): forbidden during iteration");
+            result.write(false, "single_class_set::compact(): forbidden during iteration");
             return result;
         }
         const size_t before = dense_.size();
         compact_impl_();
-        (void)before; // release 构建 OM_MSG 不求值参数, 抑制未使用警告
-        OM_MSG(result, true, "single_class_set::compact(): reclaimed ", before - dense_.size(), " tombstones");
+        result.write(true, "single_class_set::compact(): reclaimed ", before - dense_.size(), " tombstones");
         return result;
     }
 
@@ -1782,6 +1825,7 @@ public:
     : sparse_(other.sparse_)
     , sparse_cap_(other.sparse_cap_)
     , sparse_size_(other.sparse_size_)
+    , hot_(other.hot_)
     , dense_(std::move(other.dense_))
     , type_id_(other.type_id_)
     , typed_pool_(other.typed_pool_)
@@ -1801,11 +1845,11 @@ public:
     , on_modify_(other.on_modify_)
     , on_modify_data_(other.on_modify_data_)
     {
-        std::memcpy(hot_set_, other.hot_set_, sizeof(hot_set_));
         position_epoch_ = other.position_epoch_;
         other.sparse_ = nullptr;
         other.sparse_cap_ = 0;
         other.sparse_size_ = 0;
+        other.hot_ = {};
         other.typed_pool_ = nullptr;
         other.typed_pool_data_ = nullptr;
         other.ops_ = {};
@@ -1836,7 +1880,8 @@ public:
             sparse_ = other.sparse_;
             sparse_cap_ = other.sparse_cap_;
             sparse_size_ = other.sparse_size_;
-            std::memcpy(hot_set_, other.hot_set_, sizeof(hot_set_));
+            hot_set_release_();
+            hot_ = other.hot_;
             position_epoch_ = other.position_epoch_;
             dense_ = std::move(other.dense_);
             typed_pool_ = other.typed_pool_;
@@ -1861,6 +1906,7 @@ public:
             other.sparse_ = nullptr;
             other.sparse_cap_ = 0;
             other.sparse_size_ = 0;
+            other.hot_ = {};
             other.typed_pool_ = nullptr;
             other.typed_pool_data_ = nullptr;
             other.ops_ = {};
@@ -2062,6 +2108,23 @@ public:
         hot_set_clear_();
     }
 
+    // 热集容量调整 (2 的幂), 改变即清空热集
+    void set_hot_set_capacity(size_t entries) noexcept
+    {
+        if (entries == 0 || (entries & (entries - 1)) != 0) [[unlikely]]
+        {
+            assert(false && "set_hot_set_capacity(): entries must be power of two");
+            return;
+        }
+        hot_set_release_();
+        hot_set_allocate_(entries);
+    }
+
+    [[nodiscard]] size_t hot_set_capacity() const noexcept
+    {
+        return hot_.entries ? hot_.mask + 1 : 0;
+    }
+
     void bump_pool_version() noexcept
     {
         ++version_;
@@ -2076,6 +2139,7 @@ public:
     ~single_class_set() noexcept
     {
         if (typed_pool_ && ops_.destroy_pool) ops_.destroy_pool(typed_pool_);
+        hot_set_release_();
         if (sparse_) [[likely]]
         {
             ::operator delete(sparse_, sparse_cap_ * sizeof(sparse_entry));
@@ -2236,13 +2300,13 @@ inline operating_message single_class_set::hard_remove(entity e) noexcept
     operating_message result;
     if (!e.is_valid() || e.parts_.index_ >= sparse_size_) [[unlikely]]
     {
-        OM_MSG(result, false, "single_class_set::hard_remove(): invalid entity or version mismatch, index=", e.parts_.index_);
+        result.write(false, "single_class_set::hard_remove(): invalid entity or version mismatch, index=", e.parts_.index_);
         return result;
     }
     const sparse_entry* se = sparse_entry_checked_(e.parts_.index_);
     if (!se || se->dense == dense_invalid || se->version != e.parts_.version_) [[unlikely]]
     {
-        OM_MSG(result, false, "single_class_set::hard_remove(): invalid entity or version mismatch, index=", e.parts_.index_);
+        result.write(false, "single_class_set::hard_remove(): invalid entity or version mismatch, index=", e.parts_.index_);
         return result;
     }
 

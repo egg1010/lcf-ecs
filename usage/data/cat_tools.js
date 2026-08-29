@@ -10,14 +10,13 @@ window.DOCS_DATA['operating_message'] = {
 
 记录操作结果（成功/失败）和调试信息。核心特性：
 
-- **值语义返回**：\`single_class_set\` / \`manager\` 的 \`add\` / \`add_batch\` / \`hard_remove\` / \`soft_remove\` 均按值返回 \`operating_message\`。容器自身不持有 \`operating_message\` 成员，每次操作返回独立结果
+- **单一 write 接口**：所有写入经由 \`write\`，级别/错误码/位置/格式化以标签形式混入参数包，任意组合
+- **值语义返回**：\`single_class_set\` / \`manager\` 的 \`add\` / \`add_batch\` / \`hard_remove\` / \`soft_remove\` 均按值返回 \`operating_message\`
 - **粘性 false 语义**：单个返回值对象一旦失败就保持 false，只有 \`reset()\` 能恢复
-- **默认高性能**：Release 构建（\`NDEBUG\`）默认零开销，\`OM_MSG\` 宏不求值消息参数；Debug 构建默认写消息
-- **全局开关**：\`message_recording_enabled()\` 运行时控制是否写入字符串（仅影响 \`write_message*\` 函数，不影响 \`OM_MSG\` 宏的编译期展开）
-- **错误码**：\`code()\` 返回错误码（0=成功），可用 \`is_code()\` 程序化判断错误类型
-- **位置追踪**：\`write_message_loc()\` 自动附加 \`[文件名:行号]\` 前缀
-- **日志级别过滤**：\`msg_level\` 枚举 + \`min_level_\` 表驱动过滤，被过滤的级别跳过全部格式化
-- **类型特化写入**：\`write_message\` 对整型/浮点走 \`std::to_chars\`，对字符串走 \`append\`，其他类型走 \`std::format_to\`
+- **零业务宏**：全部能力由模板与标签表达；消息写入由运行时开关 \`message_recording_enabled()\` 控制
+- **全局开关**：\`message_recording_enabled()\` 运行时控制是否写入字符串
+- **错误码**：32 位，\`code()\` 返回（0=成功），\`is_code()\` 程序化判断错误类型
+- **日志级别过滤**：\`msg_level\` 枚举 + \`min_level\` 过滤，被过滤的级别跳过全部写入
 
 ### msg_level 日志级别
 
@@ -33,26 +32,27 @@ enum class msg_level : uint8_t {
 ### 错误码常量
 
 \`\`\`cpp
-constexpr uint16_t om_err_none              = 0;
-constexpr uint16_t om_err_type_mismatch     = /* fnv1a("type_mismatch") */;
-constexpr uint16_t om_err_invalid_entity    = /* fnv1a("invalid_entity") */;
-constexpr uint16_t om_err_version_mismatch  = /* fnv1a("version_mismatch") */;
-constexpr uint16_t om_err_out_of_range      = /* fnv1a("out_of_range") */;
-constexpr uint16_t om_err_null_pointer      = /* fnv1a("null_pointer") */;
-constexpr uint16_t om_err_capacity_exceeded = /* fnv1a("capacity_exceeded") */;
-constexpr uint16_t om_err_not_found         = /* fnv1a("not_found") */;
-constexpr uint16_t om_err_already_exists    = /* fnv1a("already_exists") */;
+constexpr msg::code_tag om_err_none              = 0;
+constexpr msg::code_tag om_err_type_mismatch     = /* fnv1a("type_mismatch") */;
+constexpr msg::code_tag om_err_invalid_entity    = /* fnv1a("invalid_entity") */;
+constexpr msg::code_tag om_err_version_mismatch  = /* fnv1a("version_mismatch") */;
+constexpr msg::code_tag om_err_out_of_range      = /* fnv1a("out_of_range") */;
+constexpr msg::code_tag om_err_null_pointer      = /* fnv1a("null_pointer") */;
+constexpr msg::code_tag om_err_capacity_exceeded = /* fnv1a("capacity_exceeded") */;
+constexpr msg::code_tag om_err_not_found         = /* fnv1a("not_found") */;
+constexpr msg::code_tag om_err_already_exists    = /* fnv1a("already_exists") */;
+constexpr msg::code_tag om_err_out_of_memory     = /* fnv1a("out_of_memory") */;
 \`\`\`
 
-错误码基于 \`fnv1a_consteval\` 哈希低 16 位，跨进程稳定。可自定义错误码：\`static_cast<uint16_t>(fnv1a_consteval("my_error"))\`。
+错误码基于 \`fnv1a_consteval\` 哈希，跨进程稳定。自定义错误码：\`msg::errc(static_cast<uint32_t>(fnv1a_consteval("my_error")))\`。
 
 ### 接口
 
 | 接口 | 说明 |
 |------|------|
-| \`message_recording_enabled()\` | 全局开关引用（运行时控制是否写入字符串，仅影响 \`write_message*\` 函数） |
+| \`message_recording_enabled()\` | 全局开关引用（运行时控制是否写入字符串） |
 | \`msg_level\` | 日志级别枚举（debug/info/warn/error） |
-| \`om_err_*\` | 预定义错误码常量 |
+| \`om_err_*\` | 预定义错误码常量标签 |
 | \`operating_message()\` | 默认构造，\`switch_=true\`，\`code_=0\`，\`min_level_=info\` |
 | \`operator bool()\` | 是否成功（返回 \`switch_\`） |
 | \`reset()\` | 重置为成功、清空消息和错误码 |
@@ -62,27 +62,16 @@ constexpr uint16_t om_err_already_exists    = /* fnv1a("already_exists") */;
 | \`get_switch_bool() const\` | 获取开关 const 引用 |
 | \`set_min_level(msg_level)\` | 设置最低记录级别（默认 info） |
 | \`get_min_level()\` | 获取当前最低记录级别 |
-| \`set_code(uint16_t)\` | 设置错误码 |
+| \`set_code(uint32_t)\` | 设置错误码 |
 | \`code()\` | 获取错误码（0=成功） |
-| \`is_code(uint16_t)\` | 判断错误码是否匹配 |
+| \`is_code(uint32_t)\` | 判断错误码是否匹配 |
 | \`reserve(size_t)\` | 预分配消息缓冲区 |
 | \`capacity()\` | 当前缓冲区容量 |
 | \`message_size()\` | 当前消息长度 |
-| \`write_message(bool sw, Args... args)\` | 写入消息（\`sw=false\` 标记失败，粘性） |
-| \`write_message_level(lv, sw, Args...)\` | 带级别的写入（级别不足则跳过，自动加前缀） |
-| \`write_message_fmt(bool sw, fmt, Args...)\` | 格式化写入（\`fmt\` 为编译期字面量，\`std::format_string\` 编译期校验） |
-| \`write_message_fmt_level(lv, sw, fmt, Args...)\` | 带级别的格式化写入（编译期校验） |
-| \`write_message_code(code, sw, Args...)\` | 带错误码的写入（\`sw=false\` 时设置 code） |
-| \`write_message_code_level(code, lv, sw, Args...)\` | 带错误码和级别的写入 |
-| \`write_message_loc(sw, std::source_location, Args...)\` | 带源码位置前缀 \`[文件:行]\` 的写入（\`loc\` 需显式传 \`current()\`） |
-| \`write_message_code_loc(code, sw, std::source_location, Args...)\` | 带错误码和源码位置的写入 |
-| \`write_message_fmt_runtime(sw, std::string_view fmt, Args...)\` | 运行时格式化写入（\`fmt\` 运行时构造，\`validate_format\` 校验，完整 \`std::format\` 语法） |
-| \`write_message_fmt_runtime_level(lv, sw, fmt, Args...)\` | 带级别的运行时格式化写入 |
-| \`write_message_fmt_runtime_code(code, sw, fmt, Args...)\` | 带错误码的运行时格式化写入 |
-| \`write_message_fmt_runtime_code_level(code, lv, sw, fmt, Args...)\` | 带错误码和级别的运行时格式化写入 |
-| \`write_message_fmt_runtime_loc(sw, std::source_location, fmt, Args...)\` | 带源码位置的运行时格式化写入 |
-| \`write_message_fmt_runtime_code_loc(code, sw, std::source_location, fmt, Args...)\` | 带错误码和源码位置的运行时格式化写入 |
-| \`validate_format(fmt, expected_count)\` | 运行时格式串校验（占位符数量 + 语法，\`noexcept\`，不校验类型匹配） |
+| \`write(bool sw, Args... args)\` | 写入消息，\`sw\` 调整成败（粘性） |
+| \`write(Args... args)\` | 写入消息（省略开关 = 成功，不改变现有状态） |
+| \`check(cond, Args... args)\` | 前置条件检查：成功零写入返回 true，失败写入返回 false |
+| \`validate_format(fmt, expected_count)\` | 运行时格式串校验（占位符数量 + 语法，不校验类型匹配） |
 | \`read_message()\` | 读取消息字符串（返回 \`string_view\`） |
 | \`operator+=(string_view)\` | 追加字符串到消息 |
 | \`operator+=(operating_message&&)\` | 合并右值消息（\`switch_ = switch_ && other.switch_\`） |
@@ -93,112 +82,130 @@ constexpr uint16_t om_err_already_exists    = /* fnv1a("already_exists") */;
 | \`operating_message(const operating_message&)\` | 拷贝构造 |
 | \`operator=(const operating_message&)\` | 拷贝赋值 |
 
+### 标签
+
+| 标签 | 说明 |
+|------|------|
+| \`msg::debug\` / \`msg::info\` / \`msg::warn\` / \`msg::error\` | 级别常量标签 |
+| \`om_err_*\` | 预定义错误码标签（失败时设置 code） |
+| \`msg::errc(c)\` | 动态错误码标签 |
+| \`msg::here()\` | 位置标签，写入 \`[文件名:行号]\` 前缀 |
+| \`msg::fmt("{}", x)\` | 编译期格式化标签（\`std::format\` 语法，编译期校验） |
+| \`msg::fmt_rt(sv, x)\` | 运行时格式串标签（\`fmt\` 为运行时 string_view） |
+| \`msg::defer(fn)\` | 惰性求值标签（写入时才调用） |
+
+标签与普通参数可任意组合、任意顺序混入 \`write\` 参数包：
+
+\`\`\`cpp
+om.write(false, msg::here(), om_err_type_mismatch,
+         "add(): type mismatch, got ", msg::fmt("{}(0x{:X})", id, id));
+\`\`\`
+
+### 断言与调试辅助
+
+| 接口 | 说明 |
+|------|------|
+| \`msg::expect_ok(om)\` | 测试断言：期望成功，失败则打印位置并中止 |
+| \`msg::expect_code(om, expected)\` | 测试断言：期望指定错误码 |
+| \`msg::expect_fail(om)\` | 测试断言：期望失败 |
+| \`msg::debug_break()\` | 触发调试器中断 |
+
 ### 使用
 
 \`\`\`cpp
 operating_message msg;
-msg.write_message(false, "Error: ", "file not found");
+msg.write(false, "Error: ", "file not found");
 if (!msg) { /* 处理错误 */ }
 
-// 粘性 false：write_message(true) 不会恢复
-msg.write_message(true, "This won't recover");
+// 粘性 false：write(true) 不会恢复
+msg.write(true, "This won't recover");
 // msg 仍为 false
 
 msg.reset();  // 恢复为 true, 清空 code 和消息
 
-// 全局开关 (运行时控制, 仅影响 write_message* 函数)
-// Release 构建 (NDEBUG) 默认 false (高性能); Debug 构建默认 true
-message_recording_enabled() = false;  // 运行时禁用字符串写入
-message_recording_enabled() = true;   // 运行时启用字符串写入
+// 省略开关 = 成功
+msg.write("created: id=", 42);
 
-// 构建类型选择 (VSCode CMake Tools 状态栏 / 命令行)
-//   cmake -B build -DCMAKE_BUILD_TYPE=Release  # 高性能: OM_MSG 宏不求值参数
-//   cmake -B build -DCMAKE_BUILD_TYPE=Debug    # 调试: OM_MSG 宏写完整消息
+// 纯状态调整（无消息）
+msg.write(false);
+
+// 全局开关 (运行时控制)
+message_recording_enabled() = false;  // 禁用字符串写入
+message_recording_enabled() = true;   // 启用字符串写入
 
 // 格式化
-msg.write_message_fmt(true, "x={}, y={}", 10, 20);
+msg.write(true, msg::fmt("x={}, y={}", 10, 20));
+
+// 运行时格式串 (配置/语言包/动态模板)
+std::string dyn_fmt = load_template("entry");
+msg.write(true, msg::fmt_rt(dyn_fmt, id, name));
 
 // 合并
 operating_message msg2;
-msg2.write_message(false, "Another error");
+msg2.write(false, "Another error");
 msg += msg2;  // switch_ = msg.switch_ && msg2.switch_
 
 // 日志级别过滤
 msg.set_min_level(msg_level::warn);       // 只记 warn 及以上
-msg.write_message_level(msg_level::info, true, "这条被过滤");  // 不写入
-msg.write_message_level(msg_level::error, true, "严重错误: ", 42);
+msg.write(true, msg::info, "这条被过滤");  // 不写入
+msg.write(true, msg::error, "严重错误: ", 42);
 // message_ = "[ERROR] 严重错误: 42\\n"
 
-// 级别格式化
-msg.write_message_fmt_level(msg_level::warn, true, "v={} k={}", 1, "x");
+// 级别 + 格式化组合
+msg.write(true, msg::warn, msg::fmt("v={} k={}", 1, "x"));
 // message_ += "[WARN]  v=1 k=x\\n"
 
-// 整型/浮点使用 to_chars
-msg.write_message(true, "i=", 100, " d=", 3.14);
+// 整型/浮点直接写入
+msg.write(true, "i=", 100, " d=", 3.14);
 
-// 预分配缓冲区（循环场景避免首次分配）
-msg.reserve(4096);
-for (int i = 0; i < 1000; ++i) {
-    msg.reset();
-    msg.write_message(true, "iter ", i);
-}
+// 惰性求值
+msg.write(false, "state=", msg::defer([&]{ return dump_state(); }));
 
-// === 错误码 ===
-msg.write_message_code(om_err_invalid_entity, false, "实体无效: ", entity_id);
-if (msg.is_code(om_err_invalid_entity)) {
+// 错误码
+msg.write(false, om_err_invalid_entity, "实体无效: ", entity_id);
+if (msg.is_code(om_err_invalid_entity))
+{
     // 程序化判断错误类型
 }
-if (msg.is_code(om_err_version_mismatch)) {
-    // 版本不匹配的专门处理
-}
 
-// 自定义错误码
-constexpr uint16_t my_err = static_cast<uint16_t>(fnv1a_consteval("my_custom_error"));
-msg.set_code(my_err);
+// 动态错误码
+msg.write(false, msg::errc(custom_code), "自定义错误");
 
-// 错误码 + 级别
-msg.write_message_code_level(om_err_capacity_exceeded, msg_level::error, false, "容量超限");
-
-// === source_location ===
-msg.write_message_loc(false, std::source_location::current(), "操作失败: ", reason);
+// 位置
+msg.write(false, msg::here(), "操作失败: ", reason);
 // message_ = "[test.cpp:42] 操作失败: <reason>\\n"
 
-// 错误码 + 位置
-msg.write_message_code_loc(om_err_null_pointer, false, std::source_location::current(), "空指针: ", ptr);
+// 前置条件检查
+if (!msg.check(ptr != nullptr, om_err_null_pointer, "空指针: ", ptr))
+{
+    return msg;
+}
 
-// === 运行时格式化 (fmt 为运行时 string_view, 支持完整 std::format 语法) ===
-msg.write_message_fmt_runtime(true, "值: {}", 42);
-msg.write_message_fmt_runtime(true, "{}+{}={}", 1, 2, 3);
-msg.write_message_fmt_runtime_level(msg_level::warn, true, "[{}] {}", "WARN", "告警");
+// 预分配缓冲区（循环场景）
+msg.reserve(4096);
+for (int i = 0; i < 1000; ++i)
+{
+    msg.reset();
+    msg.write(true, "iter ", i);
+}
 
-// 复杂格式 (slow path: validate_format + std::vformat_to)
-msg.write_message_fmt_runtime(true, "hex={:08x}", 0xAB);   // "hex=000000ab"
-
-// 运行时拼接 fmt (配置/语言包/动态宽度)
-std::string dyn_fmt = load_template("entry");
-msg.write_message_fmt_runtime(true, dyn_fmt, id, name);
-
-// 运行时 + code / loc 组合
-msg.write_message_fmt_runtime_code(om_err_out_of_range, false, "idx={} max={}", 9, 8);
-msg.write_message_fmt_runtime_loc(true, std::source_location::current(), "n={}", 5);
-
-// 预校验运行时格式串 (可选, 不校验类型匹配)
-if (!validate_format(dyn_fmt, 2)) { /* 格式非法 */ }
+// 测试断言
+msg::expect_ok(manager.add<Position>(e, pos));
+msg::expect_code(manager.add<Position>(invalid_e, pos), om_err_invalid_entity);
 \`\`\`
 
 ### 不要做什么
 
 | 错误做法 | 问题 | 正确做法 |
 |---------|------|---------|
-| 依赖 \`write_message(true)\` 恢复失败状态 | 粘性 false 语义，成功后不会恢复 | 调用 \`reset()\` 显式恢复 |
-| 在 Release 构建中依赖 \`read_message()\` | 全局开关关闭时字符串为空 | 使用 \`operator bool()\` 判断成败，或用 Debug 构建开启消息 |
+| 依赖 \`write(true)\` 恢复失败状态 | 粘性 false 语义，成功后不会恢复 | 调用 \`reset()\` 显式恢复 |
+| 在记录开关关闭时依赖 \`read_message()\` | 字符串为空，但 switch/code 仍更新 | 先 \`message_recording_enabled()\` 确认开启，或用 \`operator bool()\` 判断成败 |
 | 忘记检查 \`operator bool()\` | 操作失败被静默忽略 | 每次关键操作后检查 \`if (!msg) { ... }\` |
-| 字符串匹配判断错误类型 | 脆弱且 Release 中消息为空 | 使用 \`is_code()\` 程序化判断错误码 |
-| \`write_message_code\` 传 \`sw=true\` 时期望设置 code | \`sw=true\` 时不设 code | 仅 \`sw=false\` 时 code 被设置 |
+| 字符串匹配判断错误类型 | 脆弱且记录关闭时消息为空 | 使用 \`is_code()\` 程序化判断错误码 |
+| \`write\` 传 \`sw=true\` 时期望设置错误码 | 成功路径错误码清零 | 仅 \`sw=false\` 时 code 被设置 |
 | \`reset()\` 后期望保留错误码 | \`reset()\` 清零 code | 如需保留 code，用 \`clear_message()\` 仅清消息 |
-| 高频日志用 \`{:08x}\` 等复杂格式 | 走通用路径 | 高频路径仅用 \`{}\` 简单占位符 |
-| 默认级别记录所有 debug 日志 | Release 中 debug 日志拖累性能 | \`set_min_level(msg_level::warn)\` 过滤低级别 |
-| \`write_message_loc\` 省略 \`loc\` 参数 | 编译错误（\`loc\` 非默认参数） | 显式传 \`std::source_location::current()\` |
+| 首参数传 bool 内容 | 首参数为 bool 类型一律视为开关 | 用 \`msg::fmt("{}", flag)\` 写入 bool 内容 |
+| \`msg::fmt\` 内传昂贵表达式 | 参数在构造时求值 | 用 \`msg::defer\` 包裹昂贵计算 |
 
 ### 高级功能与调试辅助
 
@@ -211,7 +218,7 @@ if (!validate_format(dyn_fmt, 2)) { /* 格式非法 */ }
 | 类型 | 说明 |
 |------|------|
 | \`message_recording_guard(enable)\` | 作用域内临时开启/关闭 \`message_recording_enabled()\`，析构自动恢复 |
-| \`min_level_guard(om, lv)\` | 作用域内临时调整 \`om\` 的 \`min_level_\`，析构自动恢复 |
+| \`min_level_guard(om, lv)\` | 作用域内临时调整 \`om\` 的 \`min_level\`，析构自动恢复 |
 | \`om_prefix(prefix)\` | 推入模块前缀到前缀栈，析构弹出（配合 \`om_write_prefixed\`；\`om_extensions.hpp\`） |
 | \`om_indent\` | 推入一层缩进，析构弹出（配合 \`om_write_indented\`） |
 | \`om_scope_timer(om, name)\` | RAII 作用域计时器（墙钟 us，析构写入消息；\`om_extensions.hpp\`） |
@@ -219,7 +226,7 @@ if (!validate_format(dyn_fmt, 2)) { /* 格式非法 */ }
 
 \`\`\`cpp
 {
-    message_recording_guard g(true);        // Release 模式局部开启消息
+    message_recording_guard g(true);        // 局部开启消息
     min_level_guard lg(om, msg_level::warn);// 作用域内只看 warn 及以上
     om_prefix pfx("[ECS]");                 // 模块前缀
     om_indent ind;                          // 缩进一层
@@ -237,17 +244,9 @@ if (!validate_format(dyn_fmt, 2)) { /* 格式非法 */ }
 
 \`\`\`cpp
 auto snap = snapshot_of(om);
-om.write_message_fmt_runtime(true, "二次失败诊断: {}", detail);
+om.write(true, msg::fmt_rt("二次失败诊断: {}", detail));
 std::string_view extra = appended_since(om, snap);  // 仅追加部分
 \`\`\`
-
-#### 级别便捷方法与 KV 日志
-
-| 接口 | 说明 |
-|------|------|
-| \`om_debug/om_info/om_warn/om_error(om, sw, args...)\` | 薄封装 \`write_message_level\` |
-| \`om_kv(om, key, val)\` | 写入 \`key=value\\n\` 形式 |
-| \`om_progress(om, cur, total, task)\` | 写入 \`[cur/total] task\\n\` 进度 |
 
 #### 前缀与缩进写入
 
@@ -278,8 +277,9 @@ std::string_view extra = appended_since(om, snap);  // 仅追加部分
 | \`om_dedup_clear()\` | 清空去重集合，允许同 \`key\` 再次输出 |
 
 \`\`\`cpp
-if (om_once("warn_overflow")) {           // 同一警告只输出一次
-    om.write_message_level(msg_level::warn, true, "buffer overflow");
+if (om_once("warn_overflow"))
+{
+    om.write(true, msg::warn, "buffer overflow");
 }
 \`\`\`
 
@@ -303,13 +303,13 @@ if (om_once("warn_overflow")) {           // 同一警告只输出一次
 
 | 类型/接口 | 说明 |
 |----------|------|
-| \`om_sink_fn\` | 回调签名 \`void(*)(msg_level, uint16_t, string_view)\`（函数指针，无 \`std::function\`） |
+| \`om_sink_fn\` | 回调签名 \`void(*)(msg_level, uint32_t, string_view)\`（函数指针，无 \`std::function\`） |
 | \`om_logger(sink, cb)\` | 包装 \`operating_message\`，每次 \`write/write_fmt\` 后触发回调 + 推入历史 |
-| \`om_logger::write / write_fmt\` | 代理 \`write_message_level\` / \`write_message_fmt_runtime_level\` |
+| \`om_logger::write / write_fmt\` | 代理 \`write\` + level 标签（\`write_fmt\` 附运行时格式串） |
 
 \`\`\`cpp
 om_history hist;
-auto cb = [](msg_level lv, uint16_t code, std::string_view msg) {
+auto cb = [](msg_level lv, uint32_t code, std::string_view msg) {
     std::printf("[%u] code=%u %.*s\\n", (unsigned)lv, code, (int)msg.size(), msg.data());
 };
 om_logger logger(&hist, cb);
@@ -328,7 +328,8 @@ logger.write(msg_level::error, false, "操作失败");
 \`\`\`cpp
 om_latency_tracker tracker;
 tracker.reserve(1000);
-for (int i = 0; i < 1000; ++i) {
+for (int i = 0; i < 1000; ++i)
+{
     tracker.measure([&]{ /* 待测操作 */ });
 }
 stats s = tracker.compute();   // 一次性计算分位数
@@ -351,31 +352,10 @@ bool handle_oor(const operating_message&) { expand_capacity(); return true; }
 om_register_recovery(om_err_out_of_range, handle_oor);
 
 auto msg = manager.add<T>(e);
-if (!msg && om_try_recover(msg)) {
+if (!msg && om_try_recover(msg))
+{
     msg = manager.add<T>(e);  // 恢复后重试
 }
-\`\`\`
-
-#### 调试与测试辅助宏
-
-| 宏 | 说明 |
-|----|------|
-| \`LCF_DEBUG_MSG(om, fmt, ...)\` | \`om\` 失败时追加诊断消息并触发调试器中断 |
-| \`LCF_CHECK(om, cond, err_code, ...)\` | 前置条件检查，\`cond=false\` 时写入错误码消息并 \`return om\` |
-| \`LCF_EXPECT_OK(om)\` | 测试断言：期望成功，失败则 \`printf\` + \`abort\` |
-| \`LCF_EXPECT_CODE(om, expected)\` | 测试断言：期望指定错误码 |
-| \`LCF_EXPECT_FAIL(om)\` | 测试断言：期望失败 |
-
-\`\`\`cpp
-operating_message do_add(manager& m, entity_t e) {
-    operating_message result;
-    LCF_CHECK(result, e != 0, om_err_invalid_entity, "实体不能为 0");
-    return m.add<T>(e);
-}
-
-// 测试中
-LCF_EXPECT_OK(m.add<T>(e));
-LCF_EXPECT_CODE(m.add<T>(invalid), om_err_invalid_entity);
 \`\`\`
 
 ### 高级功能使用注意
@@ -384,10 +364,10 @@ LCF_EXPECT_CODE(m.add<T>(invalid), om_err_invalid_entity);
 |--------|------|
 | 全局静态状态 | \`om_dedup_set\`/\`global_om_stats\`/\`om_prefix_stack\`/\`om_indent_level\`/\`om_anomaly_detector\` 为全局静态，非线程安全（项目排除多线程） |
 | 历史消息截断 | \`om_history_push\` 单条消息截断到 256B，超长部分丢失 |
-| \`om_logger\` 不影响 \`OM_MSG\` | 包装器仅代理 \`write_message*\` 函数，\`OM_MSG\` 宏仍走编译期展开 |
+| \`om_logger\` 代理范围 | 包装器代理 \`write\` 函数，记录开关关闭时同样不产生字符串 |
 | \`om_latency_tracker::compute\` 会排序 | 内部调用 \`compute_stats\` 按值传入并排序样本，非 \`const\` |
 | \`om_anomaly_detector\` 单位为纳秒 | 与 \`time.hpp\` 一致，\`om_measure_and_check\` 内部用 \`stopwatch::ns()\` |
-| Release 模式 \`OM_MSG\` 不写消息 | 守卫/\`om_logger\` 只影响 \`write_message*\` 函数，无法让 \`OM_MSG\` 在 Release 写消息 |
+| 记录开关关闭时 \`write\` 不写字符串 | 仅跳过字符串写入；switch 累积与 code 设置不受影响 |
 
 ---
 `

@@ -192,6 +192,8 @@ window.DOCS_DATA['single_class_set'] = {
 | \`tombstone_count()\` | 软删除墓碑数（O(n) 扫描） |
 | \`empty()\` | 是否为空 |
 | \`increase_capacity(capacity)\` | 预留容量 |
+| \`set_hot_set_capacity(entries)\` | 设置热集容量（2 的幂，非 2 的幂被拒绝；调整后热集清空） |
+| \`hot_set_capacity()\` | 获取当前热集容量 |
 | \`get_type_id_value()\` | 获取类型 ID 值 |
 | \`get_typed_pool_ptr<T>()\` | 获取类型化组件池指针（带 type_id 检查） |
 | \`get_typed_pool_ptr<T>() const\` | const 版本 |
@@ -214,6 +216,7 @@ Position* pf = set.get_ptr_fast<Position>(e1);  // 快速
 set.soft_remove(e1);  // 软删除（O(1)，墓碑延迟回收，add 自动复用死槽）
 set.compact();        // 密度回收（活条目前压，墓碑物理移除；超阈值时 soft_remove 自动触发）
 set.hard_remove(e1);  // 硬删除（swap-pop，立即移除）
+set.set_hot_set_capacity(4096);  // 调整热集容量（2 的幂）
 
 // 批量添加
 class_pool<entity> ents = {entity(2,1), entity(3,1)};

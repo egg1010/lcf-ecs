@@ -150,7 +150,7 @@ struct archive_codec
         operating_message res;
         if (!r || r->has_error())
         {
-            res.write_message(false, "格式校验失败");
+            res.write(false, "格式校验失败");
         }
         if (r)
         {

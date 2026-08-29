@@ -318,14 +318,14 @@ static void test_with_operating_message()
 
     if (v.decode() != test_str)
     {
-        om.write_message(false, "可逆性验证失败: decode 结果与原串不符");
+        om.write(false, "可逆性验证失败: decode 结果与原串不符");
     }
     else
     {
-        om.write_message(true, "可逆性验证成功");
+        om.write(true, "可逆性验证成功");
     }
 
-    LCF_EXPECT_OK(om);
+    msg::expect_ok(om);
     print_item("operating_message 验证可逆性", (bool)om);
 
     // 用错误码验证无冲突
@@ -335,15 +335,15 @@ static void test_with_operating_message()
 
     if (v1.equals(v2))
     {
-        om2.write_message_code(om_err_already_exists, false,
+        om2.write(false, om_err_already_exists,
             "无冲突验证失败: 不同字符串产生了相同码");
     }
     else
     {
-        om2.write_message(true, "无冲突验证成功");
+        om2.write(true, "无冲突验证成功");
     }
 
-    LCF_EXPECT_OK(om2);
+    msg::expect_ok(om2);
     print_item("operating_message 验证无冲突", (bool)om2);
     std::printf("\n");
 }

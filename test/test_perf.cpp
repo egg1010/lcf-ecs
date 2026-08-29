@@ -1,4 +1,4 @@
-﻿// test_perf.cpp - lcf-ecs 性能测试 (Performance Benchmark)
+// test_perf.cpp - lcf-ecs 性能测试 (Performance Benchmark)
 // 支持: MinGW GCC / Linux GCC / Clang / MSVC, 启用 LTO
 //   - MinGW GCC: 不启用 AVX2 (vmovdqa 32 字节栈对齐 vs MinGW ABI 16 字节对齐
 //     → 随机崩溃 0xC0000005). MinGW ABI 遵循 Windows x64 ABI 规范, 仅保证 16 字节
@@ -1263,26 +1263,26 @@ int main()
     {
         const size_t om_count = 1000000;
 
-        print_perf_sub("6.1 write_message 系列 (1M/百万)");
+        print_perf_sub("6.1 write 系列 (1M/百万)");
         t.reset();
         operating_message om1;
         for (size_t i = 0; i < om_count; ++i)
         {
             om1.reset();
-            om1.write_message(true, "msg", i);
+            om1.write(true, "msg", i);
         }
         lcf_sink(om1.message_size());
-        print_perf("write_message", om_count, t.elapsed_milliseconds());
+        print_perf("write", om_count, t.elapsed_milliseconds());
 
         t.reset();
         operating_message om2;
         for (size_t i = 0; i < om_count; ++i)
         {
             om2.reset();
-            om2.write_message_fmt(true, "fmt: {} + {}", i, i + 1);
+            om2.write(true, msg::fmt("fmt: {} + {}", i, i + 1));
         }
         lcf_sink(om2.message_size());
-        print_perf("write_message_fmt", om_count, t.elapsed_milliseconds());
+        print_perf("write+fmt", om_count, t.elapsed_milliseconds());
 
         t.reset();
         operating_message om_lv;
@@ -1290,10 +1290,10 @@ int main()
         for (size_t i = 0; i < om_count; ++i)
         {
             om_lv.reset();
-            om_lv.write_message_level(msg_level::info, true, "msg", i);
+            om_lv.write(true, msg::info, "msg", i);
         }
         lcf_sink(om_lv.message_size());
-        print_perf("write_message_level", om_count, t.elapsed_milliseconds());
+        print_perf("write+level", om_count, t.elapsed_milliseconds());
 
         t.reset();
         operating_message om_lv2;
@@ -1301,10 +1301,10 @@ int main()
         for (size_t i = 0; i < om_count; ++i)
         {
             om_lv2.reset();
-            om_lv2.write_message_fmt_level(msg_level::warn, true, "v={}", i);
+            om_lv2.write(true, msg::warn, msg::fmt("v={}", i));
         }
         lcf_sink(om_lv2.message_size());
-        print_perf("write_message_fmt_level", om_count, t.elapsed_milliseconds());
+        print_perf("write+level+fmt", om_count, t.elapsed_milliseconds());
 
         // 等级过滤快速路径
         t.reset();
@@ -1313,7 +1313,7 @@ int main()
         for (size_t i = 0; i < om_count; ++i)
         {
             om_f.reset();
-            om_f.write_message_level(msg_level::debug, true, "filtered", i);
+            om_f.write(true, msg::debug, "filtered", i);
         }
         lcf_sink(om_f.message_size());
         print_perf("level filter fast path", om_count, t.elapsed_milliseconds());
@@ -1323,10 +1323,10 @@ int main()
         for (size_t i = 0; i < om_count; ++i)
         {
             om_mix.reset();
-            om_mix.write_message(true, "i=", i, " d=", 3.14, " s=", std::string_view("x"));
+            om_mix.write(true, "i=", i, " d=", 3.14, " s=", std::string_view("x"));
         }
         lcf_sink(om_mix.message_size());
-        print_perf("write_message mixed", om_count, t.elapsed_milliseconds());
+        print_perf("write mixed", om_count, t.elapsed_milliseconds());
 
         print_perf_sub("6.2 operator+= 与状态查询 (1M/百万)");
         t.reset();
@@ -1343,7 +1343,7 @@ int main()
         for (size_t i = 0; i < om_count; ++i)
         {
             operating_message om4, om5;
-            om5.write_message(true, "src");
+            om5.write(true, "src");
             om4 += std::move(om5);
             lcf_sink(om4.message_size());
         }
@@ -1363,7 +1363,7 @@ int main()
 
         t.reset();
         om6.reset();
-        om6.write_message(true, "test");
+        om6.write(true, "test");
         for (size_t i = 0; i < om_count; ++i)
         {
             lcf_sink((bool)om6);

@@ -291,7 +291,7 @@ public:
                 archive_ver = r.read_u32();
                 if (archive_ver > max_archive_ver)
                 {
-                    err.write_message(false, "存档版本 ", archive_ver,
+                    err.write(false, "存档版本 ", archive_ver,
                                     " 高于当前支持版本 ", max_archive_ver);
                     return {0, 0};
                 }

@@ -179,7 +179,7 @@ public:
         std::ofstream f(path, std::ios::binary | std::ios::trunc);
         if (!f)
         {
-            r.write_message(false, "无法打开文件: ", path);
+            r.write(false, "无法打开文件: ", path);
             return r;
         }
         f.write(data.data(), static_cast<std::streamsize>(data.size()));
@@ -245,14 +245,14 @@ public:
         if (!f)
         {
             operating_message r;
-            r.write_message(false, "无法打开文件: ", path);
+            r.write(false, "无法打开文件: ", path);
             return r;
         }
         std::streamsize sz = f.tellg();
         if (static_cast<size_t>(sz) > limits_.max_file_size)
         {
             operating_message r;
-            r.write_message(false, "文件过大: ", path);
+            r.write(false, "文件过大: ", path);
             return r;
         }
         f.seekg(0, std::ios::beg);
@@ -260,7 +260,7 @@ public:
         content.resize(static_cast<size_t>(sz));
         if (!f.read(content.data(), sz))
         {
-            operating_message r; r.write_message(false, "读取失败: ", path); return r;
+            operating_message r; r.write(false, "读取失败: ", path); return r;
         }
         return load_from_string<Ts...>(content);
     }
@@ -271,14 +271,14 @@ public:
         if (!f)
         {
             operating_message r;
-            r.write_message(false, "无法打开文件: ", path);
+            r.write(false, "无法打开文件: ", path);
             return r;
         }
         std::streamsize sz = f.tellg();
         if (static_cast<size_t>(sz) > limits_.max_file_size)
         {
             operating_message r;
-            r.write_message(false, "文件过大: ", path);
+            r.write(false, "文件过大: ", path);
             return r;
         }
         f.seekg(0, std::ios::beg);
@@ -286,7 +286,7 @@ public:
         content.resize(static_cast<size_t>(sz));
         if (!f.read(content.data(), sz))
         {
-            operating_message r; r.write_message(false, "读取失败: ", path); return r;
+            operating_message r; r.write(false, "读取失败: ", path); return r;
         }
         return validate_string(content);
     }
@@ -370,7 +370,7 @@ public:
         if (!codec)
         {
             operating_message res;
-            res.write_message(false, "未知格式");
+            res.write(false, "未知格式");
             return res;
         }
         // JSON 特殊处理 (按字段名校验)
@@ -574,7 +574,7 @@ public:
         std::ofstream f(path, std::ios::binary | std::ios::trunc);
         if (!f)
         {
-            r.write_message(false, "无法打开文件: ", path);
+            r.write(false, "无法打开文件: ", path);
             return r;
         }
         f.write(data.data(), static_cast<std::streamsize>(data.size()));
@@ -588,14 +588,14 @@ public:
         if (!f)
         {
             operating_message r;
-            r.write_message(false, "无法打开文件: ", path);
+            r.write(false, "无法打开文件: ", path);
             return r;
         }
         std::streamsize sz = f.tellg();
         if (static_cast<size_t>(sz) > limits_.max_file_size)
         {
             operating_message r;
-            r.write_message(false, "文件过大: ", path);
+            r.write(false, "文件过大: ", path);
             return r;
         }
         f.seekg(0, std::ios::beg);
@@ -603,7 +603,7 @@ public:
         content.resize(static_cast<size_t>(sz));
         if (!f.read(content.data(), sz))
         {
-            operating_message r; r.write_message(false, "读取失败: ", path); return r;
+            operating_message r; r.write(false, "读取失败: ", path); return r;
         }
         return load_from_string_runtime(content);
     }
@@ -725,7 +725,7 @@ private:
         if (stored_cs != actual_cs)
         {
             operating_message res;
-            res.write_message(false, "CRC32C 校验失败: 存档可能已损坏");
+            res.write(false, "CRC32C 校验失败: 存档可能已损坏");
             return res;
         }
         content.erase(0, 8);
@@ -1003,7 +1003,7 @@ private:
                 if (v > header_.archive_version)
                 {
                     operating_message res;
-                    res.write_message(false, "存档版本 ", v, " 高于当前支持版本 ",
+                    res.write(false, "存档版本 ", v, " 高于当前支持版本 ",
                                     std::to_string(header_.archive_version));
                     return res;
                 }
@@ -1046,7 +1046,7 @@ private:
                         return r.last_error();
                     }
                     operating_message res;
-                    res.write_message(false, "实体扫描失败 (可能超过上限: ",
+                    res.write(false, "实体扫描失败 (可能超过上限: ",
                                     std::to_string(limits_.max_entity_count), ")");
                     return res;
                 }
@@ -1551,7 +1551,7 @@ private:
         if (!w)
         {
             operating_message res;
-            res.write_message(false, "编码器创建失败");
+            res.write(false, "编码器创建失败");
             return res;
         }
 
@@ -1620,7 +1620,7 @@ private:
         if (r.has_error())
         {
             operating_message res;
-            res.write_message(false, "二进制格式校验失败");
+            res.write(false, "二进制格式校验失败");
             return res;
         }
 
@@ -1628,7 +1628,7 @@ private:
         if (archive_ver > header_.archive_version)
         {
             operating_message res;
-            res.write_message(false, "存档版本 ", archive_ver, " 高于当前支持版本 ",
+            res.write(false, "存档版本 ", archive_ver, " 高于当前支持版本 ",
                             std::to_string(header_.archive_version));
             return res;
         }
@@ -1659,7 +1659,7 @@ private:
             if (!scan_entities(er, remap))
             {
                 operating_message res;
-                res.write_message(false, "二进制存档实体扫描失败");
+                res.write(false, "二进制存档实体扫描失败");
                 return res;
             }
         }
@@ -1680,7 +1680,7 @@ private:
             if (r.has_error())
             {
                 operating_message res;
-                res.write_message(false, "二进制加载读取错误");
+                res.write(false, "二进制加载读取错误");
                 return res;
             }
         }
@@ -1812,7 +1812,7 @@ private:
                 codec.destroy_reader(r);
             }
             operating_message res;
-            res.write_message(false, "格式校验失败");
+            res.write(false, "格式校验失败");
             return res;
         }
 
@@ -1821,7 +1821,7 @@ private:
             operating_message res = r->has_error() ? r->last_error() : operating_message{};
             if (!res)
             {
-                res.write_message(false, "enter_object 失败");
+                res.write(false, "enter_object 失败");
             }
             codec.destroy_reader(r);
             return res;
@@ -1837,7 +1837,7 @@ private:
         {
             codec.destroy_reader(r);
             operating_message res;
-            res.write_message(false, "schema 校验失败: 期望字段 f1(version)");
+            res.write(false, "schema 校验失败: 期望字段 f1(version)");
             return res;
         }
         uint32_t archive_ver = r->read_u32();
@@ -1845,7 +1845,7 @@ private:
         {
             codec.destroy_reader(r);
             operating_message res;
-            res.write_message(false, "存档版本 ", archive_ver, " 高于当前支持版本 ",
+            res.write(false, "存档版本 ", archive_ver, " 高于当前支持版本 ",
                             std::to_string(header_.archive_version));
             return res;
         }
@@ -1854,7 +1854,7 @@ private:
         {
             codec.destroy_reader(r);
             operating_message res;
-            res.write_message(false, "schema 校验失败: 期望字段 f2(engine)");
+            res.write(false, "schema 校验失败: 期望字段 f2(engine)");
             return res;
         }
         (void)r->read_u32();
@@ -1863,7 +1863,7 @@ private:
         {
             codec.destroy_reader(r);
             operating_message res;
-            res.write_message(false, "schema 校验失败: 期望字段 f3(meta)");
+            res.write(false, "schema 校验失败: 期望字段 f3(meta)");
             return res;
         }
         {
@@ -1887,7 +1887,7 @@ private:
         {
             codec.destroy_reader(r);
             operating_message res;
-            res.write_message(false, "schema 校验失败: 期望字段 f4(cv)");
+            res.write(false, "schema 校验失败: 期望字段 f4(cv)");
             return res;
         }
         {
@@ -1911,14 +1911,14 @@ private:
         {
             codec.destroy_reader(r);
             operating_message res;
-            res.write_message(false, "schema 校验失败: 期望字段 f5(entities)");
+            res.write(false, "schema 校验失败: 期望字段 f5(entities)");
             return res;
         }
         if (!scan_entities_via_codec(*r, remap))
         {
             codec.destroy_reader(r);
             operating_message res;
-            res.write_message(false, "实体扫描失败 (可能超过上限: ",
+            res.write(false, "实体扫描失败 (可能超过上限: ",
                             std::to_string(limits_.max_entity_count), ")");
             return res;
         }
@@ -1927,7 +1927,7 @@ private:
         {
             codec.destroy_reader(r);
             operating_message res;
-            res.write_message(false, "schema 校验失败: 期望字段 f6(components)");
+            res.write(false, "schema 校验失败: 期望字段 f6(components)");
             return res;
         }
         if (r->enter_object())
@@ -2383,7 +2383,7 @@ private:
                 if (v > header_.archive_version)
                 {
                     operating_message res;
-                    res.write_message(false, "存档版本 ", v, " 高于当前支持版本 ",
+                    res.write(false, "存档版本 ", v, " 高于当前支持版本 ",
                                     std::to_string(header_.archive_version));
                     return res;
                 }
@@ -2425,7 +2425,7 @@ private:
                         return r.last_error();
                     }
                     operating_message res;
-                    res.write_message(false, "实体扫描失败 (可能超过上限: ",
+                    res.write(false, "实体扫描失败 (可能超过上限: ",
                                     std::to_string(limits_.max_entity_count), ")");
                     return res;
                 }
@@ -2544,14 +2544,14 @@ private:
         {
             return r;
         }
-        r.write_message(false, "运行时二进制保存暂不支持, 请使用 JSON 格式或 Ts... 编译期路径");
+        r.write(false, "运行时二进制保存暂不支持, 请使用 JSON 格式或 Ts... 编译期路径");
         return r;
     }
 
     operating_message load_from_binary_runtime(std::string_view data) noexcept {
         // 运行时二进制暂不支持
         operating_message r;
-        r.write_message(false, "运行时二进制加载暂不支持, 请使用 JSON 格式或 Ts... 编译期路径");
+        r.write(false, "运行时二进制加载暂不支持, 请使用 JSON 格式或 Ts... 编译期路径");
         return r;
     }
 
@@ -2756,7 +2756,7 @@ private:
         if (!f)
         {
             operating_message r;
-            r.write_message(false, "无法创建文件: ", path);
+            r.write(false, "无法创建文件: ", path);
             return r;
         }
 
@@ -2972,7 +2972,7 @@ private:
         if (!f)
         {
             operating_message r;
-            r.write_message(false, "无法打开文件: ", path);
+            r.write(false, "无法打开文件: ", path);
             return r;
         }
 
@@ -2981,7 +2981,7 @@ private:
         if (std::memcmp(magic, ARCHIVE_INDEX_MAGIC, 4) != 0)
         {
             operating_message r;
-            r.write_message(false, "非分块存档格式 (缺少 LCAX magic)");
+            r.write(false, "非分块存档格式 (缺少 LCAX magic)");
             return r;
         }
 
@@ -3069,7 +3069,7 @@ private:
                     return er.last_error();
                 }
                 operating_message r;
-                r.write_message(false, "实体扫描失败 (可能超过上限: ",
+                r.write(false, "实体扫描失败 (可能超过上限: ",
                                 std::to_string(limits_.max_entity_count), ")");
                 return r;
             }

@@ -1,4 +1,4 @@
-﻿#include "test_common.hpp"
+#include "test_common.hpp"
 #include "include/part/class_pool_views.hpp"
 
 // 功能测试 - 验证 ECS 各接口的正确性
@@ -55,11 +55,11 @@ int main()
         om.reset();
         print_item("reset() 恢复为 true", (bool)om);
 
-        om.write_message(false, "错误消息");
-        print_item("write_message(false,...) switch变false", !om.get_switch_bool());
+        om.write(false, "错误消息");
+        print_item("write(false,...) switch变false", !om.get_switch_bool());
 
         om.reset();
-        om.write_message(false, "测试");
+        om.write(false, "测试");
         bool sw_before = om.get_switch_bool();
         om.clear_message();
         bool sw_after = om.get_switch_bool();
@@ -84,12 +84,12 @@ int main()
         print_item("operator+=(string_view)", om.read_message() == "hello world");
 
         operating_message om2;
-        om2.write_message(true, "om2消息");
+        om2.write(true, "om2消息");
         om += std::move(om2);
         print_item("operator+=(operating_message&&)", om.read_message().find("om2消息") != std::string::npos);
 
         operating_message om3;
-        om3.write_message(true, "om3消息");
+        om3.write(true, "om3消息");
         om += om3;
         print_item("operator+=(const operating_message&)", om.read_message().find("om3消息") != std::string::npos);
 
@@ -100,42 +100,52 @@ int main()
         print_item("operator<<", os_om.str() == "流输出测试");
 
         om.reset();
-        om.write_message(true, "正常消息");
-        print_item("write_message(true,...)", (bool)om && om.read_message().find("正常消息") != std::string::npos);
+        om.write(true, "正常消息");
+        print_item("write(true,...)", (bool)om && om.read_message().find("正常消息") != std::string::npos);
 
         om.reset();
-        om.write_message_fmt(true, "格式化: {} + {} = {}", 1, 2, 3);
-        print_item("write_message_fmt()", om.read_message().find("格式化: 1 + 2 = 3") != std::string::npos);
+        om.write("省略开关=成功");
+        print_item("write(args...) 省略开关", (bool)om && om.read_message().find("省略开关=成功") != std::string::npos);
+
+        om.reset();
+        om.write(true, msg::fmt("格式化: {} + {} = {}", 1, 2, 3));
+        print_item("msg::fmt()", om.read_message().find("格式化: 1 + 2 = 3") != std::string::npos);
 
         om.reset();
         om.set_min_level(msg_level::warn);
         print_item("set_min_level(warn)", om.get_min_level() == msg_level::warn);
-        om.write_message_level(msg_level::info, true, "不应写入的info");
+        om.write(true, msg::info, "不应写入的info");
         print_item("level过滤: info被过滤", om.read_message().empty());
-        om.write_message_level(msg_level::error, true, "error消息");
+        om.write(true, msg::error, "error消息");
         print_item("level通过: error写入", om.read_message().find("[ERROR]") != std::string::npos);
         print_item("level前缀: [ERROR]存在", om.read_message().find("[ERROR] error消息") != std::string::npos);
         om.reset();
         om.set_min_level(msg_level::debug);
-        om.write_message_level(msg_level::debug, true, "debug", 42);
-        print_item("write_message_level 整型参数", om.read_message().find("debug42") != std::string::npos);
+        om.write(true, msg::level_tag{msg_level::debug}, "debug", 42);
+        print_item("write+level 整型参数", om.read_message().find("debug42") != std::string::npos);
         om.reset();
-        om.write_message_fmt_level(msg_level::warn, true, "fmt: {}={}", "k", 1);
-        print_item("write_message_fmt_level", om.read_message().find("[WARN]  fmt: k=1") != std::string::npos);
+        om.write(true, msg::warn, msg::fmt("fmt: {}={}", "k", 1));
+        print_item("warn+fmt 组合", om.read_message().find("[WARN]  fmt: k=1") != std::string::npos);
 
         om.reset();
         om.reserve(4096);
         print_item("reserve(4096)", om.capacity() >= 4096);
-        for (int i = 0; i < 100; ++i) om.write_message(true, "msg", i);
+        for (int i = 0; i < 100; ++i) om.write(true, "msg", i);
         print_item("reserve后批量写入", om.message_size() > 0 && om.capacity() >= 4096);
 
         om.reset();
-        om.write_message(true, "int=", 42, " dbl=", 3.14, " str=", std::string("hi"));
-        print_item("write_message 混合类型(to_chars)", om.read_message().find("int=42 dbl=3.14 str=hi") != std::string::npos);
+        om.write(true, "int=", 42, " dbl=", 3.14, " str=", std::string("hi"));
+        print_item("write 混合类型(to_chars)", om.read_message().find("int=42 dbl=3.14 str=hi") != std::string::npos);
+
+        // defer 惰性求值
+        om.reset();
+        int defer_executed = 0;
+        om.write(true, "lazy=", msg::defer([&] { ++defer_executed; return 99; }));
+        print_item("defer 执行并写入", om.read_message().find("lazy=99") != std::string::npos && defer_executed == 1);
 
         // 拷贝构造
         operating_message om_src;
-        om_src.write_message(true, "拷贝源");
+        om_src.write(true, "拷贝源");
         operating_message om_copy(om_src);
         print_item("拷贝构造", om_copy.read_message() == om_src.read_message());
 
@@ -146,14 +156,14 @@ int main()
 
         // 移动构造
         operating_message om_move_src;
-        om_move_src.write_message(true, "移动源");
+        om_move_src.write(true, "移动源");
         std::string saved_msg(om_move_src.read_message());
         operating_message om_move_dst(std::move(om_move_src));
         print_item("移动构造", om_move_dst.read_message() == saved_msg);
 
         // 移动赋值
         operating_message om_moveassign_src;
-        om_moveassign_src.write_message(true, "移动赋值源");
+        om_moveassign_src.write(true, "移动赋值源");
         saved_msg = std::string(om_moveassign_src.read_message());
         operating_message om_moveassign_dst;
         om_moveassign_dst = std::move(om_moveassign_src);
@@ -161,13 +171,13 @@ int main()
 
         // === SSO 缓冲测试 ===
         operating_message om_sso;
-        om_sso.write_message(true, "短消息");  // 48 字节内, SSO 模式
+        om_sso.write(true, "短消息");  // 48 字节内, SSO 模式
         print_item("SSO 短消息写入", om_sso.read_message().find("短消息") != std::string_view::npos);
         print_item("SSO 容量 == SSO_SIZE", om_sso.capacity() == 48);
 
         // 溢出到堆 (> 48 字节)
         operating_message om_slab;
-        om_slab.write_message(true, "这是一条超过SSO缓冲区大小的较长消息用于测试slab分配器溢出路径12345678901234567890");
+        om_slab.write(true, "这是一条超过SSO缓冲区大小的较长消息用于测试slab分配器溢出路径12345678901234567890");
         print_item("溢出消息写入", om_slab.read_message().size() > 48);
         print_item("溢出容量 > SSO_SIZE", om_slab.capacity() > 48);
 
@@ -177,17 +187,17 @@ int main()
         print_item("large reserve(4096)", om_large.capacity() >= 4096);
         for (int i = 0; i < 50; ++i)
         {
-            om_large.write_message(true, "padding1234567890", i);
+            om_large.write(true, "padding1234567890", i);
         }
         print_item("large 批量写入", om_large.message_size() > 256 && om_large.capacity() >= 4096);
 
         // SSO → slab → large 扩容链
         operating_message om_grow;
-        om_grow.write_message(true, "init");
+        om_grow.write(true, "init");
         size_t cap_sso = om_grow.capacity();
         for (int i = 0; i < 20; ++i)
         {
-            om_grow.write_message(true, "扩展消息内容测试", i, " ");
+            om_grow.write(true, "扩展消息内容测试", i, " ");
         }
         size_t cap_after = om_grow.capacity();
         print_item("扩容链容量增长", cap_after > cap_sso);
@@ -202,80 +212,84 @@ int main()
         print_item("is_code(invalid_entity) false", !om_code.is_code(om_err_invalid_entity));
 
         operating_message om_code2;
-        om_code2.write_message_code(om_err_invalid_entity, false, "实体无效");
-        print_item("write_message_code 设置码", om_code2.code() == om_err_invalid_entity);
-        print_item("write_message_code switch false", !om_code2.get_switch_bool());
+        om_code2.write(false, om_err_invalid_entity, "实体无效");
+        print_item("write+errc 设置码", om_code2.code() == om_err_invalid_entity);
+        print_item("write+errc switch false", !om_code2.get_switch_bool());
 
         operating_message om_code3;
-        om_code3.write_message_code(om_err_out_of_range, true, "正常路径");
-        print_item("write_message_code sw=true 不设码", om_code3.code() == om_err_none);
+        om_code3.write(true, om_err_out_of_range, "正常路径");
+        print_item("write+errc sw=true 清码", om_code3.code() == om_err_none);
 
         // 错误码跨实例稳定
-        constexpr uint16_t test_code = static_cast<uint16_t>(fnv1a_consteval("test_error_code"));
+        constexpr uint32_t test_code = static_cast<uint32_t>(fnv1a_consteval("test_error_code"));
         om_code.set_code(test_code);
         print_item("fnv1a 错误码稳定", om_code.code() == test_code);
 
+        // 动态错误码
+        operating_message om_code4;
+        om_code4.write(false, msg::errc(1234), "动态码");
+        print_item("errc(动态) 设置码", om_code4.code() == 1234);
+
         // === source_location 测试 ===
         operating_message om_loc;
-        om_loc.write_message_loc(true, std::source_location::current(), "位置测试");
+        om_loc.write(true, msg::here(), "位置测试");
         std::string_view loc_msg = om_loc.read_message();
-        print_item("write_message_loc 含文件名", loc_msg.find("test_functional.cpp") != std::string_view::npos);
-        print_item("write_message_loc 含行号", loc_msg.find(":") != std::string_view::npos);
-        print_item("write_message_loc 含 ]", loc_msg.find("]") != std::string_view::npos);
-        print_item("write_message_loc 含消息", loc_msg.find("位置测试") != std::string_view::npos);
+        print_item("here() 含文件名", loc_msg.find("test_functional.cpp") != std::string_view::npos);
+        print_item("here() 含行号", loc_msg.find(":") != std::string_view::npos);
+        print_item("here() 含 ]", loc_msg.find("]") != std::string_view::npos);
+        print_item("here() 含消息", loc_msg.find("位置测试") != std::string_view::npos);
 
         // 错误码 + 位置组合
         operating_message om_cl;
-        om_cl.write_message_code_loc(om_err_null_pointer, false, std::source_location::current(), "空指针错误");
-        print_item("code_loc 设置码", om_cl.code() == om_err_null_pointer);
-        print_item("code_loc 含文件名", om_cl.read_message().find("test_functional.cpp") != std::string_view::npos);
-        print_item("code_loc switch false", !om_cl.get_switch_bool());
+        om_cl.write(false, om_err_null_pointer, msg::here(), "空指针错误");
+        print_item("code+here 设置码", om_cl.code() == om_err_null_pointer);
+        print_item("code+here 含文件名", om_cl.read_message().find("test_functional.cpp") != std::string_view::npos);
+        print_item("code+here switch false", !om_cl.get_switch_bool());
 
-        // === 运行时格式化测试 (fmt 为运行时 string_view) ===
+        // === 运行时格式化测试 (fmt_rt) ===
         operating_message om_ct;
-        om_ct.write_message_fmt_runtime(true, "值: {}", 42);
-        print_item("fmt_runtime 简单格式", om_ct.read_message().find("值: 42") != std::string_view::npos);
+        om_ct.write(true, msg::fmt_rt("值: {}", 42));
+        print_item("fmt_rt 简单格式", om_ct.read_message().find("值: 42") != std::string_view::npos);
 
         om_ct.reset();
-        om_ct.write_message_fmt_runtime(true, "{}+{}={}", 1, 2, 3);
-        print_item("fmt_runtime 多参数", om_ct.read_message().find("1+2=3") != std::string_view::npos);
+        om_ct.write(true, msg::fmt_rt("{}+{}={}", 1, 2, 3));
+        print_item("fmt_rt 多参数", om_ct.read_message().find("1+2=3") != std::string_view::npos);
 
         om_ct.reset();
-        om_ct.write_message_fmt_runtime_level(msg_level::warn, true, "[{}] {}", "WARN", "告警消息");
-        print_item("fmt_runtime_level 含前缀", om_ct.read_message().find("[WARN]") != std::string_view::npos);
-        print_item("fmt_runtime_level 含消息", om_ct.read_message().find("告警消息") != std::string_view::npos);
+        om_ct.write(true, msg::warn, msg::fmt_rt("[{}] {}", "WARN", "告警消息"));
+        print_item("fmt_rt+level 含前缀", om_ct.read_message().find("[WARN]") != std::string_view::npos);
+        print_item("fmt_rt+level 含消息", om_ct.read_message().find("告警消息") != std::string_view::npos);
 
-        // 运行时复杂格式 (完整 std::format 语法, slow path)
+        // 运行时复杂格式 (完整 std::format 语法)
         om_ct.reset();
-        om_ct.write_message_fmt_runtime(true, "hex={:08x}", 0xAB);
-        print_item("fmt_runtime 复杂格式", om_ct.read_message().find("hex=000000ab") != std::string_view::npos);
+        om_ct.write(true, msg::fmt_rt("hex={:08x}", 0xAB));
+        print_item("fmt_rt 复杂格式", om_ct.read_message().find("hex=000000ab") != std::string_view::npos);
 
         // 运行时拼接 fmt (运行时生成的格式串)
         om_ct.reset();
         std::string dyn_fmt = "v=" + std::string("{:>4}") + " end";
-        om_ct.write_message_fmt_runtime(true, dyn_fmt, 7);
-        print_item("fmt_runtime 动态fmt", om_ct.read_message().find("v=   7 end") != std::string_view::npos);
+        om_ct.write(true, msg::fmt_rt(dyn_fmt, 7));
+        print_item("fmt_rt 动态fmt", om_ct.read_message().find("v=   7 end") != std::string_view::npos);
 
-        // runtime + code
+        // fmt_rt + code
         om_ct.reset();
-        om_ct.write_message_fmt_runtime_code(om_err_out_of_range, false, "idx={} max={}", 9, 8);
-        print_item("fmt_runtime_code 设置码", om_ct.code() == om_err_out_of_range);
-        print_item("fmt_runtime_code switch false", !om_ct.get_switch_bool());
-        print_item("fmt_runtime_code 含消息", om_ct.read_message().find("idx=9 max=8") != std::string_view::npos);
+        om_ct.write(false, om_err_out_of_range, msg::fmt_rt("idx={} max={}", 9, 8));
+        print_item("fmt_rt+errc 设置码", om_ct.code() == om_err_out_of_range);
+        print_item("fmt_rt+errc switch false", !om_ct.get_switch_bool());
+        print_item("fmt_rt+errc 含消息", om_ct.read_message().find("idx=9 max=8") != std::string_view::npos);
 
-        // runtime + loc
+        // fmt_rt + loc
         om_ct.reset();
-        om_ct.write_message_fmt_runtime_loc(true, std::source_location::current(), "n={}", 5);
+        om_ct.write(true, msg::here(), msg::fmt_rt("n={}", 5));
         std::string_view rt_loc = om_ct.read_message();
-        print_item("fmt_runtime_loc 含文件名", rt_loc.find("test_functional.cpp") != std::string_view::npos);
-        print_item("fmt_runtime_loc 含消息", rt_loc.find("n=5") != std::string_view::npos);
+        print_item("fmt_rt+here 含文件名", rt_loc.find("test_functional.cpp") != std::string_view::npos);
+        print_item("fmt_rt+here 含消息", rt_loc.find("n=5") != std::string_view::npos);
 
-        // runtime + code + loc
+        // fmt_rt + code + loc
         om_ct.reset();
-        om_ct.write_message_fmt_runtime_code_loc(om_err_not_found, false,
-            std::source_location::current(), "missing {}", 1);
-        print_item("fmt_runtime_code_loc 设置码", om_ct.code() == om_err_not_found);
-        print_item("fmt_runtime_code_loc 含位置", om_ct.read_message().find("test_functional.cpp") != std::string_view::npos);
+        om_ct.write(false, om_err_not_found, msg::here(), msg::fmt_rt("missing {}", 1));
+        print_item("fmt_rt+errc+here 设置码", om_ct.code() == om_err_not_found);
+        print_item("fmt_rt+errc+here 含位置", om_ct.read_message().find("test_functional.cpp") != std::string_view::npos);
 
         // validate_format: 占位符数量/语法校验
         print_item("validate_format 合法", validate_format("a={} b={}", 2));
@@ -287,16 +301,29 @@ int main()
         // === 全局开关关闭时行为 ===
         dbg = false;
         operating_message om_off;
-        om_off.write_message(false, "不应写入");
+        om_off.write(false, "不应写入");
         print_item("开关关闭: switch 仍变 false", !om_off.get_switch_bool());
         print_item("开关关闭: 消息为空", om_off.message_size() == 0);
-        om_off.write_message_code(om_err_not_found, false, "不应写入");
+        om_off.write(false, om_err_not_found, "不应写入");
         print_item("开关关闭: code 仍设置", om_off.code() == om_err_not_found);
         dbg = true;
 
+        // === check 前置条件 ===
+        operating_message om_chk;
+        bool chk1 = om_chk.check(1 == 1, "永不写入");
+        bool zero_after_ok = om_chk.message_size() == 0;
+        bool chk2 = om_chk.check(1 == 2, om_err_invalid_entity, "条件失败");
+        print_item("check 成功零写入", chk1 && zero_after_ok);
+        print_item("check 失败写入", !chk2 && om_chk.code() == om_err_invalid_entity);
+
+        // === 断言函数 (不触发) ===
+        om_chk.reset();
+        msg::expect_ok(om_chk);
+        print_item("expect_ok 通过", true);
+
         // === reset 清理 ===
         operating_message om_reset;
-        om_reset.write_message_code(om_err_capacity_exceeded, false, "容量超限");
+        om_reset.write(false, om_err_capacity_exceeded, "容量超限");
         om_reset.reserve(512);
         print_item("reset 前有堆缓冲", om_reset.capacity() > 48);
         om_reset.reset();

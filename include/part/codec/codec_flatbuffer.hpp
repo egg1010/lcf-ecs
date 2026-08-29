@@ -319,7 +319,7 @@ public:
         if (data.size() < sizeof(fb_detail::header))
         {
             err_ = true;
-            err_msg_.write_message(false, "flatbuffer: 数据过短");
+            err_msg_.write(false, "flatbuffer: 数据过短");
             return;
         }
 
@@ -329,7 +329,7 @@ public:
         if (std::memcmp(hdr.magic, "LCFB", 4) != 0)
         {
             err_ = true;
-            err_msg_.write_message(false, "flatbuffer: magic 不匹配");
+            err_msg_.write(false, "flatbuffer: magic 不匹配");
             return;
         }
 

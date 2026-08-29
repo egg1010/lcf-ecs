@@ -1,7 +1,7 @@
 #pragma once
 
-// operating_message.hpp - 操作消息 (SSO 缓冲 + 堆扩容 + 错误码 + 位置追踪)
-// 无命名空间, 通用工具
+// operating_message.hpp - 操作消息 (SSO + 堆扩容 + 错误码 + 级别 + 位置)
+// 单一 write 接口, 标签混入参数包任意组合
 
 #include <string_view>
 #include <format>
@@ -11,40 +11,18 @@
 #include <type_traits>
 #include <cstring>
 #include <cstdlib>
+#include <cstdio>
+#include <tuple>
+#include <utility>
 #include <source_location>
-#include <iterator>
 #include "fnv1a.hpp"
 #include "force_inline.hpp"
 
-// 消息写入开关: Release 构建 (NDEBUG) 默认高性能零开销, Debug 构建默认写消息
-// OM_MSG 宏在编译期根据 LCF_RELEASE_MESSAGES 选择展开, 运行时函数无法影响宏展开
-#ifdef NDEBUG
-#define LCF_RELEASE_MESSAGES 1
-#else
-#define LCF_RELEASE_MESSAGES 0
-#endif
-
-// 全局消息记录开关 (运行时控制)
-// Release 构建 (NDEBUG) 默认 false (高性能); Debug 构建默认 true, 运行时可调
-// 仅影响 write_message* 系列函数, 不影响 OM_MSG 宏的编译期展开
+// 全局消息记录开关 (运行时)
 inline bool& message_recording_enabled() noexcept
 {
-    static bool enabled = !static_cast<bool>(LCF_RELEASE_MESSAGES);
+    static bool enabled = true;
     return enabled;
-}
-
-// 兼容别名 (已废弃, 使用 message_recording_enabled())
-[[deprecated("use message_recording_enabled()")]]
-inline bool& debug_messages_enabled() noexcept
-{
-    return message_recording_enabled();
-}
-
-// 兼容别名 (已废弃, 使用 message_recording_enabled())
-[[deprecated("use message_recording_enabled()")]]
-inline bool& ecs_debug_messages() noexcept
-{
-    return message_recording_enabled();
 }
 
 enum class msg_level : uint8_t
@@ -55,20 +33,112 @@ enum class msg_level : uint8_t
     error = 3
 };
 
-// 错误码常量 (fnv1a 低 16 位)
-inline constexpr uint16_t om_err_none              = 0;
-inline constexpr uint16_t om_err_type_mismatch     = static_cast<uint16_t>(fnv1a_consteval("type_mismatch"));
-inline constexpr uint16_t om_err_invalid_entity    = static_cast<uint16_t>(fnv1a_consteval("invalid_entity"));
-inline constexpr uint16_t om_err_version_mismatch  = static_cast<uint16_t>(fnv1a_consteval("version_mismatch"));
-inline constexpr uint16_t om_err_out_of_range      = static_cast<uint16_t>(fnv1a_consteval("out_of_range"));
-inline constexpr uint16_t om_err_null_pointer      = static_cast<uint16_t>(fnv1a_consteval("null_pointer"));
-inline constexpr uint16_t om_err_capacity_exceeded = static_cast<uint16_t>(fnv1a_consteval("capacity_exceeded"));
-inline constexpr uint16_t om_err_not_found         = static_cast<uint16_t>(fnv1a_consteval("not_found"));
-inline constexpr uint16_t om_err_already_exists    = static_cast<uint16_t>(fnv1a_consteval("already_exists"));
-inline constexpr uint16_t om_err_out_of_memory     = static_cast<uint16_t>(fnv1a_consteval("out_of_memory"));
+// 标签
+namespace msg
+{
+    struct level_tag { msg_level lv; };
+    struct code_tag
+    {
+        uint32_t code;
+        [[nodiscard]] constexpr operator uint32_t() const noexcept { return code; }
+    };
+    struct loc_tag { std::source_location loc; };
 
-// 运行时格式串校验: 占位符数量匹配 + 基本语法合法
-// 不校验类型匹配 (如 {:f} 配 int), 类型错误仍可能触发 format_error
+    inline constexpr level_tag debug{msg_level::debug};
+    inline constexpr level_tag info {msg_level::info};
+    inline constexpr level_tag warn {msg_level::warn};
+    inline constexpr level_tag error{msg_level::error};
+
+    // 动态错误码
+    [[nodiscard]] constexpr code_tag errc(uint32_t c) noexcept { return {c}; }
+
+    // 位置 (须在调用点求值)
+    [[nodiscard]] inline loc_tag here(
+        std::source_location l = std::source_location::current()) noexcept
+    {
+        return {l};
+    }
+
+    // 编译期格式化
+    template<typename... Args>
+    struct fmt_tag
+    {
+        static constexpr int kind = 1;
+        std::format_string<Args...> fs;
+        std::tuple<Args...> args;
+    };
+
+    // 运行时格式串
+    template<typename... Args>
+    struct fmt_rt_tag
+    {
+        static constexpr int kind = 2;
+        std::string_view sv;
+        std::tuple<Args...> args;
+    };
+
+    template<typename... Args>
+    [[nodiscard]] constexpr auto fmt(
+        std::format_string<std::decay_t<Args>...> f, Args&&... args) noexcept
+    {
+        return fmt_tag<std::decay_t<Args>...>{
+            f, std::tuple<std::decay_t<Args>...>(
+                   std::forward<Args>(args)...)};
+    }
+
+    template<typename... Args>
+    [[nodiscard]] constexpr auto fmt_rt(std::string_view sv, Args&&... args) noexcept
+    {
+        return fmt_rt_tag<std::decay_t<Args>...>{
+            sv, std::tuple<std::decay_t<Args>...>(
+                    std::forward<Args>(args)...)};
+    }
+
+    // 惰性求值
+    template<typename F>
+    requires std::invocable<F>
+    struct lazy_tag
+    {
+        static constexpr int kind = 3;
+        F fn;
+    };
+
+    template<typename F>
+    [[nodiscard]] constexpr lazy_tag<std::remove_cvref_t<F>> defer(F&& f) noexcept
+    {
+        return {std::forward<F>(f)};
+    }
+}
+
+// 标签类型识别
+template<typename T> struct is_msg_tag : std::false_type {};
+template<> struct is_msg_tag<msg::level_tag> : std::true_type {};
+template<> struct is_msg_tag<msg::code_tag>  : std::true_type {};
+template<> struct is_msg_tag<msg::loc_tag>   : std::true_type {};
+template<typename T> inline constexpr bool is_msg_tag_v = is_msg_tag<T>::value;
+
+template<typename T> struct is_msg_lazy : std::false_type {};
+template<typename F> struct is_msg_lazy<msg::lazy_tag<F>> : std::true_type {};
+template<typename T> inline constexpr bool is_msg_lazy_v = is_msg_lazy<T>::value;
+
+template<typename T> struct is_msg_fmt : std::false_type {};
+template<typename... A> struct is_msg_fmt<msg::fmt_tag<A...>> : std::true_type {};
+template<typename... A> struct is_msg_fmt<msg::fmt_rt_tag<A...>> : std::true_type {};
+template<typename T> inline constexpr bool is_msg_fmt_v = is_msg_fmt<T>::value;
+
+// 错误码常量 (fnv1a)
+inline constexpr msg::code_tag om_err_none              = msg::code_tag{0};
+inline constexpr msg::code_tag om_err_type_mismatch     = msg::code_tag{static_cast<uint32_t>(fnv1a_consteval("type_mismatch"))};
+inline constexpr msg::code_tag om_err_invalid_entity    = msg::code_tag{static_cast<uint32_t>(fnv1a_consteval("invalid_entity"))};
+inline constexpr msg::code_tag om_err_version_mismatch  = msg::code_tag{static_cast<uint32_t>(fnv1a_consteval("version_mismatch"))};
+inline constexpr msg::code_tag om_err_out_of_range      = msg::code_tag{static_cast<uint32_t>(fnv1a_consteval("out_of_range"))};
+inline constexpr msg::code_tag om_err_null_pointer      = msg::code_tag{static_cast<uint32_t>(fnv1a_consteval("null_pointer"))};
+inline constexpr msg::code_tag om_err_capacity_exceeded = msg::code_tag{static_cast<uint32_t>(fnv1a_consteval("capacity_exceeded"))};
+inline constexpr msg::code_tag om_err_not_found         = msg::code_tag{static_cast<uint32_t>(fnv1a_consteval("not_found"))};
+inline constexpr msg::code_tag om_err_already_exists    = msg::code_tag{static_cast<uint32_t>(fnv1a_consteval("already_exists"))};
+inline constexpr msg::code_tag om_err_out_of_memory     = msg::code_tag{static_cast<uint32_t>(fnv1a_consteval("out_of_memory"))};
+
+// 运行时格式串校验 (占位符数量 + 语法, 不校验类型)
 [[nodiscard]] inline bool validate_format(std::string_view fmt, size_t expected_count) noexcept
 {
     size_t count = 0;
@@ -117,19 +187,19 @@ class operating_message
 private:
     static constexpr size_t SSO_SIZE = 48;
 
-    // SSO 缓冲 + 堆指针 union
+    // 构造不清零缓冲 (utf8pp 同策略)
     union msg_storage
     {
         char sso_buf[SSO_SIZE];
         char* heap_ptr;
     };
 
-    msg_storage storage_{};
+    msg_storage storage_;
     uint32_t size_{0};
     uint32_t capacity_{SSO_SIZE};
     bool switch_{true};
     uint8_t min_level_{static_cast<uint8_t>(msg_level::info)};
-    uint16_t code_{0};
+    uint32_t code_{0};
 
     static constexpr std::string_view k_level_prefix[] = {
         "[DEBUG] ",
@@ -153,44 +223,42 @@ private:
         return is_sso() ? storage_.sso_buf : storage_.heap_ptr;
     }
 
-    // 释放堆缓冲, 回到 SSO 模式
     void free_heap_buffer() noexcept
     {
         if (!is_sso())
         {
             ::operator delete(storage_.heap_ptr);
-            storage_ = {};
+            storage_.heap_ptr = nullptr;
             capacity_ = SSO_SIZE;
         }
     }
 
-    // 扩容到 need 字节 (SSO → 堆)
+    // 倍增扩容
     void grow_to(size_t need) noexcept
     {
         if (need <= capacity_)
         {
             return;
         }
-
-        size_t new_cap = need;
+        size_t new_cap = capacity_ * 2;
+        while (new_cap < need)
+        {
+            new_cap *= 2;
+        }
         char* new_buf = static_cast<char*>(::operator new(new_cap, std::nothrow));
         if (!new_buf)
         {
             std::abort();
         }
-
         if (size_ > 0)
         {
             std::memcpy(new_buf, data_ptr(), size_);
         }
-
         free_heap_buffer();
-
         storage_.heap_ptr = new_buf;
         capacity_ = static_cast<uint32_t>(new_cap);
     }
 
-    // 追加原始字节
     FORCE_INLINE void append(const char* s, size_t len) noexcept
     {
         if (len == 0)
@@ -204,7 +272,7 @@ private:
         }
         char* dst = data_ptr();
 #if defined(__GNUC__) || defined(__clang__)
-        asm volatile("" : "+r"(dst));  // 切断对象大小追踪, 避免 SSO union 触发 -Wstringop-overflow 误报
+        asm volatile("" : "+r"(dst));  // 切断对象大小追踪, 抑制误报
 #endif
         std::memcpy(dst + size_, s, len);
         size_ = static_cast<uint32_t>(need);
@@ -220,7 +288,7 @@ private:
         ++size_;
     }
 
-    // std::format_to 输出迭代器
+    // format_to 输出迭代器
     struct msg_appender
     {
         operating_message* self;
@@ -240,8 +308,9 @@ private:
         msg_appender operator++(int) { return *this; }
     };
 
+    // 单参数类型分派
     template<typename T>
-    void append_arg(T&& v) noexcept
+    FORCE_INLINE void append_arg(T&& v) noexcept
     {
         using U = std::remove_cvref_t<T>;
         if constexpr (std::is_convertible_v<U, std::string_view>)
@@ -267,138 +336,86 @@ private:
         }
     }
 
-    // 检测 fmt 是否只含简单 {} 占位符
-    static constexpr bool is_simple_fmt(std::string_view fmt, size_t expected) noexcept
+    // 标签扫描结果
+    struct tag_scan_ctx
     {
-        size_t count = 0;
-        size_t i = 0;
-        const size_t sz = fmt.size();
-        while (i < sz)
+        msg_level lv = msg_level::info;
+        uint32_t code = 0;
+        bool has_code = false;
+        const msg::loc_tag* loc = nullptr;
+    };
+
+    // Pass 1: 结构标签提取
+    template<typename T>
+    FORCE_INLINE static void scan_tag_(T& v, tag_scan_ctx& ctx) noexcept
+    {
+        using U = std::remove_cvref_t<T>;
+        if constexpr (std::same_as<U, msg::level_tag>)
         {
-            char c = fmt[i];
-            if (c == '{')
-            {
-                if (i + 1 < sz && fmt[i + 1] == '{')
-                {
-                    return false;
-                }
-                if (i + 1 >= sz || fmt[i + 1] != '}')
-                {
-                    return false;
-                }
-                ++count;
-                i += 2;
-            }
-            else if (c == '}')
-            {
-                if (i + 1 < sz && fmt[i + 1] == '}')
-                {
-                    return false;
-                }
-                return false;
-            }
-            else
-            {
-                ++i;
-            }
+            ctx.lv = v.lv;
         }
-        return count == expected;
-    }
-
-    // 解析简单 {} 占位符 fmt
-    template<typename... Args>
-    void write_fmt_simple(std::string_view fmt, Args&&... args) noexcept
-    {
-        size_t pos = 0;
-        const size_t sz = fmt.size();
-        auto emit_literal = [&](size_t end) {
-            if (end > pos)
-            {
-                append(fmt.data() + pos, end - pos);
-            }
-        };
-        auto emit_arg = [&](auto&& a) {
-            size_t i = pos;
-            while (i < sz)
-            {
-                if (fmt[i] == '{')
-                {
-                    emit_literal(i);
-                    i += 2;
-                    pos = i;
-                    append_arg(std::forward<decltype(a)>(a));
-                    return;
-                }
-                ++i;
-            }
-        };
-
-        (emit_arg(args), ...);
-        emit_literal(sz);
-    }
-
-    // fast path 分派
-    template<typename... Args>
-    void dispatch_fmt(std::string_view fmt_sv, std::format_string<Args...> fmt, Args&&... args)
-    {
-        if constexpr (sizeof...(Args) > 0)
+        else if constexpr (std::same_as<U, msg::code_tag>)
         {
-            if (is_simple_fmt(fmt_sv, sizeof...(Args)))
-            {
-                size_t estimated = static_cast<size_t>(size_) + fmt_sv.size() + sizeof...(Args) * 32;
-                if (estimated > capacity_)
-                {
-                    grow_to(estimated);
-                }
-                write_fmt_simple(fmt_sv, std::forward<Args>(args)...);
-            }
-            else
-            {
-                std::format_to(msg_appender{this}, fmt, std::forward<Args>(args)...);
-            }
+            ctx.code = v.code;
+            ctx.has_code = true;
         }
-        else
+        else if constexpr (std::same_as<U, msg::loc_tag>)
         {
-            std::format_to(msg_appender{this}, fmt);
+            ctx.loc = &v;
         }
     }
 
-    // 运行时分派: fmt 为运行时 string_view, 不经编译期校验
-    // fast path 复用 is_simple_fmt + write_fmt_simple; slow path 用 validate_format + vformat_to
-    template<typename... Args>
-    void dispatch_fmt_runtime(std::string_view fmt, Args&&... args)
+    // Pass 2: 单参数写入
+    template<typename T>
+    FORCE_INLINE void emit_one_(T&& v)
     {
-        if constexpr (sizeof...(Args) > 0)
+        using U = std::remove_cvref_t<T>;
+        if constexpr (is_msg_tag_v<U>)
         {
-            if (is_simple_fmt(fmt, sizeof...(Args)))
-            {
-                size_t estimated = static_cast<size_t>(size_) + fmt.size() + sizeof...(Args) * 32;
-                if (estimated > capacity_)
+        }
+        else if constexpr (is_msg_fmt_v<U>)
+        {
+            std::apply([&](auto&&... as) {
+                if constexpr (U::kind == 1)
                 {
-                    grow_to(estimated);
-                }
-                write_fmt_simple(fmt, std::forward<Args>(args)...);
-            }
-            else
-            {
-                if (validate_format(fmt, sizeof...(Args)))
-                {
-                    std::vformat_to(msg_appender{this}, fmt,
-                        std::make_format_args(args...));
+                    std::format_to(msg_appender{this}, v.fs, std::move(as)...);
                 }
                 else
                 {
-                    std::abort();
+                    if (validate_format(v.sv, sizeof...(as)))
+                    {
+                        std::vformat_to(msg_appender{this}, v.sv,
+                                        std::make_format_args(as...));
+                    }
+                    else
+                    {
+                        append(v.sv.data(), v.sv.size());
+                    }
                 }
-            }
+            }, v.args);
+        }
+        else if constexpr (is_msg_lazy_v<U>)
+        {
+            append_arg(v.fn());
         }
         else
         {
-            append(fmt.data(), fmt.size());
+            append_arg(std::forward<T>(v));
         }
     }
 
-    // 文件名 basename
+    void write_loc_prefix_(const msg::loc_tag& tag) noexcept
+    {
+        std::string_view file = path_basename(tag.loc.file_name());
+        append_char('[');
+        append(file.data(), file.size());
+        append_char(':');
+        char buf[16];
+        auto r = std::to_chars(buf, buf + sizeof(buf), tag.loc.line());
+        append(buf, static_cast<size_t>(r.ptr - buf));
+        append("] ", 2);
+    }
+
     [[nodiscard]] static constexpr std::string_view path_basename(const char* path) noexcept
     {
         if (!path)
@@ -416,7 +433,10 @@ public:
         free_heap_buffer();
     }
 
-    operating_message() noexcept = default;
+    operating_message() noexcept
+    {
+        storage_.heap_ptr = nullptr;
+    }
 
     operating_message(operating_message&& other) noexcept
         : storage_(other.storage_)
@@ -426,7 +446,7 @@ public:
         , min_level_(other.min_level_)
         , code_(other.code_)
     {
-        other.storage_ = {};
+        other.storage_.heap_ptr = nullptr;
         other.size_ = 0;
         other.capacity_ = SSO_SIZE;
     }
@@ -442,7 +462,7 @@ public:
             switch_ = other.switch_;
             min_level_ = other.min_level_;
             code_ = other.code_;
-            other.storage_ = {};
+            other.storage_.heap_ptr = nullptr;
             other.size_ = 0;
             other.capacity_ = SSO_SIZE;
         }
@@ -450,7 +470,7 @@ public:
     }
 
     operating_message(const operating_message& other) noexcept
-        : storage_{}
+        : storage_()
         , size_(0)
         , capacity_(SSO_SIZE)
         , switch_(other.switch_)
@@ -507,7 +527,6 @@ public:
     [[nodiscard]] constexpr bool& get_switch_bool() noexcept { return switch_; }
     [[nodiscard]] constexpr const bool& get_switch_bool() const noexcept { return switch_; }
 
-    // 只更新 switch_ (release 模式 OM_MSG 宏专用, 保留操作成功/失败语义)
     constexpr void update_switch(bool sw) noexcept
     {
         switch_ = switch_ && sw;
@@ -516,10 +535,9 @@ public:
     constexpr void set_min_level(msg_level lv) noexcept { min_level_ = static_cast<uint8_t>(lv); }
     [[nodiscard]] constexpr msg_level get_min_level() const noexcept { return static_cast<msg_level>(min_level_); }
 
-    // 错误码接口
-    constexpr void set_code(uint16_t c) noexcept { code_ = c; }
-    [[nodiscard]] constexpr uint16_t code() const noexcept { return code_; }
-    [[nodiscard]] constexpr bool is_code(uint16_t c) const noexcept { return code_ == c; }
+    constexpr void set_code(uint32_t c) noexcept { code_ = c; }
+    [[nodiscard]] constexpr uint32_t code() const noexcept { return code_; }
+    [[nodiscard]] constexpr bool is_code(uint32_t c) const noexcept { return code_ == c; }
 
     void reserve(size_t cap) noexcept
     {
@@ -572,272 +590,110 @@ public:
         return std::string_view(data_ptr(), size_);
     }
 
-    // === 基础写入 ===
-
+    // write: 唯一写入入口
+    //   write(sw, args...)  sw 调整成败 (粘性 false)
+    //   write(args...)      省略 = 成功
+    // 标签: msg::debug/info/warn/error | om_err_* / msg::errc | msg::here
+    //       msg::fmt / msg::fmt_rt / msg::defer
     template<typename... Args>
-    void write_message(bool sw, Args&&... args)
+    FORCE_INLINE operating_message& write(bool sw, Args&&... args)
     {
         switch_ = switch_ && sw;
-        if (!message_recording_enabled())
+
+        tag_scan_ctx ctx;
+        (scan_tag_(args, ctx), ...);
+
+        // 失败设码, 成功清零 (不受记录开关与级别过滤影响)
+        if (ctx.has_code)
         {
-            return;
+            code_ = sw ? 0 : ctx.code;
         }
-        if (static_cast<uint8_t>(msg_level::info) < min_level_)
+
+        if (message_recording_enabled() && static_cast<uint8_t>(ctx.lv) >= min_level_)
         {
-            return;
+            if (ctx.loc)
+            {
+                write_loc_prefix_(*ctx.loc);
+            }
+            if (ctx.lv != msg_level::info)
+            {
+                const uint8_t idx = static_cast<uint8_t>(ctx.lv);
+                append(k_level_prefix[idx].data(), k_level_prefix[idx].size());
+            }
+            (emit_one_(std::forward<Args>(args)), ...);
+            append_char('\n');
         }
-        (append_arg(std::forward<Args>(args)), ...);
-        append_char('\n');
+        return *this;
     }
 
     template<typename... Args>
-    void write_message_level(msg_level lv, bool sw, Args&&... args)
+    FORCE_INLINE operating_message& write(Args&&... args)
     {
-        switch_ = switch_ && sw;
-        if (!message_recording_enabled())
-        {
-            return;
-        }
-        const uint8_t idx = static_cast<uint8_t>(lv);
-        if (idx < min_level_)
-        {
-            return;
-        }
-        append(k_level_prefix[idx].data(), k_level_prefix[idx].size());
-        (append_arg(std::forward<Args>(args)), ...);
-        append_char('\n');
+        return write(true, std::forward<Args>(args)...);
     }
 
+    // 前置条件检查: 失败写入并返回 false
     template<typename... Args>
-    void write_message_fmt(bool sw, std::format_string<Args...> fmt, Args&&... args)
+    [[nodiscard]] FORCE_INLINE bool check(bool cond, Args&&... args)
     {
-        switch_ = switch_ && sw;
-        if (!message_recording_enabled())
+        if (cond)
         {
-            return;
+            return true;
         }
-        if (static_cast<uint8_t>(msg_level::info) < min_level_)
-        {
-            return;
-        }
-        dispatch_fmt(fmt.get(), fmt, std::forward<Args>(args)...);
-        append_char('\n');
-    }
-
-    template<typename... Args>
-    void write_message_fmt_level(msg_level lv, bool sw, std::format_string<Args...> fmt, Args&&... args)
-    {
-        switch_ = switch_ && sw;
-        if (!message_recording_enabled())
-        {
-            return;
-        }
-        const uint8_t idx = static_cast<uint8_t>(lv);
-        if (idx < min_level_)
-        {
-            return;
-        }
-        append(k_level_prefix[idx].data(), k_level_prefix[idx].size());
-        dispatch_fmt(fmt.get(), fmt, std::forward<Args>(args)...);
-        append_char('\n');
-    }
-
-    // === 错误码写入 ===
-
-    template<typename... Args>
-    void write_message_code(uint16_t err_code, bool sw, Args&&... args)
-    {
-        if (!sw)
-        {
-            code_ = err_code;
-        }
-        write_message(sw, std::forward<Args>(args)...);
-    }
-
-    template<typename... Args>
-    void write_message_code_level(uint16_t err_code, msg_level lv, bool sw, Args&&... args)
-    {
-        if (!sw)
-        {
-            code_ = err_code;
-        }
-        write_message_level(lv, sw, std::forward<Args>(args)...);
-    }
-
-    // === source_location 写入 ===
-
-    // === source_location 写入 ===
-    // loc 需显式传入 std::source_location::current()
-
-    template<typename... Args>
-    void write_message_loc(bool sw, std::source_location loc, Args&&... args)
-    {
-        switch_ = switch_ && sw;
-        if (!message_recording_enabled())
-        {
-            return;
-        }
-        if (static_cast<uint8_t>(msg_level::info) < min_level_)
-        {
-            return;
-        }
-        append_char('[');
-        std::string_view file = path_basename(loc.file_name());
-        append(file.data(), file.size());
-        append_char(':');
-        char buf[16];
-        auto r = std::to_chars(buf, buf + sizeof(buf), loc.line());
-        append(buf, static_cast<size_t>(r.ptr - buf));
-        append("] ", 2);
-        (append_arg(std::forward<Args>(args)), ...);
-        append_char('\n');
-    }
-
-    template<typename... Args>
-    void write_message_code_loc(uint16_t err_code, bool sw, std::source_location loc, Args&&... args)
-    {
-        if (!sw)
-        {
-            code_ = err_code;
-        }
-        switch_ = switch_ && sw;
-        if (!message_recording_enabled())
-        {
-            return;
-        }
-        if (static_cast<uint8_t>(msg_level::info) < min_level_)
-        {
-            return;
-        }
-        append_char('[');
-        std::string_view file = path_basename(loc.file_name());
-        append(file.data(), file.size());
-        append_char(':');
-        char buf[16];
-        auto r = std::to_chars(buf, buf + sizeof(buf), loc.line());
-        append(buf, static_cast<size_t>(r.ptr - buf));
-        append("] ", 2);
-        (append_arg(std::forward<Args>(args)), ...);
-        append_char('\n');
-    }
-
-    // === 运行时格式化 (fmt 为运行时 string_view, 经 validate_format 校验) ===
-
-    template<typename... Args>
-    void write_message_fmt_runtime(bool sw, std::string_view fmt, Args&&... args)
-    {
-        switch_ = switch_ && sw;
-        if (!message_recording_enabled())
-        {
-            return;
-        }
-        if (static_cast<uint8_t>(msg_level::info) < min_level_)
-        {
-            return;
-        }
-        dispatch_fmt_runtime(fmt, std::forward<Args>(args)...);
-        append_char('\n');
-    }
-
-    template<typename... Args>
-    void write_message_fmt_runtime_level(msg_level lv, bool sw,
-                                         std::string_view fmt, Args&&... args)
-    {
-        switch_ = switch_ && sw;
-        if (!message_recording_enabled())
-        {
-            return;
-        }
-        const uint8_t idx = static_cast<uint8_t>(lv);
-        if (idx < min_level_)
-        {
-            return;
-        }
-        append(k_level_prefix[idx].data(), k_level_prefix[idx].size());
-        dispatch_fmt_runtime(fmt, std::forward<Args>(args)...);
-        append_char('\n');
-    }
-
-    template<typename... Args>
-    void write_message_fmt_runtime_code(uint16_t err_code, bool sw,
-                                        std::string_view fmt, Args&&... args)
-    {
-        if (!sw)
-        {
-            code_ = err_code;
-        }
-        write_message_fmt_runtime(sw, fmt, std::forward<Args>(args)...);
-    }
-
-    template<typename... Args>
-    void write_message_fmt_runtime_code_level(uint16_t err_code, msg_level lv, bool sw,
-                                              std::string_view fmt, Args&&... args)
-    {
-        if (!sw)
-        {
-            code_ = err_code;
-        }
-        write_message_fmt_runtime_level(lv, sw, fmt, std::forward<Args>(args)...);
-    }
-
-    template<typename... Args>
-    void write_message_fmt_runtime_loc(bool sw, std::source_location loc,
-                                       std::string_view fmt, Args&&... args)
-    {
-        switch_ = switch_ && sw;
-        if (!message_recording_enabled())
-        {
-            return;
-        }
-        if (static_cast<uint8_t>(msg_level::info) < min_level_)
-        {
-            return;
-        }
-        append_char('[');
-        std::string_view file = path_basename(loc.file_name());
-        append(file.data(), file.size());
-        append_char(':');
-        char buf[16];
-        auto r = std::to_chars(buf, buf + sizeof(buf), loc.line());
-        append(buf, static_cast<size_t>(r.ptr - buf));
-        append("] ", 2);
-        dispatch_fmt_runtime(fmt, std::forward<Args>(args)...);
-        append_char('\n');
-    }
-
-    template<typename... Args>
-    void write_message_fmt_runtime_code_loc(uint16_t err_code, bool sw,
-                                            std::source_location loc,
-                                            std::string_view fmt, Args&&... args)
-    {
-        if (!sw)
-        {
-            code_ = err_code;
-        }
-        write_message_fmt_runtime_loc(sw, loc, fmt, std::forward<Args>(args)...);
+        write(false, std::forward<Args>(args)...);
+        return false;
     }
 };
 
-// === 热路径专用宏: Release 构建零开销 (不求值消息参数, 只更新 switch_) ===
-// 用法: OM_MSG(result, false, "错误: ", idx);   // 直接传整型, append_arg 用 to_chars 零分配写入
-// Release (NDEBUG): 展开为 (result).update_switch(false)  — 参数不求值, 零开销
-// Debug          : 展开为 (result).write_message(false, "错误: ", idx)  — 完整写入
-// 注意: 整型直接传入, 勿用 std::to_string 包装 (debug 模式会额外 std::string 分配)
-#if LCF_RELEASE_MESSAGES
-    #define OM_MSG(om, sw, ...) (om).update_switch(sw)
+// 测试断言与调试辅助
+namespace msg
+{
+    [[noreturn]] inline void fail_(std::string_view what,
+                                   std::source_location loc) noexcept
+    {
+        std::fprintf(stderr, "FAIL: %s:%u %s\n",
+                     loc.file_name(), loc.line(), what.data());
+        std::abort();
+    }
+
+    inline void expect_ok(const operating_message& om,
+                          std::source_location loc = std::source_location::current()) noexcept
+    {
+        if (!static_cast<bool>(om))
+        {
+            fail_("expected success", loc);
+        }
+    }
+
+    inline void expect_code(const operating_message& om, uint32_t expected,
+                            std::source_location loc = std::source_location::current()) noexcept
+    {
+        if (!om.is_code(expected))
+        {
+            fail_("expected code mismatch", loc);
+        }
+    }
+
+    inline void expect_fail(const operating_message& om,
+                            std::source_location loc = std::source_location::current()) noexcept
+    {
+        if (static_cast<bool>(om))
+        {
+            fail_("expected failure but succeeded", loc);
+        }
+    }
+
+    [[noreturn]] FORCE_INLINE void debug_break() noexcept
+    {
+#if defined(_MSC_VER)
+        __debugbreak();
 #else
-    #define OM_MSG(om, sw, ...) (om).write_message(sw, __VA_ARGS__)
+        __builtin_trap();
 #endif
+    }
+}
 
-// =============================================================================
-// 高级功能与调试辅助 (基于 operating_message 现有接口组合, 零侵入)
-// P0 段 (守卫/快照/便捷方法/宏) 留在此处; P1/P2 段依赖容器与时间模块,
-// 已分离至 om_extensions.hpp (本模块保持零容器依赖)
-// =============================================================================
-
-// === P0: RAII 守卫 ===
-
-// 消息记录守卫: 作用域内临时开启/关闭 message_recording_enabled, 析构自动恢复
+// RAII 守卫
 struct message_recording_guard
 {
     bool old_;
@@ -854,7 +710,6 @@ struct message_recording_guard
     message_recording_guard& operator=(const message_recording_guard&) = delete;
 };
 
-// 级别守卫: 作用域内临时调整 om 的 min_level_, 析构自动恢复
 struct min_level_guard
 {
     operating_message& om_;
@@ -872,14 +727,12 @@ struct min_level_guard
     min_level_guard& operator=(const min_level_guard&) = delete;
 };
 
-// === P0: 消息快照与差异提取 ===
-
-// 消息快照: 记录某时刻的 size/switch/code, 用于定位后续追加内容
+// 消息快照
 struct message_snapshot
 {
     size_t size_;
     bool switch_;
-    uint16_t code_;
+    uint32_t code_;
 };
 
 [[nodiscard]] inline message_snapshot snapshot_of(const operating_message& om) noexcept
@@ -887,7 +740,7 @@ struct message_snapshot
     return message_snapshot{om.message_size(), (bool)om, om.code()};
 }
 
-// 提取快照之后追加的消息内容 (零拷贝 string_view)
+// 提取快照后追加的内容
 [[nodiscard]] inline std::string_view appended_since(
     const operating_message& om, const message_snapshot& snap) noexcept
 {
@@ -899,72 +752,7 @@ struct message_snapshot
     return full.substr(snap.size_);
 }
 
-// === P0: 调试断点辅助宏 ===
-
-#if defined(_MSC_VER)
-    #define LCF_DEBUG_BREAK() __debugbreak()
-#else
-    #define LCF_DEBUG_BREAK() __builtin_trap()
-#endif
-
-// 失败时追加诊断消息并触发调试器中断
-#define LCF_DEBUG_MSG(om, ...) \
-    do { \
-        if (!(om)) \
-        { \
-            (om).write_message_fmt_runtime(true, __VA_ARGS__); \
-            LCF_DEBUG_BREAK(); \
-        } \
-    } while (0)
-
-// === P0: 级别便捷方法 (薄封装, 提升调用方可读性) ===
-
-template<typename... Args>
-void om_debug(operating_message& om, bool sw, Args&&... args) noexcept
-{
-    om.write_message_level(msg_level::debug, sw, std::forward<Args>(args)...);
-}
-
-template<typename... Args>
-void om_info(operating_message& om, bool sw, Args&&... args) noexcept
-{
-    om.write_message_level(msg_level::info, sw, std::forward<Args>(args)...);
-}
-
-template<typename... Args>
-void om_warn(operating_message& om, bool sw, Args&&... args) noexcept
-{
-    om.write_message_level(msg_level::warn, sw, std::forward<Args>(args)...);
-}
-
-template<typename... Args>
-void om_error(operating_message& om, bool sw, Args&&... args) noexcept
-{
-    om.write_message_level(msg_level::error, sw, std::forward<Args>(args)...);
-}
-
-// === P0: KV 风格日志 ===
-
-// 写入 key=value 形式消息 (复用 write_message 多参数拼接)
-template<typename V>
-void om_kv(operating_message& om, std::string_view key, V&& val) noexcept
-{
-    om.write_message(true, key, "=", std::forward<V>(val));
-}
-
-// === P0: 进度消息 ===
-
-inline void om_progress(operating_message& om, size_t cur, size_t total,
-                        std::string_view task) noexcept
-{
-    om.write_message_fmt_runtime(true, "[{}/{}] {}", cur, total, task);
-}
-
-// 消息前缀栈 (om_prefix_stack/om_prefix/om_write_prefixed) 依赖 dense,
-// 已分离至 om_extensions.hpp
-
-// === P0: 消息分组缩进 ===
-
+// 缩进级别 (全局, 单线程)
 [[nodiscard]] inline uint8_t& om_indent_level() noexcept
 {
     static uint8_t level = 0;
@@ -985,19 +773,7 @@ struct om_indent
     om_indent& operator=(const om_indent&) = delete;
 };
 
-// 带缩进写入: 追加 2*level 个空格前缀后调用 write_message
-template<typename... Args>
-void om_write_indented(operating_message& om, bool sw, Args&&... args) noexcept
-{
-    for (uint8_t i = 0; i < om_indent_level(); ++i)
-    {
-        om += "  ";
-    }
-    om.write_message(sw, std::forward<Args>(args)...);
-}
-
-// === P0: 体积监控 (超阈值自动清空, 防止无限增长) ===
-
+// 超阈值清空
 inline void om_clear_if_over(operating_message& om, size_t threshold) noexcept
 {
     if (om.message_size() > threshold)
@@ -1005,47 +781,3 @@ inline void om_clear_if_over(operating_message& om, size_t threshold) noexcept
         om.clear_message();
     }
 }
-
-// === P0: 断言式写入宏 (前置条件检查) ===
-
-#define LCF_CHECK(om, cond, err_code, ...) \
-    do { \
-        if (!(cond)) \
-        { \
-            (om).write_message_fmt_runtime_code(err_code, false, __VA_ARGS__); \
-            return om; \
-        } \
-    } while (0)
-
-// === P0: 测试断言宏 ===
-
-#define LCF_EXPECT_OK(om) \
-    do { \
-        if (!(om)) \
-        { \
-            std::printf("FAIL: %s:%d 期望成功, code=%u msg=%.*s\n", \
-                __FILE__, __LINE__, static_cast<unsigned>((om).code()), \
-                static_cast<int>((om).message_size()), (om).read_message().data()); \
-            std::abort(); \
-        } \
-    } while (0)
-
-#define LCF_EXPECT_CODE(om, expected) \
-    do { \
-        if (!(om).is_code(expected)) \
-        { \
-            std::printf("FAIL: %s:%d 期望 code=%u, 实际 code=%u\n", \
-                __FILE__, __LINE__, static_cast<unsigned>(expected), \
-                static_cast<unsigned>((om).code())); \
-            std::abort(); \
-        } \
-    } while (0)
-
-#define LCF_EXPECT_FAIL(om) \
-    do { \
-        if ((om)) \
-        { \
-            std::printf("FAIL: %s:%d 期望失败但成功了\n", __FILE__, __LINE__); \
-            std::abort(); \
-        } \
-    } while (0)

@@ -38,7 +38,7 @@ struct om_prefix
     om_prefix& operator=(const om_prefix&) = delete;
 };
 
-// 带前缀写入: 依次追加所有前缀后调用 write_message
+// 带前缀写入: 依次追加所有前缀后调用 write
 template<typename... Args>
 void om_write_prefixed(operating_message& om, bool sw, Args&&... args) noexcept
 {
@@ -47,14 +47,14 @@ void om_write_prefixed(operating_message& om, bool sw, Args&&... args) noexcept
     {
         om += s[i];
     }
-    om.write_message(sw, std::forward<Args>(args)...);
+    om.write(sw, std::forward<Args>(args)...);
 }
 
 // === P1: 错误码映射表 (code → 可读名/描述) ===
 
 struct om_error_entry
 {
-    uint16_t code;
+    uint32_t code;
     std::string_view name;
     std::string_view description;
 };
@@ -78,7 +78,7 @@ struct om_error_entry
     return table;
 }
 
-[[nodiscard]] inline std::string_view om_error_name(uint16_t code) noexcept
+[[nodiscard]] inline std::string_view om_error_name(uint32_t code) noexcept
 {
     const dense<om_error_entry>& t = om_error_table();
     for (size_t i = 0; i < t.size(); ++i)
@@ -91,7 +91,7 @@ struct om_error_entry
     return "unknown";
 }
 
-[[nodiscard]] inline std::string_view om_error_desc(uint16_t code) noexcept
+[[nodiscard]] inline std::string_view om_error_desc(uint32_t code) noexcept
 {
     const dense<om_error_entry>& t = om_error_table();
     for (size_t i = 0; i < t.size(); ++i)
@@ -194,7 +194,7 @@ struct om_scope_timer
     ~om_scope_timer() noexcept
     {
         double us = timer_.elapsed_microseconds();
-        om_.write_message_fmt_runtime(true, "[{}] 耗时 {:.1f}us", name_, us);
+        om_.write(true, msg::fmt_rt("[{}] 耗时 {:.1f}us", name_, us));
     }
     om_scope_timer(const om_scope_timer&) = delete;
     om_scope_timer& operator=(const om_scope_timer&) = delete;
@@ -213,7 +213,7 @@ struct om_scope_cycles
     ~om_scope_cycles() noexcept
     {
         uint64_t cyc = timer_.elapsed_cycles();
-        om_.write_message_fmt_runtime(true, "[{}] {} cycles", name_, cyc);
+        om_.write(true, msg::fmt_rt("[{}] {} cycles", name_, cyc));
     }
     om_scope_cycles(const om_scope_cycles&) = delete;
     om_scope_cycles& operator=(const om_scope_cycles&) = delete;
@@ -225,7 +225,7 @@ struct om_scope_cycles
 struct om_record
 {
     msg_level level;
-    uint16_t code;
+    uint32_t code;
     uint16_t msg_len;
     char msg_buf[256];
 };
@@ -257,7 +257,7 @@ size_t om_history_flush(om_history& hist, Func&& handler) noexcept
 
 // === P2: 消息订阅/回调 (包装器模式, 不修改 operating_message) ===
 
-using om_sink_fn = void (*)(msg_level, uint16_t, std::string_view);
+using om_sink_fn = void (*)(msg_level, uint32_t, std::string_view);
 
 // 消息记录器: 包装 operating_message, 每次 write 后触发回调 + 推入历史
 class om_logger
@@ -272,11 +272,11 @@ public:
 
     operating_message& inner() noexcept { return om_; }
 
-    // 代理 write_message_level, 写入后触发订阅
+    // 代理 write + level 标签, 写入后触发订阅
     template<typename... Args>
     void write(msg_level lv, bool sw, Args&&... args) noexcept
     {
-        om_.write_message_level(lv, sw, std::forward<Args>(args)...);
+        om_.write(sw, msg::level_tag{lv}, std::forward<Args>(args)...);
         if (callback_)
         {
             callback_(lv, om_.code(), om_.read_message());
@@ -287,13 +287,13 @@ public:
         }
     }
 
-    // 代理 write_message_fmt_runtime_level, 写入后触发订阅
+    // 代理 write + level 标签 + 运行时格式串, 写入后触发订阅
     template<typename... Args>
     void write_fmt(msg_level lv, bool sw,
                    std::string_view fmt, Args&&... args) noexcept
     {
-        om_.write_message_fmt_runtime_level(lv, sw, fmt,
-                                            std::forward<Args>(args)...);
+        om_.write(sw, msg::level_tag{lv},
+                  msg::fmt_rt(fmt, std::forward<Args>(args)...));
         if (callback_)
         {
             callback_(lv, om_.code(), om_.read_message());
@@ -305,7 +305,7 @@ public:
     }
 
     [[nodiscard]] operator bool() const noexcept { return (bool)om_; }
-    [[nodiscard]] uint16_t code() const noexcept { return om_.code(); }
+    [[nodiscard]] uint32_t code() const noexcept { return om_.code(); }
     [[nodiscard]] std::string_view read_message() const noexcept { return om_.read_message(); }
     [[nodiscard]] operating_message&& take() noexcept { return std::move(om_); }
 };
@@ -316,7 +316,7 @@ using om_recovery_fn = bool (*)(const operating_message&);
 
 struct om_recovery_entry
 {
-    uint16_t code;
+    uint32_t code;
     om_recovery_fn fn;
 };
 
@@ -326,7 +326,7 @@ struct om_recovery_entry
     return t;
 }
 
-inline void om_register_recovery(uint16_t code, om_recovery_fn fn) noexcept
+inline void om_register_recovery(uint32_t code, om_recovery_fn fn) noexcept
 {
     dense<om_recovery_entry>& t = om_recovery_table();
     t.increase_capacity(t.size() + 1);

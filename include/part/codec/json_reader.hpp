@@ -40,7 +40,7 @@ private:
         if (!has_err_)
         {
             has_err_ = true;
-            err_.write_message(false, "JSON 解析错误 @offset ", static_cast<size_t>(p_ - src_.data()),
+            err_.write(false, "JSON 解析错误 @offset ", static_cast<size_t>(p_ - src_.data()),
                                ": ", msg);
         }
     }

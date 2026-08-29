@@ -493,7 +493,7 @@ public:
             return set->soft_remove(entitys);
         }
         operating_message result;
-        OM_MSG(result, false, "manager::soft_remove(): component set does not exist, type=", type_id::get_type_id<T>());
+        result.write(false, "manager::soft_remove(): component set does not exist, type=", type_id::get_type_id<T>());
         return result;
     }
 
@@ -511,7 +511,7 @@ public:
             return set->hard_remove(entitys);
         }
         operating_message result;
-        OM_MSG(result, false, "manager::hard_remove(): component set does not exist, type=", type_id::get_type_id<T>());
+        result.write(false, "manager::hard_remove(): component set does not exist, type=", type_id::get_type_id<T>());
         return result;
     }
 
@@ -961,7 +961,7 @@ public:
         const type_def* d = type_id::get_type_def(def_id);
         if (!d) [[unlikely]]
         {
-            OM_MSG(result, false, "manager::add_def(): unknown def id ", def_id);
+            result.write(false, "manager::add_def(): unknown def id ", def_id);
             return result;
         }
         register_def_component_meta(def_id);
@@ -982,7 +982,7 @@ public:
         if (id < 0) [[unlikely]]
         {
             operating_message result;
-            OM_MSG(result, false, "manager::add_def(): unregistered def name");
+            result.write(false, "manager::add_def(): unregistered def name");
             return result;
         }
         return add_def(entitys, id, data);
@@ -1026,7 +1026,7 @@ public:
                                                    static_cast<uint32_t>(def_id));
             return set->hard_remove(entitys);
         }
-        OM_MSG(result, false, "manager::hard_remove_def(): def set does not exist, id=", def_id);
+        result.write(false, "manager::hard_remove_def(): def set does not exist, id=", def_id);
         return result;
     }
 
@@ -1036,7 +1036,7 @@ public:
         if (id < 0) [[unlikely]]
         {
             operating_message result;
-            OM_MSG(result, false, "manager::hard_remove_def(): unregistered def name");
+            result.write(false, "manager::hard_remove_def(): unregistered def name");
             return result;
         }
         return hard_remove_def(entitys, id);
@@ -1051,7 +1051,7 @@ public:
             clear_entity_mask_for_type(entitys, def_id);
             return set->soft_remove(entitys);
         }
-        OM_MSG(result, false, "manager::soft_remove_def(): def set does not exist, id=", def_id);
+        result.write(false, "manager::soft_remove_def(): def set does not exist, id=", def_id);
         return result;
     }
 
@@ -1061,7 +1061,7 @@ public:
         if (id < 0) [[unlikely]]
         {
             operating_message result;
-            OM_MSG(result, false, "manager::soft_remove_def(): unregistered def name");
+            result.write(false, "manager::soft_remove_def(): unregistered def name");
             return result;
         }
         return soft_remove_def(entitys, id);
