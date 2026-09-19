@@ -933,6 +933,7 @@ private:
             versions_.increase_capacity(dense_start + count);
             pool->increase_capacity(pool->size() + count);
             typed_pool_data_ = pool->data();
+            bump_pool_version();
 
             for (size_t i = 0; i < count; ++i)
             {
@@ -1035,6 +1036,7 @@ private:
                 versions_.increase_capacity(dense_old + new_count);
                 pool->increase_capacity(pool->size() + new_count);
                 typed_pool_data_ = pool->data();
+                bump_pool_version();
 
                 dense<uint32_t> new_entity_indices;
                 dense<uint32_t> new_entity_versions;
@@ -1166,6 +1168,7 @@ public:
                 entity_change_tracking_.increase_capacity(new_cap);
                 pool->increase_capacity(new_cap);
                 typed_pool_data_ = pool->data();
+                bump_pool_version();
             }
             sparse_reserve_(sparse_size_ + 1);
             sparse_[e.parts_.index_] = sparse_entry{dense_idx, e.parts_.version_};
@@ -1949,6 +1952,8 @@ public:
         {
             ops_.increase_capacity_pool(typed_pool_, capacity);
             if (ops_.get_pool_data) typed_pool_data_ = ops_.get_pool_data(typed_pool_);
+            // 池重分配使已缓存 pool_data_ 的 query_context 悬垂, 递增 epoch 触发其刷新
+            bump_pool_version();
         }
         else
         {

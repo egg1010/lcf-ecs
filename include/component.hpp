@@ -17,14 +17,9 @@
 #include "part/ring_buffer.hpp"
 #include "view_tags.hpp"
 
-// MinGW GCC: 返回大对象 (group/owning_group/reorder_group) 的工厂方法中,
-// GCC 会用 vmovdqa (32 字节对齐的 256 位存储) 在栈上构造 std::array<...> 参数,
-// 但 MinGW x64 ABI 遵循 Windows x64 ABI 规范, 仅保证 16 字节栈对齐 (设计规范, 非 bug)
-// → 触发 #GP, 进程崩溃 (0xC0000005).
-// 解决: 在这些工厂方法上加 [[gnu::target("no-avx")]] 禁用 AVX, 改用 SSE2/scalar
-//       (仅需 16 字节对齐, MinGW ABI 可保证). 工厂方法非热路径, 性能无影响.
-// Linux/macOS SysV ABI 为 AVX 函数维护 32 字节栈对齐 (设计规范), 无需此属性.
-// MSVC /arch:AVX2 会自动插入动态栈对齐, 亦无需此属性.
+// MinGW x64 ABI 仅保证 16 字节栈对齐, GCC 在工厂方法栈上构造 group 参数时
+// 用 vmovdqa (需 32 字节对齐) 会触发 #GP; no-avx 属性强制走 SSE2 路径规避.
+// Linux SysV ABI 维护 AVX 栈对齐, MSVC 自动动态对齐, 均无需此属性.
 #if defined(_WIN32) && defined(__GNUC__) && !defined(__clang__)
 #define LCF_NO_AVX [[gnu::target("no-avx")]]
 #else
@@ -274,8 +269,14 @@ public:
         int type_id = type_id::get_type_id<DecayedT>();
         register_component_meta<DecayedT>();
         operating_message result = components_c_[type_id].add(entitys, std::forward<T>(component));
-        set_entity_mask_for_type(entitys, type_id);
-        if (!components_c_[type_id].on_add_) push_comp_signal(0, entitys.parts_.index_, static_cast<uint32_t>(type_id));
+        // 仅成功时置掩码/记变更/发信号: 失败置掩码会造成掩码与存储不一致
+        if (result) [[likely]]
+        {
+            set_entity_mask_for_type(entitys, type_id);
+            push_change_record(0, entitys.parts_.index_, static_cast<uint32_t>(type_id),
+                               static_cast<uint32_t>(components_c_[type_id].size() - 1));
+            if (!components_c_[type_id].on_add_) push_comp_signal(0, entitys.parts_.index_, static_cast<uint32_t>(type_id));
+        }
         return result;
     }
 
@@ -1223,38 +1224,48 @@ template <typename T>
 class query_context
 {
     single_class_set* set_;
-    size_t sparse_size_;
-    T* pool_data_;
-    uint32_t position_epoch_;
+    mutable T* pool_data_;
+    mutable uint32_t position_epoch_;
+
+    // epoch 变化 (位置变动/池重分配) 后刷新缓存指针, 防止扩容悬垂
+    void refresh_if_stale_() const noexcept
+    {
+        if (position_epoch_ != set_->position_epoch_) [[unlikely]]
+        {
+            pool_data_ = set_->get_typed_pool<T>()->data();
+            position_epoch_ = set_->position_epoch_;
+        }
+    }
 
 public:
     query_context(manager& mgr) noexcept
         : set_(mgr.get_single_class_set<T>())
-        , sparse_size_(set_ ? set_->sparse_size_ : 0)
         , pool_data_(set_ ? set_->get_typed_pool<T>()->data() : nullptr)
         , position_epoch_(set_ ? set_->position_epoch_ : 0)
     {}
 
     [[nodiscard]] T* get_ptr(entity e) noexcept
     {
-        if (!set_ || e.parts_.index_ >= sparse_size_) [[unlikely]]
+        if (!set_ || e.parts_.index_ >= set_->sparse_size_) [[unlikely]]
             return nullptr;
-        // 查找算法委托 single_class_set 统一核心 (epoch 传构造期缓存值)
+        refresh_if_stale_();
+        // 查找算法委托 single_class_set 统一核心 (epoch 传刷新后的缓存值)
         const uint32_t d = set_->hot_lookup_fill_(e, position_epoch_);
         return d == single_class_set::dense_invalid ? nullptr : &pool_data_[d];
     }
 
     [[nodiscard]] const T* get_ptr(entity e) const noexcept
     {
-        if (!set_ || e.parts_.index_ >= sparse_size_) [[unlikely]]
+        if (!set_ || e.parts_.index_ >= set_->sparse_size_) [[unlikely]]
             return nullptr;
+        refresh_if_stale_();
         const uint32_t d = set_->hot_lookup_(e, position_epoch_);
         return d == single_class_set::dense_invalid ? nullptr : &pool_data_[d];
     }
 
     void prefetch_sparse(entity e) const noexcept
     {
-        if (!set_ || e.parts_.index_ >= sparse_size_) [[unlikely]]
+        if (!set_ || e.parts_.index_ >= set_->sparse_size_) [[unlikely]]
             return;
         if (e.parts_.index_ < set_->sparse_cap_)
             PREFETCH_R(&set_->sparse_[e.parts_.index_]);
@@ -1262,9 +1273,10 @@ public:
 
     void prefetch_data(entity e) const noexcept
     {
-        if (!set_ || e.parts_.index_ >= sparse_size_) [[unlikely]]
+        if (!set_ || e.parts_.index_ >= set_->sparse_size_) [[unlikely]]
             return;
-        // 单次 is_constructed_at + 单次 sparse_entry 加载
+        refresh_if_stale_();
+        // 单次 sparse_entry 加载即可判定有效 dense 位置
         const sparse_entry* se = set_->sparse_entry_checked_(e.parts_.index_);
         if (se && se->version == e.parts_.version_ && se->dense != single_class_set::dense_invalid)
         {

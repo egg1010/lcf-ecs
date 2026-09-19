@@ -132,7 +132,8 @@ public:
         size_t initial_size = preallocated_entities_.size();
         preallocated_entities_.increase_capacity(initial_size + count);
 
-        size_t max_idx = count + 1;
+        // 上界含既有最大已分配 id: 支持多次调用 (仅按 count 计算会越界读 version_v_)
+        size_t max_idx = static_cast<size_t>(id_manager_.maximum_id()) + count + 1;
         if (max_idx > version_v_.size())
         {
             version_v_.increase_capacity(max_idx, 1);

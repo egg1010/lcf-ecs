@@ -2,10 +2,6 @@
 #include "dense.hpp"
 #include "force_inline.hpp"
 
-// 非原子 id 分配器: 单线程高性能
-// 反射模块通过 magic statics (static int id = ...) 保证 get_type_id<T>() 线程安全,
-// 每个 T 仅初始化一次, 无需原子操作.
-// 序列化模块实例非线程安全, 多线程使用同一实例需用户外部加锁.
 template <typename T = size_t>
 class id_allocation
 {
