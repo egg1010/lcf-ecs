@@ -187,7 +187,7 @@ static void test_entity_mask()
 
     entity_manager em;
     em.reserve_mask_blocks(4);
-    for (size_t i = 0; i < N; ++i) em.get_entity();
+    for (size_t i = 0; i < N; ++i) (void)em.get_entity();
 
     // 3.1 set_mask_bit (带边界检查)
     {
@@ -247,7 +247,7 @@ static void test_entity_mask()
         for (size_t i = 0; i < 64; ++i) em.set_mask_bit_no_bounds_check(0, 0, static_cast<uint32_t>(i));
         double ns = best_ns(REPEAT, [&]() {
             volatile size_t cnt = 0;
-            em.for_each_set_bit(0, [&](uint32_t, uint32_t) { ++cnt; });
+            em.for_each_set_bit(0, [&](uint32_t, uint32_t) { cnt = cnt + 1; });
             compiler_barrier();
             return cnt;
         });
@@ -269,7 +269,7 @@ static void test_entity_signals()
     {
         entity_manager em;
         em.enable_entity_signals();
-        for (size_t i = 0; i < N; ++i) em.get_entity();
+        for (size_t i = 0; i < N; ++i) (void)em.get_entity();
         double ns = best_ns(REPEAT, [&]() {
             volatile size_t s = 0;
             for (size_t i = 0; i < OPS; ++i)
@@ -289,7 +289,7 @@ static void test_entity_signals()
     {
         entity_manager em;
         em.enable_entity_signals();
-        for (size_t i = 0; i < N; ++i) em.get_entity();
+        for (size_t i = 0; i < N; ++i) (void)em.get_entity();
         double ns = best_ns(REPEAT, [&]() {
             em.flush_signals([](uint32_t, uint32_t) {});
             compiler_barrier();
@@ -322,7 +322,7 @@ static void test_entity_state()
     constexpr size_t OPS = 1000000;
 
     entity_manager em;
-    for (size_t i = 0; i < N; ++i) em.get_entity();
+    for (size_t i = 0; i < N; ++i) (void)em.get_entity();
 
     // 5.1 get_entity_state
     {

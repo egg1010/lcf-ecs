@@ -116,9 +116,17 @@ struct Base { int base_val; };
 struct Derived : Base { int derived_val; };
 REGISTER(Base);
 REGISTER_TYPE_ONLY(Derived);
+// 刻意对非 standard-layout 使用 offsetof (条件性支持), 压制警告
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Winvalid-offsetof"
+#endif
 REGISTER_PRIVATE_OFFSETS(Derived,
     PRIV_FIELD("base_val", offsetof(Derived, base_val), int),
     PRIV_FIELD("derived_val", offsetof(Derived, derived_val), int));
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 REGISTER_BASE(Derived, Base);
 
 // #5 容器测试类型 (dense<int> 字段)

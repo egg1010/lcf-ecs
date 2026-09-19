@@ -36,7 +36,7 @@ static void test_manager_entity(size_t n)
     {
         double ns = best_ns(REPEAT, [&]() {
             manager mgr;
-            for (size_t i = 0; i < n; ++i) mgr.create_entity();
+            for (size_t i = 0; i < n; ++i) (void)mgr.create_entity();
             compiler_barrier();
             return 0;
         });
@@ -60,7 +60,7 @@ static void test_manager_entity(size_t n)
     {
         double ns = best_ns(REPEAT, [&]() {
             manager mgr;
-            for (size_t i = 0; i < n; ++i) mgr.create_entity();
+            for (size_t i = 0; i < n; ++i) (void)mgr.create_entity();
             vector<entity> ents;
             for (size_t i = 0; i < n; ++i)
             {
@@ -77,7 +77,7 @@ static void test_manager_entity(size_t n)
     // 1.4 get_entity_manager / get_entity_state / set/clear,has_entity_flag
     {
         manager mgr;
-        for (size_t i = 0; i < n; ++i) mgr.create_entity();
+        for (size_t i = 0; i < n; ++i) (void)mgr.create_entity();
         const size_t OPS = 1000000;
         double ns = best_ns(REPEAT, [&]() {
             volatile size_t s = 0;
@@ -175,8 +175,7 @@ static void test_manager_add(size_t n)
     {
         double ns = best_ns(REPEAT, [&]() {
             manager mgr;
-            Pos p{1, 2, 3};
-            for (size_t i = 0; i < n; ++i) mgr.create_entity();
+            for (size_t i = 0; i < n; ++i) (void)mgr.create_entity();
             // addc 需要实体已存在
             return 0;
         });

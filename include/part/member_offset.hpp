@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <type_traits>
 #include "force_inline.hpp"
 
@@ -30,7 +31,8 @@ template<typename T, typename M>
 FORCE_INLINE M& ub_access(T& obj, size_t offset) noexcept
 {
     M T::*mptr = nullptr;
-    *reinterpret_cast<size_t*>(&mptr) = offset;
+    size_t raw = offset;
+    std::memcpy(&mptr, &raw, sizeof(mptr));
     return obj.*mptr;
 }
 

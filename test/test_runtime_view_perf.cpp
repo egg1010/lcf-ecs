@@ -15,7 +15,7 @@ struct Armor { int v; };
 static void build_manager(manager& mgr, size_t n, mt19937& rng)
 {
     // 预分配实体, 确保 entity_manager 的 masks_ 有足够容量
-    for (size_t i = 0; i < n; ++i) mgr.create_entity();
+    for (size_t i = 0; i < n; ++i) (void)mgr.create_entity();
 
     uniform_real_distribution<float> rf(-1000, 1000);
     uniform_int_distribution<int> ri(0, 100);
@@ -177,7 +177,7 @@ static void test_for_each(manager& mgr, size_t n, const vector<int>& req_ids, co
             {
                 entity e = *it;
                 touch_ptr(&e);
-                ++cnt;
+                cnt = cnt + 1;
             }
             compiler_barrier();
             return cnt;

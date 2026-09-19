@@ -131,14 +131,14 @@ int main()
     // === 8. offset_desc 结构 ===
     print_section(8, "offset_desc 结构");
     {
-        offset_desc desc{"balance_", 32, type_id::get_type_id<int>()};
+        offset_desc desc{"balance_", 32, type_id::get_type_id<int>(), sizeof(int)};
         print_item("offset_desc name", std::string(desc.name) == "balance_");
         print_item("offset_desc offset == 32", desc.offset == 32);
         print_item("offset_desc type_id 匹配", desc.type_id == type_id::get_type_id<int>());
 
         offset_desc descs[] = {
-            {"name_",    0,  type_id::get_type_id<std::string>()},
-            {"balance_", 32, type_id::get_type_id<int>()}
+            {"name_",    0,  type_id::get_type_id<std::string>(), sizeof(std::string)},
+            {"balance_", 32, type_id::get_type_id<int>(),         sizeof(int)}
         };
         print_item("offset_desc 数组数量 == 2", sizeof(descs) / sizeof(descs[0]) == 2);
         print_item("descs[0].name", std::string(descs[0].name) == "name_");

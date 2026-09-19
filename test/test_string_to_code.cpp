@@ -280,10 +280,17 @@ static void test_move()
         print_item("短串移动: 新对象 is_inline", v2.is_inline());
         print_item("短串移动: 源对象 empty", v1.empty());
     }
-    // 自赋值
+    // 自赋值: 刻意自移动, 压制 GCC 误报警告
     {
         code_value v1("self_assign_long");
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wself-move"
+#endif
         v1 = std::move(v1);
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
         print_item("自移动赋值: 不损坏", v1.decode() == "self_assign_long");
     }
     std::printf("\n");

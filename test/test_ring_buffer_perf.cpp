@@ -20,7 +20,7 @@ static void test_push()
             ring_buffer<T, N> rb;
             for (size_t i = 0; i < OPS; ++i)
             {
-                rb.push(v);
+                (void)rb.push(v);
             }
             compiler_barrier();
             return rb.pending_count();
@@ -34,7 +34,7 @@ static void test_push()
             for (size_t i = 0; i < OPS; ++i)
             {
                 T v{};
-                rb.push(std::move(v));
+                (void)rb.push(std::move(v));
             }
             compiler_barrier();
             return rb.pending_count();
@@ -47,7 +47,7 @@ static void test_push()
             ring_buffer<T, N> rb;
             for (size_t i = 0; i < OPS; ++i)
             {
-                rb.emplace();
+                (void)rb.emplace();
             }
             compiler_barrier();
             return rb.pending_count();
@@ -70,11 +70,11 @@ static void test_pop_peek()
         T v{};
         double ns = best_ns(REPEAT, [&]() {
             ring_buffer<T, N> rb;
-            for (size_t i = 0; i < N; ++i) rb.push(v);
+            for (size_t i = 0; i < N; ++i) (void)rb.push(v);
             for (size_t i = 0; i < OPS; ++i)
             {
-                rb.pop();
-                rb.push(v);
+                (void)rb.pop();
+                (void)rb.push(v);
             }
             compiler_barrier();
             return rb.pending_count();
@@ -86,7 +86,7 @@ static void test_pop_peek()
         T v{};
         double ns = best_ns(REPEAT, [&]() {
             ring_buffer<T, N> rb;
-            for (size_t i = 0; i < N; ++i) rb.push(v);
+            for (size_t i = 0; i < N; ++i) (void)rb.push(v);
             const T* p = nullptr;
             for (size_t i = 0; i < OPS; ++i) { p = rb.peek(); touch_ptr(p); }
             compiler_barrier();
@@ -99,11 +99,11 @@ static void test_pop_peek()
         T v{};
         double ns = best_ns(REPEAT, [&]() {
             ring_buffer<T, N> rb;
-            for (size_t i = 0; i < N; ++i) rb.push(v);
+            for (size_t i = 0; i < N; ++i) (void)rb.push(v);
             size_t total = 0;
             for (size_t i = 0; i < OPS / N; ++i)
             {
-                for (size_t k = 0; k < N; ++k) rb.push(v);
+                for (size_t k = 0; k < N; ++k) (void)rb.push(v);
                 total += rb.drain([](const T&) {});
             }
             compiler_barrier();
@@ -116,11 +116,11 @@ static void test_pop_peek()
         T v{};
         double ns = best_ns(REPEAT, [&]() {
             ring_buffer<T, N> rb;
-            for (size_t i = 0; i < N; ++i) rb.push(v);
+            for (size_t i = 0; i < N; ++i) (void)rb.push(v);
             size_t total = 0;
             for (size_t i = 0; i < OPS / 64; ++i)
             {
-                for (size_t k = 0; k < 64; ++k) rb.push(v);
+                for (size_t k = 0; k < 64; ++k) (void)rb.push(v);
                 total += rb.drain_with_budget(64, [](const T&) {});
             }
             compiler_barrier();
@@ -142,7 +142,7 @@ static void test_status()
 
     ring_buffer<T, N> rb;
     T v{};
-    for (size_t i = 0; i < N; ++i) rb.push(v);
+    for (size_t i = 0; i < N; ++i) (void)rb.push(v);
 
     {
         double ns = best_ns(REPEAT, [&]() {
@@ -162,7 +162,7 @@ static void test_status()
     {
         double ns = best_ns(REPEAT, [&]() {
             ring_buffer<T, N> tmp;
-            for (size_t i = 0; i < N; ++i) tmp.push(v);
+            for (size_t i = 0; i < N; ++i) (void)tmp.push(v);
             tmp.clear();
             compiler_barrier();
             return tmp.pending_count();
@@ -187,7 +187,7 @@ static void test_unbounded()
             ring_buffer<T, 16> rb;
             for (size_t i = 0; i < OPS; ++i)
             {
-                rb.push(v);
+                (void)rb.push(v);
             }
             compiler_barrier();
             return rb.pending_count();
@@ -198,7 +198,7 @@ static void test_unbounded()
     {
         double ns = best_ns(REPEAT, [&]() {
             ring_buffer<T, 16> rb;
-            for (size_t i = 0; i < OPS; ++i) rb.push(v);
+            for (size_t i = 0; i < OPS; ++i) (void)rb.push(v);
             size_t total = rb.drain([](const T&) {});
             compiler_barrier();
             return total;
@@ -220,7 +220,7 @@ static void test_static_pool()
     {
         T v{};
         ring_buffer<T, 256> rb;
-        for (size_t i = 0; i < 256; ++i) rb.push(v);
+        for (size_t i = 0; i < 256; ++i) (void)rb.push(v);
         rb.clear();
 
         double ns = best_ns(REPEAT, [&]() {

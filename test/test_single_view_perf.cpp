@@ -35,7 +35,7 @@ template <typename T>
 static void build_manager(manager& mgr, size_t n, mt19937& rng)
 {
     // 预分配实体, 确保 entity_manager 的 masks_ 有足够容量
-    for (size_t i = 0; i < n; ++i) mgr.create_entity();
+    for (size_t i = 0; i < n; ++i) (void)mgr.create_entity();
 
     if constexpr (is_same_v<T, Pos>)
     {
@@ -163,7 +163,7 @@ static void test_iterator(size_t n)
             {
                 entity e = *it;
                 touch_ptr(&e);
-                ++cnt;
+                cnt = cnt + 1;
             }
             compiler_barrier();
             return cnt;
@@ -177,7 +177,7 @@ static void test_iterator(size_t n)
             for (auto it = sv.component_begin(); it != sv.component_end(); ++it)
             {
                 touch_ptr(&*it);
-                ++cnt;
+                cnt = cnt + 1;
             }
             compiler_barrier();
             return cnt;
@@ -294,8 +294,8 @@ static void test_nested_views(size_t n)
         mgr2.add(T{}, e2);
         auto sv2 = mgr2.view<T>();
         double ns = best_ns(REPEAT, [&]() {
-            volatile const T& r = sv2.exactly_one();
-            (void)r;
+            const T& r = sv2.exactly_one();
+            touch_ptr(&r);
             compiler_barrier();
             return 0;
         });

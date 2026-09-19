@@ -69,6 +69,7 @@ inline void sink_write(const T& x) noexcept
 inline void print_triple(const char* label, size_t n,
                           double dense_ns, double pool_ns, double vec_ns) noexcept
 {
+	(void)n;
 	const char* verdict_d = (dense_ns < vec_ns * 0.95) ? "[W]" : (vec_ns < dense_ns * 0.95) ? "[L]" : "[T]";
 	const char* verdict_p = (pool_ns < vec_ns * 0.95) ? "[W]" : (vec_ns < pool_ns * 0.95) ? "[L]" : "[T]";
 	cout << "  " << left << setw(28) << label

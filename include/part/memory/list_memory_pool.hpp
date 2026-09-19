@@ -343,6 +343,13 @@ private:
 		return wild;
 	}
 
+	// 独立大块 OS 释放 (冷路径): noinline 隔离指针来源,
+	// 避免 GCC 内联后对 wilderness 切割路径误报 -Wfree-nonheap-object
+	static NOINLINE void release_big_block_os(big_block_header* bh) noexcept
+	{
+		::operator delete(bh, bh->total_size, std::align_val_t{ CHUNK_ALIGN });
+	}
+
 	void deallocate_big_block(big_block_header* bh, bool allow_release_to_os) noexcept
 	{
 		if (!allow_release_to_os)
@@ -372,7 +379,7 @@ private:
 		total_capacity_bytes_ -= aligned;
 		if (!bh->from_wilderness)
 		{
-			::operator delete(bh, bh->total_size, std::align_val_t{ CHUNK_ALIGN });
+			release_big_block_os(bh);
 		}
 	}
 
