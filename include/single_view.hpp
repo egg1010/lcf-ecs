@@ -108,6 +108,13 @@
             auto* pool = set_->template get_typed_pool_ptr<T>();
             if (!pool) [[unlikely]] return;
 
+            // 有墓碑时改走过滤遍历
+            if (set_->has_tombstones()) [[unlikely]]
+            {
+                for_each_filtered_(std::forward<Func>(func), pool);
+                return;
+            }
+
             if constexpr (std::is_invocable_v<Func, entity, T&>)
             {
                 auto& indices = set_->get_entity_indices();
@@ -196,6 +203,33 @@
             }
         }
     }
+
+        // 逐槽判活的过滤遍历
+        template <typename Func>
+        void for_each_filtered_(Func&& func, dense<T>* pool) noexcept
+        {
+            auto& indices = set_->get_entity_indices();
+            const size_t n = indices.size();
+            if constexpr (std::is_invocable_v<Func, entity, T&>)
+            {
+                for (size_t i = 0; i < n; ++i)
+                {
+                    if (!set_->is_dense_slot_live(i)) [[unlikely]] continue;
+                    uint32_t eid = indices[i];
+                    uint32_t ver = set_->sparse_version_at(eid);
+                    entity e(eid, ver);
+                    func(e, (*pool)[i]);
+                }
+            }
+            else
+            {
+                for (size_t i = 0; i < n; ++i)
+                {
+                    if (!set_->is_dense_slot_live(i)) [[unlikely]] continue;
+                    func((*pool)[i]);
+                }
+            }
+        }
 
         // 迭代期可安全 hard_remove 的遍历: 回调内允许删除当前实体
         template <typename Func>

@@ -3,64 +3,45 @@
     // === 替换 ===
     utf8pp& replace(size_t pos, size_t n, const utf8pp& str)
     {
-        ensure_cp_info();
-        if (pos >= cp_count_) return *this;
-        if (n > cp_count_ - pos) n = cp_count_ - pos;
-        erase(pos, n);
-        insert_str(pos, str);
+        replace_range_core(pos, n, str);
         return *this;
     }
 
     utf8pp& replace(size_t pos, size_t n, const char* s)
     {
-        ensure_cp_info();
-        if (pos >= cp_count_) return *this;
-        if (n > cp_count_ - pos) n = cp_count_ - pos;
-        erase(pos, n);
-        insert_str(pos, utf8pp(s));
+        utf8pp tmp(s);
+        replace_range_core(pos, n, tmp);
         return *this;
     }
 
     utf8pp& replace(size_t pos, size_t n, std::string_view sv)
     {
-        ensure_cp_info();
-        if (pos >= cp_count_) return *this;
-        if (n > cp_count_ - pos) n = cp_count_ - pos;
-        erase(pos, n);
-        insert_str(pos, utf8pp(sv));
+        utf8pp tmp(sv);
+        replace_range_core(pos, n, tmp);
         return *this;
     }
-    // 替换为 C 串前 n2 字节 (与 std::string::replace(pos, n, s, n2) 对齐)
+    // 替换为 C 串前 n2 字节
     utf8pp& replace(size_t pos, size_t n, const char* s, size_t n2)
     {
-        ensure_cp_info();
-        if (pos >= cp_count_) return *this;
-        if (n > cp_count_ - pos) n = cp_count_ - pos;
-        erase(pos, n);
-        insert_str(pos, utf8pp(s, n2));
+        utf8pp tmp(s, n2);
+        replace_range_core(pos, n, tmp);
         return *this;
     }
-    // 填充替换: 替换为 n2 个 cp (与 std::string::replace(pos, n, n2, char) 对齐)
+    // 填充替换: 替换为 n2 个 cp
     utf8pp& replace(size_t pos, size_t n, size_t n2, char32_t cp)
     {
-        ensure_cp_info();
-        if (pos >= cp_count_) return *this;
-        if (n > cp_count_ - pos) n = cp_count_ - pos;
-        erase(pos, n);
-        insert_str(pos, utf8pp(n2, cp));
+        utf8pp tmp(n2, cp);
+        replace_range_core(pos, n, tmp);
         return *this;
     }
-    // 初始化列表替换 (与 std::string::replace(pos, count, initializer_list) 对齐)
+    // 初始化列表替换
     utf8pp& replace(size_t pos, size_t n, std::initializer_list<char32_t> il)
     {
-        ensure_cp_info();
-        if (pos >= cp_count_) return *this;
-        if (n > cp_count_ - pos) n = cp_count_ - pos;
-        erase(pos, n);
-        insert_str(pos, utf8pp(il));
+        utf8pp tmp(il);
+        replace_range_core(pos, n, tmp);
         return *this;
     }
-    // 迭代器范围替换 (与 std::string 迭代器版对齐)
+    // 迭代器范围替换
     utf8pp& replace(const_iterator first, const_iterator last, const utf8pp& str)
     {
         ensure_cp_info();
@@ -119,7 +100,6 @@
         old_str.ensure_cp_info();
         new_str.ensure_cp_info();
         if (old_str.cp_count_ == 0 || old_str.cp_count_ > cp_count_) return *this;
-        // 1. 扫描所有匹配的码点索引 (一次性, O(n))
         dense<size_t> match_cp_starts;
         size_t pos = 0;
         while (pos + old_str.cp_count_ <= cp_count_)
@@ -130,12 +110,10 @@
             pos = found + old_str.cp_count_;
         }
         if (match_cp_starts.size() == 0) return *this;
-        // 2. 计算新总字节长度
         size_t match_count = match_cp_starts.size();
         size_t new_byte_size = byte_size_
             + match_count * new_str.byte_size_
             - match_count * old_str.byte_size_;
-        // 3. 构建新字节缓冲区 (一次写入, 避免反复 memmove)
         char* new_data = static_cast<char*>(utf8pp_alloc(new_byte_size + 1));
         if (!new_data) std::abort();
         size_t write_pos = 0;
@@ -167,8 +145,6 @@
             write_pos += tail_len;
         }
         new_data[new_byte_size] = '\0';
-        // 4. 替换内部缓冲区, 保留新 cp_count_ (invalidate_cp_layout 不清零)
-        // 新 cp_count = 原码点数 - 匹配数*旧模式码点数 + 匹配数*新模式码点数
         size_t new_cp_count = cp_count_
             + match_count * (new_str.cp_count_ - old_str.cp_count_);
         bool was_sso = is_sso();
@@ -188,14 +164,81 @@
 
     utf8pp& replace_all(char32_t old_cp, char32_t new_cp)
     {
-        ensure_cp_info();
-        for (size_t i = 0; i < cp_count_; ++i)
+        ensure_cp_count();
+        uint8_t old_enc[4];
+        size_t old_len = 0;
+        uint8_t new_enc[4];
+        size_t new_len = 0;
+        (void)detail_utf8::utf8_encode_one(static_cast<uint32_t>(old_cp), old_enc, &old_len);
+        (void)detail_utf8::utf8_encode_one(static_cast<uint32_t>(new_cp), new_enc, &new_len);
+        if (old_len == 0 || old_len == new_len)
         {
-            if (char32_t(cp_at_byte(cp_byte_offset(i))) == old_cp)
+            // 等宽: 原地补丁
+            uint8_t* p = reinterpret_cast<uint8_t*>(data_);
+            uint8_t* end = p + byte_size_;
+            while (p < end)
             {
-                replace_cp_at(i, new_cp);
+                size_t step = detail_utf8::k_utf8_seq_len[*p];
+                if (*p == old_enc[0])
+                {
+                    if (old_len == 1 || std::memcmp(p, old_enc, old_len) == 0)
+                    {
+                        std::memcpy(p, new_enc, new_len);
+                    }
+                }
+                p += step ? step : 1;
+            }
+            invalidate_cp_cache();
+            return *this;
+        }
+        // 变宽: 首遍计数, 次遍一次构建
+        const uint8_t* base = reinterpret_cast<const uint8_t*>(data_);
+        size_t matches = 0;
+        {
+            const uint8_t* p = base;
+            const uint8_t* end = base + byte_size_;
+            while (p + old_len <= end)
+            {
+                size_t step = detail_utf8::k_utf8_seq_len[*p];
+                if (std::memcmp(p, old_enc, old_len) == 0)
+                {
+                    ++matches;
+                    p += old_len;
+                    continue;
+                }
+                p += step ? step : 1;
             }
         }
+        if (matches == 0) return *this;
+
+        size_t new_byte_size = byte_size_ + matches * (new_len - old_len);
+        char* new_data = static_cast<char*>(utf8pp_alloc(new_byte_size + 1));
+        if (!new_data) std::abort();
+        uint8_t* w = reinterpret_cast<uint8_t*>(new_data);
+        const uint8_t* p = base;
+        const uint8_t* end = base + byte_size_;
+        while (p < end)
+        {
+            if (p + old_len <= end && std::memcmp(p, old_enc, old_len) == 0)
+            {
+                std::memcpy(w, new_enc, new_len);
+                w += new_len;
+                p += old_len;
+                continue;
+            }
+            size_t step = detail_utf8::k_utf8_seq_len[*p];
+            std::memcpy(w, p, step ? step : 1);
+            w += step ? step : 1;
+            p += step ? step : 1;
+        }
+        new_data[new_byte_size] = '\0';
+        bool was_sso = is_sso();
+        if (!was_sso) utf8pp_free(data_, static_cast<size_t>(byte_capacity_) + 1);
+        data_ = new_data;
+        byte_size_ = static_cast<uint32_t>(new_byte_size);
+        byte_capacity_ = static_cast<uint32_t>(new_byte_size);
+        invalidate_cp_layout();
+        cp_count_ = static_cast<uint32_t>(cp_count_);  // 1:1 替换, 码点数不变
         return *this;
     }
 
@@ -204,7 +247,7 @@
     {
         ensure_cp_info();
         if (cp_count_ == 0) return *this;
-        // 纯 ASCII 快速路径: 直接字节扫描 (避免 cp_byte_offset + cp_at_byte 调用)
+        // 纯 ASCII: 字节扫描
         if (cp_info_state_ == 1)
         {
             size_t i = 0;
@@ -212,17 +255,16 @@
             if (i > 0) erase(0, i);
             return *this;
         }
-        // 非纯 ASCII: 字节指针遍历
+        // 非纯 ASCII: 字节指针遍历 (无校验解码)
         const uint8_t* p = reinterpret_cast<const uint8_t*>(data_);
         const uint8_t* end = p + byte_size_;
         size_t cp_idx = 0;
         while (p < end)
         {
-            uint32_t cp = 0;
-            size_t len = 0;
-            (void)detail_utf8::utf8_decode_one(p, end, &cp, &len);
+            size_t step = detail_utf8::k_utf8_seq_len[*p];
+            uint32_t cp = static_cast<uint32_t>(detail_utf8::utf8_decode_unchecked(p));
             if (!is_space_cp(cp)) break;
-            p += len;
+            p += step ? step : 1;
             ++cp_idx;
         }
         if (cp_idx > 0) erase(0, cp_idx);
@@ -233,7 +275,7 @@
     {
         ensure_cp_info();
         if (cp_count_ == 0) return *this;
-        // 纯 ASCII 快速路径: 反向字节扫描 (仅检查尾部空白, 避免全串遍历)
+        // 纯 ASCII: 反向字节扫描
         if (cp_info_state_ == 1)
         {
             size_t i = byte_size_;
@@ -250,7 +292,7 @@
             }
             return *this;
         }
-        // 非纯 ASCII: 直接访问 cp_offsets_, 反向扫描 (仅检查尾部空白)
+        // 非纯 ASCII: 反向扫描 cp_offsets_
         size_t i = cp_count_;
         while (i > 0)
         {
@@ -273,7 +315,7 @@
     [[nodiscard]] utf8pp trimmed_right() const { utf8pp t(*this); t.trim_right(); return t; }
 
     // === trim 谓词版 / 字符集版 ===
-    // 谓词必须可调用为 bool(char32_t); 排除 utf8pp/const char*/string_view 等容器类型
+    // 谓词可调用为 bool(char32_t)
     template <typename Pred, typename = std::enable_if_t<
         std::is_invocable_r_v<bool, Pred, char32_t>>>
     utf8pp& trim_left(Pred pred)
@@ -324,26 +366,26 @@
     [[nodiscard]] utf8pp trimmed_right(const utf8pp& chars) const { utf8pp t(*this); t.trim_right(chars); return t; }
 
     // === 显示宽度 (East Asian Width, UAX #11) ===
-    // 返回整串的显示宽度 (单元宽度列): 全角/CJK=2, 零宽=0, 其他=1
+    // 返回整串显示宽度: 全角/CJK=2, 零宽=0, 其他=1
     [[nodiscard]] size_t display_width() const noexcept
     {
         ensure_cp_info();
         if (cp_count_ == 0) return 0;
         size_t w = 0;
-        // 无校验快速解码: utf8pp 数据保证合法
+        // 无校验解码
         const uint8_t* p = reinterpret_cast<const uint8_t*>(data_);
         const uint8_t* end = p + byte_size_;
         while (p < end)
         {
             char32_t cp = detail_utf8::utf8_decode_unchecked(p);
             w += static_cast<size_t>(unicode_data::cp_display_width(static_cast<uint32_t>(cp)));
-            p += detail_utf8::k_utf8_seq_len[*p];
+            size_t step = detail_utf8::k_utf8_seq_len[*p];
+            p += step ? step : 1;  // 非法 lead 表值为 0, 至少推进 1 字节
         }
         return w;
     }
 
-    // === 对齐填充 (按显示宽度, East Asian Width 感知) ===
-    // 全角字符宽度 2, 零宽字符宽度 0, 纯 ASCII 宽度 1
+    // === 对齐填充 (按显示宽度) ===
     utf8pp& pad_left(size_t width, char32_t fill = U' ')
     {
         size_t cur_w = display_width();
@@ -388,7 +430,7 @@
     {
         ensure_cp_info();
         if (cp_count_ <= 1) return *this;
-        // 纯 ASCII 快速路径: 原地字节反转 (码点 = 字节, cp_count_ 不变, state 仍纯 ASCII)
+        // 纯 ASCII: 原地字节反转
         if (cp_info_state_ == 1)
         {
             char* p = data_;
@@ -403,35 +445,51 @@
             }
             return *this;
         }
-        // 非纯 ASCII: 分配新缓冲区, 按码点逆序写入
-        char* new_data = static_cast<char*>(utf8pp_alloc(byte_size_ + 1));
-        if (!new_data) std::abort();
-        // 直接访问 cp_offsets_ (避免 cp_byte_offset 函数调用), 循环内不写 cp_offsets_
-        // 陷阱: 循环内写 cp_offsets_ 会覆盖后续迭代待读取的旧偏移 (混合宽度字符触发)
-        const uint32_t* offs = cp_offsets_;
-        size_t write_pos = 0;
-        for (size_t i = cp_count_; i > 0; --i)
+        // 非纯 ASCII: 整体字节反转 + 逐码点块内反转
+        uint8_t* base = reinterpret_cast<uint8_t*>(data_);
+        const size_t total = byte_size_;
+        for (size_t i = 0, j = total; i + 1 < j; ++i, --j)
         {
-            size_t idx = i - 1;
-            size_t start = offs[idx];
-            size_t end = (idx + 1 < cp_count_) ? offs[idx + 1] : byte_size_;
-            size_t len = end - start;
-            std::memcpy(new_data + write_pos, data_ + start, len);
-            write_pos += len;
+            uint8_t tmp = base[i];
+            base[i] = base[j - 1];
+            base[j - 1] = tmp;
         }
-        new_data[byte_size_] = '\0';
-        bool was_sso = is_sso();
-        if (!was_sso) utf8pp_free(data_, static_cast<size_t>(byte_capacity_) + 1);
-        data_ = new_data;
-        byte_capacity_ = byte_size_;
-        // 反转不改变码点数, 用 invalidate_cp_layout 保留 cp_count_
-        invalidate_cp_layout();
+        // 逐码点内部反转: 按「跳过 continuation + 含一个 lead」切块
+        size_t i = 0;
+        while (i < total)
+        {
+            size_t j = i + 1;
+            if ((base[i] & 0xC0) == 0x80)
+            {
+                while (j < total && (base[j] & 0xC0) == 0x80)
+                {
+                    ++j;
+                }
+                if (j < total) ++j;   // 含入 lead 字节
+            }
+            for (size_t a = i, b = j; a + 1 < b; ++a, --b)
+            {
+                uint8_t tmp = base[a];
+                base[a] = base[b - 1];
+                base[b - 1] = tmp;
+            }
+            i = j;
+        }
+        // 失效偏移/缓存, 保留 uniform
+        invalidate_cp_cache();
+        if (cp_offsets_)
+        {
+            utf8pp_free(cp_offsets_, static_cast<size_t>(cp_offsets_capacity_) * sizeof(uint32_t));
+            cp_offsets_ = nullptr;
+            cp_offsets_capacity_ = 0;
+        }
+        if (cp_info_state_ == 2) cp_info_state_ = 3;
         return *this;
     }
 
     [[nodiscard]] utf8pp reversed() const { utf8pp t(*this); t.reverse(); return t; }
 
-    // === format (printf 风格静态构造, 类内声明; 类外定义) ===
+    // === format (printf 风格静态构造) ===
     [[nodiscard]] static utf8pp format(const char* fmt, ...);
     [[nodiscard]] static utf8pp vformat(const char* fmt, std::va_list ap);
 
@@ -441,22 +499,21 @@
         ensure_cp_info();
         dense<utf8pp> result;
         if (cp_count_ == 0) return result;
-        // 字节指针遍历 (避免 cp_byte_offset + cp_at_byte 双重函数调用)
+        // 字节指针遍历 (无校验解码)
         const uint8_t* p = reinterpret_cast<const uint8_t*>(data_);
         const uint8_t* end = p + byte_size_;
         size_t start_cp = 0;
         size_t cp_idx = 0;
         while (p < end)
         {
-            uint32_t cp = 0;
-            size_t len = 0;
-            (void)detail_utf8::utf8_decode_one(p, end, &cp, &len);
+            size_t step = detail_utf8::k_utf8_seq_len[*p];
+            uint32_t cp = static_cast<uint32_t>(detail_utf8::utf8_decode_unchecked(p));
             if (char32_t(cp) == delim)
             {
                 result.push_back(substr(start_cp, cp_idx - start_cp));
                 start_cp = cp_idx + 1;
             }
-            p += len;
+            p += step ? step : 1;
             ++cp_idx;
         }
         result.push_back(substr(start_cp));
@@ -491,7 +548,7 @@
     [[nodiscard]] dense<utf8pp> split(const char* delim) const { return split(utf8pp(delim)); }
     [[nodiscard]] dense<utf8pp> split(std::string_view delim) const { return split(utf8pp(delim)); }
 
-    // === split_view: 零拷贝分割, 返回 dense<utf8_view> (复用原字符串内存) ===
+    // === split_view: 零拷贝分割, 返回 dense<utf8_view> ===
     [[nodiscard]] dense<utf8_view> split_view(char32_t delim) const
     {
         ensure_cp_info();
@@ -561,7 +618,7 @@
         size_t n = r.size() < out_cap ? r.size() : out_cap;
         for (size_t i = 0; i < n; ++i) out[i] = r[i];
     }
-    // 重载 split_to 字符串分隔符 (委托 utf8pp 版本)
+    // 重载 split_to 字符串分隔符
     void split_to(const char* delim, std::vector<utf8pp>& out) const { split_to(utf8pp(delim), out); }
     void split_to(std::string_view delim, std::vector<utf8pp>& out) const { split_to(utf8pp(delim), out); }
     void split_to(const char* delim, utf8pp* out, size_t out_cap) const { split_to(utf8pp(delim), out, out_cap); }
@@ -572,6 +629,12 @@
     {
         utf8pp result;
         if (parts.size() == 0) return result;
+        if (parts.size() > 1)
+        {
+            size_t total = (parts.size() - 1) * delim.byte_size();
+            for (size_t i = 0; i < parts.size(); ++i) { total += parts[i].byte_size(); }
+            result.reserve(total);
+        }
         result.append(parts[0]);
         for (size_t i = 1; i < parts.size(); ++i)
         {
@@ -599,6 +662,12 @@
     {
         utf8pp result;
         if (N == 0) return result;
+        if (N > 1)
+        {
+            size_t total = (N - 1) * delim.byte_size();
+            for (size_t i = 0; i < N; ++i) { total += parts[i].byte_size(); }
+            result.reserve(total);
+        }
         result.append(parts[0]);
         for (size_t i = 1; i < N; ++i)
         {
@@ -612,6 +681,12 @@
     {
         utf8pp result;
         if (parts.empty()) return result;
+        if (parts.size() > 1)
+        {
+            size_t total = (parts.size() - 1) * delim.byte_size();
+            for (size_t i = 0; i < parts.size(); ++i) { total += parts[i].byte_size(); }
+            result.reserve(total);
+        }
         result.append(parts[0]);
         for (size_t i = 1; i < parts.size(); ++i)
         {
@@ -625,6 +700,12 @@
     {
         utf8pp result;
         if (count == 0) return result;
+        if (count > 1)
+        {
+            size_t total = (count - 1) * delim.byte_size();
+            for (size_t i = 0; i < count; ++i) { total += parts[i].byte_size(); }
+            result.reserve(total);
+        }
         result.append(parts[0]);
         for (size_t i = 1; i < count; ++i)
         {
@@ -646,7 +727,7 @@
         std::memmove(data_, data_ + 3, byte_size_ - 3);
         byte_size_ -= 3;
         data_[byte_size_] = '\0';
-        // 标记 BOM 是 1 个码点, 移除后 cp_count_ 减 1
+        // BOM 是 1 个码点, 移除后 cp_count_ 减 1
         if (cp_info_state_ != 0 && cp_count_ > 0) --cp_count_;
         invalidate_cp_layout();
     }

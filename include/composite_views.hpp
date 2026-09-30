@@ -96,8 +96,8 @@
             return entity{};
         }
 
-        template <typename Func>
-        void for_each(Func&& func) noexcept
+        template <typename Func, bool Filter>
+        void for_each_impl_(Func&& func) noexcept
         {
             if (!set_) [[unlikely]] return;
             auto* pool = set_->template get_typed_pool_ptr<T>();
@@ -113,6 +113,10 @@
                     {
                         PREFETCH_R(&(*pool)[i + 32]);
                     }
+                    if constexpr (Filter)
+                    {
+                        if (!set_->is_dense_slot_live(i)) [[unlikely]] continue;
+                    }
                     uint32_t idx = indices[i];
                     uint32_t ver = set_->sparse_version_at(idx);
                     if (is_excluded(idx)) [[unlikely]] continue;
@@ -126,10 +130,28 @@
                 {
                     if (i + 32 < n) [[likely]]
                         PREFETCH_R(&(*pool)[i + 32]);
+                    if constexpr (Filter)
+                    {
+                        if (!set_->is_dense_slot_live(i)) [[unlikely]] continue;
+                    }
                     uint32_t idx = indices[i];
                     if (is_excluded(idx)) [[unlikely]] continue;
                     func((*pool)[i]);
                 }
+            }
+        }
+
+        template <typename Func>
+        void for_each(Func&& func) noexcept
+        {
+            // 有墓碑时走过滤实例
+            if (set_ && set_->has_tombstones()) [[unlikely]]
+            {
+                for_each_impl_<Func, true>(std::forward<Func>(func));
+            }
+            else
+            {
+                for_each_impl_<Func, false>(std::forward<Func>(func));
             }
         }
     };
@@ -170,8 +192,8 @@
             return entity(indices[0], set_->get_version_unchecked(indices[0]));
         }
 
-        template <typename Func>
-        void for_each(Func&& func) noexcept
+        template <typename Func, bool Filter>
+        void for_each_impl_(Func&& func) noexcept
         {
             if (!set_) [[unlikely]] return;
             auto* pool = set_->template get_typed_pool_ptr<T>();
@@ -183,6 +205,10 @@
                 if (i + 32 < n) [[likely]]
                 {
                     PREFETCH_R(&(*pool)[i + 32]);
+                }
+                if constexpr (Filter)
+                {
+                    if (!set_->is_dense_slot_live(i)) [[unlikely]] continue;
                 }
                 uint32_t idx = indices[i];
                 uint32_t ver = set_->sparse_version_at(idx);
@@ -204,6 +230,20 @@
                     else
                         func(comp, mgr_->template get_ptr_fast<GetTypes>(e)...);
                 }
+            }
+        }
+
+        template <typename Func>
+        void for_each(Func&& func) noexcept
+        {
+            // 有墓碑时走过滤实例
+            if (set_ && set_->has_tombstones()) [[unlikely]]
+            {
+                for_each_impl_<Func, true>(std::forward<Func>(func));
+            }
+            else
+            {
+                for_each_impl_<Func, false>(std::forward<Func>(func));
             }
         }
     };
@@ -250,8 +290,8 @@
             return entity{};
         }
 
-        template <typename Func>
-        void for_each(Func&& func) noexcept
+        template <typename Func, bool TombA, bool TombB>
+        void for_each_impl_(Func&& func) noexcept
         {
             if (set_a_)
             {
@@ -263,6 +303,10 @@
                     size_t b_sparse_size = set_b_ ? set_b_->get_sparse_size() : 0;
                     for (size_t i = 0; i < idx_a.size(); ++i)
                     {
+                        if constexpr (TombA)
+                        {
+                            if (!set_a_->is_dense_slot_live(i)) [[unlikely]] continue;
+                        }
                         uint32_t eid = idx_a[i];
                         uint32_t a_ver = set_a_->sparse_version_at(eid);
                         entity e(eid, a_ver);
@@ -292,6 +336,10 @@
                     size_t a_sparse_size = set_a_ ? set_a_->get_sparse_size() : 0;
                     for (size_t i = 0; i < idx_b.size(); ++i)
                     {
+                        if constexpr (TombB)
+                        {
+                            if (!set_b_->is_dense_slot_live(i)) [[unlikely]] continue;
+                        }
                         uint32_t eid = idx_b[i];
                         if (set_a_ && eid < a_sparse_size)
                         {
@@ -310,6 +358,30 @@
                         }
                     }
                 }
+            }
+        }
+
+        template <typename Func>
+        void for_each(Func&& func) noexcept
+        {
+            // 任一侧有墓碑时启用过滤
+            const bool ta = set_a_ && set_a_->has_tombstones();
+            const bool tb = set_b_ && set_b_->has_tombstones();
+            if (!ta && !tb)
+            {
+                for_each_impl_<Func, false, false>(std::forward<Func>(func));
+            }
+            else if (ta && !tb)
+            {
+                for_each_impl_<Func, true, false>(std::forward<Func>(func));
+            }
+            else if (!ta && tb)
+            {
+                for_each_impl_<Func, false, true>(std::forward<Func>(func));
+            }
+            else
+            {
+                for_each_impl_<Func, true, true>(std::forward<Func>(func));
             }
         }
     };
@@ -354,8 +426,8 @@
             return true;
         }
 
-        template <size_t... Is>
-        void for_each_impl(auto&& func, std::index_sequence<Is...>) noexcept
+        template <bool Filter, size_t... Is>
+        void for_each_impl_(auto&& func, std::index_sequence<Is...>) noexcept
         {
             size_t max_idx = max_entity_index();
             if (max_idx == 0) return;
@@ -368,9 +440,15 @@
                 if (!set) continue;
                 auto& indices = set->get_entity_indices();
                 const size_t n = indices.size();
+                // 判活须在 visited 登记之前
+                const bool tomb = set->has_tombstones();
 
                 for (size_t i = 0; i < n; ++i)
                 {
+                    if constexpr (Filter)
+                    {
+                        if (tomb && !set->is_dense_slot_live(i)) [[unlikely]] continue;
+                    }
                     uint32_t idx = indices[i];
                     size_t word = idx >> 6;
                     uint64_t bit = uint64_t{1} << (idx & 63);
@@ -401,7 +479,20 @@
         template <typename Func>
         void for_each(Func&& func) noexcept
         {
-            for_each_impl(std::forward<Func>(func), std::index_sequence_for<Types...>{});
+            // 任一 set 有墓碑时走过滤实例
+            bool any_tomb = false;
+            for (auto* s : sets_)
+            {
+                if (s && s->has_tombstones()) { any_tomb = true; break; }
+            }
+            if (any_tomb)
+            {
+                for_each_impl_<true>(std::forward<Func>(func), std::index_sequence_for<Types...>{});
+            }
+            else
+            {
+                for_each_impl_<false>(std::forward<Func>(func), std::index_sequence_for<Types...>{});
+            }
         }
     };
 

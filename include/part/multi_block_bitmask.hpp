@@ -561,6 +561,24 @@ public:
 		return get_block(slot, block_idx) != 0;
 	}
 
+	// req 为超集且与 exc 无交集; req/exc 为按块展开的掩码序列
+	[[nodiscard]] bool slot_satisfies(uint32_t slot,
+	                                  const uint64_t* req,
+	                                  const uint64_t* exc,
+	                                  uint32_t block_count) const noexcept
+	{
+		for (uint32_t b = 0; b < block_count; ++b)
+		{
+			const uint64_t req_mask = req[b];
+			const uint64_t exc_mask = exc[b];
+			if (req_mask == 0 && exc_mask == 0) continue;
+			const uint64_t mask = get_block(slot, b);
+			if (req_mask != 0 && (mask & req_mask) != req_mask) return false;
+			if (exc_mask != 0 && (mask & exc_mask) != 0) return false;
+		}
+		return true;
+	}
+
 	[[nodiscard]] bool any_set(uint32_t slot) const noexcept
 	{
 		if (slot >= inline_bits_.size()) [[unlikely]] return false;

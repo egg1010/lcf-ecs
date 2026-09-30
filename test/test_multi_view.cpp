@@ -12,7 +12,7 @@ int main()
     print_section(1, "基本查询 (size/empty/contains)");
     {
         manager mgr;
-        mgr.append_preallocated_entities(10);
+        mgr.preallocate_entities(10);
         auto e1 = mgr.create_entity();
         auto e2 = mgr.create_entity();
         auto e3 = mgr.create_entity();
@@ -49,7 +49,7 @@ int main()
     print_section(2, "for_each (comp / entity+comp)");
     {
         manager mgr;
-        mgr.append_preallocated_entities(10);
+        mgr.preallocate_entities(10);
         auto e1 = mgr.create_entity();
         auto e2 = mgr.create_entity();
 
@@ -88,7 +88,7 @@ int main()
     print_section(3, "without<T> 排除");
     {
         manager mgr;
-        mgr.append_preallocated_entities(10);
+        mgr.preallocate_entities(10);
         auto e1 = mgr.create_entity();
         auto e2 = mgr.create_entity();
         auto e3 = mgr.create_entity();
@@ -111,7 +111,7 @@ int main()
     print_section(4, "page 分页");
     {
         manager mgr;
-        mgr.append_preallocated_entities(20);
+        mgr.preallocate_entities(20);
         dense<entity> ents;
         for (int i = 0; i < 10; ++i)
         {
@@ -154,7 +154,7 @@ int main()
     print_section(5, "exactly_one / find_one");
     {
         manager mgr;
-        mgr.append_preallocated_entities(10);
+        mgr.preallocate_entities(10);
         auto e1 = mgr.create_entity();
         mgr.add(e1, Position{42, 0, 0});
         mgr.add(e1, Velocity{100, 0, 0});
@@ -180,7 +180,7 @@ int main()
     print_section(6, "track_changes");
     {
         manager mgr;
-        mgr.append_preallocated_entities(10);
+        mgr.preallocate_entities(10);
         auto e1 = mgr.create_entity();
         auto e2 = mgr.create_entity();
         mgr.add(e1, Position{1, 0, 0});
@@ -212,7 +212,7 @@ int main()
     print_section(7, "filter_changed / filter_added");
     {
         manager mgr;
-        mgr.append_preallocated_entities(10);
+        mgr.preallocate_entities(10);
         auto e1 = mgr.create_entity();
         auto e2 = mgr.create_entity();
         auto e3 = mgr.create_entity();
@@ -257,7 +257,7 @@ int main()
     print_section(8, "sorted_by_component");
     {
         manager mgr;
-        mgr.append_preallocated_entities(10);
+        mgr.preallocate_entities(10);
         auto a = mgr.create_entity();
         auto b = mgr.create_entity();
         auto c = mgr.create_entity();
@@ -283,7 +283,7 @@ int main()
     print_section(9, "view_any_of (N元 OR)");
     {
         manager mgr;
-        mgr.append_preallocated_entities(10);
+        mgr.preallocate_entities(10);
         auto o1 = mgr.create_entity();
         auto o2 = mgr.create_entity();
         auto o3 = mgr.create_entity();
@@ -324,7 +324,7 @@ int main()
     print_section(10, "边界情况");
     {
         manager mgr;
-        mgr.append_preallocated_entities(10);
+        mgr.preallocate_entities(10);
 
         // 空 manager 上的 view
         auto mv = mgr.view<Position, Velocity>();

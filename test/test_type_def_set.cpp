@@ -338,11 +338,11 @@ int main()
         print_item("移动后可移除", static_cast<bool>(om));
     }
 
-    // === 12. append_preallocated_entities 联动 ===
+    // === 12. preallocate_entities 联动 ===
     print_section(12, "预分配扩容联动");
     {
         ecs::manager mgr;
-        mgr.append_preallocated_entities(100);
+        mgr.preallocate_entities(100);
         const int id = type_id::register_type_def("DefPre", make_trivial_def(4, 4));
         entity e = mgr.create_entity();
         int data = 3;

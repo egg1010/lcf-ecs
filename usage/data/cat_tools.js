@@ -914,6 +914,7 @@ window.DOCS_DATA['multi_block_bitmask'] = {
 | \`any_set(slot) const\` | 槽位是否有任意位置位（含 overflow） |
 | \`is_zero(slot) const\` | 槽位是否全零 |
 | \`count_set_bits(slot) const\` | 槽位置位数（含 overflow，基于 \`std::popcount\`） |
+| \`slot_satisfies(slot, req, exc, block_count) const\` | 槽位掩码是否满足：包含 \`req\` 的全部置位且与 \`exc\` 无交集；\`req\`/\`exc\` 为按块展开的掩码数组，\`block_count\` 为参与比较的块数 |
 | \`find_first_set(slot, out_block, out_offset) const\` | 找首个置位，写入 \`out_block\`/\`out_offset\`，返回是否找到 |
 | \`find_last_set(slot, out_block, out_offset) const\` | 找末个置位 |
 | \`find_next_set(slot, after_block, after_offset, out_block, out_offset) const\` | 从指定位置之后找下一个置位 |

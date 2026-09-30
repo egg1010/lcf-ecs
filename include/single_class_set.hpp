@@ -5,9 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
-#if defined(__AVX2__) || (defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64)))
-#include <immintrin.h>
-#endif
+#include <limits>
 #include "part/operating_message.hpp"
 #include "entity.hpp"
 #include "part/dense.hpp"
@@ -16,32 +14,6 @@
 #include "part/memory/memory_pool.hpp"
 // PREFETCH_R 宏: 集中定义于 part/force_inline.hpp
 
-
-static inline void nt_fill_uint32_(uint32_t* dst, size_t count, uint32_t value) noexcept
-{
-#if defined(__AVX2__)
-    if (count >= 8)
-    {
-        const __m256i fill = _mm256_set1_epi32(static_cast<int>(value));
-        const size_t ymm_count = count / 8;
-        for (size_t i = 0; i < ymm_count; ++i)
-        {
-            _mm256_stream_si256(reinterpret_cast<__m256i*>(dst) + i, fill);
-        }
-        _mm_sfence();
-        const size_t tail_start = ymm_count * 8;
-        for (size_t i = tail_start; i < count; ++i)
-        {
-            dst[i] = value;
-        }
-        return;
-    }
-#endif
-    for (size_t i = 0; i < count; ++i)
-    {
-        dst[i] = value;
-    }
-}
 
 namespace ecs
 {
@@ -1397,6 +1369,10 @@ public:
                 {
                     sparse_set_at(e.parts_.index_, reuse, ver);
                 }
+                if (!dp->trivially_copyable && dp->destruct) [[unlikely]]
+                {
+                    dp->destruct(dp->element(reuse));
+                }
                 std::memcpy(dp->element(reuse), data, dp->component_size);
                 if (reuse < entity_change_tracking_.size())
                 {
@@ -1782,6 +1758,18 @@ public:
         return dense_.size() - live_count();
     }
 
+    // 是否存在墓碑 (O(1), 过期登记会误报)
+    [[nodiscard]] bool has_tombstones() const noexcept
+    {
+        return !free_dense_.empty();
+    }
+
+    // dense 槽位是否存活, i 须在 [0, dense_.size()) 内
+    [[nodiscard]] bool is_dense_slot_live(size_t i) const noexcept
+    {
+        return sparse_[dense_[i]].dense == i;
+    }
+
     [[nodiscard]] bool contains_entity(entity e) const noexcept
     {
         // 优化: 2 次检查 + 单次 sparse_entry 加载 (原 5 次冗余检查)
@@ -1992,6 +1980,28 @@ public:
         uint32_t dense = set->sparse_dense_at(idx);
         uint32_t ver = set->sparse_version_at(idx);
         return dense != dense_invalid && ver == version;
+    }
+
+    // 选 size 最小者为遍历主集, out_index 回填命中下标
+    [[nodiscard]] static single_class_set* select_primary_set(single_class_set* const* sets,
+                                                             size_t count,
+                                                             size_t* out_index = nullptr) noexcept
+    {
+        single_class_set* primary = nullptr;
+        size_t min_size = std::numeric_limits<size_t>::max();
+        size_t idx = 0;
+        for (size_t i = 0; i < count; ++i)
+        {
+            single_class_set* s = sets[i];
+            if (s && s->size() < min_size) [[likely]]
+            {
+                min_size = s->size();
+                primary = s;
+                idx = i;
+            }
+        }
+        if (out_index) *out_index = idx;
+        return primary;
     }
 
     void swap_dense_and_pool(size_t i, size_t j) noexcept

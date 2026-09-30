@@ -1,8 +1,7 @@
 // 专有 Unicode 操作
 
     // === 大小写转换公共实现 ===
-    // 工厂返回可调用对象 uint32_t(uint32_t), 支持有状态映射 (如 to_title 的 new_word)
-    // 预扫描与构建各创建一次工厂实例, 重置内部状态
+    // 工厂返回可调用对象 uint32_t(uint32_t)
     template<typename MapFnFactory>
     utf8pp& case_transform_inplace(MapFnFactory factory)
     {
@@ -11,7 +10,7 @@
 
         const uint8_t* src = reinterpret_cast<const uint8_t*>(data_);
         const uint8_t* src_end = src + byte_size_;
-        // 预扫描: 计算新字节长度并检测变更 (字节指针, 不依赖 cp_offsets_)
+        // 预扫描: 计算新字节长度并检测变更
         size_t new_byte_size = 0;
         bool any_change = false;
         {
@@ -29,14 +28,45 @@
             }
         }
         if (!any_change) return *this;
-        // 构建新缓冲区与 cp_offsets_ (同步写入避免重建)
+        // 等宽快路径: 映射后字节宽度不变时原地补丁
+        if (new_byte_size == byte_size_)
+        {
+            auto map_fn = factory();
+            uint8_t* w = reinterpret_cast<uint8_t*>(data_);
+            const uint8_t* p = src;
+            while (p < src_end)
+            {
+                uint32_t cp = 0;
+                size_t len = 0;
+                (void)detail_utf8::utf8_decode_one(p, src_end, &cp, &len);
+                uint32_t mapped = map_fn(cp);
+                if (mapped != cp)
+                {
+                    uint8_t enc[4];
+                    size_t enc_len = 0;
+                    if (!detail_utf8::utf8_encode_one(mapped, enc, &enc_len) || enc_len != len)
+                    {
+                        break;  // 宽度变化: 回退重建路径
+                    }
+                    std::memcpy(w, enc, enc_len);
+                }
+                p += len;
+                w += len;
+            }
+            if (p >= src_end)
+            {
+                invalidate_cp_cache();
+                return *this;
+            }
+        }
+        // 构建新缓冲区与 cp_offsets_
         char* new_data = static_cast<char*>(utf8pp_alloc(new_byte_size + 1));
         if (!new_data) std::abort();
         ensure_cp_capacity(cp_count_);
         size_t write_pos = 0;
         size_t i = 0;
         {
-            auto map_fn = factory();  // 重新创建以重置状态
+            auto map_fn = factory();
             const uint8_t* p = src;
             while (p < src_end)
             {
@@ -63,7 +93,7 @@
         data_ = new_data;
         byte_size_ = static_cast<uint32_t>(new_byte_size);
         byte_capacity_ = static_cast<uint32_t>(new_byte_size);
-        cp_info_state_ = 2;  // 偏移已构建
+        cp_info_state_ = 2;
         return *this;
     }
 
@@ -71,7 +101,7 @@
     utf8pp& to_lower()
     {
         ensure_cp_info();
-        // 纯 ASCII 快速路径: 直接字节操作 (无分配无重编码, state 保持 1)
+        // 纯 ASCII 快速路径
         if (cp_info_state_ == 1) [[likely]]
         {
             for (size_t i = 0; i < byte_size_; ++i)
@@ -90,7 +120,7 @@
     utf8pp& to_upper()
     {
         ensure_cp_info();
-        // 纯 ASCII 快速路径: 直接字节操作 (无分配无重编码, state 保持 1)
+        // 纯 ASCII 快速路径
         if (cp_info_state_ == 1) [[likely]]
         {
             for (size_t i = 0; i < byte_size_; ++i)
@@ -143,13 +173,11 @@
     [[nodiscard]] utf8pp swapcased() const { utf8pp t(*this); t.swapcase(); return t; }
 
     // === Unicode 规范化 (NFC/NFD/NFKC/NFKD) ===
-    // 内部统一实现: 分解 (规范 + 兼容 + 韩文) → CCC 排序 → 组合
-    // 参数 compat=true 执行 NFKD/NFKC; false 执行 NFD/NFC
 private:
     // 分解单个码点到 out
     static void decompose_cp(uint32_t cp, dense<uint32_t>& out, bool compat) noexcept
     {
-        // 韩文算法分解 (优先, 不查表)
+        // 韩文算法分解
         uint32_t hg[3] = {0, 0, 0};
         if (unicode_data::hangul_decompose(cp, hg) > 0)
         {
@@ -212,7 +240,6 @@ private:
 
     // 组合: 合并 starter 与组合序列 (含韩文算法 + 规范表 + blocking)
     // 原地规范组合 (读写双指针, 零额外分配)
-    // 陷阱: 合并只减码点数, write_idx <= read_idx 恒成立, 未处理数据不被覆盖
     static void compose_seq(dense<uint32_t>& out) noexcept
     {
         size_t write_idx = 0;
@@ -276,21 +303,21 @@ private:
     {
         ensure_cp_info();
         if (cp_count_ == 0) return *this;
-        // 步骤1: 分解 (规范 + 兼容 + 韩文)
+        // 分解
         dense<uint32_t> decomp;
         decomp.reserve_exact(cp_count_ * 2);
         for (size_t i = 0; i < cp_count_; ++i)
         {
             decompose_cp(cp_at_byte(cp_byte_offset(i)), decomp, compat);
         }
-        // 步骤2: 规范排序
+        // 规范排序
         canonical_order(decomp);
-        // 步骤3: 组合 (NFC/NFKC)
+        // 组合 (NFC/NFKC)
         if (compose)
         {
             compose_seq(decomp);
         }
-        // 步骤4: 与原串比较, 相同则跳过重建
+        // 与原串比较, 相同则跳过重建
         bool changed = (decomp.size() != cp_count_);
         if (!changed)
         {
@@ -300,7 +327,7 @@ private:
             }
         }
         if (!changed) return *this;
-        // 步骤5: 重建字符串
+        // 重建字符串
         clear();
         for (size_t k = 0; k < decomp.size(); ++k)
         {

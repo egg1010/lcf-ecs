@@ -2,7 +2,55 @@
 
 
     // === 修改 ===
-    void push_back(char32_t cp) { ensure_cp_info(); insert(cp_count_, cp); }
+    // 尾部追加单码点
+    void push_back(char32_t cp)
+    {
+        uint8_t enc[4];
+        size_t enc_len = 0;
+        if (!detail_utf8::utf8_encode_one(static_cast<uint32_t>(cp), enc, &enc_len))
+        {
+            (void)detail_utf8::utf8_encode_one(0xFFFD, enc, &enc_len);
+        }
+        invalidate_cp_cache();
+        ensure_byte_capacity(byte_size_ + enc_len);
+        std::memcpy(data_ + byte_size_, enc, enc_len);
+        byte_size_ += static_cast<uint32_t>(enc_len);
+        data_[byte_size_] = '\0';
+
+        if (cp_info_state_ == 0)
+        {
+            // 首次追加: 交全量扫描一次 (含新字节)
+            ensure_cp_count();
+            return;
+        }
+        if (cp_info_state_ == 1)
+        {
+            ++cp_count_;
+            if (enc_len != 1)
+            {
+                cp_info_state_ = 3;
+                uniform_byte_len_ = (cp_count_ == 1) ? static_cast<uint8_t>(enc_len) : 0;
+            }
+            return;
+        }
+        if (cp_info_state_ == 3)
+        {
+            ++cp_count_;
+            if (uniform_byte_len_ != 0 && enc_len != uniform_byte_len_)
+            {
+                uniform_byte_len_ = 0;
+            }
+            return;
+        }
+        // state=2: 追加一个偏移槽
+        ensure_cp_capacity(cp_count_ + 1);
+        cp_offsets_[cp_count_] = byte_size_ - static_cast<uint32_t>(enc_len);
+        ++cp_count_;
+        if (uniform_byte_len_ != 0 && enc_len != uniform_byte_len_)
+        {
+            uniform_byte_len_ = 0;
+        }
+    }
 
     void append(const char* s) { append(s, s ? std::strlen(s) : 0); }
 
@@ -15,19 +63,19 @@
     FORCE_INLINE void append(const char* s, size_t byte_len)
     {
         if (byte_len == 0) return;
-        invalidate_cp_cache();  // 字节内容将变更, 失效预解码缓存 (在 cp_count_ 变更前)
+        invalidate_cp_cache();
         ensure_byte_capacity(byte_size_ + byte_len);
         std::memcpy(data_ + byte_size_, s, byte_len);
         byte_size_ += static_cast<uint32_t>(byte_len);
         data_[byte_size_] = '\0';
 
-        // 状态=0: ensure_cp_count 扫描全量缓冲 (含新字节), cp_count_ 已正确
+        // 状态=0: ensure_cp_count 扫描全量缓冲 (含新字节)
         if (cp_info_state_ == 0) { ensure_cp_count(); return; }
 
-        // 状态=3 热路径: 已计数, 未建偏移 (append 场景最常见)
+        // 状态=3: 已计数未建偏移
         if (cp_info_state_ == 3) [[likely]]
         {
-            // 均匀 3 字节快速路径 (中文): 常量除数转 GCC 倒数乘法
+            // 均匀 3 字节路径
             if (uniform_byte_len_ == 3) [[likely]]
             {
                 if (byte_len % 3 == 0) [[likely]]
@@ -77,13 +125,13 @@
             }
             while (q < qend) { if ((*q & 0xC0) != 0x80) ++new_cps; ++q; }
             cp_count_ += static_cast<uint32_t>(new_cps);
-            uniform_byte_len_ = 0;  // 非均匀追加, 失效
+            uniform_byte_len_ = 0;
             return;
         }
 
         if (cp_info_state_ == 1)
         {
-            // 状态=1 (ASCII): SWAR 快速检测新字节是否含非 ASCII
+            // 状态=1 (ASCII): 检测新字节是否含非 ASCII
             const uint8_t* p = reinterpret_cast<const uint8_t*>(data_ + byte_size_ - byte_len);
             const uint8_t* end = p + byte_len;
             bool has_non_ascii = false;
@@ -100,7 +148,7 @@
             }
             if (has_non_ascii)
             {
-                // 非 ASCII: SWAR 计数新码点, 转为 state=3
+                // 非 ASCII: 计数新码点, 转为 state=3
                 size_t new_cps = 0;
                 const uint8_t* q = reinterpret_cast<const uint8_t*>(data_ + byte_size_ - byte_len);
                 const uint8_t* qend = q + byte_len;
@@ -118,8 +166,6 @@
                 while (q < qend) { if ((*q & 0xC0) != 0x80) ++new_cps; ++q; }
                 cp_count_ += static_cast<uint32_t>(new_cps);
                 cp_info_state_ = 3;
-                // 检测新串是否均匀 (首次非 ASCII 追加后, 串可能全为 3 字节中文)
-                // 使后续 append 走 uniform 快速路径, 避免 SWAR 回退
                 detect_uniform_byte_len();
             }
             else
@@ -129,12 +175,29 @@
             return;
         }
 
-        // 状态=2: 增量维护 cp_offsets_ (保持 O(1) 随机访问)
+        // 状态=2: 增量维护 cp_offsets_
         {
             const uint8_t* base = reinterpret_cast<const uint8_t*>(data_);
             const uint8_t* q = base + byte_size_ - byte_len;
             const uint8_t* qend = base + byte_size_;
-            ensure_cp_capacity(cp_count_ + byte_len);  // 上限: 每字节 1 码点
+            size_t cps_before = cp_count_;
+            // 精确计数新码点后一次性留量
+            size_t new_cps = 0;
+            {
+                const uint8_t* c = q;
+                while (c + 8 <= qend)
+                {
+                    uint64_t chunk;
+                    std::memcpy(&chunk, c, 8);
+                    uint64_t x = chunk & 0x8080808080808080ULL;
+                    uint64_t y = chunk & 0x4040404040404040ULL;
+                    uint64_t cont = x & ~(y << 1);
+                    new_cps += std::popcount(cont ^ 0x8080808080808080ULL);
+                    c += 8;
+                }
+                while (c < qend) { if ((*c & 0xC0) != 0x80) ++new_cps; ++c; }
+            }
+            ensure_cp_capacity(cp_count_ + new_cps);
             while (q + 8 <= qend)
             {
                 uint64_t chunk;
@@ -160,17 +223,16 @@
                 }
                 ++q;
             }
-            recheck_uniform();
+            update_uniform_append(cp_count_ - cps_before, byte_len);
         }
     }
-
     void append(const char32_t* s, size_t cp_count)
     {
         if (cp_count == 0) return;
-        invalidate_cp_cache();  // 字节内容将变更, 失效预解码缓存 (在 cp_count_ 变更前)
+        invalidate_cp_cache();
         ensure_cp_count();
         bool was_state_2 = (cp_info_state_ == 2);
-        // 保守预分配: 每码点最多 4 字节 (单遍扫描, 双遍预计算的额外开销不抵消缓存收益)
+        // 保守预分配: 每码点最多 4 字节
         ensure_byte_capacity(byte_size_ + cp_count * 4);
 
         // 先编码全部码点 (不维护 cp_offsets_), 计算实际字节数 + 检测是否全 ASCII
@@ -219,7 +281,17 @@
         data_[byte_size_] = '\0';
     }
 
-    void append(const utf8pp& other) { append(other.data_, other.byte_size_); }
+    void append(const utf8pp& other)
+    {
+        if (&other == this)
+        {
+            // 自追加: 扩容会释放源缓冲, 先快照
+            utf8pp snapshot(other);
+            append(snapshot.data_, snapshot.byte_size_);
+            return;
+        }
+        append(other.data_, other.byte_size_);
+    }
     void append(std::string_view sv) { append(sv.data(), sv.size()); }
     void append(const std::string& s) { append(s.data(), s.size()); }
     void append(const std::u8string& s) { append(reinterpret_cast<const char*>(s.data()), s.size()); }
@@ -241,7 +313,7 @@
     {
         ensure_cp_info();
         if (cp_idx > cp_count_) cp_idx = cp_count_;
-        invalidate_cp_cache();  // 字节内容将变更, 失效预解码缓存 (在 cp_count_ 变更前)
+        invalidate_cp_cache();
         if (cp_info_state_ == 1) promote_ascii_to_offsets();
 
         uint8_t enc[4];
@@ -271,7 +343,7 @@
         }
         cp_offsets_[cp_idx] = static_cast<uint32_t>(byte_idx);
         ++cp_count_;
-        recheck_uniform();
+        update_uniform_insert_block(enc_len);
         return *this;
     }
 
@@ -281,7 +353,21 @@
         if (cp_idx >= cp_count_) return;
         if (n > cp_count_ - cp_idx) n = cp_count_ - cp_idx;
         if (n == 0) return;
-        invalidate_cp_cache();  // 字节内容将变更, 失效预解码缓存 (在 cp_count_ 变更前)
+        invalidate_cp_cache();
+        // 尾部删除: 从末尾回退定界, 不建偏移不搬移
+        if (cp_idx + n == cp_count_)
+        {
+            const uint8_t* base = reinterpret_cast<const uint8_t*>(data_);
+            const uint8_t* p = base + byte_size_;
+            for (size_t k = 0; k < n; ++k)
+            {
+                p = detail_utf8::retreat_codepoint(base, p);
+            }
+            byte_size_ = static_cast<uint32_t>(p - base);
+            cp_count_ -= static_cast<uint32_t>(n);
+            data_[byte_size_] = '\0';
+            return;
+        }
         if (cp_info_state_ == 1) promote_ascii_to_offsets();
 
         size_t start_byte = cp_offsets_[cp_idx];
@@ -301,17 +387,16 @@
             for (size_t i = cp_idx; i < cp_count_ - n; ++i) cp_offsets_[i] -= static_cast<uint32_t>(erased);
         }
         cp_count_ -= n;
-        recheck_uniform();
     }
 
-    // === insert 字符串重载 (返回 *this 支持链式调用, 与 std::string 对齐) ===
+    // === insert 字符串重载 ===
     utf8pp& insert(size_t cp_idx, const utf8pp& str) { insert_str(cp_idx, str); return *this; }
     utf8pp& insert(size_t cp_idx, const char* s) { if (s) insert_str(cp_idx, utf8pp(s)); return *this; }
     utf8pp& insert(size_t cp_idx, std::string_view sv) { insert_str(cp_idx, utf8pp(sv)); return *this; }
     utf8pp& insert(size_t cp_idx, const char* s, size_t byte_len) { insert_str(cp_idx, utf8pp(s, byte_len)); return *this; }
-    // 子串插入: 从 str 的 pos2 开始取 n2 个码点插入 (与 std::string::insert(index, str, index_str, count) 对齐)
+    // 子串插入
     utf8pp& insert(size_t cp_idx, const utf8pp& str, size_t pos2, size_t n2) { insert_str(cp_idx, str.substr(pos2, n2)); return *this; }
-    // 填充插入: 在 cp_idx 处插入 n 个 cp (与 std::string::insert(pos, n, char) 对齐)
+    // 填充插入: 在 cp_idx 处插入 n 个 cp
     utf8pp& insert(size_t cp_idx, size_t n, char32_t cp)
     {
         ensure_cp_info();
@@ -341,7 +426,10 @@
     const_iterator insert(const_iterator pos, size_t n, char32_t cp)
     {
         size_t idx = iterator_to_cp_idx(pos);
-        for (size_t i = 0; i < n; ++i) insert(idx + i, cp);
+        if (n > 0)
+        {
+            insert(idx, n, cp);
+        }
         return make_iterator(idx);
     }
 
@@ -349,15 +437,12 @@
     const_iterator insert(const_iterator pos, InputIt first, InputIt last)
     {
         size_t idx = iterator_to_cp_idx(pos);
-        size_t i = 0;
-        for (InputIt it = first; it != last; ++it, ++i)
-        {
-            insert(idx + i, *it);
-        }
+        utf8pp tmp(first, last);  // 先物化源, 避免首次修改后迭代器失效
+        insert_str(idx, tmp);
         return make_iterator(idx);
     }
 
-    // 迭代器版 insert: 字符串 / string_view / initializer_list
+    // 迭代器版 insert
     const_iterator insert(const_iterator pos, const utf8pp& str)
     {
         size_t idx = iterator_to_cp_idx(pos);
@@ -402,7 +487,6 @@
 
     [[nodiscard]] utf8pp substr(size_t pos, size_t cp_count = npos) const
     {
-        // 内联 state 检查: 大部分场景 state!=0 (构造后), 跳过函数调用
         if (cp_info_state_ == 0) [[unlikely]] ensure_cp_count();
         if (pos >= cp_count_) return utf8pp();
         if (cp_count > cp_count_ - pos) cp_count = cp_count_ - pos;
@@ -416,19 +500,16 @@
         }
         else if (uniform_byte_len_ != 0) [[likely]]
         {
-            // 均匀码点: O(1) 乘法, 无需构建/查表 cp_offsets_
             start_byte = pos * uniform_byte_len_;
             sub_byte_len = cp_count * uniform_byte_len_;
         }
         else
         {
-            // 非均匀: 需要完整 cp_offsets_
             ensure_cp_info();
             start_byte = cp_offsets_[pos];
             sub_byte_len = (pos + cp_count < cp_count_) ? (cp_offsets_[pos + cp_count] - static_cast<uint32_t>(start_byte)) : (byte_size_ - static_cast<uint32_t>(start_byte));
         }
 
-        // 裸构造: 跳过默认构造的字段初始化, 手动设置避免冗余写入
         utf8pp result(raw_construct);
         result.cp_offsets_ = nullptr;
         result.cp_offsets_capacity_ = 0;
@@ -444,16 +525,12 @@
         }
         else
         {
-            // 内联: data_ 指向 sso_buffer_, byte_capacity_ = SSO_CAPACITY
             result.data_ = result.sso_buffer_;
             result.byte_capacity_ = SSO_CAPACITY;
         }
         std::memcpy(result.data_, data_ + start_byte, sub_byte_len);
         result.data_[sub_byte_len] = '\0';
 
-        // 设置状态/均匀性 (内联避免分支)
-        // 均匀路径直接继承: substr 的 start_byte/sub_byte_len 已保证子串均匀
-        // 非均匀父串 uniform_byte_len_=0, 子串继承 0 也正确
         if (cp_info_state_ == 1)
         {
             result.cp_info_state_ = 1;
@@ -471,8 +548,7 @@
     void append_cp(size_t n, char32_t cp)
     {
         if (n == 0) return;
-        invalidate_cp_cache();  // 字节内容将变更, 失效预解码缓存 (在 cp_count_ 变更前)
-        // 只需 cp_count_, 不强制构建 cp_offsets_
+        invalidate_cp_cache();
         ensure_cp_count();
         bool was_state_2 = (cp_info_state_ == 2);
 
@@ -487,6 +563,7 @@
         if (was_state_2)
         {
             // 已构建 cp_offsets_, 增量维护
+            if (uniform_byte_len_ != 0 && uniform_byte_len_ != enc_len) uniform_byte_len_ = 0;
             ensure_cp_capacity(cp_count_ + n);
             for (size_t i = 0; i < n; ++i)
             {
@@ -499,13 +576,21 @@
         else
         {
             // 不构建 cp_offsets_, 只更新 cp_count_ + 写入字节
-            // 纯 ASCII 填充保持/提升到 state=1; 非ASCII 填充提升到 state=3
+            uint32_t cps_before = cp_count_;
             for (size_t i = 0; i < n; ++i)
             {
                 std::memcpy(data_ + byte_size_, enc, enc_len);
                 byte_size_ += enc_len;
             }
             cp_count_ += static_cast<uint32_t>(n);
+            if (cps_before == 0)
+            {
+                uniform_byte_len_ = static_cast<uint8_t>(enc_len);
+            }
+            else if (uniform_byte_len_ != 0 && uniform_byte_len_ != enc_len)
+            {
+                uniform_byte_len_ = 0;
+            }
             if (cp_info_state_ == 0)
             {
                 cp_info_state_ = (enc_len == 1) ? 1 : 3;
@@ -560,7 +645,7 @@
         return byte_n;
     }
 
-    // === 范围 append: 从容器/裸指针/span ===
+    // === 范围 append ===
     utf8pp& append(const std::vector<utf8pp>& parts)
     {
         for (size_t i = 0; i < parts.size(); ++i) append(parts[i]);

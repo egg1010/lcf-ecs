@@ -18,7 +18,7 @@
 
 namespace detail_utf8 {
 
-// 序列长度查表: 0=非法首字节, 1=纯 ASCII, 2/3/4=多字节序列
+// 序列长度查表: 0=非法首字节, 1=ASCII, 2/3/4=多字节序列
 inline constexpr uint8_t k_utf8_seq_len[256] = {
     1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
     1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
@@ -48,7 +48,7 @@ inline constexpr uint8_t k_utf8_seq_len[256] = {
     return true;
 }
 
-// 单码点解码 (内联热点)
+// 单码点解码
 [[nodiscard]] FORCE_INLINE
 bool utf8_decode_one(const uint8_t* p, const uint8_t* end,
                      uint32_t* out_cp, size_t* out_len) noexcept
@@ -57,7 +57,7 @@ bool utf8_decode_one(const uint8_t* p, const uint8_t* end,
     *out_cp = 0xFFFD;
     *out_len = 1;
 
-    // 纯 ASCII 快速路径
+    // ASCII 快速路径
     if (lead < 0x80) [[likely]]
     {
         *out_cp = lead;
@@ -73,7 +73,7 @@ bool utf8_decode_one(const uint8_t* p, const uint8_t* end,
         return false;
     }
 
-    // 校验 continuation 字节并解码: 按 seq_len 展开, OR 合并校验减少分支
+    // 校验 continuation 字节并解码
     uint32_t cp = 0;
     if (seq_len == 2)
     {
@@ -107,8 +107,8 @@ bool utf8_decode_one(const uint8_t* p, const uint8_t* end,
     return true;
 }
 
-// 无校验快速解码: 仅查表+位移, 跳过 continuation/codepoint/shortest_form 校验
-// 用于已确认合法 UTF-8 的迭代器/遍历热路径 (比 utf8_decode_one 少 2-3 个分支)
+// 无校验快速解码: 仅查表+位移, 不校验 continuation/codepoint/shortest_form
+// 用于已确认合法 UTF-8 的遍历路径
 [[nodiscard]] FORCE_INLINE
 char32_t utf8_decode_unchecked(const uint8_t* p) noexcept
 {
@@ -138,7 +138,7 @@ char32_t utf8_decode_unchecked(const uint8_t* p) noexcept
     return 0xFFFD;
 }
 
-// 单码点编码 (内联热点)
+// 单码点编码
 [[nodiscard]] FORCE_INLINE
 bool utf8_encode_one(uint32_t cp, uint8_t* buf, size_t* out_len) noexcept
 {
@@ -168,15 +168,13 @@ bool utf8_encode_one(uint32_t cp, uint8_t* buf, size_t* out_len) noexcept
         }
         return true;
     }
-    // 纯 ASCII 快速路径
+    // ASCII 快速路径
     buf[0] = static_cast<uint8_t>(cp);
     *out_len = 1;
     return true;
 }
 
 // 指令集 SSE2 码点计数: 统计非 continuation 字节 (= 码点数)
-// 16 字节/迭代, pcmpeqb+pmovmskb 替代 SWAR popcount
-// 纯 ASCII 块 (movemask==0) 跳过 cmpeq, 非 ASCII 块统计 cont 字节后相减
 #if LCF_UTF8_HAS_SSE2
 [[nodiscard]] FORCE_INLINE
 size_t count_codepoints(const uint8_t* p, const uint8_t* end) noexcept
@@ -184,12 +182,10 @@ size_t count_codepoints(const uint8_t* p, const uint8_t* end) noexcept
     size_t count = 0;
     const __m128i mask_C0 = _mm_set1_epi8(static_cast<char>(0xC0));
     const __m128i mask_80 = _mm_set1_epi8(static_cast<char>(0x80));
-    // 32 字节主循环: 2x SSE2 (16+16)
     while (p + 32 <= end)
     {
         __m128i v0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p));
         __m128i v1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p + 16));
-        // 纯 ASCII 快速路径: 原值 movemask==0 → 无字节 bit7 置位 → 全 ASCII
         uint32_t hi_mask = (static_cast<uint32_t>(_mm_movemask_epi8(v1)) << 16)
                          | static_cast<uint16_t>(_mm_movemask_epi8(v0));
         if (hi_mask == 0)
@@ -198,7 +194,6 @@ size_t count_codepoints(const uint8_t* p, const uint8_t* end) noexcept
         }
         else
         {
-            // 非 ASCII: 统计 continuation 字节, lead = 32 - cont
             __m128i m0 = _mm_and_si128(v0, mask_C0);
             __m128i m1 = _mm_and_si128(v1, mask_C0);
             __m128i cont0 = _mm_cmpeq_epi8(m0, mask_80);
@@ -209,7 +204,6 @@ size_t count_codepoints(const uint8_t* p, const uint8_t* end) noexcept
         }
         p += 32;
     }
-    // 尾部 16 字节 SSE2
     if (p + 16 <= end)
     {
         __m128i v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p));
@@ -227,7 +221,6 @@ size_t count_codepoints(const uint8_t* p, const uint8_t* end) noexcept
         }
         p += 16;
     }
-    // 尾部逐字节
     while (p < end)
     {
         if ((*p & 0xC0) != 0x80) ++count;
@@ -237,7 +230,6 @@ size_t count_codepoints(const uint8_t* p, const uint8_t* end) noexcept
 }
 #else
 // 算法 SWAR 码点计数 (ARM64 标量回退): 统计非 continuation 字节
-// 32 字节主循环: 4 路并行 popcount
 [[nodiscard]] FORCE_INLINE
 size_t count_codepoints(const uint8_t* p, const uint8_t* end) noexcept
 {
@@ -281,11 +273,7 @@ size_t count_codepoints(const uint8_t* p, const uint8_t* end) noexcept
 }
 #endif
 
-// 指令集 SSE2 码点计数 + ASCII 检测 (两阶段: 首个非 ASCII 块后跳过 ASCII 检测)
-// 供 ensure_cp_count / init_from_utf8 使用: 避免二次扫描
-// 变量 all_ascii = 全部字节 < 0x80 (码点数 = 字节数)
-// 优化: 非 ASCII 文本 (如中文) 首块即确定 all_ascii=false, 后续块跳过 hi_mask 计算
-//   节省 2x pmovmskb + or + cmp = ~3 周期/块, 192 块 (6KB) 省 ~60ns
+// 指令集 SSE2 码点计数 + ASCII 检测
 #if LCF_UTF8_HAS_SSE2
 [[nodiscard]] FORCE_INLINE
 size_t count_codepoints_and_ascii(const uint8_t* p, const uint8_t* end, bool& all_ascii) noexcept
@@ -307,7 +295,6 @@ size_t count_codepoints_and_ascii(const uint8_t* p, const uint8_t* end, bool& al
             p += 32;
             continue;
         }
-        // 首个非 ASCII 块: 计数并退出阶段 1
         all_ascii = false;
         __m128i m0 = _mm_and_si128(v0, mask_C0);
         __m128i m1 = _mm_and_si128(v1, mask_C0);
@@ -319,7 +306,7 @@ size_t count_codepoints_and_ascii(const uint8_t* p, const uint8_t* end, bool& al
         p += 32;
         break;
     }
-    // 阶段 2: 非 ASCII 快速计数 (跳过 hi_mask 计算, all_ascii 已为 false)
+    // 阶段 2: 非 ASCII 计数
     while (p + 32 <= end)
     {
         __m128i v0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p));
@@ -333,7 +320,6 @@ size_t count_codepoints_and_ascii(const uint8_t* p, const uint8_t* end, bool& al
         count += 32 - static_cast<size_t>(std::popcount(cont_mask));
         p += 32;
     }
-    // 尾部 16 字节 SSE2
     if (p + 16 <= end)
     {
         __m128i v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p));
@@ -361,9 +347,7 @@ size_t count_codepoints_and_ascii(const uint8_t* p, const uint8_t* end, bool& al
     return count;
 }
 
-// 融合扫描+拷贝: 单次遍历同时完成码点计数 + ASCII 检测 + memcpy
-// 比分开的 count_codepoints_and_ascii + memcpy 少一次源数据读取
-// 供 init_from_utf8 使用: 构造时源数据 s 在 cache, 融合后仅读一次
+// 融合扫描+拷贝: 单次遍历完成码点计数 + ASCII 检测 + 拷贝
 #if LCF_UTF8_HAS_SSE2
 [[nodiscard]] FORCE_INLINE
 size_t fused_count_copy_and_ascii(const uint8_t* src, uint8_t* dst, size_t len, bool& all_ascii) noexcept
@@ -375,7 +359,7 @@ size_t fused_count_copy_and_ascii(const uint8_t* src, uint8_t* dst, size_t len, 
     uint8_t* d = dst;
     const __m128i mask_C0 = _mm_set1_epi8(static_cast<char>(0xC0));
     const __m128i mask_80 = _mm_set1_epi8(static_cast<char>(0x80));
-    // 阶段 1: ASCII 检测 + 计数 + 拷贝 (首个非 ASCII 块后退出)
+    // 阶段 1: ASCII 检测 + 计数 + 拷贝
     while (p + 32 <= end)
     {
         __m128i v0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p));
@@ -401,7 +385,7 @@ size_t fused_count_copy_and_ascii(const uint8_t* src, uint8_t* dst, size_t len, 
         count += 32 - static_cast<size_t>(std::popcount(cont_mask));
         p += 32;
         d += 32;
-        // 阶段 2: 非 ASCII 快速计数 + 拷贝 (跳过 hi_mask 计算)
+        // 阶段 2: 非 ASCII 计数 + 拷贝
         while (p + 32 <= end)
         {
             __m128i v0b = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p));
@@ -599,14 +583,13 @@ const uint8_t* advance_codepoint(const uint8_t* p, const uint8_t* end) noexcept
     return next > end ? end : next;
 }
 
-// 批量前进 n 个码点 (SWAR 加速 ASCII 段跳过)
-// 比逐个 advance_codepoint 快: ASCII 段用 SWAR 一次跳 8 字节
+// 批量前进 n 个码点
 [[nodiscard]] FORCE_INLINE
 const uint8_t* advance_codepoints(const uint8_t* p, const uint8_t* end, size_t n) noexcept
 {
     while (n > 0 && p < end)
     {
-        // 纯 ASCII 快速路径: SWAR 批量跳过连续 ASCII
+        // ASCII 快速路径: SWAR 批量跳过连续 ASCII
         if (*p < 0x80) [[likely]]
         {
             while (n >= 8 && p + 8 <= end)
@@ -616,7 +599,6 @@ const uint8_t* advance_codepoints(const uint8_t* p, const uint8_t* end, size_t n
                 uint64_t hi = chunk & 0x8080808080808080ULL;
                 if (hi != 0)
                 {
-                    // 遇到非 ASCII, 跳过已有的 ASCII 字节
                     int bit = std::countr_zero(hi);
                     size_t ascii_in_chunk = static_cast<size_t>(bit) >> 3;
                     p += ascii_in_chunk;
@@ -626,7 +608,6 @@ const uint8_t* advance_codepoints(const uint8_t* p, const uint8_t* end, size_t n
                 p += 8;
                 n -= 8;
             }
-            // 尾部逐字节 ASCII
             while (n > 0 && p < end && *p < 0x80)
             {
                 ++p;
@@ -635,11 +616,10 @@ const uint8_t* advance_codepoints(const uint8_t* p, const uint8_t* end, size_t n
             if (p == end || n == 0) return p;
             if (*p >= 0x80)
             {
-                // 落到多字节字符, 继续走 advance_codepoint
             }
             else
             {
-                continue;  // 剩余 n > 0 但仍 ASCII
+                continue;
             }
         }
         p = advance_codepoint(p, end);
@@ -653,7 +633,6 @@ const uint8_t* retreat_codepoint(const uint8_t* begin, const uint8_t* p) noexcep
 {
     if (p <= begin) return begin;
     const uint8_t* q = p - 1;
-    // 编码 UTF-8 最多 4 字节, continuation 最多 3 次; 限制回退避免越界读
     int n = 3;
     while (n > 0 && q > begin && (*q & 0xC0) == 0x80) { --q; --n; }
     return q;
@@ -675,7 +654,7 @@ uint32_t to_int(char32_t ch) noexcept
     return static_cast<uint32_t>(ch);
 }
 
-// 解码 UTF-8 → 码点数组 (ASCII 批量快速路径)
+// 解码 UTF-8 → 码点数组
 [[nodiscard]] FORCE_INLINE
 size_t utf8_to_codepoints(const char* __restrict src, size_t src_len,
                            uint32_t* __restrict out, size_t out_cap,
@@ -688,23 +667,20 @@ size_t utf8_to_codepoints(const char* __restrict src, size_t src_len,
 
     while (p < end)
     {
-        // 纯 ASCII 快速路径: SWAR 批量扫描连续 ASCII 字节
+        // ASCII 快速路径: SWAR 批量扫描连续 ASCII 字节
         if (*p < 0x80) [[likely]]
         {
             const uint8_t* ascii_start = p;
-            // 算法 SWAR: 8 字节一组, 找到首个非 ASCII 字节 (bit7=1)
             while (p + 8 <= end)
             {
                 uint64_t chunk;
                 std::memcpy(&chunk, p, 8);
                 uint64_t hi = chunk & 0x8080808080808080ULL;
                 if (hi == 0) { p += 8; continue; }
-                // 找到首个 bit7=1 的字节
                 int bit = std::countr_zero(hi);
                 p += static_cast<size_t>(bit) >> 3;
                 break;
             }
-            // 尾部逐字节 (或未走 SWAR 的短块)
             while (p < end && *p < 0x80) ++p;
             size_t ascii_n = static_cast<size_t>(p - ascii_start);
             if (count + ascii_n <= out_cap)
@@ -751,7 +727,7 @@ size_t codepoints_to_char32(const uint32_t* cps, size_t cp_count,
     return cp_count;
 }
 
-// 码点数组 → UTF-8 (批量编码, 内联写入, ASCII 批量快速路径)
+// 码点数组 → UTF-8 (批量编码)
 [[nodiscard]] FORCE_INLINE
 size_t char32_to_utf8(const char32_t* src, size_t src_len,
                        char* __restrict out, size_t out_cap,
@@ -765,13 +741,10 @@ size_t char32_to_utf8(const char32_t* src, size_t src_len,
     {
         uint32_t cp = static_cast<uint32_t>(src[i]);
 
-        // 纯 ASCII 快速路径: SWAR 批量扫描连续 ASCII 码点
-        // 一次读 2 个 char32_t (8 字节), 用位掩码检测均为 ASCII
-        //   码点 cp < 0x80 等价于 (cp & 0xFFFFFF80) == 0 (高 3 字节为 0 且低字节 < 0x80)
+        // ASCII 快速路径: 2 码点一组 SWAR 扫描
         if (cp < 0x80) [[likely]]
         {
             size_t j = i;
-            // 2 码点一组 SWAR 扫描
             while (j + 2 <= src_len)
             {
                 uint64_t chunk;
@@ -779,7 +752,6 @@ size_t char32_to_utf8(const char32_t* src, size_t src_len,
                 if ((chunk & 0xFFFFFF80FFFFFF80ULL) != 0) break;
                 j += 2;
             }
-            // 尾部逐个 (或非 2 对齐的剩余)
             while (j < src_len && static_cast<uint32_t>(src[j]) < 0x80) ++j;
             size_t ascii_n = j - i;
             if (pos + ascii_n <= out_cap)
@@ -800,7 +772,6 @@ size_t char32_to_utf8(const char32_t* src, size_t src_len,
             cp = 0xFFFD;
         }
 
-        // 内联编码直接写入输出缓冲区
         if (cp < 0x800)
         {
             if (pos + 2 <= out_cap)

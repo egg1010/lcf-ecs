@@ -94,15 +94,15 @@ static void test_manager_entity(size_t n)
         print_ns("get_em/state/set/clear/has_flag", OPS, ns / static_cast<double>(OPS));
     }
 
-    // 1.5 append_preallocated_entities
+    // 1.5 preallocate_entities
     {
         double ns = best_ns(REPEAT, [&]() {
             manager mgr;
-            mgr.append_preallocated_entities(n);
+            mgr.preallocate_entities(n);
             compiler_barrier();
             return 0;
         });
-        print_ns("append_preallocated_entities", n, ns / static_cast<double>(n));
+        print_ns("preallocate_entities", n, ns / static_cast<double>(n));
     }
 
     print_footer();
@@ -366,7 +366,7 @@ static void test_manager_meta(size_t n)
         print_ns("get_set/container/bit", OPS, ns / static_cast<double>(OPS));
     }
 
-    // 5.2 get_single_class_set_by_id / get_component_meta / reserve_component_capacity
+    // 5.2 get_single_class_set_by_id / get_component_meta / preallocate_components
     {
         int pos_id = ::type_id::get_type_id<Pos>();
         double ns = best_ns(REPEAT, [&]() {
@@ -381,7 +381,7 @@ static void test_manager_meta(size_t n)
         print_ns("get_set_by_id/get_meta", OPS, ns / static_cast<double>(OPS));
     }
 
-    // 5.3 get_entity_mask / get_entity_block / num_mask_blocks / reserve_mask_blocks
+    // 5.3 get_entity_mask / get_entity_block / num_mask_blocks / preallocate_mask_blocks
     {
         double ns = best_ns(REPEAT, [&]() {
             volatile uint64_t s = 0;

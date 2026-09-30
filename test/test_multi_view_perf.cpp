@@ -142,7 +142,7 @@ int main()
     manager mgr;
     mgr.disable_track_changes();
     mgr.disable_comp_signals();
-    mgr.append_preallocated_entities(N);
+    mgr.preallocate_entities(N);
 
     mt19937 rng(42);
     uniform_real_distribution<float> rf(-1000.0f, 1000.0f);

@@ -63,7 +63,7 @@ window.DOCS_DATA['utf8pp'] = {
 | \`operator=(const char8_t*)\` / \`operator=(std::initializer_list<char32_t>)\` | 从 char8_t/初始化列表赋值 |
 | \`operator=(const std::string&)\` / \`operator=(const std::u8string&)\` | 从 std 字符串赋值 |
 | \`operator=(const utf8_view& v)\` | 从 \`utf8_view\` 赋值 |
-| \`assign(const char* s, size_t byte_len)\` / \`assign(const char* s)\` / \`assign(const utf8pp&)\` | 重新赋值 |
+| \`assign(const char* s, size_t byte_len)\` / \`assign(const char* s)\` / \`assign(const utf8pp&)\` | 重新赋值；以自身为参数（\`s.assign(s)\`）安全，结果与以副本赋值一致 |
 | \`assign(std::string_view)\` / \`assign(const std::string&)\` / \`assign(const char8_t*)\` / \`assign(const utf8_view&)\` | 重新赋值 |
 | \`assign(std::initializer_list<char32_t>)\` / \`assign(InputIt first, InputIt last)\` | 从初始化列表/迭代器范围赋值 |
 | \`assign(size_t n, char32_t cp)\` | 重新赋值为 n 个 cp |
@@ -80,7 +80,7 @@ window.DOCS_DATA['utf8pp'] = {
 | \`byte_size()\` | 字节数 |
 | \`capacity()\` | 当前字节容量 |
 | \`cp_capacity()\` | 当前码点容量（与字节容量解耦） |
-| \`max_size()\` | 理论最大字节数 |
+| \`max_size()\` | 可持有的字节/码点上限（常量 \`0xFFFFFFFF\`） |
 | \`empty()\` | 是否为空 |
 | \`is_sso()\` | 是否处于 SSO 模式（constexpr） |
 | \`sso_capacity()\` | SSO 容量（constexpr，= 103） |
@@ -242,9 +242,9 @@ window.DOCS_DATA['utf8pp'] = {
 | \`find(char32_t, pos=0)\` / \`find(const utf8pp&, pos=0)\` | 正向查找码点/子串 |
 | \`find(const char* s, pos=0)\` / \`find(std::string_view sv, pos=0)\` | 正向查找 C 字符串/string_view |
 | \`find(const char* s, pos, n)\` | 正向查找 C 字符串前 n 字节（三参，与 \`std::string\` 对齐） |
-| \`rfind(char32_t, pos=npos)\` / \`rfind(const utf8pp&, pos=npos)\` | 逆向查找 |
-| \`rfind(const char* s, pos=npos)\` / \`rfind(std::string_view sv, pos=npos)\` | 逆向查找 C 字符串/string_view |
-| \`rfind(const char* s, pos, n)\` | 逆向查找 C 字符串前 n 字节（三参） |
+| \`rfind(char32_t, pos=npos)\` / \`rfind(const utf8pp&, pos=npos)\` | 逆向查找：返回起始位置不大于 pos 的最后一个匹配，无匹配返回 npos |
+| \`rfind(const char* s, pos=npos)\` / \`rfind(std::string_view sv, pos=npos)\` | 逆向查找 C 字符串/string_view：返回起始位置不大于 pos 的最后一个匹配，无匹配返回 npos |
+| \`rfind(const char* s, pos, n)\` | 逆向查找 C 字符串前 n 字节（三参），pos 语义同上 |
 | \`find_first_of(char32_t, pos=0)\` / \`find_first_of(const utf8pp&, pos=0)\` | 首个匹配 |
 | \`find_first_of(const char* s, pos=0)\` / \`find_first_of(std::string_view sv, pos=0)\` | 首个匹配（C 字符串/string_view） |
 | \`find_first_of(const char* s, pos, n)\` | 首个匹配（三参） |
@@ -518,6 +518,8 @@ getline(is, line);                // 读取一行
 | 误用 \`to_nfd()\` 分解 Hangul 音节 | NFD 已支持 Hangul 算法分解（가→ㄱ+ㅏ） | Hangul 分解直接用 \`to_nfd()\`/\`to_nfkd()\` |
 | 期望 NFKC 保持 A+组合标记不组合 | NFKC 包含 NFC 全部组合规则，A+U+0301→Á | 仅需兼容性分解不需组合时用 \`to_nfkd()\` |
 | \`script_of\` 对组合标记返回 \`inherited\` | 组合标记继承前字符脚本 | 需上下文脚本时由调用者跟踪前一个 starter |
+| 多线程共享同一 \`utf8pp\`（含只读） | 只读接口可能惰性构建内部缓存，非线程安全 | 需外部同步；或先在单线程阶段调用一次 \`size()\` / \`begin()\` 完成预热 |
+| \`assign\`/\`append\`/\`insert\`/\`replace\` 以自身为参数 | 已保证自引用安全，行为与 \`std::string\` 同输入一致 | 可直接 \`s.append(s)\`、\`s.insert(1, s)\`、\`s.replace(0, 2, s)\` |
 
 ---
 `
@@ -556,7 +558,7 @@ window.DOCS_DATA['utf8_view'] = {
 | \`byte_size()\` / \`size_bytes()\` / \`length_bytes()\` | 字节数 |
 | \`size()\` / \`length()\` | 码点数 |
 | \`empty()\` | 是否为空 |
-| \`max_size()\` | 理论最大值 |
+| \`max_size()\` | 理论最大值（\`size_t(-1)\`） |
 
 ### 36.3 数据访问
 
@@ -662,6 +664,7 @@ size_t n = utf8_view("a,b,c").count(U',');     // 2
 | \`utf8_is_ascii(const char*)\` / \`utf8_is_ascii(string_view)\` | 纯 ASCII 判断 |
 | \`utf8_next_cp(p, end, *consumed=nullptr)\` | 游标式解码一个码点 |
 | \`utf8_prev_cp(begin, p, *consumed=nullptr)\` | 游标式回溯一个码点 |
+| \`utf8_next_line(*p, end, *out, delim='\\n')\` | 游标式读取一行（产出零拷贝子视图，\`*p\` 推进到下一行起点；切分语义与 \`getline\` 循环一致） |
 
 \`\`\`cpp
 // 直接对 const char* / string_view 操作, 不必构造 view
@@ -682,6 +685,15 @@ while (p < end) {
     char32_t cp = utf8_next_cp(p, end, &len);
     use(cp);
     p += len;
+}
+
+// 游标式逐行读取 (零拷贝, 不构造 utf8pp)
+const char* text = "one\\ntwo\\nlast";
+const char* lp = text;
+const char* lend = text + std::strlen(text);
+utf8_view line;
+while (utf8_next_line(&lp, lend, &line)) {
+    use(line);   // 依次得到 "one" "two" "last" (不含分隔符)
 }
 \`\`\`
 

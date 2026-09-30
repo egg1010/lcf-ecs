@@ -32,16 +32,15 @@
 
 inline memory::layered_allocator utf8pp_pool_{};
 
-// 无分支 slab 定位: ≤128 按位宽分桶, >128 统一大块
 [[nodiscard]] static constexpr size_t utf8pp_slab_index(size_t n) noexcept
 {
+    if (n <= 16) return 0;
     if (n <= 128) return std::bit_width(n - 1) - 4;
     return 4;
 }
 
 [[nodiscard]] FORCE_INLINE void* utf8pp_alloc(size_t n) noexcept { return utf8pp_pool_.allocate(n); }
 
-// 带大小释放: slab 定位 + owns 验证, slab 满时安全回退 big_pool
 FORCE_INLINE void utf8pp_free(void* p, size_t n) noexcept
 {
     if (!p) [[unlikely]] return;
@@ -52,11 +51,9 @@ FORCE_INLINE void utf8pp_free(void* p, size_t n) noexcept
         utf8pp_pool_.slab(idx).deallocate(p);
         return;
     }
-    // 满降级回退 big_pool
     utf8pp_pool_.big_pool().soft_deallocate(p);
 }
 
-// 无大小释放: 地址扫描定位
 FORCE_INLINE void utf8pp_free(void* p) noexcept { return utf8pp_pool_.deallocate(p); }
 #else
 [[nodiscard]] FORCE_INLINE void* utf8pp_alloc(size_t n) noexcept { return std::malloc(n); }
@@ -77,6 +74,7 @@ public:
     #include "detail/string_ops.hpp"
     #include "detail/unicode.hpp"
     #include "detail/private.hpp"
+    #include "detail/getline.hpp"
 };
 
 #include "nonmember.hpp"

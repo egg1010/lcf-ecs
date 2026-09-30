@@ -7,13 +7,14 @@
         std::u32string result;
         if (cp_count_ == 0) return result;
         result.reserve(cp_count_);
-        // 无校验快速解码: utf8pp 数据保证合法
+        // 无校验解码
         const uint8_t* p = reinterpret_cast<const uint8_t*>(data_);
         const uint8_t* end = p + byte_size_;
         while (p < end)
         {
             result.push_back(detail_utf8::utf8_decode_unchecked(p));
-            p += detail_utf8::k_utf8_seq_len[*p];
+            size_t step = detail_utf8::k_utf8_seq_len[*p];
+            p += step ? step : 1;  // 非法 lead 表值为 0, 至少推进 1 字节
         }
         return result;
     }
@@ -22,14 +23,13 @@
         return data_ ? std::u8string(reinterpret_cast<const char8_t*>(data_), byte_size_)
                      : std::u8string();
     }
-    // 零拷贝视图: 指向内部缓冲区, 生命周期受 *this 限制
+    // 零拷贝视图: 生命周期受 *this 限制
     [[nodiscard]] utf8_view to_utf8_view() const noexcept
     {
         return utf8_view(data_ ? data_ : "", byte_size_);
     }
 
     // === 字符串转数字 (不抛异常, 失败返回 0; pos 输出消费字符数) ===
-    // 与 std::stoi/stol/stof 等价但无异常, base 仅整数有效 (2/8/10/16)
     [[nodiscard]] int to_int(size_t* pos = nullptr, int base = 10) const
     {
         return static_cast<int>(to_ll_internal(pos, base));
@@ -86,7 +86,6 @@
     [[nodiscard]] long double stold(size_t* pos = nullptr) const { return to_long_double(pos); }
 
     // === 解析 (返回 bool 表示是否完全转换, 输出值到 out) ===
-    // 整数允许前导 +/- 与首尾空白, base∈{2,8,10,16}, 全串须为有效数字
     [[nodiscard]] bool parse_int(int& out, int base = 10) const noexcept
     {
         long long v = 0;
@@ -119,7 +118,7 @@
         if (start >= end) return false;
         size_t bstart = cp_byte_offset(start);
         size_t bend = (end < cp_count_) ? cp_byte_offset(end) : byte_size_;
-        // 构造临时 C 串: 源可能无 '\0', 复制到临时缓冲
+        // 构造临时 C 串: 源可能无 '\0'
         char buf[64];
         char* p = buf;
         size_t len = bend - bstart;
@@ -251,7 +250,6 @@
     }
 
     // === 内容判断 ===
-    // 整数 (允许前导 +/-, 首尾空白, base 默认 10)
     [[nodiscard]] bool is_integer(int base = 10) const noexcept
     {
         long long v = 0;
@@ -279,7 +277,7 @@
     [[nodiscard]] bool is_binary() const noexcept { return is_integer(2); }
     [[nodiscard]] bool is_octal() const noexcept  { return is_integer(8); }
 
-    // === 单码点字符分类 (公开静态, 完整 Unicode 覆盖 via unicode_data) ===
+    // === 单码点字符分类 ===
     [[nodiscard]] static bool is_alpha(char32_t cp) noexcept
     {
         return unicode_data::is_alpha_cp(static_cast<uint32_t>(cp));
@@ -298,15 +296,12 @@
     }
     [[nodiscard]] static bool is_punct(char32_t cp) noexcept
     {
-        // 标点 ASCII: ! " # $ % & ' ( ) * + , - . / : ; < = > ? @ [ \ ] ^ _ ` { | } ~
         if ((cp >= U'!' && cp <= U'/') || (cp >= U':' && cp <= U'@') ||
             (cp >= U'[' && cp <= U'`') || (cp >= U'{' && cp <= U'~')) return true;
-        // 标点 Latin-1 (¡ ¢ £ ¤ ¥ ¦ § ¨ © ª « ¬ ­ ® ¯ ° ± ² ³ ´ µ ¶ · ¸ ¹ º » ¼ ½ ¾ ¿)
         if (cp >= U'\u00A1' && cp <= U'\u00BF') return true;
-        // 通用标点 General Punctuation / CJK Symbols / 全角标点
-        if (cp >= U'\u2000' && cp <= U'\u206F') return true;   // General Punctuation
-        if (cp >= U'\u3000' && cp <= U'\u303F') return true;   // CJK Symbols and Punctuation
-        if (cp >= U'\uFF01' && cp <= U'\uFF0F') return true;   // 全角 ASCII 标点
+        if (cp >= U'\u2000' && cp <= U'\u206F') return true;
+        if (cp >= U'\u3000' && cp <= U'\u303F') return true;
+        if (cp >= U'\uFF01' && cp <= U'\uFF0F') return true;
         if (cp >= U'\uFF1A' && cp <= U'\uFF20') return true;
         if (cp >= U'\uFF3B' && cp <= U'\uFF40') return true;
         if (cp >= U'\uFF5B' && cp <= U'\uFF65') return true;
@@ -372,9 +367,6 @@
     }
 
     // === Unicode 脚本判断 (UAX #24) ===
-    // 复用 unicode_data::script 枚举与查找表
-    // 类型别名 script 定义于 construct.hpp, 此处直接使用
-
     [[nodiscard]] static script script_of(char32_t cp) noexcept
     {
         return unicode_data::script_of(static_cast<uint32_t>(cp));
@@ -383,7 +375,7 @@
     {
         return unicode_data::is_script(static_cast<uint32_t>(cp), s);
     }
-    // 脚本名称 (用于输出/调试)
+    // 脚本名称
     [[nodiscard]] static const char* script_name(script s) noexcept
     {
         switch (s)

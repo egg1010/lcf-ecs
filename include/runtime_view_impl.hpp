@@ -54,19 +54,14 @@ inline runtime_query::runtime_query(manager* mgr, std::span<const int> required_
     }
     if (required_ids_.empty()) [[unlikely]] return;
 
-    size_t min_size = std::numeric_limits<size_t>::max();
     for (int tid : required_ids_)
     {
         uint32_t b = type_id::mask_block_of(tid);
         if (b > max_block_) max_block_ = b;
         auto* set = mgr->get_single_class_set_by_id(tid);
         req_sets_.push_back(set);
-        if (set && set->size() < min_size)
-        {
-            min_size = set->size();
-            primary_set_ = set;
-        }
     }
+    primary_set_ = single_class_set::select_primary_set(req_sets_.data(), req_sets_.size());
 
     for (int tid : excluded_ids)
     {
@@ -109,8 +104,7 @@ inline runtime_query::runtime_query(manager* mgr, std::span<const runtime_term> 
     struct term_ctx
     {
         runtime_query* self;
-        size_t min_size;
-    } ctx{this, std::numeric_limits<size_t>::max()};
+    } ctx{this};
 
     using term_handler = void(*)(term_ctx&, const runtime_term&, single_class_set*) noexcept;
 
@@ -123,11 +117,6 @@ inline runtime_query::runtime_query(manager* mgr, std::span<const runtime_term> 
             c.self->req_access_.push_back(t.access);
             c.self->req_masks_[type_id::mask_block_of(t.type_id)]
                 |= 1ULL << type_id::mask_offset_of(t.type_id);
-            if (set && set->size() < c.min_size)
-            {
-                c.min_size = set->size();
-                c.self->primary_set_ = set;
-            }
         },
         // op=1 OR
         [](term_ctx& c, const runtime_term&, single_class_set* set) noexcept
@@ -161,6 +150,7 @@ inline runtime_query::runtime_query(manager* mgr, std::span<const runtime_term> 
         }
     }
 
+    primary_set_ = single_class_set::select_primary_set(req_sets_.data(), req_sets_.size());
     use_mask_path_ = !has_or_ && ((req_sets_.size() >= 3) || ((max_block_ + 1) <= 5));
 }
 
@@ -246,17 +236,16 @@ inline entity runtime_view::get_first_entity() noexcept
 
 inline void runtime_view::rebuild() noexcept
 {
-    size_t min_size = std::numeric_limits<size_t>::max();
     query_.primary_set_ = nullptr;
+    const size_t n = query_.required_ids_.size();
+    query_.req_sets_.clear();
+    query_.req_sets_.increase_capacity(n);
     for (int tid : query_.required_ids_)
     {
-        auto* set = mgr_->get_single_class_set_by_id(tid);
-        if (set && set->size() < min_size)
-        {
-            min_size = set->size();
-            query_.primary_set_ = set;
-        }
+        query_.req_sets_.push_back(mgr_->get_single_class_set_by_id(tid));
     }
+    query_.primary_set_ = single_class_set::select_primary_set(query_.req_sets_.data(),
+                                                              query_.req_sets_.size());
     if (query_.primary_set_)
     {
         cached_primary_version_ = query_.primary_set_->get_pool_version();
@@ -867,22 +856,10 @@ auto manager::filter_view<T, Pred>::or_() noexcept
 
 [[nodiscard]] inline bool runtime_query::check_blocks(uint32_t entity_index, const manager* mgr) const noexcept
 {
-    for (uint32_t b = 0; b <= max_block_; ++b)
-    {
-        if (req_masks_[b] != 0)
-        {
-            uint64_t mask = mgr->get_entity_block_by_idx(entity_index, b);
-            if ((mask & req_masks_[b]) != req_masks_[b])
-                return false;
-        }
-        if (exc_masks_[b] != 0)
-        {
-            uint64_t mask = mgr->get_entity_block_by_idx(entity_index, b);
-            if ((mask & exc_masks_[b]) != 0)
-                return false;
-        }
-    }
-    return true;
+    return mgr->get_entity_manager().slot_satisfies_mask(entity_index,
+                                                        req_masks_.data(),
+                                                        exc_masks_.data(),
+                                                        max_block_ + 1);
 }
 
 } // namespace ecs

@@ -2,8 +2,7 @@
 
     static constexpr size_t npos = static_cast<size_t>(-1);
 
-    // 正向迭代器: trivial 指针包装器, 遍历 cp_cache_ (char32_t 数组)
-    // 编译器可自动向量化 range-for (SSE2 4 元素/迭代, 与 u32string 同速)
+    // 正向迭代器: 遍历 cp_cache_ (char32_t 数组)
     class const_iterator
     {
     public:
@@ -59,7 +58,6 @@
         using difference_type = std::ptrdiff_t;
         // 注: operator+= 为 O(n) 线性推进, 非真正的随机访问
         using iterator_category = std::bidirectional_iterator_tag;
-
         const_reverse_iterator() noexcept = default;
         const_reverse_iterator(const char* p, const char* begin, const char* end) noexcept
             : p_(p), begin_(begin), end_(end) {}
@@ -68,7 +66,7 @@
 
         FORCE_INLINE const_reverse_iterator& operator++() noexcept
         {
-            // 均匀码点快速路径: 直接 p_ -= uniform_len_
+            // 均匀码点: 直接 p_ -= uniform_len_
             if (uniform_len_ != 0 && p_ > begin_)
             {
                 p_ -= uniform_len_;
@@ -96,7 +94,6 @@
         {
             if (p_ < end_)
             {
-                // 分支链优于查表 (避免 load-use 延迟)
                 const uint8_t* q = reinterpret_cast<const uint8_t*>(p_);
                 uint8_t lead = *q;
                 size_t seq;
@@ -162,7 +159,7 @@
 
         [[nodiscard]] FORCE_INLINE char32_t operator*() const noexcept
         {
-            // 均匀码点快速路径: 已知码点长度, 直接定位起始 (无需回退扫描)
+            // 均匀码点: 已知码点长度, 直接定位起始
             if (uniform_len_ != 0)
             {
                 const uint8_t* q = reinterpret_cast<const uint8_t*>(p_) - uniform_len_;
@@ -185,13 +182,13 @@
                     | (static_cast<uint32_t>(q[2] & 0x3F) << 6)
                     | (q[3] & 0x3F));
             }
-            // 反向回退到码点起始, 无校验快速解码
+            // 反向回退到码点起始, 无校验解码
             const uint8_t* q = reinterpret_cast<const uint8_t*>(p_);
             const uint8_t* b = reinterpret_cast<const uint8_t*>(begin_);
             --q;
             while (q > b && (*q & 0xC0) == 0x80) --q;
             uint8_t lead = *q;
-            // 3 字节中文路径前置 [[likely]]
+            // 3 字节
             if ((lead & 0xF0) == 0xE0) [[likely]]
             {
                 return static_cast<char32_t>(
@@ -237,7 +234,7 @@
 
     using reverse_iterator = const_reverse_iterator;
 
-    // === 字节迭代器 (只读 contiguous, O(1) 字节访问) ===
+    // === 字节迭代器 (只读 contiguous) ===
     class const_byte_iterator
     {
     public:

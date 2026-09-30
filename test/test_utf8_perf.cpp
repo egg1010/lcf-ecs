@@ -1325,6 +1325,327 @@ int main()
         lcf_sink(sink3);
     }
 
+    // ================================================================
+    //  模块 5: 缺陷修复性能 (P1-P16)
+    // ================================================================
+    print_section(5, "缺陷修复性能");
+
+    // === 5.1 push_back 中文码点 ===
+    print_perf_sub("5.1 push_back 中文码点 (O(n^2)->O(n))");
+    {
+        // 缩比展示斜率: 10 万 (原实现 100 万不可完成)
+        size_t N = 100000;
+        timer t;
+        utf8pp s;
+        for (size_t i = 0; i < N; ++i) s.push_back(char32_t(0x4E2D));
+        double ms = t.elapsed_milliseconds();
+        print_perf("utf8pp push_back 10万 (中文)", N, ms);
+        std::cout << "       └─ size=" << s.size() << " byte_size=" << s.byte_size() << "\n";
+    }
+    {
+        // std::string 追加同量 UTF-8 字节做量纲参照
+        size_t N = 100000;
+        timer t;
+        std::string s;
+        const char cn[] = "\xE4\xB8\xAD";
+        for (size_t i = 0; i < N; ++i) s.append(cn, 3);
+        double ms = t.elapsed_milliseconds();
+        print_perf("std::string append 10万 (中文)", N, ms);
+    }
+
+    // === 5.2 getline 10 万字符行 ===
+    print_perf_sub("5.2 getline 长行 (块读 -> 两段式直读)");
+    {
+        std::string long_line(100000, 'a');
+        long_line.push_back('\n');
+        size_t N = 1000;
+        timer t;
+        size_t sink = 0;
+        for (size_t i = 0; i < N; ++i)
+        {
+            std::istringstream iss(long_line);
+            utf8pp line;
+            ::getline(iss, line);
+            sink += line.size();
+        }
+        double ms = t.elapsed_milliseconds();
+        print_perf("utf8pp getline 10万字符行", N, ms);
+        lcf_sink(sink);
+    }
+    {
+        std::string long_line(100000, 'a');
+        long_line.push_back('\n');
+        size_t N = 1000;
+        timer t;
+        size_t sink = 0;
+        for (size_t i = 0; i < N; ++i)
+        {
+            std::istringstream iss(long_line);
+            std::string line;
+            std::getline(iss, line);
+            sink += line.size();
+        }
+        double ms = t.elapsed_milliseconds();
+        print_perf("std::getline 10万字符行", N, ms);
+        lcf_sink(sink);
+    }
+
+    // === 5.2b getline 短行批量 (1000 行 x 100 字节, 复用对象) ===
+    print_perf_sub("5.2b getline 短行批量 (1000 行 x 100 字节)");
+    {
+        std::string data;
+        for (size_t i = 0; i < 1000; ++i)
+        {
+            data += std::string(99, 'a' + static_cast<char>(i % 26));
+            data += '\n';
+        }
+        size_t N = 100;
+        timer t;
+        size_t sink = 0;
+        for (size_t i = 0; i < N; ++i)
+        {
+            std::istringstream iss(data);
+            utf8pp line;
+            size_t k = 0;
+            while (::getline(iss, line)) k += line.size();
+            sink += k;
+        }
+        double ms = t.elapsed_milliseconds();
+        print_perf("utf8pp getline 短行 x1000", N, ms);
+        lcf_sink(sink);
+    }
+    {
+        std::string data;
+        for (size_t i = 0; i < 1000; ++i)
+        {
+            data += std::string(99, 'a' + static_cast<char>(i % 26));
+            data += '\n';
+        }
+        size_t N = 100;
+        timer t;
+        size_t sink = 0;
+        for (size_t i = 0; i < N; ++i)
+        {
+            std::istringstream iss(data);
+            std::string line;
+            size_t k = 0;
+            while (std::getline(iss, line)) k += line.size();
+            sink += k;
+        }
+        double ms = t.elapsed_milliseconds();
+        print_perf("std::getline 短行 x1000", N, ms);
+        lcf_sink(sink);
+    }
+
+    // === 5.2c 零拷贝行游标 vs getline 循环 (1 万短行) ===
+    print_perf_sub("5.2c utf8_next_line 游标 vs getline (1 万短行)");
+    {
+        std::string data;
+        for (size_t i = 0; i < 10000; ++i)
+        {
+            data += std::string(99, 'a' + static_cast<char>(i % 26));
+            data += '\n';
+        }
+        size_t N = 100;
+        timer t;
+        size_t sink = 0;
+        for (size_t i = 0; i < N; ++i)
+        {
+            const char* p = data.data();
+            const char* end = data.data() + data.size();
+            utf8_view line;
+            size_t k = 0;
+            while (utf8_next_line(&p, end, &line)) k += line.size();
+            sink += k;
+        }
+        double ms = t.elapsed_milliseconds();
+        print_perf("utf8_next_line 游标 x1万", N, ms);
+        lcf_sink(sink);
+    }
+    {
+        std::string data;
+        for (size_t i = 0; i < 10000; ++i)
+        {
+            data += std::string(99, 'a' + static_cast<char>(i % 26));
+            data += '\n';
+        }
+        size_t N = 100;
+        timer t;
+        size_t sink = 0;
+        for (size_t i = 0; i < N; ++i)
+        {
+            std::istringstream iss(data);
+            utf8pp line;
+            size_t k = 0;
+            while (::getline(iss, line)) k += line.size();
+            sink += k;
+        }
+        double ms = t.elapsed_milliseconds();
+        print_perf("utf8pp getline 循环 x1万", N, ms);
+        lcf_sink(sink);
+    }
+
+    // === 5.3 replace_all 单码点变宽 ===
+    print_perf_sub("5.3 replace_all(char32_t,char32_t) 变宽 (O(n^2)->O(n))");
+    {
+        size_t N = 100000;
+        utf8pp s;
+        for (size_t i = 0; i < N; ++i) s.push_back(char32_t(U'a'));
+        timer t;
+        s.replace_all(char32_t(U'a'), char32_t(0x4E2D));   // 等宽原地补丁: 1 -> 3
+        double ms = t.elapsed_milliseconds();
+        print_perf("replace_all 10万 (1->3 字节)", N, ms);
+        std::cout << "       └─ byte_size=" << s.byte_size() << "\n";
+    }
+
+    // === 5.4 迭代器批量 insert ===
+    print_perf_sub("5.4 迭代器 insert(pos,n,cp) 批量 (循环重建 -> 单次)");
+    {
+        size_t N = 10000;
+        utf8pp base(u8"XYZ");
+        timer t;
+        size_t sink = 0;
+        for (size_t i = 0; i < N; ++i)
+        {
+            utf8pp s(base);
+            s.insert(s.begin(), size_t(10), char32_t(0x4E2D));
+            sink += s.size();
+        }
+        double ms = t.elapsed_milliseconds();
+        print_perf("utf8pp 迭代器批量 insert", N, ms);
+        lcf_sink(sink);
+    }
+
+    // === 5.5 reverse 非 ASCII ===
+    print_perf_sub("5.5 reverse 非 ASCII (分配+拷贝 -> 原地)");
+    {
+        size_t N = 20000;
+        utf8pp base(size_t(200), char32_t(0x4E2D));   // heap 串
+        timer t;
+        size_t sink = 0;
+        for (size_t i = 0; i < N; ++i)
+        {
+            utf8pp s(base);
+            s.reverse();
+            sink += static_cast<size_t>(s.get(0));
+        }
+        double ms = t.elapsed_milliseconds();
+        print_perf("utf8pp reverse 200码点 heap", N, ms);
+        lcf_sink(sink);
+    }
+    {
+        size_t N = 20000;
+        timer t;
+        size_t sink = 0;
+        for (size_t i = 0; i < N; ++i)
+        {
+            utf8pp s(u8"你好世界");     // SSO 串
+            s.reverse();
+            sink += static_cast<size_t>(s.get(0));
+        }
+        double ms = t.elapsed_milliseconds();
+        print_perf("utf8pp reverse 4码点 SSO", N, ms);
+        lcf_sink(sink);
+    }
+
+    // === 5.6 std::hash ===
+    print_perf_sub("5.6 std::hash (逐字节 -> 8 字节块)");
+    {
+        size_t N = 100000;
+        utf8pp s(size_t(300000), char32_t(U'a'));   // ~300KB
+        std::hash<utf8pp> h;
+        timer t;
+        size_t sink = 0;
+        for (size_t i = 0; i < N; ++i) sink ^= h(s);
+        double ms = t.elapsed_milliseconds();
+        print_perf("std::hash<utf8pp> 300KB", N, ms);
+        lcf_sink(sink);
+    }
+    {
+        size_t N = 100000;
+        std::string s(300000, 'a');
+        std::hash<std::string> h;
+        timer t;
+        size_t sink = 0;
+        for (size_t i = 0; i < N; ++i) sink ^= h(s);
+        double ms = t.elapsed_milliseconds();
+        print_perf("std::hash<std::string> 300KB", N, ms);
+        lcf_sink(sink);
+    }
+
+    // === 5.7 find(char32_t) 混合串 state=3 ===
+    print_perf_sub("5.7 find(char32_t) 混合串 state=3 (建表 -> SWAR)");
+    {
+        // 90% ASCII + 10% 中文, 非均匀 -> state=3
+        utf8pp s;
+        for (size_t i = 0; i < 900; ++i) s.push_back(char32_t(U'a'));
+        s.push_back(char32_t(0x4E2D));
+        for (size_t i = 0; i < 90; ++i) s.push_back(char32_t(U'a'));
+        s.push_back(char32_t(0x4E2D));
+        size_t N = 200000;
+        timer t;
+        size_t sink = 0;
+        for (size_t i = 0; i < N; ++i) sink += s.find(char32_t(0x4E2D));
+        double ms = t.elapsed_milliseconds();
+        print_perf("utf8pp find(中) state=3 × 20万", N, ms);
+        lcf_sink(sink);
+    }
+
+    // === 5.8 混合串 byte_to_cp_idx 末段 ===
+    print_perf_sub("5.8 byte_to_cp_idx 混合串末段 (线性微调 -> 二分)");
+    {
+        utf8pp s;
+        for (size_t i = 0; i < 50000; ++i) s.push_back(char32_t(U'a'));
+        for (size_t i = 0; i < 5000; ++i) s.push_back(char32_t(0x4E2D));
+        size_t end_byte = s.byte_size() - 1;
+        size_t N = 100000;
+        timer t;
+        size_t sink = 0;
+        for (size_t i = 0; i < N; ++i) sink += s.byte_to_cp_idx(end_byte);
+        double ms = t.elapsed_milliseconds();
+        print_perf("byte_to_cp_idx 末段 × 10万", N, ms);
+        lcf_sink(sink);
+    }
+
+    // === 5.9 join 1000 段 x 1KB ===
+    print_perf_sub("5.9 join 1000 段 x 1KB (反复 grow -> 预留)");
+    {
+        std::vector<utf8pp> parts;
+        parts.reserve(1000);
+        utf8pp seg(size_t(1024), char32_t(U'a'));   // 1KB ASCII
+        for (size_t i = 0; i < 1000; ++i) parts.push_back(seg);
+        size_t N = 200;
+        timer t;
+        size_t sink = 0;
+        for (size_t i = 0; i < N; ++i)
+        {
+            utf8pp r = utf8pp::join(parts, utf8pp(u8","));
+            sink += r.byte_size();
+        }
+        double ms = t.elapsed_milliseconds();
+        print_perf("utf8pp join 1000x1KB", N, ms);
+        lcf_sink(sink);
+    }
+    {
+        std::vector<std::string> parts(1000, std::string(1024, 'a'));
+        size_t N = 200;
+        timer t;
+        size_t sink = 0;
+        for (size_t i = 0; i < N; ++i)
+        {
+            std::string r;
+            for (size_t k = 0; k < parts.size(); ++k)
+            {
+                if (k) r.push_back(',');
+                r += parts[k];
+            }
+            sink += r.size();
+        }
+        double ms = t.elapsed_milliseconds();
+        print_perf("std::string 手工 join 1000x1KB", N, ms);
+        lcf_sink(sink);
+    }
+
     print_summary("性能测试");
     return 0;
 }

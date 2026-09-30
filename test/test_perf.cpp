@@ -220,8 +220,8 @@ int main()
         print_perf_sub("0.1 实体预分配与创建 (1M/百万)");
 
         t.reset();
-        ecss.append_preallocated_entities(N);
-        print_perf("append_preallocated_entities", N, t.elapsed_milliseconds());
+        ecss.preallocate_entities(N);
+        print_perf("preallocate_entities", N, t.elapsed_milliseconds());
 
         t.reset();
         for (size_t i = 0; i < N; ++i)
@@ -231,16 +231,16 @@ int main()
         print_perf("create_entity", N, t.elapsed_milliseconds());
 
         // 预留组件容量, 避免后续 add 触发重分配
-        ecss.reserve_component_capacity<Position>(N);
-        ecss.reserve_component_capacity<Health>(N);
-        ecss.reserve_component_capacity<Velocity>(N / 2);
-        ecss.reserve_component_capacity<Damage>(N / 2);
-        ecss.reserve_component_capacity<Armor>(N / 2);
-        ecss.reserve_component_capacity<Rotation>(N / 2);
-        ecss.reserve_component_capacity<Speed>(N / 4);
-        ecss.reserve_component_capacity<Scale>(N / 4);
-        ecss.reserve_component_capacity<Name>(N / 10);
-        ecss.reserve_component_capacity<Mass>(N / 10);
+        ecss.preallocate_components<Position>(N);
+        ecss.preallocate_components<Health>(N);
+        ecss.preallocate_components<Velocity>(N / 2);
+        ecss.preallocate_components<Damage>(N / 2);
+        ecss.preallocate_components<Armor>(N / 2);
+        ecss.preallocate_components<Rotation>(N / 2);
+        ecss.preallocate_components<Speed>(N / 4);
+        ecss.preallocate_components<Scale>(N / 4);
+        ecss.preallocate_components<Name>(N / 10);
+        ecss.preallocate_components<Mass>(N / 10);
 
         print_perf_sub("0.2 组件数据生成 (随机分布)");
         std::mt19937 gen(42);
@@ -1731,7 +1731,7 @@ int main()
             ecs::manager mgr3;
             mgr3.disable_track_changes();
             mgr3.disable_comp_signals();
-            mgr3.append_preallocated_entities(op_count * 2);
+            mgr3.preallocate_entities(op_count * 2);
             dense<entity> op_ents;
             op_ents.increase_capacity(op_count);
 
@@ -1776,7 +1776,7 @@ int main()
 
             // 链式 addc / hard_removec / soft_removec
             ecs::manager mgr_ch;
-            mgr_ch.append_preallocated_entities(op_count);
+            mgr_ch.preallocate_entities(op_count);
             dense<entity> ents_ch;
             ents_ch.increase_capacity(op_count);
             for (size_t i = 0; i < op_count; ++i)
@@ -2010,7 +2010,7 @@ int main()
             ecs::manager sort_mgr;
             sort_mgr.disable_track_changes();
             sort_mgr.disable_comp_signals();
-            sort_mgr.append_preallocated_entities(sort_n_);
+            sort_mgr.preallocate_entities(sort_n_);
             dense<entity> sort_ents;
             sort_ents.increase_capacity(sort_n_);
             std::mt19937 srng(99);
@@ -2044,7 +2044,7 @@ int main()
             // 即时信号 entity_created / destroyed
             {
                 ecs::manager mgr;
-                mgr.append_preallocated_entities(sig_count * 2);
+                mgr.preallocate_entities(sig_count * 2);
                 size_t created = 0, destroyed = 0;
                 mgr.set_on_entity_created([](entity, void* d) noexcept { (*static_cast<size_t*>(d))++; }, &created);
                 mgr.set_on_entity_destroyed([](entity, void* d) noexcept { (*static_cast<size_t*>(d))++; }, &destroyed);
@@ -2069,7 +2069,7 @@ int main()
             // 即时信号 on_add / on_remove
             {
                 ecs::manager mgr;
-                mgr.append_preallocated_entities(sig_count);
+                mgr.preallocate_entities(sig_count);
                 size_t added = 0, removed = 0;
                 mgr.set_on_add<Position>([](entity, void*, void* d) noexcept { (*static_cast<size_t*>(d))++; }, &added);
                 mgr.set_on_remove<Position>([](entity, void*, void* d) noexcept { (*static_cast<size_t*>(d))++; }, &removed);
@@ -2099,7 +2099,7 @@ int main()
             // on_modify 覆盖写
             {
                 ecs::manager mgr;
-                mgr.append_preallocated_entities(sig_count);
+                mgr.preallocate_entities(sig_count);
                 size_t modify_cnt = 0;
                 mgr.set_on_modify<Position>([](entity, void*, void* d) noexcept { (*static_cast<size_t*>(d))++; }, &modify_cnt);
 
@@ -2123,7 +2123,7 @@ int main()
             {
                 ecs::manager mgr;
                 mgr.disable_comp_signals();
-                mgr.append_preallocated_entities(sig_count);
+                mgr.preallocate_entities(sig_count);
                 dense<entity> ents;
                 ents.increase_capacity(sig_count);
                 for (size_t i = 0; i < sig_count; ++i)
@@ -2152,9 +2152,9 @@ int main()
                 print_perf("has_pending_signals", 1000000 * 2, t.elapsed_milliseconds());
 
                 t.reset();
-                mgr_chk.reserve_entity_signal_capacity(2048);
-                mgr_chk.reserve_comp_signal_capacity(2048);
-                print_perf("reserve_signal_capacity", 2, t.elapsed_milliseconds());
+                mgr_chk.preallocate_entity_signals(2048);
+                mgr_chk.preallocate_component_signals(2048);
+                print_perf("preallocate_signals", 2, t.elapsed_milliseconds());
 
                 t.reset();
                 for (int i = 0; i < 1000000; ++i)
@@ -2274,7 +2274,7 @@ int main()
             ecs::manager eq_mgr;
             eq_mgr.disable_track_changes();
             eq_mgr.disable_comp_signals();
-            eq_mgr.append_preallocated_entities(eq_n);
+            eq_mgr.preallocate_entities(eq_n);
 
             std::mt19937 eq_gen(77);
             std::uniform_real_distribution<float> eq_dist(-100.0f, 100.0f);
@@ -2402,7 +2402,7 @@ int main()
             ecs::manager sort_mgr;
             sort_mgr.disable_track_changes();
             sort_mgr.disable_comp_signals();
-            sort_mgr.append_preallocated_entities(sort_n);
+            sort_mgr.preallocate_entities(sort_n);
             std::mt19937 srng(123);
             std::uniform_real_distribution<float> sdist(0, 1000);
             for (size_t i = 0; i < sort_n; ++i)
@@ -2464,7 +2464,7 @@ int main()
             ecs::manager mgr_fa;
             mgr_fa.disable_track_changes();
             mgr_fa.disable_comp_signals();
-            mgr_fa.append_preallocated_entities(view_count);
+            mgr_fa.preallocate_entities(view_count);
             dense<entity> ents_fa;
             ents_fa.increase_capacity(view_count);
             auto av = mgr_fa.view<Position>().filter_added();
@@ -2482,7 +2482,7 @@ int main()
 
         {
             ecs::manager mgr_eo;
-            mgr_eo.append_preallocated_entities(10);
+            mgr_eo.preallocate_entities(10);
             entity e1 = mgr_eo.create_entity();
             mgr_eo.add(e1, Position{42.0f, 0, 0});
             mgr_eo.add(e1, Velocity{1.0f, 0, 0});
@@ -2635,7 +2635,7 @@ int main()
         ecs::manager mgr;
         mgr.disable_track_changes();
         mgr.disable_comp_signals();
-        mgr.append_preallocated_entities(grp_count);
+        mgr.preallocate_entities(grp_count);
         dense<entity> ents;
         ents.increase_capacity(grp_count);
         for (size_t i = 0; i < grp_count; ++i)
@@ -2797,7 +2797,7 @@ int main()
         ecs::manager mgr;
         mgr.disable_track_changes();
         mgr.disable_comp_signals();
-        mgr.append_preallocated_entities(rv_count);
+        mgr.preallocate_entities(rv_count);
         dense<entity> ents;
         ents.increase_capacity(rv_count);
         for (size_t i = 0; i < rv_count; ++i)
@@ -2947,7 +2947,7 @@ int main()
         ecs::manager mgr;
         mgr.disable_track_changes();
         mgr.disable_comp_signals();
-        mgr.append_preallocated_entities(cb_count);
+        mgr.preallocate_entities(cb_count);
         dense<entity> ents;
         ents.increase_capacity(cb_count);
         for (size_t i = 0; i < cb_count; ++i)
@@ -3379,7 +3379,7 @@ int main()
             ecs::manager mgr;
             mgr.disable_track_changes();
             mgr.disable_comp_signals();
-            mgr.append_preallocated_entities(mask_n);
+            mgr.preallocate_entities(mask_n);
             dense<entity> ents;
             ents.increase_capacity(mask_n);
             for (size_t i = 0; i < mask_n; ++i)
@@ -3491,7 +3491,7 @@ int main()
                 ecs::manager mgr2;
                 mgr2.disable_track_changes();
                 mgr2.disable_comp_signals();
-                mgr2.append_preallocated_entities(unaligned_n);
+                mgr2.preallocate_entities(unaligned_n);
                 dense<entity> ents2;
                 ents2.increase_capacity(unaligned_n);
                 for (size_t i = 0; i < unaligned_n; ++i)

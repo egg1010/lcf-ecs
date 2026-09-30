@@ -3,7 +3,7 @@
 #include "entity.hpp"
 #include "part/id_.hpp"
 #include "part/dense.hpp"
-#include "part/ring_buffer.hpp"
+#include "part/signal_queue.hpp"
 #include "part/multi_block_bitmask.hpp"
 
 namespace ecs
@@ -50,24 +50,12 @@ private:
         uint32_t entity_idx;
     };
     static constexpr size_t signal_buffer_size = 1024;
-    static_assert((signal_buffer_size & (signal_buffer_size - 1)) == 0,
-                  "signal_buffer_size must be power of 2");
-    ring_buffer<signal_event, signal_buffer_size> signal_buf_;
-    dense<signal_event> signal_overflow_chain_;
-    size_t signal_overflow_read_{0};
-    uint64_t signal_overflow_count_{0};
-    bool entity_signal_enabled_{true};
-    bool entity_signal_flushing_{false};
+    signal_queue<signal_event, signal_buffer_size> signals_;
     uint32_t entity_reentrancy_depth_{0};
 
     void push_signal(uint32_t type, uint32_t entity_idx) noexcept
     {
-        if (!entity_signal_enabled_) [[unlikely]] return;
-        if (!signal_buf_.push(signal_event{type, entity_idx})) [[unlikely]]
-        {
-            ++signal_overflow_count_;
-            signal_overflow_chain_.push_back(signal_event{type, entity_idx});
-        }
+        signals_.push(signal_event{type, entity_idx});
     }
 
     // 即时回调与延迟队列互斥:注册了即时回调且非重入时同步调用,否则入队
@@ -124,10 +112,10 @@ public:
 
     explicit entity_manager(size_t prealloc_count) noexcept
     {
-        append_preallocated_entities(prealloc_count);
+        preallocate_entities(prealloc_count);
     }
 
-    void append_preallocated_entities(size_t count) noexcept
+    void preallocate_entities(size_t count) noexcept
     {
         size_t initial_size = preallocated_entities_.size();
         preallocated_entities_.increase_capacity(initial_size + count);
@@ -197,7 +185,7 @@ public:
     }
 
     // 预分配掩码块数 — 注册组件前调用避免 reshape
-    void reserve_mask_blocks(uint32_t num_blocks) noexcept
+    void preallocate_mask_blocks(uint32_t num_blocks) noexcept
     {
         masks_.reserve_blocks(num_blocks);
     }
@@ -236,6 +224,14 @@ public:
         return masks_.get_block(entity_index, block_idx);
     }
 
+    [[nodiscard]] bool slot_satisfies_mask(uint32_t entity_index,
+                                           const uint64_t* req,
+                                           const uint64_t* exc,
+                                           uint32_t block_count) const noexcept
+    {
+        return masks_.slot_satisfies(entity_index, req, exc, block_count);
+    }
+
     [[nodiscard]] entity get_entity() noexcept
     {
         entity e = current_preallocated_index_ < preallocated_entities_.size()
@@ -248,44 +244,23 @@ public:
     template <typename Func>
     void flush_signals(Func&& handler) noexcept
     {
-        // 防 flush 递归重入
-        if (entity_signal_flushing_) [[unlikely]] return;
-        entity_signal_flushing_ = true;
-        // 循环上限防止 handler 内追加导致无限循环
-        uint64_t budget = signal_buffer_size * 4 + signal_overflow_chain_.size();
-        size_t processed = signal_buf_.drain_with_budget(
-            static_cast<size_t>(budget),
-            [&](const signal_event& ev) noexcept { handler(ev.type, ev.entity_idx); });
-        budget -= processed;
-        while (budget > 0 && signal_overflow_read_ < signal_overflow_chain_.size())
-        {
-            auto& ev = signal_overflow_chain_[signal_overflow_read_];
-            handler(ev.type, ev.entity_idx);
-            ++signal_overflow_read_;
-            --budget;
-        }
-        if (signal_overflow_read_ == signal_overflow_chain_.size() && signal_overflow_chain_.size() > 0)
-        {
-            signal_overflow_chain_.clear();
-            signal_overflow_read_ = 0;
-        }
-        entity_signal_flushing_ = false;
+        signals_.flush([&](const signal_event& ev) noexcept { handler(ev.type, ev.entity_idx); });
     }
 
     [[nodiscard]] bool has_pending_signals() const noexcept
     {
-        return signal_buf_.has_pending() || signal_overflow_read_ < signal_overflow_chain_.size();
+        return signals_.has_pending();
     }
 
-    void enable_entity_signals() noexcept { entity_signal_enabled_ = true; }
-    void disable_entity_signals() noexcept { entity_signal_enabled_ = false; }
+    void enable_entity_signals() noexcept { signals_.set_enabled(true); }
+    void disable_entity_signals() noexcept { signals_.set_enabled(false); }
 
-    [[nodiscard]] uint64_t signal_overflow_count() const noexcept { return signal_overflow_count_; }
-    void reset_signal_overflow_count() noexcept { signal_overflow_count_ = 0; }
+    [[nodiscard]] uint64_t signal_overflow_count() const noexcept { return signals_.overflow_count(); }
+    void reset_signal_overflow_count() noexcept { signals_.reset_overflow_count(); }
 
-    void reserve_signal_capacity(size_t n) noexcept
+    void preallocate_signals(size_t n) noexcept
     {
-        signal_overflow_chain_.increase_capacity(n);
+        signals_.reserve_overflow(n);
     }
 
     [[nodiscard]] entity_state& get_entity_state(uint32_t entity_index) noexcept

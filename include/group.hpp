@@ -59,16 +59,7 @@ protected:
 
     void find_smallest() noexcept
     {
-        size_t min_size = std::numeric_limits<size_t>::max();
-        primary_idx_ = 0;
-        for (size_t i = 0; i < N; ++i)
-        {
-            if (sets_[i] && sets_[i]->size() < min_size)
-            {
-                min_size = sets_[i]->size();
-                primary_idx_ = i;
-            }
-        }
+        (void)single_class_set::select_primary_set(sets_.data(), N, &primary_idx_);
     }
 
     [[nodiscard]] bool all_sets_valid() const noexcept

@@ -168,7 +168,7 @@ window.DOCS_DATA['class_pool'] = {
 
 | 接口 | 说明 |
 |------|------|
-| \`strided_span_view(start, step, count)\` | 返回 \`pool_strided_span<T>\`，持有 \`{class_pool 指针, 步长, 数量}\` |
+| \`strided_span_view(start, step, count)\` | 返回 \`pool_strided_span<T>\`，持有 \`{class_pool 指针, 步长, 数量}\`；\`start\` 越界归零、\`step=0\` 视为空视图、\`count\` 收敛到可用槽位数 |
 | \`strided_for_each(start, step, F&& f)\` | 运行时步长遍历，调用 \`f(v)\` |
 | \`strided_for_each<Step>(F&& f)\` | 编译期步长遍历，\`Step=1\` 退化为 \`for_each\` |
 
@@ -439,7 +439,7 @@ window.DOCS_DATA['class_pool_views'] = {
 | **子范围** | \`subspan(c, off, cnt)\` / \`subspan(c, off)\` | 返回 \`std::span<T>\`，自动截断到 \`size()\`（与 \`dense::subspan\` / \`std::span::subspan\` 命名一致） |
 |  | \`first(c, n)\` / \`last(c, n)\` | 前/后 \`n\` 个元素的 span |
 |  | \`first_fixed<N>(c)\` / \`last_fixed<N>(c)\` | 编译期固定长度 \`std::span<T, N>\` |
-| **步进** | \`strided_span_view(c, start, step, cnt)\` | \`class_pool\` 返回 \`pool_strided_span<T>\`；\`dense\` 返回 \`strided_span<T>\` |
+| **步进** | \`strided_span_view(c, start, step, cnt)\` | \`class_pool\` 返回 \`pool_strided_span<T>\`；\`dense\` 返回 \`strided_span<T>\`；两者均按容器实际范围收敛（越界 \`start\` / \`step=0\` 得到空视图） |
 |  | \`strided_for_each(c, start, step, f)\` | 运行时步长遍历 |
 |  | \`strided_for_each<Step>(c, f)\` | 编译期步长遍历，\`Step=1\` 退化为 \`for_each\` |
 | **变换** | \`transform_for_each(c, tr, con)\` | 对每个 \`v\` 调用 \`con(tr(v))\`，避免中间临时容器 |
@@ -1139,7 +1139,7 @@ window.DOCS_DATA['ring_buffer'] = {
 | \`push(const T&)\` / \`push(T&&)\` | 写入一个事件，恒返回 true |
 | \`emplace(args...)\` | 原位构造写入，恒返回 true |
 | \`drain(handler)\` | 读取并处理所有待处理事件，返回处理数 |
-| \`drain_with_budget(budget, handler)\` | 带预算的 drain，防止 handler 内追加导致无限循环 |
+| \`drain_with_budget(budget, handler)\` | 带预算的 drain：最多处理 \`budget\` 个事件，超出部分保留到下次调用；\`handler\` 内追加的事件在预算内继续消费，不会丢失 |
 | \`peek()\` | 仅读队首（不推进），空返回 nullptr |
 | \`pop()\` | 弹出队首，空返回 false |
 | \`empty()\` / \`has_pending()\` | 是否空 / 是否有待处理 |
@@ -1190,7 +1190,7 @@ ring_buffer<event, 1024>::shrink_static_pool();          // 释放缓存
 | 错误做法 | 问题 | 正确做法 |
 |---------|------|---------|
 | 依赖 \`push\` 返回 false 判断满 | \`push\` 恒返回 true | 用 \`pending_count()\` 监控积压 |
-| \`drain\` 的 handler 内 \`push\` 新事件 | 可能无限循环 | 用 \`drain_with_budget\` 限制处理数 |
+| \`drain\` 的 handler 内 \`push\` 新事件 | 单次调用可能长时间不返回 | 用 \`drain_with_budget\` 限制处理数；预算内追加会继续消费，剩余保留待下次 drain |
 | 依赖 \`peek()\` 指针在 \`pop\` 后有效 | \`pop\` 推进读位置，指针失效 | \`peek\` 后立即处理或先拷贝 |
 | 拷贝构造 \`ring_buffer\` | 不可拷贝 | 用移动或重新填充 |
 
@@ -1198,3 +1198,61 @@ ring_buffer<event, 1024>::shrink_static_pool();          // 释放缓存
 `
 };
 
+
+window.DOCS_DATA['signal_queue'] = {
+  id: 'signal_queue',
+  title: "signal_queue — 信号与变更日志队列",
+  category: 'containers',
+  icon: 'Q',
+  order: 44,
+  content: `## signal_queue — 信号与变更日志队列
+
+\`#include "part/signal_queue.hpp"\`，无命名空间。所有接口 \`noexcept\`。两级队列：固定容量环形缓冲（热路径零分配）+ 溢出链（缓冲满时兜底）。用于实体信号、组件信号与变更日志的统一入队与帧末排空。
+
+### 模板参数
+
+| 参数 | 说明 |
+|------|------|
+| \`Event\` | 事件类型，需可平凡拷贝（溢出链按值存储） |
+| \`Capacity\` | 环形缓冲容量，必须为 2 的幂 |
+
+### 接口
+
+| 接口 | 说明 |
+|------|------|
+| \`push(const Event&)\` | 入队；禁用状态下不生效，环形缓冲满则追加到溢出链 |
+| \`flush(handler)\` | 排空待处理事件，回调签名 \`void(const Event&)\` |
+| \`has_pending() const\` | 是否有待处理事件（含溢出链未消费部分） |
+| \`set_enabled(bool)\` / \`enabled() const\` | 设置/查询入队开关 |
+| \`overflow_count() const\` / \`reset_overflow_count()\` | 溢出计数读写（诊断用） |
+| \`reserve_overflow(count)\` | 预留溢出链容量 |
+
+### 排空语义
+
+- 单次 \`flush\` 的总预算为 \`Capacity × 4 + 溢出链长度\`，超出部分保留到下次 \`flush\`
+- \`handler\` 内追加的事件在预算内继续消费，不会丢失
+- \`flush\` 重入（\`handler\` 内再次 \`flush\`）被守卫拦截，嵌套调用不做处理
+
+### 使用
+
+\`\`\`cpp
+struct my_event { uint32_t type; uint32_t index; };
+
+signal_queue<my_event, 1024> q;
+q.push(my_event{0, 7});
+q.flush([](const my_event& ev) { /* ... */ });
+
+// 禁用入队 / 重新启用
+q.set_enabled(false);
+q.set_enabled(true);
+\`\`\`
+
+### 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| \`Capacity\` 传非 2 的幂 | 编译期 \`static_assert\` 失败 | \`Capacity\` 取 2 的幂 |
+| 依赖单次 \`flush\` 清空超长队列 | 超出预算的事件保留 | 循环调用 \`flush\` 直到 \`has_pending()\` 为 false |
+| 拷贝 \`signal_queue\` | 禁止拷贝 | 使用移动语义 |
+`
+};

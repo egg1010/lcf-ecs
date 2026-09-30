@@ -39,5 +39,8 @@
 {"title":"t_fun — 函数类型延迟调用器","category":"tools","id":"t_fun","icon":"F","order":38},
 {"title":"utf8_codec / utf8pp — UTF-8 编解码与拥有型字符串","category":"utf8","id":"utf8pp","icon":"U","order":39},
 {"title":"utf8_view — UTF-8 字符串视图","category":"utf8","id":"utf8_view","icon":"W","order":40},
-{"title":"reorder_group — 多组件重排序遍历","category":"core","id":"reorder","icon":"O","order":43}
+{"title":"reorder_group — 多组件重排序遍历","category":"core","id":"reorder","icon":"O","order":43},
+{"title":"signal_queue — 信号与变更日志队列","category":"containers","id":"signal_queue","icon":"Q","order":44},
+{"title":"analyzer — 微架构分析","category":"tools","id":"analysis","icon":"A","order":45},
+{"title":"string_to_code — 字符串数字码","category":"tools","id":"string_to_code","icon":"C","order":46}
 ]

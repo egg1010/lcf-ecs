@@ -32,33 +32,13 @@ struct pool_strided_span
 	template <typename F>
 	LCF_FLATTEN void for_each(F&& f) noexcept
 	{
-		if (pool_->is_dense()) [[likely]]
-		{
-			T* LCF_RESTRICT p = pool_->data() + start_;
-			const size_t step = step_;
-			const size_t n = count_;
-			for (size_t i = 0; i < n; ++i)
-			{
-				if constexpr (sizeof(T) >= 16)
-				{
-					if (i + 8 < n) [[likely]] { LCF_PREFETCH_R(p + 8 * step); }
-				}
-				f(*p);
-				p += step;
-			}
-		}
-		else
-		{
-			const size_t n = count_;
-			for (size_t i = 0; i < n; ++i)
-			{
-				const size_t slot = start_ + i * step_;
-				if (pool_->is_constructed_at(slot)) [[likely]]
-				{
-					f((*pool_)[slot]);
-				}
-			}
-		}
+		::strided_for_each(*pool_, start_, step_, std::forward<F>(f));
+	}
+
+	template <typename F>
+	LCF_FLATTEN void for_each(F&& f) const noexcept
+	{
+		::strided_for_each(*pool_, start_, step_, std::forward<F>(f));
 	}
 };
 
@@ -66,7 +46,12 @@ template <typename T>
 [[nodiscard]] inline pool_strided_span<T> strided_span_view(
     class_pool<T>& pool, size_t start, size_t step, size_t count) noexcept
 {
-	return pool_strided_span<T>(&pool, start, step, count);
+	// start 越界收敛, step=0 视为空视图, count 收敛到可用槽位数
+	const size_t size = pool.size();
+	const size_t s = start > size ? size : start;
+	const size_t max_cnt = (step > 0) ? (size - s) / step : 0;
+	const size_t cnt = count > max_cnt ? max_cnt : count;
+	return pool_strided_span<T>(&pool, s, step ? step : 1, cnt);
 }
 
 

@@ -49,7 +49,7 @@ struct Health   { int cur, max; };
 int main()
 {
     ecs::manager mgr;
-    mgr.append_preallocated_entities(10);
+    mgr.preallocate_entities(10);
 
     // 创建实体并挂载组件
     auto e1 = mgr.create_entity();

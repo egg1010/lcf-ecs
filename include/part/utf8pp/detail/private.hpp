@@ -4,11 +4,11 @@ private:
     // 码点信息状态机 (惰性构建 + 纯 ASCII 快速路径)
     // 状态取值:
     //   0 = 未知 (首次访问需检测)
-    //   1 = 纯 ASCII (码点数 = 字节数, 无需 cp_offsets_)
-    //   2 = 已构建 cp_offsets_ (非 ASCII 或已显式构建)
-    //   3 = 已计数但未构建偏移 (size() 可用, at/substr 触发升级到 2)
+    //   1 = 纯 ASCII (码点数 = 字节数)
+    //   2 = 已构建 cp_offsets_
+    //   3 = 已计数但未构建偏移
     mutable uint8_t cp_info_state_ = 0;
-    // 均匀码点字节长度 (0=未知, 1/2/3/4=所有码点等长), 用乘法替代 cp_offsets_ 数组查表
+    // 均匀码点字节长度 (0=未知, 1/2/3/4=所有码点等长)
     // 仅当 byte_size_ == cp_count_ * uniform_byte_len_ 时有效
     mutable uint8_t uniform_byte_len_ = 0;
     char*       data_{nullptr};
@@ -17,11 +17,9 @@ private:
     uint32_t*   cp_offsets_{nullptr};       // 仅 cp_info_state_==2 时有效
     uint32_t    cp_count_{0};               // 纯 ASCII 时 = byte_size_
     uint32_t    cp_offsets_capacity_{0};
-    // 预解码缓存: uniform=3 串批量解码为 char32_t 数组, 迭代器遍历此数组 (与 u32string 同速)
+    // 预解码缓存: 全码点解码为 char32_t 数组, 迭代器遍历此数组
     // 首次 begin() 时构建, invalidate/release 时释放
     mutable char32_t* cp_cache_{nullptr};
-    // 缓冲区 sso_buffer_ 不做默认清零 (避免 substr/拷贝/构造时清零 104 字节的浪费)
-    // 默认构造函数显式设置 data_[0]='\0' 保证 c_str() 返回 ""
     // 调用方仅可读取 [0, byte_size_] 范围内字节, 不依赖未读区域的零值
     char        sso_buffer_[SSO_CAPACITY + 1];
 
@@ -45,16 +43,12 @@ private:
     }
 
     // 仅需 cp_count_ (size() 用): 不分配 cp_offsets_ 数组
-    // 快速路径 state!=0 直接返回 (零开销, 无 SSE2 寄存器污染)
-    // 慢路径 (uniform 检测 + SSE2 全量扫描) 拆到 NOINLINE ensure_cp_count_slow(),
-    // 避免内联 SSE2 代码导致 begin()/end() 热路径保存/恢复 XMM 寄存器
     FORCE_INLINE void ensure_cp_count() const noexcept
     {
         if (cp_info_state_ != 0) return;
         ensure_cp_count_slow();
     }
-    // 标记 NOINLINE: SSE2 全量扫描, 仅首次访问执行
-    // 拆出防止 SSE2 寄存器使用污染 begin()/end() 迭代器热路径
+    // SSE2 全量扫描, 仅首次访问执行
     NOINLINE void ensure_cp_count_slow() const noexcept
     {
         if (byte_size_ == 0)
@@ -64,7 +58,7 @@ private:
             const_cast<utf8pp*>(this)->uniform_byte_len_ = 1;
             return;
         }
-        // 全量扫描精确计数 (采样猜测会误判均匀码点)
+        // 全量扫描精确计数
         const uint8_t* p = reinterpret_cast<const uint8_t*>(data_);
         const uint8_t* end = p + byte_size_;
         bool all_ascii = true;
@@ -95,9 +89,6 @@ private:
     }
 
     // 预解码缓存: 全码点批量解码为 char32_t 数组
-    // 迭代器遍历 cp_cache_ 时为 trivial 指针包装器 (无 uniform_len_ 分支)
-    // 编译器可自动向量化 range-for (SSE2 4 元素/迭代, 与 u32string 同速)
-    // 标记 NOINLINE: 仅首次 begin() 调用, 防止内联污染迭代器热路径寄存器分配
     NOINLINE void build_cp_cache() const noexcept
     {
         if (cp_cache_) return;
@@ -109,13 +100,13 @@ private:
         const uint8_t* p = reinterpret_cast<const uint8_t*>(data_);
         if (uniform_byte_len_ == 1)
         {
-            // 纯 ASCII: 零扩展每个字节到 char32_t
+            // 纯 ASCII
             for (size_t i = 0; i < cp_count_; ++i)
                 buf[i] = char32_t(p[i]);
         }
         else if (uniform_byte_len_ == 3)
         {
-            // 均匀 3 字节 (中文): 批量解码, 4 字节 load (含 1 字节 overlap), 3 次位运算
+            // 均匀 3 字节: 4 字节 load (含 1 字节 overlap)
             for (size_t i = 0; i < cp_count_; ++i)
             {
                 uint32_t v;
@@ -145,7 +136,7 @@ private:
         }
         else
         {
-            // 非均匀: 需 cp_offsets_ 查表定位字节偏移
+            // 非均匀
             ensure_cp_info();
             for (size_t i = 0; i < cp_count_; ++i)
                 buf[i] = char32_t(cp_at_byte_unchecked(cp_offsets_[i]));
@@ -154,7 +145,6 @@ private:
     }
 
     // 仅失效预解码缓存 (cp_cache_), 保留 cp_offsets_/cp_count_/state
-    // 用于 insert/erase/append/replace 等修改字节内容的操作
     // 必须在 cp_count_ 变更前调用 (free 大小依赖当前 cp_count_)
     void invalidate_cp_cache() noexcept
     {
@@ -179,7 +169,6 @@ private:
 
     // 失效码点布局但保留 cp_count_ (用于 reverse/replace_all 等仅重排内容的操作)
     // 调用者负责确保 cp_count_ 在调用前已正确更新
-    // 状态设为 3 (已计数, 未建偏移), 使 size() 可直接返回 cp_count_
     void invalidate_cp_layout() noexcept
     {
         if (cp_info_state_ == 2 && cp_offsets_ && cp_offsets_ != reinterpret_cast<uint32_t*>(sso_buffer_))
@@ -189,12 +178,12 @@ private:
         if (cp_cache_) { utf8pp_free(cp_cache_, static_cast<size_t>(cp_count_) * sizeof(char32_t)); cp_cache_ = nullptr; }
         cp_offsets_ = nullptr;
         cp_offsets_capacity_ = 0;
-        // 保留 cp_count_, 设 state=3 (已计数但未建偏移)
+        // 保留 cp_count_, 设 state=3
         if (cp_info_state_ != 0) cp_info_state_ = 3;
         uniform_byte_len_ = 0;
     }
 
-    // 精确验证 cp_offsets_ 为等差数列 i*avg (SSE2 4 项/迭代)
+    // 精确验证 cp_offsets_ 是否为等差数列 i*avg (SSE2 4 项/迭代)
     [[nodiscard]] bool check_offsets_uniform(size_t avg) const noexcept
     {
         size_t i = 0;
@@ -216,29 +205,60 @@ private:
         return true;
     }
 
-    // 修改后重新检测均匀码点 (state=2 时 cp_offsets_ 已更新)
-    // 供 insert/erase/append 等增量维护后调用
-    void recheck_uniform() noexcept
+    // 尾部追加块后维护均匀性 (k 码点共 bytes 字节, O(1))
+    void update_uniform_append(size_t new_cps, size_t new_bytes) noexcept
     {
-        uniform_byte_len_ = 0;
-        if (cp_info_state_ == 2 && cp_count_ > 0 && byte_size_ % cp_count_ == 0)
+        if (cp_info_state_ == 1)
         {
-            size_t avg = byte_size_ / cp_count_;
-            if (avg >= 1 && avg <= 4 && check_offsets_uniform(avg))
+            if (new_bytes != new_cps)
             {
-                uniform_byte_len_ = static_cast<uint8_t>(avg);
+                cp_info_state_ = 3;
+                uniform_byte_len_ = 0;
             }
+            return;
         }
-        else if (cp_info_state_ == 1)
+        if (uniform_byte_len_ == 0) return;
+        if (new_bytes != new_cps * uniform_byte_len_)
         {
-            uniform_byte_len_ = 1;
+            uniform_byte_len_ = 0;
         }
     }
 
+    // 中部插入块后维护均匀性 (块宽 blk_len, 0 表示非均匀块, O(1))
+    void update_uniform_insert_block(size_t blk_len) noexcept
+    {
+        if (uniform_byte_len_ != 0 && blk_len != uniform_byte_len_)
+        {
+            uniform_byte_len_ = 0;
+        }
+    }
+
+    // 下界定位: 返回首个满足 offs[i] >= byte_idx 的索引
+    // 调用前需已 ensure_cp_info 且非纯 ASCII 非均匀
+    [[nodiscard]] FORCE_INLINE size_t offsets_lower_bound(size_t byte_idx) const noexcept
+    {
+        const uint32_t* offs = cp_offsets_;
+        size_t lo = 0;
+        size_t hi = cp_count_;  // 搜索区间 [lo, hi)
+        size_t avg = byte_size_ / cp_count_;
+        if (avg > 0)
+        {
+            // 插值估算位置
+            size_t guess = byte_idx / avg;
+            if (guess >= cp_count_) guess = cp_count_ - 1;
+            if (offs[guess] < byte_idx) lo = guess + 1;
+            else hi = guess + 1;
+        }
+        while (lo < hi)
+        {
+            size_t mid = lo + (hi - lo) / 2;
+            if (offs[mid] < byte_idx) lo = mid + 1;
+            else hi = mid;
+        }
+        return lo;
+    }
+
     // 获取码点 i 的字节偏移
-    // 纯 ASCII (state=1): 直接返回 i
-    // 均匀码点: 乘法替代数组查表 (省 load-to-use 延迟)
-    // 非均匀: 数组查表
     [[nodiscard]] FORCE_INLINE uint32_t cp_byte_offset(size_t i) const noexcept
     {
         if (cp_info_state_ == 1) return static_cast<uint32_t>(i);
@@ -255,7 +275,6 @@ private:
 
     size_t iterator_to_cp_idx(const const_iterator& it) const noexcept
     {
-        // 预解码模式: p_ 指向 cp_cache_, 直接算索引
         if (cp_cache_)
         {
             if (!it.p_) return cp_count_;
@@ -267,83 +286,25 @@ private:
         if (!p || !data_) return cp_count_;
         size_t byte_idx = static_cast<size_t>(p - data_);
         if (byte_idx >= byte_size_) return cp_count_;
-        if (cp_info_state_ == 1) return byte_idx;  // 纯 ASCII: 直接返回
-        // 插值搜索: cp_offsets_ 近似等距, 平均 O(1)
-        const uint32_t* offs = cp_offsets_;
-        size_t avg = byte_size_ / cp_count_;
-        if (avg > 0)
-        {
-            size_t guess = byte_idx / avg;
-            if (guess >= cp_count_) guess = cp_count_ - 1;
-            if (offs[guess] == byte_idx) return guess;
-            if (offs[guess] < byte_idx)
-            {
-                size_t lo = guess + 1;
-                while (lo < cp_count_ && offs[lo] < byte_idx) ++lo;
-                return (lo < cp_count_ && offs[lo] == byte_idx) ? lo : cp_count_;
-            }
-            else
-            {
-                size_t hi = guess;
-                while (hi > 0 && offs[hi] > byte_idx) --hi;
-                return (offs[hi] == byte_idx) ? hi : cp_count_;
-            }
-        }
-        // 回退: 二分
-        size_t lo = 0, hi = cp_count_;
-        while (lo < hi)
-        {
-            size_t mid = lo + (hi - lo) / 2;
-            if (offs[mid] < byte_idx) lo = mid + 1;
-            else hi = mid;
-        }
-        return (lo < cp_count_ && offs[lo] == static_cast<uint32_t>(byte_idx)) ? lo : cp_count_;
+        if (cp_info_state_ == 1) return byte_idx;
+        size_t lb = offsets_lower_bound(byte_idx);
+        return (lb < cp_count_ && cp_offsets_[lb] == byte_idx) ? lb : cp_count_;
     }
 
     // 字节偏移 → 码点索引 (向上取整: 返回首个 offset >= byte_idx 的码点索引; 越界返回 cp_count_)
-    // 插值搜索: cp_offsets_ 近似等距, 平均 O(1)
     [[nodiscard]] FORCE_INLINE size_t byte_idx_to_cp_idx_ceil(size_t byte_idx) const noexcept
     {
         ensure_cp_info();
         if (byte_idx >= byte_size_) return cp_count_;
-        if (cp_info_state_ == 1) return byte_idx;  // 纯 ASCII: 直接返回
-        const uint32_t* offs = cp_offsets_;
-        size_t avg = byte_size_ / cp_count_;
-        if (avg > 0)
-        {
-            size_t guess = byte_idx / avg;
-            if (guess >= cp_count_) guess = cp_count_ - 1;
-            if (offs[guess] >= byte_idx)
-            {
-                // 估算偏大, 向后微调找首个 >= byte_idx
-                size_t hi = guess;
-                while (hi > 0 && offs[hi] >= byte_idx) --hi;
-                return offs[hi] >= byte_idx ? hi : hi + 1;
-            }
-            else
-            {
-                // 估算偏小, 向前微调找首个 >= byte_idx
-                size_t lo = guess + 1;
-                while (lo < cp_count_ && offs[lo] < byte_idx) ++lo;
-                return lo;
-            }
-        }
-        // 回退: 二分
-        size_t lo = 0, hi = cp_count_;
-        while (lo < hi)
-        {
-            size_t mid = lo + (hi - lo) / 2;
-            if (offs[mid] < byte_idx) lo = mid + 1;
-            else hi = mid;
-        }
-        return lo;
+        if (cp_info_state_ == 1) return byte_idx;
+        return offsets_lower_bound(byte_idx);
     }
 
     // 数据 data_ 始终以 '\0' 结尾, 可直接传给 strtoll/strtod 等 C 函数
     long long to_ll_internal(size_t* pos, int base) const
     {
         if (!data_ || byte_size_ == 0) { if (pos) *pos = 0; return 0; }
-        ensure_cp_info();
+        if (pos) ensure_cp_info();
         char* endp = nullptr;
         errno = 0;
         long long v = std::strtoll(data_, &endp, base);
@@ -354,7 +315,7 @@ private:
     unsigned long long to_ull_internal(size_t* pos, int base) const
     {
         if (!data_ || byte_size_ == 0) { if (pos) *pos = 0; return 0; }
-        ensure_cp_info();
+        if (pos) ensure_cp_info();
         char* endp = nullptr;
         errno = 0;
         unsigned long long v = std::strtoull(data_, &endp, base);
@@ -365,7 +326,7 @@ private:
     double to_double_internal(size_t* pos) const
     {
         if (!data_ || byte_size_ == 0) { if (pos) *pos = 0; return 0.0; }
-        ensure_cp_info();
+        if (pos) ensure_cp_info();
         char* endp = nullptr;
         errno = 0;
         double v = std::strtod(data_, &endp);
@@ -373,7 +334,7 @@ private:
         return v;
     }
 
-    // 仅释放堆内存 (析构用, 不重置字段 - 对象即将销毁无需重置)
+    // 仅释放堆内存 (析构用, 不重置字段)
     // 缓冲区 sso_buffer_ 不能 free
     void release_memory_only() noexcept
     {
@@ -396,15 +357,90 @@ private:
         cp_cache_ = nullptr;
     }
 
+    // 将 [pos, pos+n) 码点区间替换为 str, 单次字节搬移 + 单次偏移重排
+    void replace_range_core(size_t pos, size_t n, const utf8pp& str)
+    {
+        if (&str == this)
+        {
+            utf8pp snapshot(*this);
+            replace_range_core(pos, n, snapshot);
+            return;
+        }
+        ensure_cp_info();
+        if (pos >= cp_count_)
+        {
+            return;
+        }
+        if (n > cp_count_ - pos) n = cp_count_ - pos;
+        str.ensure_cp_info();
+        if (n == 0 && str.cp_count_ == 0) return;
+        invalidate_cp_cache();
+        if (cp_info_state_ == 1) promote_ascii_to_offsets();
+
+        size_t b0 = cp_offsets_[pos];
+        size_t b1 = (pos + n < cp_count_) ? cp_offsets_[pos + n] : byte_size_;
+        int64_t diff = static_cast<int64_t>(str.byte_size_) - static_cast<int64_t>(b1 - b0);
+        if (diff > 0)
+        {
+            ensure_byte_capacity(static_cast<size_t>(byte_size_ + diff));
+            b0 = cp_offsets_[pos];
+            b1 = (pos + n < cp_count_) ? cp_offsets_[pos + n] : byte_size_;
+        }
+
+        if (b1 < byte_size_)
+        {
+            std::memmove(data_ + b1 + diff, data_ + b1, byte_size_ - b1);
+        }
+        if (str.byte_size_ > 0)
+        {
+            std::memcpy(data_ + b0, str.data_, str.byte_size_);
+        }
+        byte_size_ = static_cast<uint32_t>(static_cast<int64_t>(byte_size_) + diff);
+        data_[byte_size_] = '\0';
+
+        if (pos + n < cp_count_)
+        {
+            std::memmove(cp_offsets_ + pos + str.cp_count_, cp_offsets_ + pos + n,
+                         (cp_count_ - pos - n) * sizeof(uint32_t));
+            for (size_t i = pos + str.cp_count_; i < cp_count_ + str.cp_count_ - n; ++i)
+            {
+                cp_offsets_[i] = static_cast<uint32_t>(static_cast<int64_t>(cp_offsets_[i]) + diff);
+            }
+        }
+        if (str.cp_info_state_ == 1)
+        {
+            for (size_t i = 0; i < str.cp_count_; ++i)
+            {
+                cp_offsets_[pos + i] = static_cast<uint32_t>(b0 + i);
+            }
+        }
+        else
+        {
+            for (size_t i = 0; i < str.cp_count_; ++i)
+            {
+                cp_offsets_[pos + i] = static_cast<uint32_t>(b0 + str.cp_offsets_[i]);
+            }
+        }
+        cp_count_ = static_cast<uint32_t>(cp_count_ + str.cp_count_ - n);
+        update_uniform_insert_block((str.cp_info_state_ == 1) ? 1 : str.uniform_byte_len_);
+    }
+
     void insert_str(size_t cp_idx, const utf8pp& str)
     {
+        if (&str == this)
+        {
+            // 自插入(含区间重叠): 先快照, 否则源指针随扩容/搬移失效
+            utf8pp snapshot(*this);
+            insert_str(cp_idx, snapshot);
+            return;
+        }
         str.ensure_cp_info();
         if (str.cp_count_ == 0) return;
-        invalidate_cp_cache();  // 字节内容将变更, 失效预解码缓存 (在 cp_count_ 变更前)
+        invalidate_cp_cache();
         ensure_cp_info();
         if (cp_idx > cp_count_) cp_idx = cp_count_;
 
-        // 若当前为纯 ASCII 快速路径, 切换到已构建状态以增量维护
+        // 纯 ASCII 快速路径切换到已构建状态以增量维护
         if (cp_info_state_ == 1)
         {
             promote_ascii_to_offsets();
@@ -449,14 +485,14 @@ private:
             }
         }
         cp_count_ += str.cp_count_;
-        recheck_uniform();  // 内容变更后重检均匀码点
+        update_uniform_insert_block((str.cp_info_state_ == 1) ? 1 : str.uniform_byte_len_);
     }
 
     void replace_cp_at(size_t cp_idx, uint32_t new_cp)
     {
         ensure_cp_info();
         if (cp_idx >= cp_count_) return;
-        invalidate_cp_cache();  // 字节内容将变更, 失效预解码缓存
+        invalidate_cp_cache();
         // 纯 ASCII 快速路径需提升为偏移缓存
         if (cp_info_state_ == 1) promote_ascii_to_offsets();
 
@@ -548,7 +584,6 @@ private:
         if (!was_sso && data_) utf8pp_free(data_, static_cast<size_t>(byte_capacity_) + 1);
         data_ = new_data;
         byte_capacity_ = cap;
-        // 偏移数组 cp_offsets_ 独立管理, 惰性模式下不随字节扩容迁移
     }
 
     void grow_cp_capacity(size_t new_cap)
@@ -565,7 +600,7 @@ private:
         cp_offsets_capacity_ = cap;
     }
 
-    // 纯 ASCII 快速路径提升为偏移缓存 (修改操作需要随机访问偏移时调用)
+    // 纯 ASCII 快速路径提升为偏移缓存
     void promote_ascii_to_offsets() noexcept
     {
         if (cp_info_state_ != 1) return;
@@ -592,7 +627,7 @@ private:
             uniform_byte_len_ = 1;
             return;
         }
-        // 精确分配 (构造时无需预留增长空间, 省 over-allocation 开销)
+        // 精确分配
         if (byte_len > byte_capacity_)
         {
             if (!is_sso() && data_) utf8pp_free(data_, static_cast<size_t>(byte_capacity_) + 1);
@@ -622,7 +657,7 @@ private:
         }
     }
 
-    // 精确验证均匀码点: lead 位置恰为 i*avg (周期掩码全量比对)
+    // 验证均匀码点: lead 位置恰为 i*avg
     [[nodiscard]] bool verify_uniform_exact(size_t avg) const noexcept
     {
         const uint8_t* base = reinterpret_cast<const uint8_t*>(data_);
@@ -679,14 +714,14 @@ private:
         return true;
     }
 
-    // 均匀码点检测: byte_size/cp_count 整除 + 全量验证 lead 位置 (供 init_from_utf8/ensure_cp_count)
+    // 均匀码点检测: byte_size/cp_count 整除 + 全量验证 lead 位置
     void detect_uniform_byte_len() noexcept
     {
         uniform_byte_len_ = 0;
         if (cp_count_ == 0 || byte_size_ == 0) return;
         if (byte_size_ % cp_count_ != 0) return;
         size_t avg = byte_size_ / cp_count_;
-        // avg==1 即纯 ASCII (state=1) 不会到此; 到此即非法数据
+        // avg==1 即纯 ASCII (state=1) 不会到此
         if (avg < 2 || avg > 4) return;
         if (verify_uniform_exact(avg))
         {
@@ -697,7 +732,7 @@ private:
     void init_from_char32(const char32_t* s, size_t cp_count)
     {
         if (cp_count == 0) return;
-        // 预计算总字节容量 (单次扫描, 避免循环中重复 ensure_byte_capacity)
+        // 预计算总字节容量
         size_t total_bytes = 0;
         for (size_t i = 0; i < cp_count; ++i)
         {
@@ -723,9 +758,8 @@ private:
             byte_size_ += len;
         }
         data_[byte_size_] = '\0';
-        // 已构建偏移, 标记为已构建 (可能全 ASCII, 但走偏移路径不影响正确性)
         cp_info_state_ = 2;
-        // 均匀码点检测: 所有码点等长时用乘法替代数组查表
+        // 所有码点等长时记录 uniform
         if (cp_count_ > 0 && byte_size_ % cp_count_ == 0)
         {
             size_t avg = byte_size_ / cp_count_;
@@ -745,10 +779,7 @@ private:
         const uint8_t* p = base;
         const uint8_t* end = p + byte_size_;
 #if LCF_UTF8_HAS_SSE2
-        // 指令集 SSE2: 16 字节/迭代, pcmpeqb+pmovmskb 定位 lead 字节
-        // 引导字节 = 非 continuation: (b & 0xC0) != 0x80
-        // 比较指令 cmpeq(b&0xC0, 0x80) → 0xFF 为 cont, 0x00 为 lead
-        // ~movemask → 1 为 lead, 0 为 cont
+        // SSE2: 16 字节/迭代, pcmpeqb+pmovmskb 定位 lead 字节
         const __m128i mask_C0 = _mm_set1_epi8(static_cast<char>(0xC0));
         const __m128i mask_80 = _mm_set1_epi8(static_cast<char>(0x80));
         while (p + 16 <= end)
@@ -768,13 +799,13 @@ private:
             p += 16;
         }
 #else
-        // 算法 SWAR: 8 字节/迭代, 定位 lead 字节
+        // SWAR: 8 字节/迭代
         while (p + 8 <= end)
         {
             uint64_t chunk;
             std::memcpy(&chunk, p, 8);
-            uint64_t x = chunk & 0x8080808080808080ULL;  // 每字节 bit7
-            uint64_t y = chunk & 0x4040404040404040ULL;  // 每字节 bit6
+            uint64_t x = chunk & 0x8080808080808080ULL;
+            uint64_t y = chunk & 0x4040404040404040ULL;
             uint64_t cont = x & ~(y << 1);
             uint64_t lead_mask = cont ^ 0x8080808080808080ULL;
             size_t base_off = static_cast<size_t>(p - base);
@@ -796,7 +827,7 @@ private:
             }
             ++p;
         }
-        // 均匀码点检测: 若所有码点等长 (如纯中文 3 字节/码点), 用乘法替代数组查表
+        // 所有码点等长时记录 uniform
         if (cp_count_ > 0 && byte_size_ % cp_count_ == 0)
         {
             size_t avg = byte_size_ / cp_count_;
@@ -807,7 +838,7 @@ private:
         }
     }
 
-    // 保留 cp_at_byte: 按字节偏移解码单个码点 (有校验, 用于用户输入)
+    // 按字节偏移解码单个码点 (有校验)
     [[nodiscard]] uint32_t cp_at_byte(size_t byte_idx) const noexcept
     {
         uint32_t cp = 0;
@@ -818,96 +849,52 @@ private:
         return cp;
     }
 
-    // 无校验解码: utf8pp 内部数据保证合法, at/[] 已做 bounds check, 用 unchecked 省校验开销
+    // 无校验解码: utf8pp 内部数据保证合法
     [[nodiscard]] FORCE_INLINE uint32_t cp_at_byte_unchecked(size_t byte_idx) const noexcept
     {
         return static_cast<uint32_t>(detail_utf8::utf8_decode_unchecked(
             reinterpret_cast<const uint8_t*>(data_) + byte_idx));
     }
 
-    // 字节偏移 → 码点索引
-    // 纯 ASCII: 直接返回
-    // 均匀码点: 移位/乘法 (避免运行时除法, 无需 cp_offsets_)
-    // 非均匀: 插值搜索 (cp_offsets_ 近似等距, 平均 O(1), 最坏退化为线性微调)
-    //   比纯二分 O(log n) 快 5-10x: 中文串 (3 字节/码点) guess = byte_idx/3 一次命中
-    // 优化: uniform 串仅需 ensure_cp_count (不建 cp_offsets_), 省 O(n) 分配+扫描
+    // 字节偏移 → 码点索引 (非码点起点返回 npos)
     [[nodiscard]] FORCE_INLINE size_t byte_idx_to_cp_idx(size_t byte_idx) const noexcept
     {
         if (byte_idx >= byte_size_) return npos;
-        ensure_cp_count();  // 仅计数 + 设置 uniform_byte_len_, 不建 cp_offsets_
+        ensure_cp_count();
         if (cp_count_ == 0) return npos;
-        if (cp_info_state_ == 1) return byte_idx;  // 纯 ASCII: 直接返回
-        // 均匀码点: 用移位替代运行时除法 (uniform_byte_len_ ∈ {1,2,3,4})
-        // 无需 cp_offsets_, 纯算术
+        if (cp_info_state_ == 1) return byte_idx;
         if (uniform_byte_len_ != 0)
         {
             switch (uniform_byte_len_)
             {
                 case 1: return byte_idx;
                 case 2: return byte_idx >> 1;
-                case 3: return byte_idx / 3;  // GCC 生成乘法+移位 (magic number)
+                case 3: return byte_idx / 3;
                 case 4: return byte_idx >> 2;
             }
         }
-        // 非均匀: 需要 cp_offsets_ 插值搜索
-        ensure_cp_info();  // 升级到 state=2, 构建 cp_offsets_
-        const uint32_t* offs = cp_offsets_;
-        // 插值搜索: 估算位置 = byte_idx / 平均字节每码点
-        // 中文 (3 字节/码点): guess = byte_idx/3, 一次命中
-        // 混合串: guess 近似, 线性微调 1-3 步
-        size_t avg = byte_size_ / cp_count_;
-        if (avg > 0)
-        {
-            size_t guess = byte_idx / avg;
-            if (guess >= cp_count_) guess = cp_count_ - 1;
-            if (offs[guess] == byte_idx) return guess;
-            if (offs[guess] < byte_idx)
-            {
-                // 估算偏小, 线性向前微调 (通常 0-2 步)
-                size_t lo = guess + 1;
-                while (lo < cp_count_ && offs[lo] < byte_idx) ++lo;
-                return (lo < cp_count_ && offs[lo] == byte_idx) ? lo : npos;
-            }
-            else
-            {
-                // 估算偏大, 线性向后微调 (通常 0-2 步)
-                size_t hi = guess;
-                while (hi > 0 && offs[hi] > byte_idx) --hi;
-                return (offs[hi] == byte_idx) ? hi : npos;
-            }
-        }
-        // 回退: 二分 (avg=0 理论不可能, 防御性)
-        size_t lo = 0, hi = cp_count_;
-        while (lo < hi)
-        {
-            size_t mid = lo + (hi - lo) / 2;
-            if (offs[mid] < byte_idx) lo = mid + 1;
-            else hi = mid;
-        }
-        return lo < cp_count_ && offs[lo] == byte_idx ? lo : npos;
+        ensure_cp_info();
+        size_t lb = offsets_lower_bound(byte_idx);
+        return (lb < cp_count_ && cp_offsets_[lb] == byte_idx) ? lb : npos;
     }
 
-    // 字节偏移 → 码点索引 (无 cp_offsets_, 用 SWAR 计数, 避免内存分配)
-    // 适用场景: state=3 (已计数未建偏移) 的单次查找, 不愿支付 build_cp_offsets 的 O(n) 分配开销
-    // 复杂度: O(byte_idx) (SWAR 32 字节并行), 但无内存分配, 单次查找比 build+search 更快
+    // 字节偏移 → 码点索引 (SWAR 计数, 无 cp_offsets_)
     [[nodiscard]] size_t byte_idx_to_cp_idx_swar(size_t byte_idx) const noexcept
     {
         if (byte_idx >= byte_size_) return npos;
-        if (cp_info_state_ == 1) return byte_idx;  // 纯 ASCII: 直接返回
-        // 算法 SWAR 计数 [0, byte_idx) 范围内的码点数 = byte_idx 处的码点索引
+        if (cp_info_state_ == 1) return byte_idx;
         const uint8_t* base = reinterpret_cast<const uint8_t*>(data_);
         return detail_utf8::count_codepoints(base, base + byte_idx);
     }
 
-    // 码点索引 → 字节偏移 (无 cp_offsets_, 用 SWAR 推进)
-    // 适用场景: state=3 的单次查找, 避免 build_cp_offsets 的 O(n) 分配
-    // 复杂度: O(pos * 平均字节数) (纯 ASCII 段 SWAR 8 字节并行)
+    // 码点索引 → 字节偏移 (SWAR 推进, 无 cp_offsets_)
     [[nodiscard]] size_t cp_idx_to_byte_offset_swar(size_t pos) const noexcept
     {
         if (pos >= cp_count_) return byte_size_;
-        if (cp_info_state_ == 1) return pos;  // 纯 ASCII: 直接返回
+        if (cp_info_state_ == 1) return pos;
         const uint8_t* base = reinterpret_cast<const uint8_t*>(data_);
         const uint8_t* end = base + byte_size_;
         const uint8_t* p = detail_utf8::advance_codepoints(base, end, pos);
         return static_cast<size_t>(p - base);
     }
+    

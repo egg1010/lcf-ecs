@@ -48,7 +48,6 @@ public:
 
         [[nodiscard]] char32_t operator*() const noexcept
         {
-            // 无校验: 构造/递增保证 p_ 已对齐到码点边界
             return detail_utf8::utf8_decode_unchecked(reinterpret_cast<const uint8_t*>(p_));
         }
 
@@ -116,7 +115,6 @@ public:
 
         [[nodiscard]] char32_t operator*() const noexcept
         {
-            // 反向回退到码点起始后无校验解码
             const uint8_t* q = reinterpret_cast<const uint8_t*>(p_);
             const uint8_t* b = reinterpret_cast<const uint8_t*>(begin_);
             --q;
@@ -363,10 +361,10 @@ public:
         return npos;
     }
 
-    // === 码点查找 (O(n), ASCII 用 memchr 快速路径) ===
+    // === 码点查找 (O(n)) ===
     [[nodiscard]] size_t find(char32_t cp, size_t cp_pos = 0) const noexcept
     {
-        // 纯 ASCII 快速路径: 直接 memchr
+        // ASCII 快速路径
         if (static_cast<uint32_t>(cp) < 0x80) [[likely]]
         {
             const uint8_t* p = reinterpret_cast<const uint8_t*>(data_);
@@ -376,12 +374,11 @@ public:
             size_t byte_off = static_cast<size_t>(p - reinterpret_cast<const uint8_t*>(data_));
             size_t found = find_byte(static_cast<char>(cp), byte_off);
             if (found == npos) return npos;
-            // 字节位置 → 码点索引 (SWAR 计数)
             return detail_utf8::count_codepoints(
                 reinterpret_cast<const uint8_t*>(data_),
                 reinterpret_cast<const uint8_t*>(data_) + found);
         }
-        // 多字节: 预编码 cp 后字节级搜索, memchr 加速首字节
+        // 多字节: 预编码 cp 后字节级搜索
         // 自同步保证: lead 字节 (0xC0-0xFF) 不匹配 continuation, 字节级匹配起始必为码点边界
         uint8_t enc[4];
         size_t enc_len = 0;
@@ -393,7 +390,6 @@ public:
         const uint8_t* end = base + byte_size_;
         const uint8_t* p = detail_utf8::advance_codepoints(base, end, cp_pos);
         size_t start_byte = static_cast<size_t>(p - base);
-        // 首字节 memchr + 完整序列 memcmp 验证
         while (start_byte + enc_len <= byte_size_)
         {
             const void* found = std::memchr(data_ + start_byte, static_cast<int>(enc[0]),
@@ -413,28 +409,30 @@ public:
     {
         if (str.byte_size_ == 0) return cp_pos <= size() ? cp_pos : npos;
         if (str.byte_size_ > byte_size_) return npos;
-        const uint8_t* p = reinterpret_cast<const uint8_t*>(data_);
-        const uint8_t* end = p + byte_size_;
-        for (size_t i = 0; i < cp_pos && p < end; ++i)
+        const uint8_t* base = reinterpret_cast<const uint8_t*>(data_);
+        const uint8_t* end = base + byte_size_;
+        const uint8_t* p = detail_utf8::advance_codepoints(base, end, cp_pos);
+        const uint8_t* pat = reinterpret_cast<const uint8_t*>(str.data_);
+        const size_t pat_len = str.byte_size_;
+        const uint8_t* hay_end = end - pat_len + 1;
+        while (p < hay_end)
         {
-            p = detail_utf8::advance_codepoint(p, end);
-        }
-        size_t idx = cp_pos;
-        while (p + str.byte_size_ <= end)
-        {
-            if (std::memcmp(p, str.data_, str.byte_size_) == 0) return idx;
-            p = detail_utf8::advance_codepoint(p, end);
-            ++idx;
+            const uint8_t* found = static_cast<const uint8_t*>(
+                std::memchr(p, pat[0], static_cast<size_t>(hay_end - p)));
+            if (!found) return npos;
+            if (std::memcmp(found, pat, pat_len) == 0)
+            {
+                return detail_utf8::count_codepoints(base, found);
+            }
+            p = found + 1;
         }
         return npos;
     }
     [[nodiscard]] size_t rfind(char32_t cp, size_t cp_pos = npos) const noexcept
     {
-        // 反向字节遍历, 避免 O(n²)
         if (byte_size_ == 0) return npos;
         const uint8_t* p = reinterpret_cast<const uint8_t*>(data_);
         const uint8_t* end = p + byte_size_;
-        // 先正向遍历到 cp_pos, 记录位置; 再反向查找
         size_t total = 0;
         const uint8_t* it = p;
         while (it < end)
@@ -443,7 +441,6 @@ public:
             it = detail_utf8::advance_codepoint(it, end);
             ++total;
         }
-        // 反向遍历 (从 it 回退到 p)
         size_t idx = total;
         const uint8_t* cur = it;
         while (cur > p)
@@ -464,18 +461,14 @@ public:
         size_t str_cp = str.size();
         if (str_cp > total) return npos;
         if (cp_pos > total - str_cp) cp_pos = total - str_cp;
-        size_t i = cp_pos + 1;
-        while (i > 0)
-        {
-            --i;
-            utf8_view candidate = substr(i, str_cp);
-            if (candidate.byte_size_ == str.byte_size_ &&
-                std::memcmp(candidate.data_, str.data_, str.byte_size_) == 0)
-            {
-                return i;
-            }
-        }
-        return npos;
+        const uint8_t* base = reinterpret_cast<const uint8_t*>(data_);
+        const uint8_t* end = base + byte_size_;
+        const uint8_t* limit = detail_utf8::advance_codepoints(base, end, cp_pos + 1);
+        std::string_view self(reinterpret_cast<const char*>(data_), byte_size_);
+        std::string_view pat(reinterpret_cast<const char*>(str.data_), str.byte_size_);
+        size_t found = self.rfind(pat, static_cast<size_t>(limit - base - 1));
+        if (found == std::string_view::npos) return npos;
+        return detail_utf8::count_codepoints(base, base + found);
     }
 
     // === find_first_of 系列 (码点级) ===
@@ -634,7 +627,6 @@ public:
         const uint8_t* end = p + byte_size_;
         while (p < end)
         {
-            // 无校验: 遍历前已确认合法 UTF-8
             char32_t cp = detail_utf8::utf8_decode_unchecked(p);
             w += static_cast<size_t>(unicode_data::cp_display_width(static_cast<uint32_t>(cp)));
             p += detail_utf8::k_utf8_seq_len[*p];
@@ -642,7 +634,7 @@ public:
         return w;
     }
 
-    // ===== 大小写转换 (零分配, 写入外部缓冲) =====
+    // ===== 大小写转换 (写入外部缓冲) =====
     // 返回写入字节数; cap 不足时返回所需字节数, out 内容未定义
     size_t to_lower_into(char* out, size_t cap) const noexcept
     {
@@ -653,7 +645,7 @@ public:
         return case_convert_into_(out, cap, true);
     }
 
-    // ===== trim (返回子 view, 仅指针移动, 零分配) =====
+    // ===== trim (返回子 view) =====
     [[nodiscard]] utf8_view trimmed_left() const noexcept
     {
         const uint8_t* p = reinterpret_cast<const uint8_t*>(data_);
@@ -689,12 +681,11 @@ public:
         return trimmed_left().trimmed_right();
     }
 
-    // ===== 码点分类聚合 (零分配) =====
+    // ===== 码点分类聚合 =====
     [[nodiscard]] bool is_ascii() const noexcept
     {
         const uint8_t* p = reinterpret_cast<const uint8_t*>(data_);
         const uint8_t* end = p + byte_size_;
-        // 字节分组 SWAR 检测高位 bit
         while (p + 8 <= end)
         {
             uint64_t chunk;
@@ -739,7 +730,6 @@ public:
     }
 
 private:
-    // 大小写转换实现: upper=true 大写, false 小写
     size_t case_convert_into_(char* out, size_t cap, bool upper) const noexcept
     {
         const uint8_t* p = reinterpret_cast<const uint8_t*>(data_);
@@ -821,11 +811,15 @@ struct hash<utf8_view>
     if (!s) return utf8_view::npos;
     const uint8_t* p = reinterpret_cast<const uint8_t*>(s);
     const uint8_t* start = p;
-    // 无 end 约束, 以 NUL 为界
     while (*p && cp_idx > 0)
     {
+        size_t avail = 0;
+        while (avail < 4 && p[avail] != 0) { ++avail; }
         uint32_t cp = 0; size_t len = 0;
-        (void)detail_utf8::utf8_decode_one(p, p + 4, &cp, &len);
+        if (!detail_utf8::utf8_decode_one(p, p + avail, &cp, &len) || len == 0)
+        {
+            return utf8_view::npos;
+        }
         p += len;
         --cp_idx;
     }
@@ -897,4 +891,30 @@ struct hash<utf8_view>
     (void)detail_utf8::utf8_decode_one(q, reinterpret_cast<const uint8_t*>(p), &cp, &len);
     if (consumed) *consumed = static_cast<size_t>(p - reinterpret_cast<const char*>(q));
     return static_cast<char32_t>(cp);
+}
+
+// 游标式行读取: 在 [p, end) 内存上按分隔符切行, 产出零拷贝 view (不移动任何字节)
+// 返回: 产出一行 true (*out 为行内容, 不含分隔符; *p 推进到下一行起点);
+//       内存耗尽 false。行切分语义与 std::getline 循环一致 (尾行无分隔符有效, 末尾不产空行)
+// 用法: const char* p = data; utf8_view line;
+//       while (utf8_next_line(&p, data + len, &line)) { ... }
+[[nodiscard]] inline bool utf8_next_line(const char** p, const char* end,
+                                          utf8_view* out, char delim = '\n') noexcept
+{
+    if (!p || !out) return false;
+    const char* cur = *p;
+    if (!cur || cur >= end) return false;
+    const void* hit = std::memchr(cur, static_cast<unsigned char>(delim),
+                                    static_cast<size_t>(end - cur));
+    if (hit)
+    {
+        const char* h = static_cast<const char*>(hit);
+        *out = utf8_view(cur, static_cast<size_t>(h - cur));
+        *p = h + 1;
+        return true;
+    }
+    // 尾行无分隔符
+    *out = utf8_view(cur, static_cast<size_t>(end - cur));
+    *p = end;
+    return true;
 }

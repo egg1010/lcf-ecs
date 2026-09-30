@@ -14,7 +14,7 @@
 #include "runtime_view.hpp"
 #include "part/radix_sort_helper.hpp"
 #include "part/tiered_sort.hpp"
-#include "part/ring_buffer.hpp"
+#include "part/signal_queue.hpp"
 #include "view_tags.hpp"
 
 // MinGW x64 ABI 仅保证 16 字节栈对齐, GCC 在工厂方法栈上构造 group 参数时
@@ -97,42 +97,21 @@ private:
         uint32_t component_id;
     };
     static constexpr size_t comp_signal_buffer_size = 1024;
-    static_assert((comp_signal_buffer_size & (comp_signal_buffer_size - 1)) == 0,
-                  "comp_signal_buffer_size must be power of 2");
-    ring_buffer<component_signal_event, comp_signal_buffer_size> comp_signal_buf_;
-    dense<component_signal_event> comp_signal_overflow_chain_;
-    size_t comp_signal_overflow_read_{0};
-    uint64_t comp_signal_overflow_count_{0};
-    bool comp_signal_enabled_{true};
-    bool comp_signal_flushing_{false};
+    signal_queue<component_signal_event, comp_signal_buffer_size> comp_signals_;
     bool track_changes_enabled_default_{true};
 
     static constexpr size_t change_log_capacity = 4096;
-    static_assert((change_log_capacity & (change_log_capacity - 1)) == 0,
-                  "change_log_capacity must be power of 2");
-    ring_buffer<change_record, change_log_capacity> change_log_;
-    dense<change_record> change_log_overflow_;
-    size_t change_log_overflow_read_{0};
+    signal_queue<change_record, change_log_capacity> change_log_;
     uint16_t current_frame_{0};
-    bool change_log_enabled_{true};
 
     void push_change_record(uint32_t op, uint32_t entity_idx, uint32_t type_id, uint32_t dense_index) noexcept
     {
-        if (!change_log_enabled_) [[unlikely]] return;
-        if (!change_log_.push(change_record{entity_idx, type_id, static_cast<uint8_t>(op), 0, current_frame_, dense_index})) [[unlikely]]
-        {
-            change_log_overflow_.push_back(change_record{entity_idx, type_id, static_cast<uint8_t>(op), 0, current_frame_, dense_index});
-        }
+        change_log_.push(change_record{entity_idx, type_id, static_cast<uint8_t>(op), 0, current_frame_, dense_index});
     }
 
     void push_comp_signal(uint32_t type, uint32_t entity_idx, uint32_t component_id) noexcept
     {
-        if (!comp_signal_enabled_) [[unlikely]] return;
-        if (!comp_signal_buf_.push(component_signal_event{type, entity_idx, component_id})) [[unlikely]]
-        {
-            ++comp_signal_overflow_count_;
-            comp_signal_overflow_chain_.push_back(component_signal_event{type, entity_idx, component_id});
-        }
+        comp_signals_.push(component_signal_event{type, entity_idx, component_id});
     }
 
     void ensure_type_exists(int type_id) noexcept
@@ -173,7 +152,7 @@ private:
             component_metas_[type_id].size = comp_size;
             const uint32_t block = type_id::mask_block_of(type_id);
             if (block >= entity_manager_.num_mask_blocks())
-                entity_manager_.reserve_mask_blocks(block + 1);
+                entity_manager_.preallocate_mask_blocks(block + 1);
         }
     }
 
@@ -211,6 +190,30 @@ private:
         }
     }
 
+    // 组件变更提交: 模板轨道与 def 轨道共用
+
+    // 掩码置位 + 变更日志 + 延迟信号
+    void commit_add(entity entitys, int tid, uint32_t dense_index, const single_class_set& set) noexcept
+    {
+        set_entity_mask_for_type(entitys, tid);
+        push_change_record(0, entitys.parts_.index_, static_cast<uint32_t>(tid), dense_index);
+        if (!set.on_add_) [[unlikely]] push_comp_signal(0, entitys.parts_.index_, static_cast<uint32_t>(tid));
+    }
+
+    // 掩码清位 + 变更日志 + 延迟信号
+    void commit_remove(entity entitys, int tid, const single_class_set& set) noexcept
+    {
+        clear_entity_mask_for_type(entitys, tid);
+        push_change_record(1, entitys.parts_.index_, static_cast<uint32_t>(tid), 0);
+        if (!set.on_remove_) [[unlikely]] push_comp_signal(1, entitys.parts_.index_, static_cast<uint32_t>(tid));
+    }
+
+    // 软删除仅清掩码 (组件不析构, 不触发 on_remove)
+    void commit_soft_remove(entity entitys, int tid) noexcept
+    {
+        clear_entity_mask_for_type(entitys, tid);
+    }
+
     template <typename T>
     void add_component_without_message(entity entitys, T&& component) noexcept
     {
@@ -231,17 +234,17 @@ public:
         return entity_manager_.is_version_valid(entitys);
     }
 
-    void append_preallocated_entities(size_t count) noexcept
+    void preallocate_entities(size_t count) noexcept
     {
-        entity_manager_.append_preallocated_entities(count);
+        entity_manager_.preallocate_entities(count);
         if (count > default_component_capacity_) default_component_capacity_ = count;
         for (size_t i = 0; i < components_c_.size(); ++i)
         {
             components_c_[i].increase_capacity(count);
         }
     }
-    void disable_comp_signals() noexcept { comp_signal_enabled_ = false; }
-    void enable_comp_signals() noexcept { comp_signal_enabled_ = true; }
+    void disable_comp_signals() noexcept { comp_signals_.set_enabled(false); }
+    void enable_comp_signals() noexcept { comp_signals_.set_enabled(true); }
     void disable_track_changes() noexcept {
         track_changes_enabled_default_ = false;
         for (size_t i = 0; i < components_c_.size(); ++i)
@@ -272,10 +275,9 @@ public:
         // 仅成功时置掩码/记变更/发信号: 失败置掩码会造成掩码与存储不一致
         if (result) [[likely]]
         {
-            set_entity_mask_for_type(entitys, type_id);
-            push_change_record(0, entitys.parts_.index_, static_cast<uint32_t>(type_id),
-                               static_cast<uint32_t>(components_c_[type_id].size() - 1));
-            if (!components_c_[type_id].on_add_) push_comp_signal(0, entitys.parts_.index_, static_cast<uint32_t>(type_id));
+            commit_add(entitys, type_id,
+                       static_cast<uint32_t>(components_c_[type_id].size() - 1),
+                       components_c_[type_id]);
         }
         return result;
     }
@@ -489,8 +491,8 @@ public:
         single_class_set* set = get_single_class_set<T>();
         if (set)
         {
-            clear_entity_mask_for_type(entitys, type_id::get_type_id<T>());
             // soft_remove 仅逻辑隐藏,组件未析构,不触发 on_remove_ 也不入队
+            commit_soft_remove(entitys, type_id::get_type_id<T>());
             return set->soft_remove(entitys);
         }
         operating_message result;
@@ -504,11 +506,9 @@ public:
         single_class_set* set = get_single_class_set<T>();
         if (set)
         {
-            int type_id = type_id::get_type_id<T>();
-            clear_entity_mask_for_type(entitys, type_id);
-            push_change_record(1, entitys.parts_.index_, static_cast<uint32_t>(type_id), 0);
+            const int type_id = type_id::get_type_id<T>();
             // 即时回调与延迟队列互斥:注册了 on_remove_ 则同步触发,否则入队
-            if (!set->on_remove_) push_comp_signal(1, entitys.parts_.index_, static_cast<uint32_t>(type_id));
+            commit_remove(entitys, type_id, *set);
             return set->hard_remove(entitys);
         }
         operating_message result;
@@ -564,7 +564,7 @@ public:
     }
 
     template <typename T>
-    void reserve_component_capacity(size_t capacity) noexcept
+    void preallocate_components(size_t capacity) noexcept
     {
         using DecayedT = std::decay_t<T>;
         int type_id = type_id::get_type_id<DecayedT>();
@@ -624,9 +624,9 @@ public:
     }
 
     // 预分配实体掩码块数 — 注册组件前调用避免 reshape（每块支持 64 种组件类型）
-    void reserve_mask_blocks(uint32_t num_blocks) noexcept
+    void preallocate_mask_blocks(uint32_t num_blocks) noexcept
     {
-        entity_manager_.reserve_mask_blocks(num_blocks);
+        entity_manager_.preallocate_mask_blocks(num_blocks);
     }
 
     [[nodiscard]] uint32_t num_mask_blocks() const noexcept
@@ -970,9 +970,7 @@ public:
         result = set.add_def(entitys, def_id, *d, data);
         if (result) [[likely]]
         {
-            set_entity_mask_for_type(entitys, def_id);
-            if (!set.on_add_) push_comp_signal(0, entitys.parts_.index_,
-                                                static_cast<uint32_t>(def_id));
+            commit_add(entitys, def_id, static_cast<uint32_t>(set.size() - 1), set);
         }
         return result;
     }
@@ -1021,10 +1019,7 @@ public:
         single_class_set* set = get_single_class_set_by_id(def_id);
         if (set && set->get_type_id_value() == def_id)
         {
-            clear_entity_mask_for_type(entitys, def_id);
-            push_change_record(1, entitys.parts_.index_, static_cast<uint32_t>(def_id), 0);
-            if (!set->on_remove_) push_comp_signal(1, entitys.parts_.index_,
-                                                   static_cast<uint32_t>(def_id));
+            commit_remove(entitys, def_id, *set);
             return set->hard_remove(entitys);
         }
         result.write(false, "manager::hard_remove_def(): def set does not exist, id=", def_id);
@@ -1049,7 +1044,7 @@ public:
         single_class_set* set = get_single_class_set_by_id(def_id);
         if (set && set->get_type_id_value() == def_id)
         {
-            clear_entity_mask_for_type(entitys, def_id);
+            commit_soft_remove(entitys, def_id);
             return set->soft_remove(entitys);
         }
         result.write(false, "manager::soft_remove_def(): def set does not exist, id=", def_id);
@@ -1122,13 +1117,13 @@ public:
     }
     [[nodiscard]] uint64_t comp_signal_overflow_count() const noexcept
     {
-        return comp_signal_overflow_count_;
+        return comp_signals_.overflow_count();
     }
     void reset_entity_signal_overflow_count() noexcept { entity_manager_.reset_signal_overflow_count(); }
-    void reset_comp_signal_overflow_count() noexcept { comp_signal_overflow_count_ = 0; }
+    void reset_comp_signal_overflow_count() noexcept { comp_signals_.reset_overflow_count(); }
 
-    void reserve_entity_signal_capacity(size_t n) noexcept { entity_manager_.reserve_signal_capacity(n); }
-    void reserve_comp_signal_capacity(size_t n) noexcept { comp_signal_overflow_chain_.increase_capacity(n); }
+    void preallocate_entity_signals(size_t n) noexcept { entity_manager_.preallocate_signals(n); }
+    void preallocate_component_signals(size_t n) noexcept { comp_signals_.reserve_overflow(n); }
 
     template <typename Func>
     void flush_entity_signals(Func&& handler) noexcept
@@ -1143,57 +1138,23 @@ public:
     template <typename Func>
     void flush_component_signals(Func&& handler) noexcept
     {
-        // 防 flush 递归重入
-        if (comp_signal_flushing_) [[unlikely]] return;
-        comp_signal_flushing_ = true;
-        // 循环上限防止 handler 内追加导致无限循环
-        uint64_t budget = comp_signal_buffer_size * 4 + comp_signal_overflow_chain_.size();
-        size_t processed = comp_signal_buf_.drain_with_budget(
-            static_cast<size_t>(budget),
-            [&](const component_signal_event& ev) noexcept { handler(ev.type, ev.entity_idx, ev.component_id); });
-        budget -= processed;
-        while (budget > 0 && comp_signal_overflow_read_ < comp_signal_overflow_chain_.size())
-        {
-            auto& ev = comp_signal_overflow_chain_[comp_signal_overflow_read_];
+        comp_signals_.flush([&](const component_signal_event& ev) noexcept {
             handler(ev.type, ev.entity_idx, ev.component_id);
-            ++comp_signal_overflow_read_;
-            --budget;
-        }
-        if (comp_signal_overflow_read_ == comp_signal_overflow_chain_.size() && comp_signal_overflow_chain_.size() > 0)
-        {
-            comp_signal_overflow_chain_.clear();
-            comp_signal_overflow_read_ = 0;
-        }
-        comp_signal_flushing_ = false;
+        });
     }
     [[nodiscard]] bool has_pending_component_signals() const noexcept
     {
-        return comp_signal_buf_.has_pending() || comp_signal_overflow_read_ < comp_signal_overflow_chain_.size();
+        return comp_signals_.has_pending();
     }
 
     // 变更日志池 — 帧末消费
-    void enable_change_log() noexcept { change_log_enabled_ = true; }
-    void disable_change_log() noexcept { change_log_enabled_ = false; }
+    void enable_change_log() noexcept { change_log_.set_enabled(true); }
+    void disable_change_log() noexcept { change_log_.set_enabled(false); }
 
     template <typename Func>
     void flush_change_log(Func&& handler) noexcept
     {
-        uint64_t budget = change_log_capacity * 4 + change_log_overflow_.size();
-        size_t processed = change_log_.drain_with_budget(
-            static_cast<size_t>(budget),
-            [&](const change_record& r) noexcept { handler(r); });
-        budget -= processed;
-        while (budget > 0 && change_log_overflow_read_ < change_log_overflow_.size())
-        {
-            handler(change_log_overflow_[change_log_overflow_read_]);
-            ++change_log_overflow_read_;
-            --budget;
-        }
-        if (change_log_overflow_read_ == change_log_overflow_.size() && change_log_overflow_.size() > 0)
-        {
-            change_log_overflow_.clear();
-            change_log_overflow_read_ = 0;
-        }
+        change_log_.flush(handler);
     }
 
     void end_frame() noexcept
@@ -1203,7 +1164,7 @@ public:
 
     [[nodiscard]] bool has_pending_change_records() const noexcept
     {
-        return change_log_.has_pending() || change_log_overflow_read_ < change_log_overflow_.size();
+        return change_log_.has_pending();
     }
 
     // 系统上下文池 — 注册与调度

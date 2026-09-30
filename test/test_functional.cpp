@@ -1890,8 +1890,8 @@ int main()
     std::cout << "\n  [实体管理]\n";
     {
         ecs::manager mgr;
-        mgr.append_preallocated_entities(10);
-        print_item("append_preallocated_entities(10)", true);
+        mgr.preallocate_entities(10);
+        print_item("preallocate_entities(10)", true);
 
         entity e1 = mgr.create_entity();
         entity e2 = mgr.create_entity();
@@ -1907,7 +1907,7 @@ int main()
     std::cout << "\n  [添加组件]\n";
     {
         ecs::manager mgr;
-        mgr.append_preallocated_entities(10);
+        mgr.preallocate_entities(10);
         auto e1 = mgr.create_entity();
         auto e2 = mgr.create_entity();
 
@@ -1925,7 +1925,7 @@ int main()
 
         // add_batch(span)
         ecs::manager mgr2;
-        mgr2.append_preallocated_entities(5);
+        mgr2.preallocate_entities(5);
         dense<entity> ents;
         dense<Position> comps;
         for (size_t i = 0; i < 5; ++i) {
@@ -1939,7 +1939,7 @@ int main()
 
         // add_batch(class_pool&)
         ecs::manager mgr3;
-        mgr3.append_preallocated_entities(3);
+        mgr3.preallocate_entities(3);
         dense<entity> ents3;
         dense<Health> hps3;
         for (size_t i = 0; i < 3; ++i) {
@@ -1951,7 +1951,7 @@ int main()
 
         // add_batch(class_pool&&)
         ecs::manager mgr4;
-        mgr4.append_preallocated_entities(3);
+        mgr4.preallocate_entities(3);
         dense<entity> ents4;
         dense<Velocity> vels4;
         for (size_t i = 0; i < 3; ++i) {
@@ -1965,7 +1965,7 @@ int main()
 
         // add_batch 容器入参重载 (vector/array/裸指针/span)
         ecs::manager mgr5;
-        mgr5.append_preallocated_entities(8);
+        mgr5.preallocate_entities(8);
         std::vector<entity> v_ents;
         std::vector<Position> v_comps;
         for (size_t i = 0; i < 4; ++i) {
@@ -1993,7 +1993,7 @@ int main()
 
         // 花括号初始化仍走 class_pool (不歧义)
         ecs::manager mgr5b;
-        mgr5b.append_preallocated_entities(3);
+        mgr5b.preallocate_entities(3);
         auto be0 = mgr5b.create_entity();
         auto be1 = mgr5b.create_entity();
         mgr5b.add_batch<Position>({be0, be1}, {Position{1, 0, 0}, Position{2, 0, 0}});
@@ -2004,7 +2004,7 @@ int main()
     std::cout << "\n  [获取组件]\n";
     {
         ecs::manager mgr;
-        mgr.append_preallocated_entities(5);
+        mgr.preallocate_entities(5);
         auto e = mgr.create_entity();
         mgr.add(e, Position{10, 20, 30});
 
@@ -2060,7 +2060,7 @@ int main()
     std::cout << "\n  [删除组件]\n";
     {
         ecs::manager mgr;
-        mgr.append_preallocated_entities(5);
+        mgr.preallocate_entities(5);
         auto e1 = mgr.create_entity();
         auto e2 = mgr.create_entity();
         mgr.add(e1, Position{1, 0, 0});
@@ -2183,7 +2183,7 @@ int main()
     std::cout << "\n  [池访问]\n";
     {
         ecs::manager mgr;
-        mgr.append_preallocated_entities(5);
+        mgr.preallocate_entities(5);
         auto e = mgr.create_entity();
         mgr.add(e, Position{1, 2, 3});
 
@@ -2195,8 +2195,8 @@ int main()
         const single_class_set* cset = mgr.get_single_class_set<Position>();
         print_item("get_single_class_set() const", cset != nullptr);
 
-        mgr.reserve_component_capacity<Position>(1024);
-        print_item("reserve_component_capacity()", true);
+        mgr.preallocate_components<Position>(1024);
+        print_item("preallocate_components()", true);
 
         dense<Position>* cv = mgr.get_component_container<Position>();
         print_item("get_component_container()", (cv && cv->size() == 1));
@@ -2206,7 +2206,7 @@ int main()
     std::cout << "\n  [视图]\n";
     {
         ecs::manager mgr;
-        mgr.append_preallocated_entities(10);
+        mgr.preallocate_entities(10);
         auto e1 = mgr.create_entity();
         auto e2 = mgr.create_entity();
         auto e3 = mgr.create_entity();
@@ -2299,7 +2299,7 @@ int main()
     std::cout << "\n  [新视图: OR / filter / filter_and / filter_or]\n";
     {
         ecs::manager mgr;
-        mgr.append_preallocated_entities(10);
+        mgr.preallocate_entities(10);
         auto e1 = mgr.create_entity();
         auto e2 = mgr.create_entity();
         auto e3 = mgr.create_entity();
@@ -2376,7 +2376,7 @@ int main()
     print_sub("view: page / sorted_by_component / sorted_by_component_value / track_changes");
     {
         ecs::manager mgr;
-        mgr.append_preallocated_entities(10);
+        mgr.preallocate_entities(10);
         auto e1 = mgr.create_entity();
         auto e2 = mgr.create_entity();
         auto e3 = mgr.create_entity();
@@ -2461,7 +2461,7 @@ int main()
         // sort_entities_by_component 正确性
         {
             ecs::manager smgr;
-            smgr.append_preallocated_entities(10);
+            smgr.preallocate_entities(10);
             auto a = smgr.create_entity();
             auto b = smgr.create_entity();
             auto c = smgr.create_entity();
@@ -2494,7 +2494,7 @@ int main()
         // sort_component_container 正确性 + 映射同步
         {
             ecs::manager cmgr;
-            cmgr.append_preallocated_entities(10);
+            cmgr.preallocate_entities(10);
             auto a = cmgr.create_entity();
             auto b = cmgr.create_entity();
             auto c = cmgr.create_entity();
@@ -2521,7 +2521,7 @@ int main()
         // reorder_by_component 正确性
         {
             ecs::manager rmgr;
-            rmgr.append_preallocated_entities(10);
+            rmgr.preallocate_entities(10);
             auto a = rmgr.create_entity();
             auto b = rmgr.create_entity();
             auto c = rmgr.create_entity();
@@ -2551,7 +2551,7 @@ int main()
         // 基数排序路径正确性 (int 组件 + std::less<int>)
         {
             ecs::manager rdmgr;
-            rdmgr.append_preallocated_entities(10);
+            rdmgr.preallocate_entities(10);
             auto a = rdmgr.create_entity();
             auto b = rdmgr.create_entity();
             auto c = rdmgr.create_entity();
@@ -2576,7 +2576,7 @@ int main()
         // multi_view 基数排序路径 (pools_aligned + int 组件)
         {
             ecs::manager mvmgr;
-            mvmgr.append_preallocated_entities(10);
+            mvmgr.preallocate_entities(10);
             auto a = mvmgr.create_entity();
             auto b = mvmgr.create_entity();
             auto c = mvmgr.create_entity();
@@ -2603,7 +2603,7 @@ int main()
     std::cout << "========================================================\n";
     {
         ecs::manager mgr;
-        mgr.append_preallocated_entities(20);
+        mgr.preallocate_entities(20);
         auto e1 = mgr.create_entity();
         auto e2 = mgr.create_entity();
         auto e3 = mgr.create_entity();
@@ -2646,7 +2646,7 @@ int main()
         std::cout << "\n  [filter_added (single_view)]\n";
         {
             ecs::manager mgr2;
-            mgr2.append_preallocated_entities(10);
+            mgr2.preallocate_entities(10);
             auto a1 = mgr2.create_entity();
             auto a2 = mgr2.create_entity();
             auto a3 = mgr2.create_entity();
@@ -2685,7 +2685,7 @@ int main()
         std::cout << "\n  [filter_changed / filter_added (multi_view)]\n";
         {
             ecs::manager mgr3;
-            mgr3.append_preallocated_entities(10);
+            mgr3.preallocate_entities(10);
             auto m1 = mgr3.create_entity();
             auto m2 = mgr3.create_entity();
             auto m3 = mgr3.create_entity();
@@ -2730,7 +2730,7 @@ int main()
         std::cout << "\n  [exactly_one]\n";
         {
             ecs::manager mgr4;
-            mgr4.append_preallocated_entities(10);
+            mgr4.preallocate_entities(10);
             auto x1 = mgr4.create_entity();
             mgr4.add(x1, Position{42, 0, 0});
             mgr4.add(x1, Velocity{100, 0, 0});
@@ -2764,7 +2764,7 @@ int main()
         std::cout << "\n  [view_any_of (N元OR)]\n";
         {
             ecs::manager mgr5;
-            mgr5.append_preallocated_entities(10);
+            mgr5.preallocate_entities(10);
             auto o1 = mgr5.create_entity();
             auto o2 = mgr5.create_entity();
             auto o3 = mgr5.create_entity();
@@ -2816,7 +2816,7 @@ int main()
     print_section(10, "Group 系统（Non-Owning + Owning）");
     {
         ecs::manager mgr;
-        mgr.append_preallocated_entities(20);
+        mgr.preallocate_entities(20);
         auto e1 = mgr.create_entity();
         auto e2 = mgr.create_entity();
         auto e3 = mgr.create_entity();
@@ -3008,7 +3008,7 @@ int main()
     print_section(11, "runtime_view 运行时视图");
     {
         ecs::manager mgr;
-        mgr.append_preallocated_entities(20);
+        mgr.preallocate_entities(20);
         auto e1 = mgr.create_entity();
         auto e2 = mgr.create_entity();
         auto e3 = mgr.create_entity();
@@ -3406,7 +3406,7 @@ int main()
     std::cout << "\n  [Non-Owning Group 持久化]\n";
     {
         ecs::manager mgr;
-        mgr.append_preallocated_entities(20);
+        mgr.preallocate_entities(20);
         auto e1 = mgr.create_entity();
         auto e2 = mgr.create_entity();
         auto e3 = mgr.create_entity();
@@ -3436,7 +3436,7 @@ int main()
     std::cout << "\n  [Owning Group 持久化]\n";
     {
         ecs::manager mgr;
-        mgr.append_preallocated_entities(20);
+        mgr.preallocate_entities(20);
         auto e1 = mgr.create_entity();
         auto e2 = mgr.create_entity();
         mgr.add(e1, Position{1, 0, 0});
@@ -3464,7 +3464,7 @@ int main()
     std::cout << "\n  [Reorder Group 持久化]\n";
     {
         ecs::manager mgr;
-        mgr.append_preallocated_entities(20);
+        mgr.preallocate_entities(20);
         auto e1 = mgr.create_entity();
         auto e2 = mgr.create_entity();
         mgr.add(e1, Position{1, 0, 0});
@@ -3492,7 +3492,7 @@ int main()
     std::cout << "\n  [Runtime View 持久化]\n";
     {
         ecs::manager mgr;
-        mgr.append_preallocated_entities(20);
+        mgr.preallocate_entities(20);
         auto e1 = mgr.create_entity();
         auto e2 = mgr.create_entity();
         mgr.add(e1, Position{1, 0, 0});
@@ -3520,7 +3520,7 @@ int main()
     std::cout << "\n  [多次连续变更]\n";
     {
         ecs::manager mgr;
-        mgr.append_preallocated_entities(20);
+        mgr.preallocate_entities(20);
         auto e1 = mgr.create_entity();
         auto e2 = mgr.create_entity();
         mgr.add(e1, Position{1, 0, 0});
@@ -3552,7 +3552,7 @@ int main()
     std::cout << "\n  [即时信号：实体级]\n";
     {
         ecs::manager mgr;
-        mgr.append_preallocated_entities(20);
+        mgr.preallocate_entities(20);
 
         int created_count = 0;
         int destroyed_count = 0;
@@ -3583,7 +3583,7 @@ int main()
     std::cout << "\n  [即时信号：组件级]\n";
     {
         ecs::manager mgr;
-        mgr.append_preallocated_entities(20);
+        mgr.preallocate_entities(20);
 
         int pos_added = 0;
         int pos_removed = 0;
@@ -3623,7 +3623,7 @@ int main()
     std::cout << "\n  [即时信号：组件指针有效性]\n";
     {
         ecs::manager mgr;
-        mgr.append_preallocated_entities(20);
+        mgr.preallocate_entities(20);
 
         auto on_add_pos = [](entity, void* comp, void*) noexcept {
             auto* p = static_cast<Position*>(comp);
@@ -3643,7 +3643,7 @@ int main()
     std::cout << "\n  [延迟信号：实体级 flush]\n";
     {
         ecs::manager mgr;
-        mgr.append_preallocated_entities(20);
+        mgr.preallocate_entities(20);
 
         auto e1 = mgr.create_entity();
         auto _e3 = mgr.create_entity(); (void)_e3;
@@ -3664,7 +3664,7 @@ int main()
     std::cout << "\n  [延迟信号：组件级 flush]\n";
     {
         ecs::manager mgr;
-        mgr.append_preallocated_entities(20);
+        mgr.preallocate_entities(20);
 
         auto e1 = mgr.create_entity();
         mgr.add(e1, Position{1, 0, 0});
@@ -3691,7 +3691,7 @@ int main()
         {
             ecs::manager mgr;
             mgr.disable_entity_signals();
-            mgr.append_preallocated_entities(2048);
+            mgr.preallocate_entities(2048);
             dense<entity> ents;
             ents.increase_capacity(2048);
             for (size_t i = 0; i < 2048; ++i) ents.emplace_back(mgr.create_entity());
@@ -3708,7 +3708,7 @@ int main()
         // #2 delete_entity 触发组件 on_remove_ + comp_signal
         {
             ecs::manager mgr;
-            mgr.append_preallocated_entities(10);
+            mgr.preallocate_entities(10);
             size_t pos_removed = 0;
             mgr.set_on_remove<Position>([](entity, void*, void* d) noexcept { (*static_cast<size_t*>(d))++; }, &pos_removed);
             auto e = mgr.create_entity();
@@ -3726,7 +3726,7 @@ int main()
         // #5 即时/延迟互斥
         {
             ecs::manager mgr;
-            mgr.append_preallocated_entities(10);
+            mgr.preallocate_entities(10);
             size_t added_cb = 0;
             mgr.set_on_add<Position>([](entity, void*, void* d) noexcept { (*static_cast<size_t*>(d))++; }, &added_cb);
             auto e = mgr.create_entity();
@@ -3742,7 +3742,7 @@ int main()
         // #6 flush 重入保护(handler 内 add 不无限循环)
         {
             ecs::manager mgr;
-            mgr.append_preallocated_entities(20);
+            mgr.preallocate_entities(20);
             auto e = mgr.create_entity();
             mgr.add(e, Position{1, 0, 0});
             int iterations = 0;
@@ -3761,7 +3761,7 @@ int main()
         // #9 on_modify 覆盖写
         {
             ecs::manager mgr;
-            mgr.append_preallocated_entities(10);
+            mgr.preallocate_entities(10);
             size_t add_cnt = 0, remove_cnt = 0, modify_cnt = 0;
             mgr.set_on_add<Position>([](entity, void*, void* d) noexcept { (*static_cast<size_t*>(d))++; }, &add_cnt);
             mgr.set_on_remove<Position>([](entity, void*, void* d) noexcept { (*static_cast<size_t*>(d))++; }, &remove_cnt);
@@ -3777,7 +3777,7 @@ int main()
         {
             ecs::manager mgr;
             mgr.disable_entity_signals();
-            mgr.append_preallocated_entities(5);
+            mgr.preallocate_entities(5);
             auto e = mgr.create_entity();
             (void)e;
             print_item("disable_entity_signals 后不入队", !mgr.has_pending_entity_signals());
@@ -3793,8 +3793,8 @@ int main()
         // #15 reserve + overflow chain
         {
             ecs::manager mgr;
-            mgr.reserve_comp_signal_capacity(2048);
-            mgr.append_preallocated_entities(2048);
+            mgr.preallocate_component_signals(2048);
+            mgr.preallocate_entities(2048);
             dense<entity> ents;
             ents.increase_capacity(2048);
             for (size_t i = 0; i < 2048; ++i) ents.emplace_back(mgr.create_entity());
@@ -3811,7 +3811,7 @@ int main()
         print_section(14, ">64 组件类型多块掩码查询测试");
 
         manager mgr;
-        mgr.append_preallocated_entities(256);
+        mgr.preallocate_entities(256);
 
         // 注册 ExtraComp<1>..ExtraComp<200>, 确保覆盖 mask 边界
         entity filler = mgr.create_entity();
@@ -4946,6 +4946,362 @@ int main()
                 });
                 print_item("非平凡类型 drain 10 个", n == 10);
             }
+        }
+    }
+    // 17. signal_queue 信号/变更日志队列
+    print_section(17, "signal_queue 信号队列");
+    {
+        struct sq_ev
+        {
+            uint32_t type;
+            uint32_t idx;
+        };
+
+        // 基本入队与排空
+        {
+            signal_queue<sq_ev, 8> q;
+            for (uint32_t i = 0; i < 10; ++i) q.push(sq_ev{i % 2, i});
+            print_item("push 10 后 has_pending", q.has_pending());
+
+            uint32_t cnt = 0, sum = 0;
+            q.flush([&](const sq_ev& e) { ++cnt; sum += e.idx; });
+            print_item("flush 数量与顺序", cnt == 10 && sum == 45);
+            print_item("flush 后 has_pending == false", !q.has_pending());
+        }
+
+        // 启用开关: 禁用期间入队无效
+        {
+            signal_queue<sq_ev, 8> q;
+            q.set_enabled(false);
+            q.push(sq_ev{0, 1});
+            print_item("禁用后 push 不入队", !q.has_pending());
+            q.set_enabled(true);
+            q.push(sq_ev{0, 2});
+            print_item("重新启用后 push 入队", q.has_pending());
+        }
+
+        // 重入守卫: handler 内再次 flush 被拦截
+        {
+            signal_queue<sq_ev, 8> q;
+            q.push(sq_ev{0, 1});
+            uint32_t outer = 0, inner = 0;
+            q.flush([&](const sq_ev&) {
+                ++outer;
+                q.flush([&](const sq_ev&) { ++inner; });
+            });
+            print_item("重入 flush 被守卫拦截", outer == 1 && inner == 0);
+        }
+
+        // handler 内追加: 预算上限 (Capacity*4) 保证终止
+        {
+            signal_queue<sq_ev, 8> q;
+            q.push(sq_ev{0, 0});
+            uint32_t processed = 0;
+            q.flush([&](const sq_ev&) {
+                ++processed;
+                if (processed < 64) q.push(sq_ev{0, processed});
+            });
+            print_item("handler 内追加受预算上限约束", processed > 0 && processed <= 8 * 4);
+            q.flush([](const sq_ev&) {});
+            print_item("二次 flush 清空剩余", !q.has_pending());
+        }
+
+        // 诊断计数与溢出链预留
+        {
+            signal_queue<sq_ev, 8> q;
+            q.reserve_overflow(32);
+            print_item("初始 overflow_count == 0", q.overflow_count() == 0);
+            q.reset_overflow_count();
+            print_item("reset_overflow_count 后 == 0", q.overflow_count() == 0);
+        }
+    }
+
+    // 18. 基础层统一原语
+    print_section(18, "基础层统一原语");
+    {
+        struct prim_comp
+        {
+            int v;
+        };
+
+        // single_class_set::select_primary_set — 消除各视图重复的最小集扫描
+        {
+            single_class_set sa, sb, sc;
+            (void)sa.add(entity(1, 1), prim_comp{1});
+            (void)sb.add(entity(2, 1), prim_comp{2});
+            (void)sb.add(entity(3, 1), prim_comp{3});
+            (void)sc.add(entity(4, 1), prim_comp{4});
+
+            single_class_set* sets[3] = {&sb, &sa, &sc};
+            size_t idx = 99;
+            single_class_set* primary = single_class_set::select_primary_set(sets, 3, &idx);
+            print_item("主集选择取 size 最小者并回填下标", primary == &sa && idx == 1);
+
+            single_class_set* none[2] = {nullptr, nullptr};
+            idx = 99;
+            print_item("全空时返回 nullptr 且下标归零",
+                       single_class_set::select_primary_set(none, 2, &idx) == nullptr && idx == 0);
+        }
+
+        // class_pool 步进视图语义收敛（与 dense 一致: 越界收敛 + step=0 空）
+        {
+            class_pool<int> pool;
+            for (int i = 0; i < 10; ++i) pool.push_back_unchecked(i);
+
+            auto sv = strided_span_view(pool, 0, 2, 100);
+            print_item("count 收敛到可用槽位数", sv.size() == 5);
+
+            int sum = 0;
+            size_t cnt = 0;
+            sv.for_each([&](int& v) { sum += v; ++cnt; });
+            print_item("步进遍历数量与取值", cnt == 5 && sum == 20);
+
+            print_item("start 越界归零 → 空视图", strided_span_view(pool, 100, 1, 10).empty());
+            print_item("step=0 视为空视图", strided_span_view(pool, 0, 0, 10).empty());
+        }
+
+        // multi_block_bitmask::slot_satisfies — 实体掩码 vs 查询条件掩码判定
+        {
+            multi_block_bitmask bm;
+            bm.reserve_blocks(2);
+            bm.set_bit(0, 0, 3);
+            bm.set_bit(0, 1, 5);
+
+            const uint64_t req_hit[2] = {1ULL << 3, 0};
+            const uint64_t req_miss[2] = {1ULL << 4, 0};
+            const uint64_t no_exc[2] = {0, 0};
+            const uint64_t exc_hit[2] = {0, 1ULL << 5};
+
+            print_item("req 超集满足", bm.slot_satisfies(0, req_hit, no_exc, 2));
+            print_item("req 缺位不满足", !bm.slot_satisfies(0, req_miss, no_exc, 2));
+            print_item("exc 命中不满足", !bm.slot_satisfies(0, req_hit, exc_hit, 2));
+        }
+    }
+
+    // 19. 软删除/硬删除语义
+    print_section(19, "软删除/硬删除语义");
+    {
+        // --- A1/A3: single_view 墓碑过滤与查询一致性 ---
+        std::cout << "\n  [single_view 墓碑过滤]\n";
+        {
+            ecs::manager mgr;
+            ecs::entity es[5];
+            for (int i = 0; i < 5; ++i)
+            {
+                es[i] = mgr.create_entity();
+                mgr.add<Position>(es[i], Position{(float)i, 0, 0});
+            }
+            mgr.soft_remove<Position>(es[2]);
+            auto* set = mgr.get_single_class_set<Position>();
+
+            size_t cnt = 0;
+            mgr.view<Position>().for_each([&cnt](Position&) { ++cnt; });
+            print_item("A1 for_each 计数 == live_count", cnt == set->live_count() && cnt == 4);
+
+            bool seen[6] = {};
+            mgr.view<Position>().for_each([&](ecs::entity e, Position&) {
+                seen[e.parts_.index_] = true;
+            });
+            // 实体 index 从 1 起分配; es[2] 的真实 index 经 parts_ 取得
+            print_item("A3 墓碑实体未被遍历", !seen[es[2].parts_.index_]
+                && seen[es[0].parts_.index_] && seen[es[4].parts_.index_]);
+            print_item("A3 get_ptr(墓碑) == nullptr", mgr.get_ptr<Position>(es[2]) == nullptr);
+            print_item("has_tombstones 稳态检测", set->has_tombstones() && set->tombstone_count() == 1);
+        }
+
+        // --- A2: multi_view join 墓碑过滤 (primary / 非 primary) ---
+        std::cout << "\n  [multi_view join 过滤]\n";
+        {
+            ecs::manager mgr;
+            ecs::entity es[5];
+            for (int i = 0; i < 5; ++i)
+            {
+                es[i] = mgr.create_entity();
+                mgr.add<Position>(es[i], Position{(float)i, 0, 0});
+                if (i < 3) { mgr.add<Velocity>(es[i], Velocity{1, 1, 1}); }
+            }
+            mgr.soft_remove<Velocity>(es[1]);
+            size_t cnt = 0;
+            mgr.view<Position, Velocity>().for_each([&cnt](Position&, Velocity&) { ++cnt; });
+            print_item("A2 primary 墓碑 join 过滤", cnt == 2);
+
+            mgr.soft_remove<Position>(es[0]);
+            size_t cnt2 = 0;
+            mgr.view<Position, Velocity>().for_each([&cnt2](Position&, Velocity&) { ++cnt2; });
+            print_item("A2 非 primary 墓碑 join 过滤", cnt2 == 1);
+        }
+
+        // --- A5: 死槽复用语义 (同实体 / 跨实体) ---
+        std::cout << "\n  [死槽复用]\n";
+        {
+            ecs::manager mgr;
+            ecs::entity es[5];
+            for (int i = 0; i < 5; ++i)
+            {
+                es[i] = mgr.create_entity();
+                mgr.add<Position>(es[i], Position{(float)i, 0, 0});
+            }
+            auto* set = mgr.get_single_class_set<Position>();
+
+            const size_t sz0 = set->size();
+            mgr.soft_remove<Position>(es[3]);
+            mgr.add<Position>(es[3], Position{99, 0, 0});
+            auto* p = mgr.get_ptr<Position>(es[3]);
+            print_item("A5 同实体复用 size 不增", set->size() == sz0);
+            print_item("A5 同实体复用数据可见", p != nullptr && p->x == 99);
+
+            mgr.soft_remove<Position>(es[1]);
+            mgr.soft_remove<Position>(es[4]);
+            const size_t sz1 = set->size();
+            ecs::entity e6 = mgr.create_entity();
+            mgr.add<Position>(e6, Position{77, 0, 0});
+            ecs::entity e7 = mgr.create_entity();
+            mgr.add<Position>(e7, Position{88, 0, 0});
+            print_item("A5 跨实体复用 size 不增", set->size() == sz1);
+            print_item("A5 跨实体复用数据可见",
+                mgr.get_ptr<Position>(e6) != nullptr && mgr.get_ptr<Position>(e7) != nullptr);
+        }
+
+        // --- A4: def 轨非平凡类型 ctor/dtor 配平 ---
+        std::cout << "\n  [def 轨析构配平]\n";
+        {
+            static int s_ctor = 0;
+            static int s_dtor = 0;
+            struct Trk
+            {
+                int v = 7;
+                ~Trk() { ++s_dtor; }
+            };
+            auto trk_construct = [](void* p) noexcept { new (p) Trk{}; ++s_ctor; };
+            auto trk_destruct = [](void* p) noexcept { static_cast<Trk*>(p)->~Trk(); };
+
+            ecs::manager mgr;
+            const int tid = type_id::register_type_def("SoftDelTrk",
+                type_def{sizeof(Trk), alignof(Trk), false, trk_construct, trk_destruct});
+            ecs::entity e1 = mgr.create_entity();
+            Trk buf{};
+            mgr.add_def(e1, tid, &buf);
+            mgr.soft_remove_def(e1, tid);
+            Trk buf2{.v = 42};
+            mgr.add_def(e1, tid, &buf2);
+            print_item("A4 复用覆盖旧对象已析构", s_dtor == 1);
+
+            auto* dset = mgr.get_single_class_set_by_id(tid);
+            dset->compact();
+            print_item("A4 compact 后活对象保留", dset->live_count() == 1);
+        }
+
+        // --- A7: auto-compact 阈值 ---
+        std::cout << "\n  [auto-compact]\n";
+        {
+            ecs::manager mgr;
+            std::vector<ecs::entity> es;
+            es.reserve(300);
+            for (int i = 0; i < 300; ++i)
+            {
+                es.push_back(mgr.create_entity());
+                mgr.add<Position>(es.back(), Position{(float)i, 0, 0});
+            }
+            auto* set = mgr.get_single_class_set<Position>();
+            for (int i = 0; i < 200; ++i)
+            {
+                mgr.soft_remove<Position>(es[static_cast<size_t>(i)]);
+            }
+            print_item("A7 阈值触发物理收缩", set->size() < 300 && set->live_count() == 100);
+        }
+
+        // --- 复合视图墓碑过滤 ---
+        std::cout << "\n  [复合视图墓碑过滤]\n";
+        {
+            // without: 锚定集墓碑过滤
+            {
+                ecs::manager mgr;
+                ecs::entity es[5];
+                for (int i = 0; i < 5; ++i)
+                {
+                    es[i] = mgr.create_entity();
+                    mgr.add<Position>(es[i], Position{(float)i, 0, 0});
+                    if (i < 3) { mgr.add<Velocity>(es[i], Velocity{1, 1, 1}); }
+                }
+                mgr.soft_remove<Position>(es[4]);
+                size_t cnt = 0;
+                mgr.view<Position>(ecs::without<Velocity>).for_each([&cnt](ecs::entity, Position&) { ++cnt; });
+                print_item("without 锚定墓碑过滤", cnt == 1);
+            }
+
+            // with: 锚定集墓碑过滤 (GetTypes 为软指针语义)
+            {
+                ecs::manager mgr;
+                ecs::entity es[5];
+                for (int i = 0; i < 5; ++i)
+                {
+                    es[i] = mgr.create_entity();
+                    mgr.add<Position>(es[i], Position{(float)i, 0, 0});
+                    if (i < 3) { mgr.add<Velocity>(es[i], Velocity{1, 1, 1}); }
+                }
+                mgr.soft_remove<Position>(es[0]);
+                size_t cnt = 0;
+                mgr.view<Position>(ecs::with<Velocity>).for_each([&cnt](ecs::entity, Position&, Velocity*) { ++cnt; });
+                print_item("with 锚定墓碑过滤", cnt == 4);
+            }
+
+            // or: 双侧墓碑过滤 (无双重计数)
+            {
+                ecs::manager mgr;
+                ecs::entity es[5];
+                for (int i = 0; i < 5; ++i)
+                {
+                    es[i] = mgr.create_entity();
+                    mgr.add<Position>(es[i], Position{(float)i, 0, 0});
+                    if (i < 3) { mgr.add<Velocity>(es[i], Velocity{1, 1, 1}); }
+                }
+                mgr.soft_remove<Velocity>(es[1]);
+                mgr.soft_remove<Position>(es[1]);
+                size_t cnt = 0;
+                mgr.view_or<Position, Velocity>().for_each([&cnt](ecs::entity, Position*, Velocity*) { ++cnt; });
+                print_item("or 双侧墓碑过滤且不重复计数", cnt == 4);
+            }
+
+            // any_of: 双侧全死实体消失, 单侧存活经对侧命中
+            {
+                ecs::manager mgr;
+                ecs::entity es[5];
+                for (int i = 0; i < 5; ++i)
+                {
+                    es[i] = mgr.create_entity();
+                    mgr.add<Position>(es[i], Position{(float)i, 0, 0});
+                    if (i < 3) { mgr.add<Velocity>(es[i], Velocity{1, 1, 1}); }
+                }
+                mgr.soft_remove<Position>(es[3]);   // es[3] 无 Velocity => 双侧全死
+                mgr.soft_remove<Position>(es[2]);   // es[2] 有 Velocity => 经 V 侧命中
+                size_t cnt = 0;
+                mgr.view_any_of<Position, Velocity>().for_each([&cnt](ecs::entity, Position*, Velocity*) { ++cnt; });
+                print_item("any_of 全死消失且单侧存活命中", cnt == 4);
+            }
+        }
+
+        // --- runtime_view 墓碑过滤 (掩码联动 + 缓存失效) ---
+        std::cout << "\n  [runtime_view 墓碑过滤]\n";
+        {
+            ecs::manager mgr;
+            ecs::entity es[5];
+            for (int i = 0; i < 5; ++i)
+            {
+                es[i] = mgr.create_entity();
+                mgr.add<Position>(es[i], Position{(float)i, 0, 0});
+                if (i < 3) { mgr.add<Velocity>(es[i], Velocity{1, 1, 1}); }
+            }
+            const int pos_id = type_id::get_type_id<Position>();
+            const int vel_id = type_id::get_type_id<Velocity>();
+            auto rv = mgr.runtime_view_create(std::array<int, 2>{vel_id, pos_id});
+            size_t base = rv.count();
+            mgr.soft_remove<Velocity>(es[1]);
+            size_t after = rv.count();
+            print_item("runtime_view 同视图缓存失效", base == 3 && after == 2);
+
+            size_t cnt = 0;
+            rv.for_each([&cnt](ecs::entity) { ++cnt; });
+            print_item("runtime_view 即时路径掩码过滤", cnt == 2);
         }
     }
     print_summary("功能测试");

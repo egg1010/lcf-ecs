@@ -64,7 +64,7 @@ window.DOCS_DATA['view_tags'] = {
 | 标签 | 类型 | 说明 |
 |------|------|------|
 | \`without<Types...>\` | \`without_t<Types...>\` | 排除含有任一 Types 组件的实体 |
-| \`with<Types...>\` | \`with_t<Types...>\` | 额外获取 Types 组件的引用 |
+| \`with<Types...>\` | \`with_t<Types...>\` | 额外获取 Types 组件的指针（可能为 \`nullptr\`，判空责任在用户） |
 | \`exclude<Types...>\` | \`without_t<Types...>\` | \`without\` 的别名 |
 | \`get<Types...>\` | \`with_t<Types...>\` | \`with\` 的别名 |
 | \`owned<Types...>\` | \`owned_t<Types...>\` | 标记 Types 为 Group 所拥有（重排 dense 数组） |
@@ -130,7 +130,7 @@ window.DOCS_DATA['single_class_set'] = {
 | 接口 | 说明 |
 |------|------|
 | \`single_class_set()\` | 默认构造 |
-| \`single_class_set(size_t reserve_capacity)\` | 预留容量构造 |
+| \`single_class_set(size_t capacity)\` | 预留容量构造 |
 | \`single_class_set(entity e, T&& object)\` | 实体+对象构造 |
 | \`single_class_set(single_class_set&&)\` | 移动构造 |
 | \`operator=(single_class_set&&)\` | 移动赋值 |
@@ -172,6 +172,10 @@ window.DOCS_DATA['single_class_set'] = {
 | \`prefetch_ptr_data<T>(entity)\` | 预取组件数据（按 entity，需先加载 sparse 条目） |
 | \`get_ptr_batch(const entity*, T**, size_t)\` | 批量查询组件指针（管线化预取，大规模 sparse 表自动走排序预取路径） |
 
+> 查询接口（\`get_ptr\` / \`get_ptr_fast\` / \`get_ptr_batch\`）查不到时返回 \`nullptr\`：实体句柄无效、实体不含该组件（含软删除与版本号不匹配）、\`T\` 与集合类型不一致。不触发编译期断言，也不产生运行期报错。
+
+> \`select_primary_set(sets, count, out_index = nullptr)\` 为静态辅助：在候选集合列表中选出 \`size()\` 最小者作为遍历主集，返回该集合指针，\`out_index\` 可选回填命中下标；空指针项被跳过，全空时返回 \`nullptr\`（下标回填 0）。
+
 ### 删除与清空
 
 | 接口 | 说明 |
@@ -190,6 +194,7 @@ window.DOCS_DATA['single_class_set'] = {
 | \`size()\` | 物理槽位数（含软删除墓碑） |
 | \`live_count()\` | 活条目数（O(n) 扫描） |
 | \`tombstone_count()\` | 软删除墓碑数（O(n) 扫描） |
+| \`has_tombstones()\` | 是否存在软删除死槽（O(1)，视图分派用） |
 | \`empty()\` | 是否为空 |
 | \`increase_capacity(capacity)\` | 预留容量 |
 | \`set_hot_set_capacity(entries)\` | 设置热集容量（2 的幂，非 2 的幂被拒绝；调整后热集清空） |
@@ -234,6 +239,7 @@ set.add_batch(ents, comps);
 | 拷贝 \`single_class_set\` | 禁止拷贝 | 使用移动语义 |
 | 批量增删后手动调用 \`clear_hot_set\` | 不必要，pool_version 自动递增已使缓存失效 | 正常使用无需手动调用；调试场景可用 \`clear_hot_set()\` 强制清空 |
 | 依赖 \`sparse_dense_at\` 返回值判断条目是否存在 | 需检查返回值是否等于 \`dense_invalid\` | 检查 \`sparse_dense_at(idx) != dense_invalid\`，或使用 \`get_ptr\` 系列接口 |
+| 用 \`get_ptr<T>\` 的返回值区分“实体无效”与“组件不存在” | 实体句柄失效、实体未挂载该组件都返回 \`nullptr\` | 判活由 \`manager::is_entity_valid\` 负责，组件查询用 \`get_ptr\` 系列 |
 
 ---
 `
@@ -251,13 +257,34 @@ ECS 核心管理类，管理实体和所有组件集合。
 
 > 注：\`manager\` 可移动，禁止拷贝。
 
+### 预分配接口
+
+所有高层预分配接口统一以 \`preallocate_\` 前缀命名，在启动阶段一次性预留容量，避免运行期扩容。各项互相独立，按需调用。
+
+| 接口 | 说明 |
+|------|------|
+| \`preallocate_entities(count)\` | 预分配实体到池中（同时抬升各组件集合容量） |
+| \`preallocate_components<T>(capacity)\` | 预留组件 T 的集合容量 |
+| \`preallocate_mask_blocks(num_blocks)\` | 预分配每实体掩码块数（每块 64 种组件，注册组件前调用） |
+| \`preallocate_entity_signals(n)\` | 预分配实体延迟信号 overflow chain 容量 |
+| \`preallocate_component_signals(n)\` | 预分配组件延迟信号 overflow chain 容量 |
+
+\`\`\`cpp
+ecs::manager mgr;
+mgr.preallocate_entities(100000);
+mgr.preallocate_components<Position>(100000);
+mgr.preallocate_components<Velocity>(50000);
+mgr.preallocate_mask_blocks(2);
+mgr.preallocate_entity_signals(4096);
+mgr.preallocate_component_signals(4096);
+\`\`\`
+
 ### 实体管理
 
 | 接口 | 说明 |
 |------|------|
 | \`create_entity()\` | 创建实体（优先使用预分配池） |
 | \`is_entity_valid(entity)\` | 检查实体有效性（版本号匹配） |
-| \`append_preallocated_entities(count)\` | 预分配实体到池中 |
 | \`delete_entity(entity&)\` | 删除实体（释放 ID，递增版本号） |
 
 ### 添加组件
@@ -317,6 +344,8 @@ ECS 核心管理类，管理实体和所有组件集合。
 | \`prefetch_ptr_cached<T>(set, entity)\` | 用缓存的 set 指针预取 sparse 条目 |
 | \`prefetch_ptr_data_cached<T>(set, entity)\` | 用缓存的 set 指针预取组件数据 |
 
+> 查询接口（\`get_ptr\` / \`get_ptr_fast\` / \`get_ptr_batch\`）查不到时统一返回 \`nullptr\`：实体句柄无效、实体未挂载该组件、\`T\` 与该组件类型不一致、该组件类型从未注册，四种情形都得到 \`nullptr\`。不触发编译期断言，也不产生运行期报错或提示，需由调用方判空。
+
 > \`get_ptr\` 和 \`get_ptr_fast\` 内部已自动使用 \`get_ptr_fast_inline\`，通过缓存的 \`typed_pool_data_\` 指针直接访问组件数据，无需 \`get_typed_pool\` 间接寻址。无需手动调用。
 
 ### query_context 查询上下文
@@ -329,6 +358,8 @@ ECS 核心管理类，管理实体和所有组件集合。
 | \`prefetch_sparse(entity) const\` | 预取 sparse 条目 |
 | \`prefetch_data(entity) const\` | 预取组件数据 |
 | \`valid() const\` | 上下文是否有效（组件类型是否已注册） |
+
+> \`valid()\` 为 false（组件类型未注册）时 \`get_ptr\` 恒返回 \`nullptr\`；实体未挂载该组件时同样返回 \`nullptr\`。不触发编译期断言，也不产生运行期报错。
 
 ### 删除组件
 
@@ -351,7 +382,6 @@ ECS 核心管理类，管理实体和所有组件集合。
 | \`get_single_class_set<T>()\` | 获取单组件集合指针 |
 | \`get_single_class_set<T>() const\` | const 版本 |
 | \`get_component_container<T>()\` | 获取类型化组件池指针 |
-| \`reserve_component_capacity<T>(capacity)\` | 预留组件容量 |
 | \`add/add_batch/hard_remove/soft_remove\` | 返回 \`operating_message\`（值类型） |
 | \`get_component_meta(int type_id)\` | 获取组件元数据（含组件大小） |
 | \`get_single_class_set_by_id(int type_id)\` | 通过 type_id 获取组件集合（运行时视图用） |
@@ -408,8 +438,8 @@ set->clear_hot_set();
 | \`entity_signal_overflow_count()\` | 实体信号溢出到 chain 的累计次数 |
 | \`reset_comp_signal_overflow_count()\` | 清零组件溢出计数 |
 | \`reset_entity_signal_overflow_count()\` | 清零实体溢出计数 |
-| \`reserve_comp_signal_capacity(n)\` | 预分配组件溢出 chain 容量 |
-| \`reserve_entity_signal_capacity(n)\` | 预分配实体溢出 chain 容量 |
+| \`preallocate_component_signals(n)\` | 预分配组件溢出 chain 容量 |
+| \`preallocate_entity_signals(n)\` | 预分配实体溢出 chain 容量 |
 
 ### View系统
 
@@ -519,7 +549,7 @@ tiered_sort_indices(indices, values, 5);
 
 \`\`\`cpp
 ecs::manager mgr;
-mgr.append_preallocated_entities(1000);
+mgr.preallocate_entities(1000);
 
 entity e1 = mgr.create_entity();
 entity e2 = mgr.create_entity();
@@ -680,7 +710,7 @@ mgr.register_system(ecs::system_context{
 | \`get_entity_block_by_idx(uint32_t entity_index, uint32_t block_idx)\` | 同上，接受 entity_index 而非 entity 句柄 |
 | \`get_component_bit<T>()\` | 获取组件 T 的掩码位（块 0 类型返回 \`1ULL<<offset\`，其余返回 0） |
 | \`get_component_meta(int type_id)\` | 获取 \`component_meta*\`（含组件大小，type_id 越界返回 nullptr） |
-| \`reserve_mask_blocks(uint32_t num_blocks)\` | 预分配每实体掩码块数（每块 64 种组件；注册组件前调用；\`register_component_meta\` 在 type_id 超出时自动扩容） |
+| \`preallocate_mask_blocks(uint32_t num_blocks)\` | 预分配每实体掩码块数（每块 64 种组件；注册组件前调用；\`register_component_meta\` 在 type_id 超出时自动扩容） |
 | \`num_mask_blocks() const\` | 当前每实体掩码块数 |
 | \`get_entity_manager()\` | 获取 \`entity_manager&\`，可继续调用 \`set_mask_bit\` / \`clear_mask_bit\` / \`get_mask\` / \`get_block\` / \`set_entity_flag\` 等 |
 
@@ -701,10 +731,10 @@ if (type_id::mask_block_of(vel_id) == 0)
 }
 
 // 启动时预分配 2 块掩码（支持 128 种组件）
-mgr.reserve_mask_blocks(2);
+mgr.preallocate_mask_blocks(2);
 \`\`\`
 
-> 默认块数为 1（支持 64 种组件）。组件注册时 \`register_component_meta\` 自动扩容掩码块数，无需手动调用 \`reserve_mask_blocks\`。手动预分配可避免运行中扩容开销。多块掩码查询通过 \`get_entity_block(e, block_idx)\` 或 \`get_entity_block_by_idx(idx, block_idx)\` 访问任意块。详见 [§ 29. multi_block_bitmask](#29-multi_block_bitmask--多块位掩码存储)。
+> 默认块数为 1（支持 64 种组件）。组件注册时 \`register_component_meta\` 自动扩容掩码块数，无需手动调用 \`preallocate_mask_blocks\`。手动预分配可避免运行中扩容开销。多块掩码查询通过 \`get_entity_block(e, block_idx)\` 或 \`get_entity_block_by_idx(idx, block_idx)\` 访问任意块。详见 [§ 29. multi_block_bitmask](#29-multi_block_bitmask--多块位掩码存储)。
 
 ### 不要做什么
 
@@ -713,9 +743,10 @@ mgr.reserve_mask_blocks(2);
 | 拷贝 \`manager\` | 禁止拷贝，内部资源所有权混乱 | 使用移动语义或引用传递 |
 | 在遍历 View 的同时增删组件 | 迭代器失效或数据竞争 | 先收集变更，遍历结束后批量操作 |
 | 删除实体后继续使用其句柄 | 句柄版本号失效，\`is_entity_valid\` 返回 false | 删除后丢弃句柄，或重新创建 |
-| 忘记 \`append_preallocated_entities\` | 每个实体创建都可能触发扩容 | 启动时预估实体数量并预分配 |
-| 在 \`soft_remove\` 后假设 \`size()\` 减少 | 软删除不减少 \`size()\` | 使用 \`hard_remove\` 或通过 View 遍历 |
+| 忘记 \`preallocate_entities\` | 每个实体创建都可能触发扩容 | 启动时预估实体数量并预分配 |
+| 在 \`soft_remove\` 后假设 \`size()\` 减少 | 软删除不减少 \`size()\` | 用 \`live_count()\` 获取存活数，或通过 View 遍历（遍历自动过滤软删除） |
 | 使用 \`get_ptr_fast\` 跨越不同类型集合 | 跳过 type_id 检查，可能返回错误类型指针 | 同一类型集合内使用 \`get_ptr_fast\`，跨类型用 \`get_ptr\` |
+| 把 \`get_ptr<T>\` 的返回值当作“类型已注册 + 实体有效 + 组件存在”的完整判断 | 实体句柄失效、实体未挂载该组件、类型未注册都返回 \`nullptr\`，无编译期断言也无运行期提示（类型名拼写错误同样静默返回 \`nullptr\`） | 判活用 \`is_entity_valid(entity)\`；类型是否已注册可用 \`get_single_class_set<T>() != nullptr\` 确认；组件查询结果一律判空 |
 
 ---
 `
@@ -729,7 +760,7 @@ window.DOCS_DATA['views'] = {
   order: 5,
   content: `## 5. View系统
 
-提供高效的组件遍历，自动选择最小集作为主集迭代。
+提供高效的组件遍历，自动选择最小集作为主集迭代。软删除（\`soft_remove\`）的组件对所有视图遍历均不可见（single_view / multi_view / 复合视图 / runtime_view 统一过滤），遍历计数即为存活数。
 
 ### 5.1 single_view\\<T> — 单组件视图
 
@@ -1574,7 +1605,7 @@ rv.for_each([](entity e) {
 | \`count()\` | 精确命中数（遍历计算） |
 | \`empty()\` | 是否为空 |
 | \`contains(entity)\` | 检查实体是否匹配查询 |
-| \`get_ptr<T>(entity)\` | 获取实体的组件指针 |
+| \`get_ptr<T>(entity)\` | 获取实体的组件指针（组件不存在返回 \`nullptr\`；不检查实体是否属于该视图） |
 | \`get_first_entity()\` | 返回第一个匹配实体 |
 | \`sort_by_component<T>(cmp)\` | 按组件值排序，结果存于 \`sorted_entities_\` |
 | \`get_sorted_entities()\` | 获取排序后的实体列表（\`const dense<entity>&\`，需先调用 \`sort_by_component\`） |
@@ -1901,7 +1932,7 @@ window.DOCS_DATA['signals'] = {
 
 \`\`\`cpp
 ecs::manager mgr;
-mgr.append_preallocated_entities(100);
+mgr.preallocate_entities(100);
 
 int created = 0, destroyed = 0;
 
@@ -1936,7 +1967,7 @@ mgr.delete_entity(e1);           // destroyed == 1
 
 \`\`\`cpp
 ecs::manager mgr;
-mgr.append_preallocated_entities(100);
+mgr.preallocate_entities(100);
 
 int add_count = 0, remove_count = 0;
 
@@ -1958,7 +1989,7 @@ mgr.add(e, Position{3, 4});        // 覆盖写:未注册 on_modify 时回退为
 mgr.hard_remove<Position>(e);      // remove_count == 2(覆盖 1 + hard_remove 1)
 \`\`\`
 
-> **注意：** 组件指针在回调期间有效，可用于读取或修改组件数据。\`hard_remove\` 触发 \`on_remove\`；\`soft_remove\` 仅逻辑隐藏组件（未析构），**不触发** \`on_remove\` 也不入延迟队列。
+> **注意：** 组件指针在回调期间有效，可用于读取或修改组件数据。\`hard_remove\` 触发 \`on_remove\`；\`soft_remove\` 仅逻辑隐藏组件（当时不析构），**不触发** \`on_remove\` 也不入延迟队列；旧对象在死槽被 \`add\` 复用覆盖或 \`compact\` 回收时补析构。
 
 ### 9.3 覆盖写与 on_modify
 
@@ -1973,7 +2004,7 @@ mgr.hard_remove<Position>(e);      // remove_count == 2(覆盖 1 + hard_remove 1
 
 \`\`\`cpp
 ecs::manager mgr;
-mgr.append_preallocated_entities(10);
+mgr.preallocate_entities(10);
 int add_cnt = 0, remove_cnt = 0, modify_cnt = 0;
 mgr.set_on_add<Position>(+[](entity, void*, void* d) noexcept { (*static_cast<int*>(d))++; }, &add_cnt);
 mgr.set_on_remove<Position>(+[](entity, void*, void* d) noexcept { (*static_cast<int*>(d))++; }, &remove_cnt);
@@ -2003,7 +2034,7 @@ mgr.add(e, Position{2, 0});   // modify_cnt == 1, add_cnt/remove_cnt 不变
 
 \`\`\`cpp
 ecs::manager mgr;
-mgr.append_preallocated_entities(100);
+mgr.preallocate_entities(100);
 
 entity e1 = mgr.create_entity();  // 推入缓冲区
 entity e2 = mgr.create_entity();  // 推入缓冲区
@@ -2042,7 +2073,7 @@ assert(!mgr.has_pending_entity_signals());
 
 \`\`\`cpp
 ecs::manager mgr;
-mgr.append_preallocated_entities(100);
+mgr.preallocate_entities(100);
 
 entity e = mgr.create_entity();
 mgr.add(e, Position{1, 2});    // 推入缓冲区
@@ -2074,7 +2105,7 @@ assert(!mgr.has_pending_component_signals());
 
 \`\`\`cpp
 ecs::manager mgr;
-mgr.append_preallocated_entities(10);
+mgr.preallocate_entities(10);
 int add_cb = 0;
 mgr.set_on_add<Position>(+[](entity, void*, void* d) noexcept { (*static_cast<int*>(d))++; }, &add_cb);
 
@@ -2105,7 +2136,7 @@ mgr.flush_component_signals([&](uint32_t type, uint32_t, uint32_t) noexcept {
 |------|------|
 | \`comp_signal_overflow_count()\` / \`entity_signal_overflow_count()\` | 查询累计溢出次数 |
 | \`reset_comp_signal_overflow_count()\` / \`reset_entity_signal_overflow_count()\` | 清零溢出计数 |
-| \`reserve_comp_signal_capacity(n)\` / \`reserve_entity_signal_capacity(n)\` | 预分配 overflow chain 容量 |
+| \`preallocate_component_signals(n)\` / \`preallocate_entity_signals(n)\` | 预分配 overflow chain 容量 |
 
 \`\`\`cpp
 ecs::manager mgr;
@@ -2115,7 +2146,7 @@ mgr.enable_entity_signals();
 auto e2 = mgr.create_entity();   // 入队
 // has_pending_entity_signals() == true
 
-mgr.reserve_comp_signal_capacity(2048);  // 预分配溢出容量
+mgr.preallocate_component_signals(2048);  // 预分配溢出容量
 \`\`\`
 
 > **不应：** 长期忽略 \`overflow_count\`。其值 >0 表示曾发生溢出，应确认 \`flush\` 已消费完 chain（\`has_pending_*_signals()\` 为 false）。
@@ -2129,7 +2160,7 @@ mgr.reserve_comp_signal_capacity(2048);  // 预分配溢出容量
 
 \`\`\`cpp
 ecs::manager mgr;
-mgr.append_preallocated_entities(10);
+mgr.preallocate_entities(10);
 int pos_removed = 0;
 mgr.set_on_remove<Position>(+[](entity, void*, void* d) noexcept { (*static_cast<int*>(d))++; }, &pos_removed);
 
@@ -2165,7 +2196,7 @@ mgr.flush_component_signals([&](uint32_t type, uint32_t, uint32_t) noexcept {
 | 错误做法 | 问题 | 正确做法 |
 |---------|------|---------|
 | 在即时信号回调中增删实体/组件 | 可能导致重入 | 使用延迟信号，在 flush 时处理；flush 内部有重入保护与 budget 上限 |
-| 依赖延迟信号缓冲区不丢事件 | 缓冲区满时落入 overflow_chain | 定期 flush；批量场景用 \`reserve_*_signal_capacity\` 预分配 |
+| 依赖延迟信号缓冲区不丢事件 | 缓冲区满时落入 overflow_chain | 定期 flush；批量场景用 \`preallocate_*_signals\` 预分配 |
 | 忘记 \`flush\` 延迟信号 | 事件堆积在缓冲区与 chain 中未处理 | 每帧开头或结尾调用 \`flush_*_signals\` |
 | 使用有捕获的 lambda 作为即时信号回调 | 无法转换为函数指针 | 使用无捕获 lambda + \`user_data\` 传上下文 |
 | 期望 \`soft_remove\` 触发 \`on_remove\` | \`soft_remove\` 仅逻辑隐藏，不析构不触发 | 需要回调改用 \`hard_remove\` |
@@ -2229,6 +2260,8 @@ cb.flush();
 | \`add_component<T>(entity, T&&)\` | 录制添加组件命令 |
 | \`remove_component<T>(entity)\` | 录制移除组件命令（soft_remove 语义） |
 | \`destroy_entity(entity)\` | 录制销毁实体命令 |
+| \`preallocate(n)\` | 预留命令缓冲容量，避免录制过程中扩容 |
+| \`capacity()\` | 当前命令缓冲容量 |
 | \`flush()\` | 按录入顺序应用所有命令，应用后清空缓冲区 |
 | \`clear()\` | 清空所有未应用命令 |
 | \`size()\` | 未应用命令数 |
@@ -2432,7 +2465,7 @@ window.DOCS_DATA['reflection_usage'] = {
 | \`push_back(element)\` | 追加元素（\`const void*\`） |
 | \`push_back<T>(value)\` | 模板版本 |
 | \`clear()\` | 清空容器 |
-| \`reserve(n)\` | 预留容量 |
+| \`preallocate(n)\` | 预留容量 |
 | \`for_each(f)\` | 遍历元素，\`f(void* element, size_t index)\` |
 | \`reflect::as_container(obj, type_id)\` | 由对象指针与类型 id 构造 \`container_view\` |
 | \`reflect::as_container(q, obj)\` | 由 \`query_view\`（字段类型）与对象指针构造 |

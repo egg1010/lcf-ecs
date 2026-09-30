@@ -19,8 +19,8 @@ static void test_record()
 
     {
         manager mgr;
-        mgr.append_preallocated_entities(N);
-        mgr.reserve_entity_signal_capacity(N);
+        mgr.preallocate_entities(N);
+        mgr.preallocate_entity_signals(N);
         vector<entity> ents(N);
         for (size_t i = 0; i < N; ++i) ents[i] = mgr.create_entity();
         Pos p{1.0f, 2.0f, 3.0f};
@@ -36,7 +36,7 @@ static void test_record()
         // 预分配后录制 (无扩容开销)
         ns = best_ns(REPEAT, [&]() {
             command_buffer cb(&mgr);
-            cb.reserve(N);
+            cb.preallocate(N);
             for (size_t i = 0; i < N; ++i) cb.add_component(ents[i], p);
             compiler_barrier();
             return cb.size();
@@ -46,8 +46,8 @@ static void test_record()
 
     {
         manager mgr;
-        mgr.append_preallocated_entities(N);
-        mgr.reserve_entity_signal_capacity(N);
+        mgr.preallocate_entities(N);
+        mgr.preallocate_entity_signals(N);
         vector<entity> ents(N);
         for (size_t i = 0; i < N; ++i)
         {
@@ -57,7 +57,7 @@ static void test_record()
 
         double ns = best_ns(REPEAT, [&]() {
             command_buffer cb(&mgr);
-            cb.reserve(N);
+            cb.preallocate(N);
             for (size_t i = 0; i < N; ++i) cb.remove_component<Pos>(ents[i]);
             compiler_barrier();
             return cb.size();
@@ -67,14 +67,14 @@ static void test_record()
 
     {
         manager mgr;
-        mgr.append_preallocated_entities(N);
-        mgr.reserve_entity_signal_capacity(N);
+        mgr.preallocate_entities(N);
+        mgr.preallocate_entity_signals(N);
         vector<entity> ents(N);
         for (size_t i = 0; i < N; ++i) ents[i] = mgr.create_entity();
 
         double ns = best_ns(REPEAT, [&]() {
             command_buffer cb(&mgr);
-            cb.reserve(N);
+            cb.preallocate(N);
             for (size_t i = 0; i < N; ++i) cb.destroy_entity(ents[i]);
             compiler_barrier();
             return cb.size();
@@ -94,8 +94,8 @@ static void test_query()
     constexpr size_t N = 1 << 14;
 
     manager mgr;
-    mgr.append_preallocated_entities(N);
-    mgr.reserve_entity_signal_capacity(N);
+    mgr.preallocate_entities(N);
+    mgr.preallocate_entity_signals(N);
     vector<entity> ents(N);
     for (size_t i = 0; i < N; ++i) ents[i] = mgr.create_entity();
     Pos p{1, 2, 3};
@@ -129,14 +129,14 @@ static void test_flush()
     {
         double ns = best_ns(REPEAT, [&]() {
             manager mgr;
-            mgr.append_preallocated_entities(N);
-            mgr.reserve_entity_signal_capacity(N);
+            mgr.preallocate_entities(N);
+            mgr.preallocate_entity_signals(N);
     vector<entity> ents(N);
             for (size_t i = 0; i < N; ++i) ents[i] = mgr.create_entity();
             Pos p{1, 2, 3};
 
             command_buffer cb(&mgr);
-            cb.reserve(N);
+            cb.preallocate(N);
             for (size_t i = 0; i < N; ++i) cb.add_component(ents[i], p);
             cb.flush();
             compiler_barrier();
@@ -148,8 +148,8 @@ static void test_flush()
     {
         double ns = best_ns(REPEAT, [&]() {
             manager mgr;
-            mgr.append_preallocated_entities(N);
-            mgr.reserve_entity_signal_capacity(N);
+            mgr.preallocate_entities(N);
+            mgr.preallocate_entity_signals(N);
     vector<entity> ents(N);
             for (size_t i = 0; i < N; ++i)
             {
@@ -158,7 +158,7 @@ static void test_flush()
             }
 
             command_buffer cb(&mgr);
-            cb.reserve(N);
+            cb.preallocate(N);
             for (size_t i = 0; i < N; ++i) cb.remove_component<Pos>(ents[i]);
             cb.flush();
             compiler_barrier();
@@ -170,13 +170,13 @@ static void test_flush()
     {
         double ns = best_ns(REPEAT, [&]() {
             manager mgr;
-            mgr.append_preallocated_entities(N);
-            mgr.reserve_entity_signal_capacity(N);
+            mgr.preallocate_entities(N);
+            mgr.preallocate_entity_signals(N);
             vector<entity> ents(N);
             for (size_t i = 0; i < N; ++i) ents[i] = mgr.create_entity();
 
             command_buffer cb(&mgr);
-            cb.reserve(N);
+            cb.preallocate(N);
             for (size_t i = 0; i < N; ++i) cb.destroy_entity(ents[i]);
             cb.flush();
             compiler_barrier();
@@ -188,13 +188,13 @@ static void test_flush()
     {
         double ns = best_ns(REPEAT, [&]() {
             manager mgr;
-            mgr.append_preallocated_entities(N);
-            mgr.reserve_entity_signal_capacity(N);
+            mgr.preallocate_entities(N);
+            mgr.preallocate_entity_signals(N);
             vector<entity> ents(N);
             for (size_t i = 0; i < N; ++i) ents[i] = mgr.create_entity();
 
             command_buffer cb(&mgr);
-            cb.reserve(2 * N);
+            cb.preallocate(2 * N);
             for (size_t i = 0; i < N; ++i)
             {
                 cb.add_component(ents[i], Pos{1, 2, 3});
@@ -218,8 +218,8 @@ static void test_clear()
     constexpr size_t N = 1 << 16;
 
     manager mgr;
-    mgr.append_preallocated_entities(N);
-    mgr.reserve_entity_signal_capacity(N);
+    mgr.preallocate_entities(N);
+    mgr.preallocate_entity_signals(N);
     vector<entity> ents(N);
     for (size_t i = 0; i < N; ++i) ents[i] = mgr.create_entity();
     Pos p{1, 2, 3};
@@ -227,7 +227,7 @@ static void test_clear()
     {
         double ns = best_ns(REPEAT, [&]() {
             command_buffer cb(&mgr);
-            cb.reserve(N);
+            cb.preallocate(N);
             for (size_t i = 0; i < N; ++i) cb.add_component(ents[i], p);
             cb.clear();
             compiler_barrier();

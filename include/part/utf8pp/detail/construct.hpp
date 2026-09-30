@@ -1,10 +1,9 @@
 // 构造/析构/赋值/swap/assign
 
-    // 内联缓冲容量: 惰性 cp_info 后无 sso_cp_offsets_, 省下空间用于扩大字节缓冲
-    // 对象总大小 144 bytes, 头部成员 40 bytes, sso_buffer_ 占 104 bytes
+    // 内联缓冲容量
     static constexpr size_t SSO_CAPACITY = 103;
 
-    // 复用 unicode_data::script 枚举 (UAX #24); 提前声明供后续 detail 文件使用
+    // 复用 unicode_data::script 枚举 (UAX #24)
     using script = unicode_data::script;
 
     // === 构造/析构 ===
@@ -16,7 +15,6 @@
     }
 
     // 裸构造: 不初始化任何字段, 供 substr/拷贝等内部热点使用
-    // 跳过默认构造的字段写入和 0 初始化, 减少覆盖开销
     struct raw_construct_t {};
     static constexpr raw_construct_t raw_construct{};
     explicit utf8pp(raw_construct_t) noexcept {}
@@ -40,7 +38,7 @@
           byte_size_(0), byte_capacity_(0), cp_offsets_(nullptr),
           cp_count_(0), cp_offsets_capacity_(0), cp_cache_(nullptr)
     {
-        // 热路径优化: byte_len > SSO 时跳过 SSO 初始化, 让 init_from_utf8 直接走堆分配
+        // byte_len > SSO 时跳过 SSO 初始化, 让 init_from_utf8 直接走堆分配
         if (byte_len == 0)
         {
             data_ = sso_buffer_;
@@ -87,7 +85,7 @@
     // 视图构造: 零拷贝视图转拥有内存拷贝
     utf8pp(const utf8_view& v) : utf8pp(v.data(), v.byte_size()) {}
 
-    // 初始化列表构造 (与 std::string 的 initializer_list<char> 对齐)
+    // 初始化列表构造
     utf8pp(std::initializer_list<char32_t> il)
     {
         data_ = sso_buffer_;
@@ -96,7 +94,7 @@
         for (char32_t cp : il) push_back(cp);
     }
 
-    // 迭代器范围构造 (与 std::string(InputIt, InputIt) 对齐)
+    // 迭代器范围构造
     // 约束: 迭代器解引用结果可转换为 char32_t
     template <typename InputIt, typename = std::enable_if_t<!std::is_integral_v<InputIt>>>
     utf8pp(InputIt first, InputIt last)
@@ -110,7 +108,7 @@
     // 禁止 nullptr 隐式构造
     utf8pp(std::nullptr_t) = delete;
 
-    // 范围构造: 从容器 (依赖 join, 类内成员函数延迟解析, 顺序无关)
+    // 范围构造: 从容器
     template <size_t N>
     explicit utf8pp(const std::array<utf8pp, N>& parts) : utf8pp(join(parts, utf8pp())) {}
 
@@ -118,8 +116,7 @@
 
     utf8pp(const utf8pp& other) : byte_size_(other.byte_size_)
     {
-        // 仅需计数, 不强制构建偏移 (避免 source state=3→2 的昂贵升级)
-        // 内联 state 检查: 大部分场景 other 已 state!=0 (构造后), 跳过函数调用
+        // 仅需计数, 不强制构建偏移; 内联 state 检查避免函数调用
         if (other.cp_info_state_ == 0) [[unlikely]] other.ensure_cp_count();
         cp_info_state_ = other.cp_info_state_;
         cp_count_ = other.cp_count_;
@@ -141,7 +138,7 @@
         }
         data_[byte_size_] = '\0';
 
-        // 仅当源已构建偏移时复制 (ASCII/state=3 无需复制, 热路径不进入)
+        // 仅当源已构建偏移时复制
         if (cp_info_state_ == 2 && other.cp_offsets_ && other.cp_count_ > 0) [[unlikely]]
         {
             cp_offsets_capacity_ = other.cp_offsets_capacity_;
@@ -160,10 +157,10 @@
             data_ = sso_buffer_;
             byte_capacity_ = SSO_CAPACITY;
             std::memcpy(sso_buffer_, other.sso_buffer_, SSO_CAPACITY + 1);
-            // 内联模式 cp_offsets_/cp_cache_ 必为空 (惰性不内嵌)
-            cp_offsets_ = nullptr;
-            cp_offsets_capacity_ = 0;
-            cp_cache_ = nullptr;
+            // SSO 串仍可能持有堆上惰性缓存, 一并接管
+            cp_offsets_ = other.cp_offsets_;
+            cp_offsets_capacity_ = other.cp_offsets_capacity_;
+            cp_cache_ = other.cp_cache_;
         }
         else
         {
@@ -212,9 +209,9 @@
                 cp_info_state_ = other.cp_info_state_;
                 uniform_byte_len_ = other.uniform_byte_len_;
                 std::memcpy(sso_buffer_, other.sso_buffer_, SSO_CAPACITY + 1);
-                cp_offsets_ = nullptr;
-                cp_offsets_capacity_ = 0;
-                cp_cache_ = nullptr;
+                cp_offsets_ = other.cp_offsets_;
+                cp_offsets_capacity_ = other.cp_offsets_capacity_;
+                cp_cache_ = other.cp_cache_;
             }
             else
             {
@@ -266,8 +263,12 @@
         return *this;
     }
 
-    // 单参/范围 assign 重载 (与 std::string::assign 对齐)
-    utf8pp& assign(const utf8pp& other) { return assign(other.data_, other.byte_size_); }
+    // 单参/范围 assign 重载
+    utf8pp& assign(const utf8pp& other)
+    {
+        if (this == &other) return *this;
+        return assign(other.data_, other.byte_size_);
+    }
     utf8pp& assign(const char* s) { return assign(s, s ? std::strlen(s) : 0); }
     utf8pp& assign(std::string_view sv) { return assign(sv.data(), sv.size()); }
     utf8pp& assign(const std::string& s) { return assign(s.data(), s.size()); }
@@ -291,7 +292,7 @@
         return *this;
     }
 
-    // 填充 assign: n 个 cp (与 std::string::assign(size_type, char) 对齐)
+    // 填充 assign: n 个 cp
     utf8pp& assign(size_t n, char32_t cp)
     {
         clear();
@@ -309,7 +310,7 @@
         for (char32_t c : s) push_back(c);
         return *this;
     }
-    // 子串 assign: 来自 other 的 [pos, pos+n) (与 std::string::assign(const string&, pos, n) 对齐)
+    // 子串 assign: 来自 other 的 [pos, pos+n)
     utf8pp& assign(const utf8pp& other, size_t pos, size_t n = npos)
     {
         return assign(other.substr(pos, n));
@@ -345,6 +346,9 @@
             std::swap(cp_count_, other.cp_count_);
             std::swap(cp_info_state_, other.cp_info_state_);
             std::swap(uniform_byte_len_, other.uniform_byte_len_);
+            std::swap(cp_offsets_, other.cp_offsets_);
+            std::swap(cp_offsets_capacity_, other.cp_offsets_capacity_);
+            std::swap(cp_cache_, other.cp_cache_);
         }
         else if (!is_sso() && !other.is_sso())
         {
@@ -357,6 +361,7 @@
             std::swap(cp_offsets_capacity_, other.cp_offsets_capacity_);
             std::swap(cp_info_state_, other.cp_info_state_);
             std::swap(uniform_byte_len_, other.uniform_byte_len_);
+            std::swap(cp_cache_, other.cp_cache_);
         }
         else
         {

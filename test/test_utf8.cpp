@@ -5,6 +5,8 @@
 #include "include/part/dense.hpp"
 #include <cmath>
 #include <unordered_map>
+#include <sstream>
+#include <fstream>
 #ifdef _WIN32
 #include <malloc.h>
 #endif
@@ -2900,6 +2902,540 @@ int main()
         print_item("erase 后 get(2)=='你'", s2.get(2) == U'你');
     }
 
+    // ================================================================
+    //  模块 124: 缺陷修复回归 (B1-B12 / P1-P16)
+    // ================================================================
+
+    // === 124.1 B1: slab 定位下溢 ===
+    print_section(124, "缺陷修复回归: B1-B12 正确性");
+    {
+        print_item("slab_index(1)==0", utf8pp_slab_index(1) == 0);
+        print_item("slab_index(4)==0", utf8pp_slab_index(4) == 0);
+        print_item("slab_index(8)==0", utf8pp_slab_index(8) == 0);
+        print_item("slab_index(16)==0", utf8pp_slab_index(16) == 0);
+        print_item("slab_index(17)==1", utf8pp_slab_index(17) == 1);
+        print_item("slab_index(32)==1", utf8pp_slab_index(32) == 1);
+        print_item("slab_index(33)==2", utf8pp_slab_index(33) == 2);
+        print_item("slab_index(64)==2", utf8pp_slab_index(64) == 2);
+        print_item("slab_index(65)==3", utf8pp_slab_index(65) == 3);
+        print_item("slab_index(128)==3", utf8pp_slab_index(128) == 3);
+        print_item("slab_index(129)==4", utf8pp_slab_index(129) == 4);
+
+        // 1/2 码点中文串: 分配命中最小桶, 遍历 + 析构烟雾
+        {
+            utf8pp a(u8"你");
+            utf8pp b(u8"你好");
+            size_t na = 0, nb = 0;
+            for (char32_t c : a) { (void)c; ++na; }
+            for (char32_t c : b) { (void)c; ++nb; }
+            print_item("1 码点中文遍历==1", na == 1 && a.get(0) == U'你');
+            print_item("2 码点中文遍历==2", nb == 2 && b.get(1) == U'好');
+        }
+    }
+
+    // === 124.2 B2: swap 漏交换字段 ===
+    {
+        // 堆↔堆: 双方先遍历建 cache
+        {
+            utf8pp a(size_t(200), char32_t(0x4F60));   // 200 个'你', 堆
+            utf8pp b(size_t(200), char32_t(0x597D));   // 200 个'好', 堆
+            size_t ca = 0, cb = 0;
+            for (char32_t c : a) { (void)c; ++ca; }
+            for (char32_t c : b) { (void)c; ++cb; }
+            print_item("堆串遍历码点数正确", ca == 200 && cb == 200);
+            using std::swap;
+            swap(a, b);
+            bool ok = a.size() == 200 && b.size() == 200;
+            for (size_t i = 0; i < 200; ++i)
+            {
+                if (a.get(i) != U'好' || b.get(i) != U'你') { ok = false; break; }
+            }
+            print_item("堆↔堆 swap 后内容互换", ok);
+        }
+        // SSO↔SSO: 双方 state=2
+        {
+            utf8pp a(u8"你a好");                 // insert 触发建表
+            a.insert(1, u8"b");
+            utf8pp b(u8"好c你");
+            b.insert(1, u8"d");
+            using std::swap;
+            swap(a, b);
+            bool ok = a.is_sso() && b.is_sso()
+                   && a.size() == b.size()
+                   && a.get(0) == U'好' && a.get(1) == U'd'
+                   && b.get(0) == U'你' && b.get(1) == U'b';
+            print_item("SSO↔SSO swap 后一致", ok);
+        }
+    }
+
+    // === 124.3 B3: move SSO 分支堆资源双丢 ===
+    {
+#if defined(UTF8PP_USE_LAYERED_ALLOCATOR)
+        size_t before = utf8pp_pool_.total_allocated_bytes();
+        {
+            utf8pp src(u8"你好");             // SSO
+            size_t n = 0;
+            for (char32_t c : src) { (void)c; ++n; }   // 触发 cp_offsets_/cp_cache_ 分配
+            (void)n;
+            utf8pp dst(std::move(src));       // move 构造
+            print_item("move 后目标内容正确", dst.size() == 2 && dst.get(1) == U'好');
+        }   // 双双析构
+        size_t after = utf8pp_pool_.total_allocated_bytes();
+        print_item("move 前后分配量守恒", before == after);
+#else
+        print_item("move 前后分配量守恒 (非分层分配器, 跳过)", true);
+#endif
+    }
+
+    // === 124.4 B4: rfind ASCII 分支 pos 语义 ===
+    {
+        utf8pp s(u8"abcabc");
+        print_item("rfind(bc, 3)==1", s.rfind(u8"bc", 3) == 1);
+        print_item("rfind(bc)==4", s.rfind(u8"bc") == 4);
+        print_item("rfind(bc, 5)==4", s.rfind(u8"bc", 5) == 4);
+        utf8pp cn(u8"你好世界你好");
+        // "你好" 出现于码点 0 与 4; pos=2 应返回 0
+        print_item("非 ASCII rfind(你好, 2)==0", cn.rfind(u8"你好", 2) == 0);
+    }
+
+    // === 124.5 B5: assign 自赋值 ===
+    {
+        utf8pp s(u8"你好世界");
+        size_t sz_before = s.size();
+        std::string bytes_before(s.data(), s.byte_size());
+        s.assign(s);
+        print_item("assign(s) 后 size 不变", s.size() == sz_before);
+        print_item("assign(s) 后内容不变",
+                   std::string(s.data(), s.byte_size()) == bytes_before);
+    }
+
+    // === 124.6 B6: utf8_byte_offset 越界读 ===
+    {
+        const char cn[] = {(char)0xE4, (char)0xBD, (char)0xA0,
+                           (char)0xE5, (char)0xA5, (char)0xBD, 0};   // "你好"
+        print_item("utf8_byte_offset(F0, 1)==npos",
+                   utf8_byte_offset("\xF0", 1) == utf8_view::npos);
+        print_item("utf8_byte_offset(你好, 1)==3",
+                   utf8_byte_offset(cn, 1) == 3);
+        print_item("utf8_byte_offset(你好, 0)==0",
+                   utf8_byte_offset(cn, 0) == 0);
+    }
+
+    // === 124.7 B7: 非法 lead 零步死循环 ===
+    {
+        utf8pp s(u8"abc");
+        char* raw = s.data();                 // 非 const
+        raw[0] = static_cast<char>(0x80);     // 写入非法 continuation lead
+        s.rebuild(3);
+        size_t width = s.display_width();     // 修复后可返回 (不挂死)
+        bool w_ok = width <= 3;
+        print_item("非法 lead display_width 可返回", w_ok);
+
+        utf8pp t(u8"abc");
+        char* raw2 = t.data();
+        raw2[0] = static_cast<char>(0x80);
+        t.rebuild(3);
+        std::u32string u = t.to_u32string();  // 修复后可返回
+        print_item("非法 lead to_u32string 可返回", u.size() >= 3);
+    }
+
+    // === 124.8 B8: max_size 虚报 ===
+    {
+        utf8pp s;
+        print_item("max_size()==0xFFFFFFFFu", s.max_size() == 0xFFFFFFFFu);
+    }
+
+    // === 124.9 B10-B12: 自引用 ===
+    {
+        utf8pp s(u8"ab");
+        s.append(s);
+        print_item("append(self) 内容翻倍", s == utf8pp(u8"abab"));
+    }
+    {
+        utf8pp s(u8"abc");
+        s.insert(1, s);
+        print_item("insert(1, self)==aabcbc", s == utf8pp(u8"aabcbc"));
+    }
+    {
+        utf8pp s(u8"abcd");
+        s.replace(0, 2, s);
+        print_item("replace(0,2,self)==abcdcd", s == utf8pp(u8"abcdcd"));
+    }
+    {
+        utf8pp s(u8"ab");
+        s.insert(1, s);
+        print_item("insert(1, self)==aabb", s == utf8pp(u8"aabb"));
+    }
+    {
+        utf8pp s(u8"abc");
+        s.replace_all(u8"ab", s);
+        print_item("replace_all 自引用不崩", s.size() >= 3);
+    }
+
+    // === 124.10 P1: 单码点修改摊还 O(1) ===
+    print_section(125, "缺陷修复回归: P1-P16 性能正确性");
+    {
+        utf8pp s;
+        for (int i = 0; i < 100000; ++i) s.push_back(char32_t(0x4E2D));
+        print_item("10万 push_back 中文 size==100000", s.size() == 100000);
+        print_item("均匀标志 byte_size==3*size", s.byte_size() == 3u * s.size());
+        print_item("抽样 get(50000)=='中'", s.get(50000) == U'中');
+        print_item("抽样 get(99999)=='中'", s.get(99999) == U'中');
+        utf8pp sub = s.substr(100, 10);
+        print_item("substr 后 size==10", sub.size() == 10 && sub.get(0) == U'中');
+    }
+    {
+        // erase 尾部 uniform 串后仍可 substr
+        utf8pp s(size_t(100), char32_t(0x597D));   // 100 个'好'
+        s.erase(10, 50);                            // 删尾部 50 个
+        print_item("erase 后 size==50", s.size() == 50);
+        print_item("erase 后 byte_size==150", s.byte_size() == 150);
+        utf8pp sub = s.substr(40, 5);
+        print_item("erase 后 substr 正常", sub.size() == 5 && sub.get(0) == U'好');
+    }
+
+    // === 124.11 P2: 迭代器批量 insert ===
+    {
+        utf8pp a(u8"XYZ");
+        a.insert(a.begin(), size_t(3), char32_t(0x4E2D));   // 迭代器版批量
+        utf8pp b(u8"XYZ");
+        for (int i = 0; i < 3; ++i) b.insert(0, char32_t(0x4E2D));
+        print_item("迭代器批量 insert == 逐个", a == b);
+    }
+    {
+        utf8pp s(u8"ab");
+        s.insert(s.begin(), s.begin(), s.end());   // 自范围
+        print_item("自范围 insert 内容正确", s == utf8pp(u8"abab"));
+    }
+
+    // === 124.12 P3: byte_to_cp_idx 混合串 ===
+    {
+        utf8pp s;
+        for (int i = 0; i < 1000; ++i) s.push_back(char32_t(U'a'));
+        for (int i = 0; i < 200; ++i) s.push_back(char32_t(0x4E2D));
+        size_t byte_of_cp1000 = 1000;              // 前 1000 个 ASCII = 1000 字节
+        size_t cp = s.byte_to_cp_idx(byte_of_cp1000);
+        print_item("混合串 byte_to_cp_idx 边界面", cp == 1000);
+    }
+
+    // === 124.13 P5/P6: replace / replace_all 语义等价 ===
+    {
+        utf8pp a(u8"abcdef");
+        a.replace(1, 3, u8"XY");                    // → aXYef
+        utf8pp b(u8"abcdef");
+        b.erase(1, 3);
+        b.insert(1, u8"XY");
+        print_item("replace == erase+insert", a == b);
+
+        utf8pp c(u8"a1b1c1");
+        c.replace_all(char32_t(U'1'), char32_t(0x4E2D));   // 等宽 1 字节 → 3 字节
+        print_item("replace_all(1,中) 结果正确", c == utf8pp(u8"a中b中c中"));
+
+        utf8pp d(u8"a11b");
+        d.replace_all(u8"11", u8"Z");               // 字符串版
+        print_item("replace_all 字符串版一致", d == utf8pp(u8"aZb"));
+    }
+
+    // === 124.14 P11: reverse / 大小写原地化 ===
+    {
+        utf8pp s(u8"你好世界");
+        size_t cap = s.capacity();
+        s.reverse();
+        print_item("SSO 中文 reverse 后 is_sso", s.is_sso());
+        print_item("SSO 中文 reverse 后 capacity 不变", s.capacity() == cap);
+        print_item("reverse(你好世界)==界世好你", s == utf8pp(u8"界世好你"));
+        // 混合宽度 (2/3/4 字节) 反转
+        utf8pp mix;
+        mix.push_back(char32_t(0x00C9));   // É 2 字节
+        mix.push_back(char32_t(0x4E2D));   // 中 3 字节
+        mix.push_back(char32_t(0x1F600));  // 😀 4 字节
+        mix.push_back(char32_t(U'a'));     // a 1 字节
+        mix.reverse();
+        print_item("混合宽度 reverse 码点序", mix.get(0) == U'a'
+                   && mix.get(1) == char32_t(0x1F600)
+                   && mix.get(2) == U'中'
+                   && mix.get(3) == char32_t(0x00C9));
+        print_item("混合宽度 reverse 长度不变", mix.size() == 4);
+    }
+    {
+        utf8pp s(u8"café");
+        bool was_sso = s.is_sso();
+        s.to_upper();
+        print_item("café to_upper 后 is_sso", s.is_sso() && was_sso);
+        print_item("café to_upper 内容==CAFÉ", s == utf8pp(u8"CAFÉ"));
+    }
+
+    // === 124.15 状态机不变量 U 随机化压测 ===
+    {
+        // 独立全量重扫: 判断全码点是否等宽, 返回等宽字节数 (0=非均匀)
+        auto full_scan_uniform = [](const utf8pp& x) -> uint8_t
+        {
+            const uint8_t* p = reinterpret_cast<const uint8_t*>(x.data());
+            const uint8_t* end = p + x.byte_size();
+            if (x.byte_size() == 0) return 1;
+            size_t w = static_cast<size_t>(detail_utf8::k_utf8_seq_len[*p]);
+            if (w == 0) return 0;
+            const uint8_t* q = p;
+            size_t cnt = 0;
+            while (q < end)
+            {
+                size_t step = detail_utf8::k_utf8_seq_len[*q];
+                if (step == 0 || step != w) return 0;
+                q += step;
+                ++cnt;
+            }
+            if (cnt == 0 || cnt * w != x.byte_size()) return 0;
+            return static_cast<uint8_t>(w);
+        };
+
+        std::mt19937 rng(20260901u);
+        bool roundtrip_ok = true;   // 不变量 U 的公开可观测代理: cp<->byte 往返
+        bool content_ok = true;     // 内容与镜像一致
+        for (int iter = 0; iter < 200; ++iter)
+        {
+            utf8pp s;
+            std::u32string mirror;
+            int ops = 50 + static_cast<int>(rng() % 50);
+            for (int k = 0; k < ops; ++k)
+            {
+                uint32_t sel = rng() % 4;
+                if (sel == 0)   // push_back
+                {
+                    char32_t cp = (rng() % 2) ? char32_t(U'a' + rng() % 26) : char32_t(0x4E2D);
+                    s.push_back(cp);
+                    mirror.push_back(cp);
+                }
+                else if (sel == 1)   // insert
+                {
+                    size_t pos = rng() % (mirror.size() + 1);
+                    char32_t cp = (rng() % 2) ? char32_t(U'A' + rng() % 26) : char32_t(0x597D);
+                    s.insert(pos, cp);
+                    mirror.insert(mirror.begin() + static_cast<ptrdiff_t>(pos), cp);
+                }
+                else if (sel == 2 && !mirror.empty())   // erase
+                {
+                    size_t pos = rng() % mirror.size();
+                    size_t n = 1 + rng() % (mirror.size() - pos);
+                    s.erase(pos, n);
+                    mirror.erase(pos, n);
+                }
+                else if (sel == 3 && !mirror.empty())   // replace_all 单码点
+                {
+                    char32_t from = mirror[rng() % mirror.size()];
+                    char32_t to = (rng() % 2) ? char32_t(U'x') : char32_t(0x4E2D);
+                    s.replace_all(from, to);
+                    for (size_t i = 0; i < mirror.size(); ++i)
+                    {
+                        if (mirror[i] == from) mirror[i] = to;
+                    }
+                }
+                // 不变量 U 的公开代理: size 一致 + cp<->byte 往返闭合
+                if (s.size() != mirror.size()) { content_ok = false; break; }
+                if (s.byte_size() != static_cast<size_t>(s.size()) * full_scan_uniform(s)
+                    && full_scan_uniform(s) != 0)
+                {
+                    roundtrip_ok = false;
+                    break;
+                }
+                for (size_t i = 0; i < s.size(); ++i)
+                {
+                    size_t b = s.cp_to_byte_idx(i);
+                    if (s.byte_to_cp_idx(b) != i) { roundtrip_ok = false; break; }
+                }
+                if (!roundtrip_ok) break;
+            }
+            if (!content_ok || !roundtrip_ok) break;
+            // 全量内容比对
+            if (s.size() != mirror.size()) { content_ok = false; break; }
+            for (size_t i = 0; i < mirror.size(); ++i)
+            {
+                if (s.get(i) != mirror[i]) { content_ok = false; break; }
+            }
+            if (!content_ok) break;
+        }
+        print_item("随机化压测: 不变量 U (往返闭合)", roundtrip_ok);
+        print_item("随机化压测: 内容与镜像一致", content_ok);
+    }
+
+    // ================================================================
+    //  模块 126: getline v3 与零拷贝行游标
+    // ================================================================
+
+    // === 126. getline v3: 行为与语义 ===
+    print_section(126, "getline v3 与零拷贝行游标");
+    {
+        // 混合长度 300 行 + 尾行 (短行 SSO / 跨 SSO / 长行大块), 逐行对照 std::getline
+        {
+            std::string data;
+            for (int i = 0; i < 300; ++i)
+            {
+                data += "L" + std::to_string(i) + ":";
+                data += std::string(static_cast<size_t>(i % 257), 'x' + static_cast<char>(i % 10));
+                data += '\n';
+            }
+            data += "tail";
+            std::vector<std::string> ref;
+            std::vector<utf8pp> got;
+            { std::istringstream iss(data); std::string t; while (std::getline(iss, t)) ref.push_back(t); }
+            { std::istringstream iss(data); utf8pp t; while (getline(iss, t)) got.push_back(t); }
+            bool ok = ref.size() == got.size();
+            if (ok)
+            {
+                for (size_t i = 0; i < ref.size(); ++i)
+                {
+                    if (ref[i] != got[i]) { ok = false; break; }
+                }
+            }
+            print_item("混合长度 300 行 + 尾行逐行一致", ok);
+        }
+
+        // 空行 / 纯分隔符流
+        {
+            std::istringstream r1s("\n\n"); std::vector<std::string> ref; std::string a;
+            while (std::getline(r1s, a)) ref.push_back(a);
+            std::istringstream r2s("\n\n"); std::vector<utf8pp> got; utf8pp b;
+            while (getline(r2s, b)) got.push_back(b);
+            bool ok = ref.size() == 2 && got.size() == 2;
+            if (ok) for (size_t i = 0; i < 2; ++i) if (!got[i].empty()) ok = false;
+            print_item("空行: 连续分隔符产出空串", ok);
+        }
+
+        // 中文行 (多字节内容)
+        {
+            std::istringstream r1s("你好\n世界"); std::vector<std::string> ref; std::string a;
+            while (std::getline(r1s, a)) ref.push_back(a);
+            std::istringstream r2s("你好\n世界"); std::vector<utf8pp> got; utf8pp b;
+            while (getline(r2s, b)) got.push_back(b);
+            bool ok = ref.size() == got.size() && got.size() == 2;
+            if (ok) for (size_t i = 0; i < ref.size(); ++i) if (ref[i] != got[i]) ok = false;
+            print_item("中文多字节行逐行一致", ok);
+        }
+
+        // EOF 语义: 空流设 failbit; 尾行无分隔符 eofbit 非 fail; 再读设 failbit
+        {
+            std::istringstream iss("");
+            utf8pp t;
+            getline(iss, t);
+            bool b1 = !static_cast<bool>(iss) && iss.fail();
+            std::istringstream iss2("abc");
+            utf8pp t2;
+            getline(iss2, t2);
+            bool b2 = static_cast<bool>(iss2) && t2 == "abc" && iss2.eof() && !iss2.fail();
+            getline(iss2, t2);
+            bool b3 = !static_cast<bool>(iss2) && iss2.fail();
+            print_item("EOF 语义与 std::getline 对齐", b1 && b2 && b3);
+        }
+
+        // 自定义分隔符
+        {
+            std::istringstream r1s("a;bb;ccc"); std::vector<std::string> ref; std::string a;
+            while (std::getline(r1s, a, ';')) ref.push_back(a);
+            std::istringstream r2s("a;bb;ccc"); std::vector<utf8pp> got; utf8pp b;
+            while (getline(r2s, b, ';')) got.push_back(b);
+            bool ok = ref.size() == got.size() && got.size() == 3;
+            if (ok) for (size_t i = 0; i < ref.size(); ++i) if (ref[i] != got[i]) ok = false;
+            print_item("自定义分隔符 ';'", ok);
+        }
+
+        // 文件流多行
+        {
+            const char* path = "test_gl_v3_126.txt";
+            {
+                std::ofstream ofs(path, std::ios::binary | std::ios::trunc);
+                for (int i = 0; i < 10; ++i)
+                {
+                    ofs << "F" << i << ":" << std::string(static_cast<size_t>(200 + i * 97), 'y') << "\n";
+                }
+                ofs << "file_tail";
+            }
+            std::vector<std::string> ref;
+            std::vector<utf8pp> got;
+            { std::ifstream ifs(path, std::ios::binary); std::string t; while (std::getline(ifs, t)) ref.push_back(t); }
+            { std::ifstream ifs(path, std::ios::binary); utf8pp t; while (getline(ifs, t)) got.push_back(t); }
+            bool ok = ref.size() == got.size() && got.size() == 11;
+            if (ok) for (size_t i = 0; i < ref.size(); ++i) if (ref[i] != got[i]) { ok = false; break; }
+            print_item("文件流 10 行 + 尾行逐行一致", ok);
+            std::remove(path);
+        }
+
+        // 分块无 seek 源: 每次 underflow 只交 100 字节 (退回走 sputbackc 降级路径)
+        struct dribble_buf final : std::streambuf
+        {
+            std::string src;
+            size_t handed = 0;
+            explicit dribble_buf(std::string s) : src(std::move(s)) {}
+        protected:
+            int_type underflow() override
+            {
+                if (handed >= src.size()) return traits_type::eof();
+                size_t n = (src.size() - handed < 100) ? src.size() - handed : 100;
+                char* b = src.data() + handed;
+                setg(b, b, b + n);
+                handed += n;
+                return traits_type::to_int_type(*b);
+            }
+        };
+        {
+            std::string dd;
+            for (int i = 0; i < 50; ++i)
+            {
+                dd += "D" + std::to_string(i) + ":";
+                size_t len = (i % 5 == 0) ? 90 : ((i % 5 == 1) ? 250 : 350);
+                dd += std::string(len, 'x' + static_cast<char>(i % 20));
+                dd += '\n';
+            }
+            dd += "dribble_tail";
+            std::vector<std::string> ref;
+            std::vector<utf8pp> got;
+            { dribble_buf db(dd); std::istream din(&db); std::string a; while (std::getline(din, a)) ref.push_back(a); }
+            { dribble_buf db(dd); std::istream din(&db); utf8pp b; while (getline(din, b)) got.push_back(b); }
+            bool ok = ref.size() == got.size() && got.size() == 51;
+            if (ok) for (size_t i = 0; i < ref.size(); ++i) if (ref[i] != got[i]) { ok = false; break; }
+            print_item("分块源 (无 seek): 51 行逐行一致", ok);
+        }
+
+        // utf8_next_line 游标: 行切分与 getline 循环一致
+        {
+            std::string data = "one\ntwo\n\n中文行\n" + std::string(500, 'z') + "\nlast";
+            std::vector<std::string> ref;
+            { std::istringstream iss(data); std::string t; while (std::getline(iss, t)) ref.push_back(t); }
+            std::vector<utf8_view> got;
+            const char* p = data.data();
+            const char* end = data.data() + data.size();
+            utf8_view line;
+            while (utf8_next_line(&p, end, &line)) got.push_back(line);
+            bool ok = ref.size() == got.size() && got.size() == 6;
+            if (ok)
+            {
+                for (size_t i = 0; i < ref.size(); ++i)
+                {
+                    if (ref[i].size() != got[i].byte_size()
+                        || std::memcmp(ref[i].data(), got[i].data(), ref[i].size()) != 0)
+                    {
+                        ok = false; break;
+                    }
+                }
+            }
+            print_item("utf8_next_line: 切分与 std::getline 一致", ok);
+        }
+
+        // utf8_next_line 游标: 边界与防御
+        {
+            const char* p = nullptr;
+            utf8_view line;
+            bool b1 = !utf8_next_line(&p, nullptr, &line);          // end 为 null
+            const char* empty = "";
+            const char* q = empty;
+            bool b2 = !utf8_next_line(&q, empty, &line);            // 空内存
+            const char* one = "\n";
+            const char* r = one;
+            bool b3 = utf8_next_line(&r, one + 1, &line) && line.empty() && r == one + 1;
+            bool b4 = !utf8_next_line(&r, one + 1, &line);          // 耗尽后不再产行
+            bool b5 = !utf8_next_line(nullptr, one, &line);         // p 为 null
+            print_item("utf8_next_line: 空内存/空行/耗尽/防御", b1 && b2 && b3 && b4 && b5);
+        }
+    }
+
     print_summary("功能测试");
     return 0;
-}
+}

@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <utility>
 #include "force_inline.hpp"
+#include "member_offset.hpp"
 #include "../config/reflect_config.hpp"
 
 static_assert(REFLECT_MAX_FIELDS == 16 ||
@@ -82,11 +83,10 @@ FORCE_INLINE void for_each_member(T& obj, F&& f)
 #undef REFLECT_CALL
 #undef REFLECT_BRANCH
 
-// 计算成员偏移量
 template<typename T, typename M>
 FORCE_INLINE size_t offset_of_member(M T::*member) noexcept
 {
-    return reinterpret_cast<size_t>(&(reinterpret_cast<T*>(0)->*member));
+    return detail_member_offset::offset_of(member);
 }
 
 } // namespace detail_aggregate_reflect

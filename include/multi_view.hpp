@@ -25,16 +25,7 @@
 
         void find_smallest() noexcept
         {
-            size_t min_size = std::numeric_limits<size_t>::max();
-            primary_idx_ = 0;
-            for (size_t i = 0; i < N; ++i)
-            {
-                if (sets_[i] && sets_[i]->size() < min_size)
-                {
-                    min_size = sets_[i]->size();
-                    primary_idx_ = i;
-                }
-            }
+            (void)single_class_set::select_primary_set(sets_.data(), N, &primary_idx_);
         }
 
         void rebuild_mappings() const noexcept
@@ -61,6 +52,12 @@
             const size_t byte_count = n * sizeof(uint32_t);
             for (size_t k = 0; k < N; ++k)
             {
+                // 有墓碑时放弃 memcmp 对齐路径, 改由版本比对过滤
+                if (sets_[k]->has_tombstones()) [[unlikely]]
+                {
+                    fast_aligned = false;
+                    break;
+                }
                 if (k == primary_idx_) continue;
                 if (sets_[k]->size() < n)
                 {

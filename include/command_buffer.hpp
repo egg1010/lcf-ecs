@@ -58,7 +58,7 @@ public:
     command_buffer& operator=(command_buffer&&) noexcept = default;
 
     // 预分配容量,避免录制过程中扩容
-    void reserve(size_t n) noexcept { commands_.increase_capacity(n); }
+    void preallocate(size_t n) noexcept { commands_.increase_capacity(n); }
     [[nodiscard]] size_t capacity() const noexcept { return commands_.capacity(); }
 
     template <typename T>

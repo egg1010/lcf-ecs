@@ -7,6 +7,7 @@
 // - N 作为编译期最小保证容量, 实际无界
 
 #include <cstddef>
+#include <cstdlib>
 #include <cstdint>
 #include <new>
 #include <type_traits>
@@ -350,6 +351,11 @@ public:
                 }
                 ++r;
                 ++count;
+                // handler 内 push 会追加到本 chunk, 故需重读 write 判定是否消费完
+                if (r == w) [[unlikely]]
+                {
+                    w = c->write;
+                }
             }
             c->read = r;
             if (r == w) [[unlikely]]

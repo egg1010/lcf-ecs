@@ -355,8 +355,7 @@ public:
             detail::abort_with_location("field limit exceeded", loc);
         }
 
-        T* null_obj = nullptr;
-        size_t offset = reinterpret_cast<size_t>(&(null_obj->*Ptr));
+        size_t offset = detail_member_offset::offset_of(Ptr);
         m->fields[fidx] = field_meta{
             name,
             static_cast<uint32_t>(offset),
@@ -404,8 +403,7 @@ public:
             detail::abort_with_location("field limit exceeded", loc);
         }
 
-        T* null_obj = nullptr;
-        size_t offset = reinterpret_cast<size_t>(&(null_obj->*Ptr));
+        size_t offset = detail_member_offset::offset_of(Ptr);
 
         uint32_t total = 1;
         for (uint8_t i = 0; i < rank; ++i)

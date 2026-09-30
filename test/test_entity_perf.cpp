@@ -110,11 +110,11 @@ static void test_entity_lifecycle()
         print_ns("prealloc ctor", 1, ns);
     }
 
-    // 2.3 append_preallocated_entities
+    // 2.3 preallocate_entities
     {
         double ns = best_ns(REPEAT, [&]() {
             entity_manager em;
-            em.append_preallocated_entities(N);
+            em.preallocate_entities(N);
             compiler_barrier();
             return em.num_mask_blocks();
         });
@@ -125,7 +125,7 @@ static void test_entity_lifecycle()
     {
         double ns = best_ns(REPEAT, [&]() {
             entity_manager em;
-            em.append_preallocated_entities(N);
+            em.preallocate_entities(N);
             entity e{};
             for (size_t i = 0; i < N; ++i) { e = em.get_entity(); }
             compiler_barrier();
@@ -186,7 +186,7 @@ static void test_entity_mask()
     constexpr size_t OPS = 1000000;
 
     entity_manager em;
-    em.reserve_mask_blocks(4);
+    em.preallocate_mask_blocks(4);
     for (size_t i = 0; i < N; ++i) (void)em.get_entity();
 
     // 3.1 set_mask_bit (带边界检查)
@@ -226,7 +226,7 @@ static void test_entity_mask()
         print_ns("clear_mask_bit_no_bounds_check", OPS, ns / static_cast<double>(OPS));
     }
 
-    // 3.4 get_mask / get_block / num_mask_blocks / reserve_mask_blocks
+    // 3.4 get_mask / get_block / num_mask_blocks / preallocate_mask_blocks
     {
         for (size_t i = 0; i < 64; ++i) em.set_mask_bit_no_bounds_check(0, 0, static_cast<uint32_t>(i));
         double ns = best_ns(REPEAT, [&]() {
@@ -298,12 +298,12 @@ static void test_entity_signals()
         print_ns("flush_signals", 1, ns);
     }
 
-    // 4.3 reset_signal_overflow_count / reserve_signal_capacity
+    // 4.3 reset_signal_overflow_count / preallocate_signals
     {
         entity_manager em;
         double ns = best_ns(REPEAT, [&]() {
             em.reset_signal_overflow_count();
-            em.reserve_signal_capacity(1024);
+            em.preallocate_signals(1024);
             compiler_barrier();
             return em.signal_overflow_count();
         });

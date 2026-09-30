@@ -12,7 +12,9 @@
 // === 非成员 operator+ 系列 ===
 [[nodiscard]] inline utf8pp operator+(const utf8pp& lhs, const utf8pp& rhs)
 {
-    utf8pp r(lhs);
+    utf8pp r;
+    r.reserve(lhs.byte_size() + rhs.byte_size());
+    r.append(lhs);
     r.append(rhs);
     return r;
 }
@@ -34,28 +36,36 @@
 
 [[nodiscard]] inline utf8pp operator+(const utf8pp& lhs, const char* rhs)
 {
-    utf8pp r(lhs);
+    utf8pp r;
+    r.reserve(lhs.byte_size() + (rhs ? std::strlen(rhs) : 0));
+    r.append(lhs);
     r.append(rhs);
     return r;
 }
 
 [[nodiscard]] inline utf8pp operator+(const char* lhs, const utf8pp& rhs)
 {
-    utf8pp r(lhs);
+    utf8pp r;
+    r.reserve((lhs ? std::strlen(lhs) : 0) + rhs.byte_size());
+    r.append(lhs);
     r.append(rhs);
     return r;
 }
 
 [[nodiscard]] inline utf8pp operator+(const utf8pp& lhs, std::string_view rhs)
 {
-    utf8pp r(lhs);
+    utf8pp r;
+    r.reserve(lhs.byte_size() + rhs.size());
+    r.append(lhs);
     r.append(rhs);
     return r;
 }
 
 [[nodiscard]] inline utf8pp operator+(std::string_view lhs, const utf8pp& rhs)
 {
-    utf8pp r(lhs);
+    utf8pp r;
+    r.reserve(lhs.size() + rhs.byte_size());
+    r.append(lhs);
     r.append(rhs);
     return r;
 }
@@ -123,7 +133,6 @@ inline std::istream& operator>>(std::istream& is, utf8pp& s)
 {
     s.clear();
 #if LCF_MINIMAL_STACK
-    // 堆缓冲读流, 堆失败退化为小栈块
     char* buf = static_cast<char*>(::operator new(4096, std::nothrow));
     if (buf) [[likely]]
     {
@@ -150,21 +159,14 @@ inline std::istream& operator>>(std::istream& is, utf8pp& s)
 }
 
 // === getline: 从流读取一行 (分隔符默认 '\n', 遇到 EOF 或分隔符停止) ===
+// 语义与 std::getline 对齐: 命中分隔符流状态不变; 读尽无分隔符设 eofbit;
+// 一字节未读到设 failbit; 空行有效
 inline std::istream& getline(std::istream& is, utf8pp& s, char delim = '\n')
 {
     s.clear();
-    char c;
-    bool any = false;
-    while (is.get(c))
+    if (is)
     {
-        any = true;
-        if (c == delim) break;
-        s.push_back(static_cast<char32_t>(static_cast<unsigned char>(c)));
-    }
-    if (!any && !is.good())
-    {
-        // 完全未读到且流已结束: 设置失败位 (与 std::getline 一致)
-        is.setstate(std::ios::failbit);
+        s.getline_read_core(is, delim);
     }
     return is;
 }
@@ -367,15 +369,28 @@ struct hash<utf8pp>
 {
     size_t operator()(const utf8pp& s) const noexcept
     {
-        // 哈希 FNV-1a 字节哈希 (分布优于朴素 *31)
-        size_t h = 14695981039346656037ULL;
         const char* p = s.data();
         size_t n = s.byte_size();
-        for (size_t i = 0; i < n; ++i)
+        size_t h = 14695981039346656037ULL;
+        while (n >= 8)
         {
-            h ^= static_cast<size_t>(static_cast<unsigned char>(p[i]));
-            h *= 1099511628211ULL;
+            uint64_t chunk;
+            std::memcpy(&chunk, p, 8);
+            h = (h ^ chunk) * 1099511628211ULL;
+            p += 8;
+            n -= 8;
         }
+        while (n > 0)
+        {
+            h ^= static_cast<size_t>(static_cast<unsigned char>(*p));
+            h *= 1099511628211ULL;
+            ++p;
+            --n;
+        }
+        // 终结混淆
+        h ^= h >> 33;
+        h *= 0xFF51AFD7ED558CCDULL;
+        h ^= h >> 33;
         return h;
     }
 };
@@ -469,8 +484,7 @@ struct std::formatter<utf8pp>
     {
         auto it = ctx.begin();
         auto end = ctx.end();
-        // [[fill]align][width]['.' precision][type]
-        // 处理 fill+align
+        // [[fill]align][width][type]
         if (it != end && (*it == '<' || *it == '>' || *it == '^'))
         {
             align_ = *it;
@@ -511,7 +525,6 @@ struct std::formatter<utf8pp>
 
     auto format(const utf8pp& s, std::format_context& ctx) const
     {
-        // 1. 先做大小写转换 (产生临时 utf8pp)
         utf8pp tmp;
         if (upper_)      tmp = utf8pp(s).to_upper();
         else if (lower_) tmp = utf8pp(s).to_lower();
@@ -519,14 +532,12 @@ struct std::formatter<utf8pp>
         else             tmp = s;
         const utf8pp& out = tmp;
 
-        // 2. 无 width, 直接输出字节
         if (width_ < 0)
         {
             return std::format_to(ctx.out(), "{}",
                 std::string_view(out.data(), out.byte_size()));
         }
 
-        // 3. 有 width, 按对齐方式填充
         size_t cur_w = disp_w_ ? out.display_width() : out.size();
         size_t target_w = static_cast<size_t>(width_);
         if (cur_w >= target_w)
@@ -535,7 +546,6 @@ struct std::formatter<utf8pp>
                 std::string_view(out.data(), out.byte_size()));
         }
 
-        // 计算填充字符 (仅支持 ASCII fill, 因 std::format spec fill 字符为单字节)
         char fill_buf[1] = {fill_};
         size_t fill_len = 1;
         size_t total_pad = target_w - cur_w;

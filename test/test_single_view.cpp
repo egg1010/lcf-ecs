@@ -13,7 +13,7 @@ int main()
     print_section(1, "基本查询 (size/empty/contains)");
     {
         manager mgr;
-        mgr.append_preallocated_entities(10);
+        mgr.preallocate_entities(10);
         auto e1 = mgr.create_entity();
         auto e2 = mgr.create_entity();
         auto e3 = mgr.create_entity();
@@ -41,7 +41,7 @@ int main()
     print_section(2, "for_each (comp / entity+comp)");
     {
         manager mgr;
-        mgr.append_preallocated_entities(10);
+        mgr.preallocate_entities(10);
         auto e1 = mgr.create_entity();
         auto e2 = mgr.create_entity();
 
@@ -78,7 +78,7 @@ int main()
     print_section(3, "迭代器 (begin/end / component_begin/end)");
     {
         manager mgr;
-        mgr.append_preallocated_entities(10);
+        mgr.preallocate_entities(10);
         auto e1 = mgr.create_entity();
         auto e2 = mgr.create_entity();
         auto e3 = mgr.create_entity();
@@ -112,7 +112,7 @@ int main()
     print_section(4, "组件访问 (get_component_for_entity / get_component_at_index)");
     {
         manager mgr;
-        mgr.append_preallocated_entities(10);
+        mgr.preallocate_entities(10);
         auto e1 = mgr.create_entity();
         auto e2 = mgr.create_entity();
         auto e3 = mgr.create_entity();
@@ -152,7 +152,7 @@ int main()
     print_section(5, "实体访问 (get_first/last/at_index)");
     {
         manager mgr;
-        mgr.append_preallocated_entities(10);
+        mgr.preallocate_entities(10);
         auto e1 = mgr.create_entity();
         auto e2 = mgr.create_entity();
         auto e3 = mgr.create_entity();
@@ -189,7 +189,7 @@ int main()
     print_section(6, "without<T> 排除");
     {
         manager mgr;
-        mgr.append_preallocated_entities(10);
+        mgr.preallocate_entities(10);
         auto e1 = mgr.create_entity();
         auto e2 = mgr.create_entity();
         auto e3 = mgr.create_entity();
@@ -224,7 +224,7 @@ int main()
     print_section(7, "with<T> 获取");
     {
         manager mgr;
-        mgr.append_preallocated_entities(10);
+        mgr.preallocate_entities(10);
         auto e1 = mgr.create_entity();
         auto e2 = mgr.create_entity();
         auto e3 = mgr.create_entity();
@@ -268,7 +268,7 @@ int main()
     print_section(8, "page 分页");
     {
         manager mgr;
-        mgr.append_preallocated_entities(20);
+        mgr.preallocate_entities(20);
         dense<entity> ents;
         for (int i = 0; i < 10; ++i)
         {
@@ -316,7 +316,7 @@ int main()
     print_section(9, "sorted_by_component");
     {
         manager mgr;
-        mgr.append_preallocated_entities(10);
+        mgr.preallocate_entities(10);
         auto a = mgr.create_entity();
         auto b = mgr.create_entity();
         auto c = mgr.create_entity();
@@ -360,7 +360,7 @@ int main()
     print_section(10, "sorted_by_component_value (分组视图)");
     {
         manager mgr;
-        mgr.append_preallocated_entities(10);
+        mgr.preallocate_entities(10);
         auto a = mgr.create_entity();
         auto b = mgr.create_entity();
         auto c = mgr.create_entity();
@@ -403,7 +403,7 @@ int main()
     print_section(11, "track_changes");
     {
         manager mgr;
-        mgr.append_preallocated_entities(10);
+        mgr.preallocate_entities(10);
         auto e1 = mgr.create_entity();
         auto e2 = mgr.create_entity();
         auto e3 = mgr.create_entity();
@@ -448,7 +448,7 @@ int main()
         // filter_changed
         {
             manager mgr;
-            mgr.append_preallocated_entities(10);
+            mgr.preallocate_entities(10);
             auto e1 = mgr.create_entity();
             auto e2 = mgr.create_entity();
             auto e3 = mgr.create_entity();
@@ -490,7 +490,7 @@ int main()
         // filter_added
         {
             manager mgr;
-            mgr.append_preallocated_entities(10);
+            mgr.preallocate_entities(10);
             auto a1 = mgr.create_entity();
             auto a2 = mgr.create_entity();
             auto a3 = mgr.create_entity();
@@ -536,7 +536,7 @@ int main()
     print_section(13, "exactly_one");
     {
         manager mgr;
-        mgr.append_preallocated_entities(10);
+        mgr.preallocate_entities(10);
         auto e1 = mgr.create_entity();
         mgr.add(e1, Position{42, 0, 0});
 
@@ -554,7 +554,7 @@ int main()
     print_section(14, "边界情况");
     {
         manager mgr;
-        mgr.append_preallocated_entities(10);
+        mgr.preallocate_entities(10);
 
         // 空 manager 上的 view
         auto sv = mgr.view<Position>();

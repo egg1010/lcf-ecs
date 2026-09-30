@@ -2119,17 +2119,10 @@ private:
     }
 
     // ====================================================================
-    // 类型名查询
     // ====================================================================
     template<typename T>
     [[nodiscard]] static std::string_view type_name() noexcept {
-        const char* stable = lookup_type_name(type_id::get_type_id<T>());
-        if (stable)
-        {
-            return stable;
-        }
-        static std::string name = typeid(T).name();
-        return name;
+        return get_type_name<T>();
     }
 
     // ====================================================================
@@ -2512,8 +2505,15 @@ private:
         }
         size_t count = set->size();
         size_t elem_size = set->get_component_size();
+        const auto& indices = set->get_entity_indices();
         for (size_t i = 0; i < count; ++i)
         {
+            // 新索引超出 remap 表 (加载后新建实体) 时跳过
+            uint32_t new_idx = indices[i];
+            if (new_idx >= remap.old_to_new.size())
+            {
+                continue;
+            }
             char* base = pool_base + i * elem_size;
             for (size_t k = 0; k < offsets.size(); ++k)
             {

@@ -1,8 +1,7 @@
 // 容量/访问/迭代器接口
 
     // === 容量 ===
-    // 码点计数在所有构造/修改后始终有效 (invalidate_cp_layout 保留计数)
-    // 无分支返回, 编译器可将 cp_count_ 提升为循环不变量, 优化 i%size 为位运算
+    // 码点计数在所有构造/修改后始终有效
     [[nodiscard]] FORCE_INLINE size_t size() const noexcept { return cp_count_; }
     [[nodiscard]] FORCE_INLINE size_t length() const noexcept { return cp_count_; }
     [[nodiscard]] size_t byte_size() const noexcept { return byte_size_; }
@@ -11,8 +10,8 @@
     [[nodiscard]] constexpr bool is_sso() const noexcept { return data_ == sso_buffer_; }
     [[nodiscard]] constexpr size_t sso_capacity() const noexcept { return SSO_CAPACITY; }
 
-    // === 字节级访问 (与码点级 at/operator[] 互补) ===
-    // 字节访问: 越界返回 '\0'
+    // === 字节级访问 ===
+    // 越界返回 '\0'
     [[nodiscard]] char byte_at(size_t byte_idx) const noexcept
     {
         if (byte_idx >= byte_size_ || !data_) return '\0';
@@ -24,14 +23,14 @@
         if (byte_idx >= byte_size_ || !data_) std::abort();
         return data_[byte_idx];
     }
-    // 字节级子串 (按字节范围, 不验证 UTF-8 边界; 调用者负责保证语义正确)
+    // 字节级子串 (不验证 UTF-8 边界)
     [[nodiscard]] utf8pp byte_substr(size_t byte_pos, size_t byte_len = npos) const
     {
         if (byte_pos >= byte_size_ || !data_) return utf8pp();
         if (byte_len > byte_size_ - byte_pos) byte_len = byte_size_ - byte_pos;
         return utf8pp(data_ + byte_pos, byte_len);
     }
-    // 字节偏移 → 码点索引 (公开版; 越界或非码点起点返回 npos)
+    // 字节偏移 → 码点索引 (越界或非码点起点返回 npos)
     [[nodiscard]] size_t byte_to_cp_idx(size_t byte_idx) const noexcept
     {
         return byte_idx_to_cp_idx(byte_idx);
@@ -49,14 +48,15 @@
         if (byte_cap > byte_capacity_) grow_byte_capacity(byte_cap);
     }
 
-    [[nodiscard]] size_t max_size() const noexcept { return static_cast<size_t>(-1) / sizeof(char); }
+    // 内部字节/码点字段为 uint32_t, 实际可持有上限与之对齐
+    [[nodiscard]] size_t max_size() const noexcept { return 0xFFFFFFFFu; }
 
     void reserve_exact(size_t byte_cap)
     {
         if (byte_cap > byte_capacity_) grow_byte_capacity(byte_cap);
     }
 
-    // 码点偏移容量预留 (项目规范: 容量预留用 increase_capacity/reserve_exact, 此处补充码点级)
+    // 码点偏移容量预留
     void reserve_cp(size_t cp_cap)
     {
         if (cp_cap > cp_offsets_capacity_) grow_cp_capacity(cp_cap);
@@ -87,7 +87,7 @@
             char tmp_bytes[SSO_CAPACITY + 1];
             std::memcpy(tmp_bytes, data_, byte_size_ + 1);
             utf8pp_free(data_, static_cast<size_t>(byte_capacity_) + 1);
-            // 保留 cp_count_ (内容不变), 用 invalidate_cp_layout 释放 cp_offsets_/cp_cache_
+            // 保留 cp_count_, 释放 cp_offsets_/cp_cache_
             invalidate_cp_layout();
             data_ = sso_buffer_;
             byte_capacity_ = SSO_CAPACITY;
@@ -120,38 +120,24 @@
     }
 
     // === 码点访问 ===
-    // 预解码缓存非空: 直接数组访问 (与 u32string 同速)
-    // 均匀码点: O(1) 乘法 + 内联解码 (无 cp_offsets_ 查表)
-    // 非均匀: ensure_cp_info + cp_offsets_[cp_idx] 查表
-    // 越界保护访问: cp_idx 越界时返回 U+FFFD
+    // 越界返回 U+FFFD
     [[nodiscard]] FORCE_INLINE char32_t get(size_t cp_idx) const noexcept
     {
-        // 最快路径: 预解码缓存已构建
         if (cp_cache_) [[likely]]
         {
             if (cp_idx >= cp_count_) return U'\uFFFD';
             return cp_cache_[cp_idx];
         }
-        // 状态已知 (构造/修改后必为 1/2/3)
         if (cp_info_state_ != 0) [[likely]]
         {
             if (cp_idx >= cp_count_) return U'\uFFFD';
-            // 均匀 3 字节且串足够长: 首次访问构建缓存, 后续 O(1)
-            if (uniform_byte_len_ == 3 && cp_count_ >= 64)
-            {
-                build_cp_cache();
-                if (cp_cache_) [[likely]] return cp_cache_[cp_idx];
-            }
-            // 均匀 1/2/4 字节: 乘法 + 内联解码
             if (uniform_byte_len_ != 0)
             {
                 return char32_t(cp_at_byte_unchecked(cp_idx * uniform_byte_len_));
             }
-            // 非均匀: 需 cp_offsets_ 查表
             ensure_cp_info();
             return char32_t(cp_at_byte_unchecked(cp_offsets_[cp_idx]));
         }
-        // 慢路径: state==0, 首次访问
         ensure_cp_count();
         return get(cp_idx);
     }
@@ -159,15 +145,9 @@
     // 无边界检查 (越界 UB, 与 std::string::operator[] 语义一致)
     [[nodiscard]] FORCE_INLINE char32_t operator[](size_t cp_idx) const noexcept
     {
-        // 最快路径: 预解码缓存已构建 (与 u32string::operator[] 同速)
         if (cp_cache_) [[likely]] return cp_cache_[cp_idx];
         if (cp_info_state_ != 0) [[likely]]
         {
-            if (uniform_byte_len_ == 3 && cp_count_ >= 64)
-            {
-                build_cp_cache();
-                if (cp_cache_) [[likely]] return cp_cache_[cp_idx];
-            }
             if (uniform_byte_len_ != 0)
             {
                 return char32_t(cp_at_byte_unchecked(cp_idx * uniform_byte_len_));
@@ -190,7 +170,7 @@
     [[nodiscard]] const char* c_str() const noexcept { return data_ ? data_ : ""; }
     [[nodiscard]] const char* data() const noexcept { return data_ ? data_ : ""; }
     // 非 const 版本允许直接修改字节缓冲区
-    // 注: 修改后必须调用 rebuild_cp_offsets() 重建缓存, 否则码点级接口行为未定义
+    // 注: 修改后必须调用 rebuild_cp_offsets(), 否则码点级接口行为未定义
     [[nodiscard]] char* data() noexcept { return data_; }
     // 修改 data() 后重建码点偏移缓存 (byte_size_ 变化需先更新)
     void rebuild_cp_offsets() noexcept
@@ -198,7 +178,7 @@
         invalidate_cp_info();
         ensure_cp_info();
     }
-    // 重建并设置新的字节大小 (直接修改 data() 后的便捷接口)
+    // 重建并设置新的字节大小
     void rebuild(size_t new_byte_size) noexcept
     {
         byte_size_ = new_byte_size;
@@ -211,8 +191,6 @@
     [[nodiscard]] std::u8string_view u8view() const noexcept { return std::u8string_view(reinterpret_cast<const char8_t*>(data_ ? data_ : ""), byte_size_); }
 
     // === 迭代器 ===
-    // 始终构建 cp_cache_, 返回 trivial 指针包装器 (无 uniform_len_ 分支)
-    // 编译器可自动向量化 range-for (SSE2 4 元素/迭代, 与 u32string 同速)
     [[nodiscard]] FORCE_INLINE const_iterator begin() const noexcept
     {
         if (cp_cache_) [[likely]] return const_iterator(cp_cache_);
