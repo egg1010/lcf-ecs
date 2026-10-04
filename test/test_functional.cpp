@@ -2866,6 +2866,20 @@ int main()
             print_item("group<Pos,Vel>.rebuild()", g.size() == 3);
         }
 
+        // --- Non-OwningGroup 空集 front/back 守卫 ---
+        std::cout << "\n  [Non-OwningGroup 空集守卫]\n";
+        {
+            ecs::manager empty_mgr;
+            empty_mgr.preallocate_entities(4);
+            auto a = empty_mgr.create_entity();
+            empty_mgr.add(a, Position{1, 0, 0});
+            (void)a;
+            auto g = empty_mgr.group<Position, Velocity>();
+            print_item("group<Pos,Vel> 空集 empty()", g.empty());
+            print_item("group<Pos,Vel> 空集 front() 返回无效 entity", !g.front().is_valid());
+            print_item("group<Pos,Vel> 空集 back() 返回无效 entity", !g.back().is_valid());
+        }
+
         // --- Non-OwningGroup 三组件 ---
         std::cout << "\n  [Non-OwningGroup 三组件]\n";
         {
@@ -3696,12 +3710,12 @@ int main()
             ents.increase_capacity(2048);
             for (size_t i = 0; i < 2048; ++i) ents.emplace_back(mgr.create_entity());
             for (size_t i = 0; i < 2048; ++i) mgr.add(ents[i], Position{static_cast<float>(i), 0, 0});
-            print_item("无界缓冲区不溢出 (overflow==0)", mgr.comp_signal_overflow_count() == 0);
+            print_item("无界缓冲区不溢出", mgr.has_pending_component_signals());
             size_t added = 0;
             mgr.flush_component_signals([&](uint32_t type, uint32_t, uint32_t) noexcept {
                 if (type == 0) ++added;
             });
-            print_item("overflow_chain 不丢信号 (added==2048)", added == 2048);
+            print_item("不丢信号 (added==2048)", added == 2048);
             print_item("flush 后缓冲区为空", !mgr.has_pending_component_signals());
         }
 
@@ -3790,18 +3804,17 @@ int main()
             print_item("flush 拿到 enable 后的信号", created == 1);
         }
 
-        // #15 reserve + overflow chain
+        // #15 大批 add 无界缓冲
         {
             ecs::manager mgr;
-            mgr.preallocate_component_signals(2048);
             mgr.preallocate_entities(2048);
             dense<entity> ents;
             ents.increase_capacity(2048);
             for (size_t i = 0; i < 2048; ++i) ents.emplace_back(mgr.create_entity());
             for (size_t i = 0; i < 2048; ++i) mgr.add(ents[i], Position{static_cast<float>(i), 0, 0});
-            print_item("reserve 后大批 add 无界不溢出 (overflow==0)", mgr.comp_signal_overflow_count() == 0);
+            print_item("大批 add 不丢信号", mgr.has_pending_component_signals());
             mgr.flush_component_signals([&](uint32_t, uint32_t, uint32_t) noexcept {});
-            print_item("reserve + flush 后缓冲区为空", !mgr.has_pending_component_signals());
+            print_item("flush 后缓冲区为空", !mgr.has_pending_component_signals());
         }
     }
 
@@ -5006,13 +5019,17 @@ int main()
             print_item("二次 flush 清空剩余", !q.has_pending());
         }
 
-        // 诊断计数与溢出链预留
+        // 无界缓冲: 大量 push 不丢事件, 多轮 flush 排空
         {
             signal_queue<sq_ev, 8> q;
-            q.reserve_overflow(32);
-            print_item("初始 overflow_count == 0", q.overflow_count() == 0);
-            q.reset_overflow_count();
-            print_item("reset_overflow_count 后 == 0", q.overflow_count() == 0);
+            constexpr uint32_t k_pushed = 8 + 8 * 16 + 50;
+            for (uint32_t i = 0; i < k_pushed; ++i) q.push(sq_ev{0, i});
+            print_item("大量 push 不丢事件", q.pending_count() == k_pushed);
+
+            uint32_t cnt = 0;
+            // flush 单轮预算 = Capacity*4; 多轮排空
+            while (q.has_pending()) q.flush([&](const sq_ev&) { ++cnt; });
+            print_item("多轮 flush 全部处理", cnt == k_pushed);
         }
     }
 
@@ -5302,8 +5319,31 @@ int main()
             size_t cnt = 0;
             rv.for_each([&cnt](ecs::entity) { ++cnt; });
             print_item("runtime_view 即时路径掩码过滤", cnt == 2);
+
+            // size() 必须与迭代器口径一致 (命中数, 非 primary 原始大小)
+            size_t iterated = 0;
+            for (auto it = rv.begin(); it != rv.end(); ++it) ++iterated;
+            print_item("runtime_view size == 迭代元素数", rv.size() == iterated && rv.size() == 2);
+        }
+
+        // --- runtime_view size 语义: 多条件命中小于 primary ---
+        {
+            ecs::manager mgr;
+            ecs::entity es[6];
+            for (int i = 0; i < 6; ++i)
+            {
+                es[i] = mgr.create_entity();
+                mgr.add<Position>(es[i], Position{(float)i, 0, 0});
+                if (i < 3) { mgr.add<Velocity>(es[i], Velocity{1, 1, 1}); }
+            }
+            const int pos_id = type_id::get_type_id<Position>();
+            const int vel_id = type_id::get_type_id<Velocity>();
+            auto rv = mgr.runtime_view_create(std::array<int, 2>{pos_id, vel_id});
+            size_t iterated = 0;
+            for (auto it = rv.begin(); it != rv.end(); ++it) ++iterated;
+            print_item("runtime_view size 与迭代一致 (6 中命中 3)",
+                       rv.size() == 3 && iterated == 3 && rv.count() == 3);
         }
     }
-    print_summary("功能测试");
-    return 0;
+    return print_summary("功能测试");
 }

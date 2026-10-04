@@ -72,18 +72,24 @@ public:
     [[nodiscard]] uint64_t read_u64() noexcept override { return r_.read_uint64(); }
     [[nodiscard]] float read_f32() noexcept override { return static_cast<float>(r_.read_double()); }
     [[nodiscard]] double read_f64() noexcept override { return r_.read_double(); }
-    [[nodiscard]] std::string_view read_string_view() noexcept override { return r_.read_string(); }
+    [[nodiscard]] std::string_view read_string_view() noexcept override {
+        // 无转义: view 指向原缓冲区 (稳定); 有转义: 解码到池化缓冲保稳定
+        std::string decode;
+        std::string_view v;
+        if (!r_.read_string(decode, v)) return {};
+        if (v.data() == decode.data() && !decode.empty()) {
+            tmp_pool_.push_back(std::make_unique<std::string>(std::move(decode)));
+            return std::string_view(*tmp_pool_.back());
+        }
+        return v;
+    }
 
     [[nodiscard]] std::string_view read_bytes_view(size_t len) noexcept override {
         // JSON 路径: bytes 存为 base64 字符串, 解码后返回池化缓冲区
-        // 空间换速度: 所有解码结果累积在 tmp_pool_ 中, reader 生命周期内有效
-        // 调用方可安全持有返回的 string_view 直到 reader 销毁
         (void)len;  // JSON 长度由流内 base64 内容决定
         std::string_view b64 = r_.read_string();
-        std::string decoded = detail::base64_decode(b64);
-        // 追加到池, 返回稳定视图 (避免下次调用覆盖)
-        tmp_pool_.push_back(std::move(decoded));
-        return std::string_view(tmp_pool_.back());
+        tmp_pool_.push_back(std::make_unique<std::string>(detail::base64_decode(b64)));
+        return std::string_view(*tmp_pool_.back());
     }
 
     void skip_value() noexcept override { r_.skip_value(); }
@@ -97,7 +103,7 @@ public:
     }
 
 private:
-    dense<std::string> tmp_pool_;  // base64 解码缓冲池 (空间换速度, 全生命周期有效)
+    dense<std::unique_ptr<std::string>> tmp_pool_;  // 解码缓冲池 (指针稳定, 视图全生命周期有效)
 };
 
 // ============================================================================

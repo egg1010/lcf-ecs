@@ -353,6 +353,5 @@ int main()
         print_item("空 view track_changes size == 0", cv.size() == 0);
     }
 
-    print_summary("功能测试");
-    return 0;
+    return print_summary("功能测试");
 }

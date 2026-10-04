@@ -61,6 +61,19 @@ struct Path { float points[16]; };
 struct Grid { float cells[8][8]; };
 struct Inventory { int slots[8]; };
 
+// 多态类型 (测试 virtual_dispatch 虚函数查询)
+struct VShape
+{
+    virtual ~VShape() = default;
+    virtual int area() { return 0; }
+    int base_id() { return 7; }
+};
+struct VSquare : VShape
+{
+    int side{4};
+    int area() override { return side * side; }
+};
+
 // === 注册 ===
 REGISTER(Vec3);
 REGISTER(Vec2);
@@ -86,6 +99,11 @@ REGISTER_FNS(BigCalculator, get_big);
 REGISTER_MEMBERS(Path, points);
 REGISTER_MEMBERS(Grid, cells);
 REGISTER_MEMBERS(Inventory, slots);
+
+// 虚方法注册 (virtual_dispatch: area 为虚函数, 给出 vtable 偏移 0; base_id 非虚)
+REGISTER(VShape);
+REGISTER_FNS(VShape, base_id);
+REGISTER_VIRTUAL_FN(VShape, area, 0);
 
 // === 新功能测试类型 (1~12) ===
 
@@ -855,6 +873,23 @@ int main()
         print_item("push_back 后 size == 4", cv.size() == 4);
     }
 
-    print_summary("功能测试");
-    return 0;
+    // === 30. virtual_dispatch 虚函数查询 ===
+    print_section(30, "virtual_dispatch 虚函数查询");
+    {
+        auto vd = reflect::get_virtual_dispatch<VShape>();
+        print_item("is_virtual(area) 为真", vd.is_virtual("area"));
+        print_item("is_virtual(base_id) 为假", !vd.is_virtual("base_id"));
+        print_item("vtable_offset(area) == 0", vd.vtable_offset("area") == 0);
+        print_item("vtable_offset(base_id) == -1", vd.vtable_offset("base_id") == -1);
+
+        // 经虚派发调用: VSquare 覆写 area, 应派发到派生实现
+        VSquare sq;
+        int a = vd.invoke_virtual<int>(&sq, "area");
+        print_item("invoke_virtual 派发到派生 area == 16", a == 16);
+
+        int bid = vd.invoke_virtual<int>(&sq, "base_id");
+        print_item("invoke_virtual 非虚 base_id == 7", bid == 7);
+    }
+
+    return print_summary("功能测试");
 }

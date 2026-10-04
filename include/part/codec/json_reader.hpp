@@ -308,8 +308,8 @@ public:
                 return std::string_view{};
             }
         }
-        std::string tmp; std::string_view k;
-        if (!parse_string(tmp, k)) return std::string_view{};
+        std::string_view k;
+        if (!parse_string(key_buf_, k)) return std::string_view{};
         if (!expect(':')) return std::string_view{};
         return k;
     }
@@ -494,4 +494,5 @@ public:
 
 private:
     bool need_comma_consumed_{false};
+    std::string key_buf_;  // next_key 转义解码缓冲 (保证返回视图稳定)
 };

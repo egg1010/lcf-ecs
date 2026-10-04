@@ -72,6 +72,15 @@ struct reflect_access;
         ::reflect::global().register_static_method<Cls, &Cls::method>(#method); \
     }
 
+// === 注册虚方法 (显式给出 vtable 偏移, 供 virtual_dispatch 查询) ===
+// 用法: REGISTER_VIRTUAL_FN(Shape, area, 0);
+// 说明: C++ 无法跨平台可靠探测成员函数是否为虚, 故显式声明偏移
+#define REGISTER_VIRTUAL_FN(Cls, method, vt_off) \
+    inline int REFLECT_UNIQUE(_reflect_vfn_) = []{ \
+        ::reflect::global().register_method<&Cls::method>(#method, vt_off); \
+        return 0; \
+    }()
+
 // === 注册私有成员 (手填偏移量, 逃生通道) ===
 // 用法:
 //   REGISTER_PRIVATE_OFFSETS(Account,

@@ -830,14 +830,14 @@ inline runtime_view::iterator runtime_view::end() noexcept
 
 inline size_t runtime_view::size() noexcept
 {
-    ensure_fresh();
-    return query_.primary_set_ ? query_.primary_set_->size() : 0;
+    ensure_hits_fresh();
+    return cached_hits_.size();
 }
 
 inline bool runtime_view::empty() noexcept
 {
-    ensure_fresh();
-    return query_.primary_set_ == nullptr || query_.primary_set_->empty();
+    ensure_hits_fresh();
+    return cached_hits_.empty();
 }
 
 template <typename T, typename Pred>

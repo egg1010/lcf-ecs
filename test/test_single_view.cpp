@@ -625,6 +625,5 @@ int main()
         print_item("添加后 contains == true", sv2.contains(e));
     }
 
-    print_summary("功能测试");
-    return 0;
+    return print_summary("功能测试");
 }

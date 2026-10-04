@@ -1045,6 +1045,84 @@ static void test_transform_hooks()
     if (!pass || !vals_ok) std::cout << "    json: " << json << "\n";
 }
 
+// 运行时二进制往返 (遍历 registry, 调用 binary trampoline)
+static void test_runtime_binary_roundtrip()
+{
+    print_sub("运行时二进制往返");
+    manager mgr;
+    entity e1 = mgr.create_entity();
+    entity e2 = mgr.create_entity();
+    mgr.add<Vec3>(e1, Vec3(1.5f, 2.5f, 3.5f));
+    mgr.add<Vec3>(e2, Vec3(4.5f, 5.5f, 6.5f));
+    mgr.add<Hp>(e1, Hp(70, 100));
+
+    // 先经编译期路径注册类型到 registry
+    serialization s_reg(mgr);
+    s_reg.set_checksum_enabled(false);
+    std::string warm;
+    s_reg.save_to_string<Vec3, Hp>(warm, serialization::format::json);
+
+    std::string bin;
+    auto r = s_reg.save_to_string_runtime(bin, serialization::format::binary);
+    bool pass = (bool)r;
+    print_item("运行时二进制保存", pass);
+    if (!pass) std::cout << "    err: " << r.read_message() << "\n";
+
+    bool is_bin = bin.size() >= 4 && bin[0] == 'L' && bin[1] == 'C' && bin[2] == 'E';
+    print_item("运行时二进制 magic", is_bin);
+
+    manager mgr2;
+    auto r2 = serialization(mgr2).load_from_string_runtime(bin);
+    pass = pass && (bool)r2;
+    print_item("运行时二进制加载", pass);
+    if (!pass) std::cout << "    err: " << r2.read_message() << "\n";
+
+    size_t v3_count = 0, hp_count = 0;
+    if (auto* s = mgr2.get_single_class_set<Vec3>()) v3_count = s->size();
+    if (auto* s = mgr2.get_single_class_set<Hp>()) hp_count = s->size();
+    pass = pass && v3_count == 2 && hp_count == 1;
+    print_item("运行时二进制数量: Vec3=2, Hp=1", pass);
+
+    bool vals_ok = false;
+    if (auto* s = mgr2.get_single_class_set<Vec3>()) {
+        const auto* pool = s->get_typed_pool_ptr<Vec3>();
+        for (size_t i = 0; i < s->size(); ++i) {
+            if ((*pool)[i] == Vec3(4.5f, 5.5f, 6.5f)) { vals_ok = true; break; }
+        }
+    }
+    print_item("运行时二进制值匹配", vals_ok);
+}
+
+// load_entity 回传创建的实体
+static void test_load_entity()
+{
+    print_sub("load_entity 回传实体");
+    manager src;
+    entity se = src.create_entity();
+    src.add<Vec3>(se, Vec3(7.5f, 8.5f, 9.5f));
+    std::string json;
+    auto rs = serialization(src).save_to_string<Vec3>(json, serialization::format::json);
+    print_item("准备 json 存档", (bool)rs);
+
+    manager dst;
+    entity out_e{};
+    auto r = serialization(dst).load_entity<Vec3>(json, out_e);
+    print_item("load_entity 成功", (bool)r);
+    print_item("out_e 有效", out_e.is_valid());
+
+    bool val_ok = false;
+    if (out_e.is_valid()) {
+        if (auto* p = dst.get_ptr_fast<Vec3>(out_e)) { val_ok = (*p == Vec3(7.5f, 8.5f, 9.5f)); }
+    }
+    print_item("out_e 指向加载的组件", val_ok);
+
+    // 失败路径: 畸形 json 回传无效实体
+    manager dst2;
+    entity bad_e{};
+    auto rb = serialization(dst2).load_entity<Vec3>("{ broken", bad_e);
+    print_item("失败时 out_e 无效", !(bool)rb && !bad_e.is_valid());
+}
+
 int main()
 {
     print_section(1, "ECS 序列化功能测试");
@@ -1055,7 +1133,7 @@ int main()
     test_file_io();
     test_empty_manager();
     test_chinese_string();
-    print_summary("功能测试");
+    int fails = print_summary("功能测试");
 
     print_section(2, "ECS 序列化高级功能测试");
     test_binary_roundtrip();
@@ -1064,7 +1142,7 @@ int main()
     test_version_control();
     test_format_auto_detection();
     test_validate_string();
-    print_summary("高级功能测试");
+    fails = print_summary("高级功能测试");
 
     print_section(3, "ECS 序列化扩展功能测试");
     test_filter_save_load();
@@ -1080,6 +1158,11 @@ int main()
     test_incremental_save();
     test_transform_hooks();
     test_static_interface();
-    print_summary("扩展功能测试");
-    return 0;
+    fails = print_summary("扩展功能测试");
+
+    print_section(4, "ECS 序列化接口补齐测试");
+    test_runtime_binary_roundtrip();
+    test_load_entity();
+    fails = print_summary("接口补齐测试");
+    return fails;
 }

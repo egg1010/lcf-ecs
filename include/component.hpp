@@ -227,7 +227,7 @@ private:
     }
 
 public:
-    manager() noexcept = default;
+    manager() noexcept { change_log_.set_enabled(false); }
 
     bool is_entity_valid(entity entitys) const noexcept
     {
@@ -290,9 +290,13 @@ public:
         register_component_meta<DecayedT>();
         ensure_type_exists(type_id);
         operating_message result = components_c_[type_id].add_batch(entities, components);
-        for (const auto& e : entities)
+        // 仅成功时置掩码 (invalid entity 时报错且不写入, 置掩码会与存储不一致)
+        if (result) [[likely]]
         {
-            set_entity_mask_for_type(e, type_id);
+            for (const auto& e : entities)
+            {
+                set_entity_mask_for_type(e, type_id);
+            }
         }
         return result;
     }
@@ -1110,20 +1114,6 @@ public:
 
     void enable_entity_signals() noexcept { entity_manager_.enable_entity_signals(); }
     void disable_entity_signals() noexcept { entity_manager_.disable_entity_signals(); }
-
-    [[nodiscard]] uint64_t entity_signal_overflow_count() const noexcept
-    {
-        return entity_manager_.signal_overflow_count();
-    }
-    [[nodiscard]] uint64_t comp_signal_overflow_count() const noexcept
-    {
-        return comp_signals_.overflow_count();
-    }
-    void reset_entity_signal_overflow_count() noexcept { entity_manager_.reset_signal_overflow_count(); }
-    void reset_comp_signal_overflow_count() noexcept { comp_signals_.reset_overflow_count(); }
-
-    void preallocate_entity_signals(size_t n) noexcept { entity_manager_.preallocate_signals(n); }
-    void preallocate_component_signals(size_t n) noexcept { comp_signals_.reserve_overflow(n); }
 
     template <typename Func>
     void flush_entity_signals(Func&& handler) noexcept

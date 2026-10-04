@@ -748,6 +748,9 @@ void class_pool<T>::push_back(T&& value) noexcept {
 
 template <typename T>
 void class_pool<T>::push_back_unchecked(const T& value) noexcept {
+	if (count_cache_ != static_cast<size_t>(-1)) [[likely]] {
+		++count_cache_;
+	}
 	if (index_ >= maximum_quantity_) [[unlikely]] {
 		grow_data_and_bitmap(calculate_new_capacity(maximum_quantity_));
 	}
@@ -763,6 +766,9 @@ void class_pool<T>::push_back_unchecked(const T& value) noexcept {
 
 template <typename T>
 void class_pool<T>::push_back_unchecked(T&& value) noexcept {
+	if (count_cache_ != static_cast<size_t>(-1)) [[likely]] {
+		++count_cache_;
+	}
 	if (index_ >= maximum_quantity_) [[unlikely]] {
 		grow_data_and_bitmap(calculate_new_capacity(maximum_quantity_));
 	}
@@ -779,6 +785,9 @@ void class_pool<T>::push_back_unchecked(T&& value) noexcept {
 template <typename T>
 template <typename... Args>
 void class_pool<T>::emplace_back_unchecked(Args&&... args) noexcept {
+	if (count_cache_ != static_cast<size_t>(-1)) [[likely]] {
+		++count_cache_;
+	}
 	if (index_ >= maximum_quantity_) [[unlikely]] {
 		grow_data_and_bitmap(calculate_new_capacity(maximum_quantity_));
 	}

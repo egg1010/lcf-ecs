@@ -55,14 +55,13 @@ public:
         return -1;
     }
 
-    // 通过 vtable 调用虚函数 (Itanium ABI: 单继承下 vptr 在对象首 8 字节)
-    // 注意: 此接口为高级用途, 需要用户确保 ABI 正确性
-    // 当前实现: 委托给普通 invoke (因为 C++ 成员函数指针已包含 vtable 信息)
+    // 通过虚函数派发调用 (成员函数指针已含 vtable 信息, 调用点自动派发)
+    // 虚函数需在 register_method 时给出 vtable 偏移 (>=0) 以启用 is_virtual 查询
     template<typename R = void, typename... Args>
     R invoke_virtual(void* obj, const char* name, Args&&... args) const noexcept
     {
-        // 对于通过 register_method 注册的虚函数, invoker 已正确处理 vtable
-        // 此处直接调用普通 invoke 路径, 复用重载解析
+        // is_virtual 查询依赖 register_method 时传入的 vtable 偏移
+        // 调用本身走成员函数指针, 虚函数自动派发到实际类型
         if (!meta_)
         {
             detail::abort_with_location("invoke_virtual: query_view invalid");

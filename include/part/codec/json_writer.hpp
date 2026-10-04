@@ -82,6 +82,18 @@ private:
         buf_.append(tmp, static_cast<size_t>(r.ptr - tmp));
     }
 
+    // 浮点写出: NaN/Inf 非 JSON 合法 token, 写 null 保证外部解析器可读
+    template<typename T>
+    void write_float(T v) noexcept
+    {
+        if (!std::isfinite(v))
+        {
+            buf_.append("null", 4);
+            return;
+        }
+        write_num(v);
+    }
+
 public:
     explicit json_writer(size_t reserve = k_default_reserve, bool pretty = false) noexcept
         : pretty_(pretty)
@@ -154,8 +166,8 @@ public:
     json_writer& value(uint32_t v) noexcept { on_value_start(); write_num(v); return *this; }
     json_writer& value(int64_t v) noexcept { on_value_start(); write_num(v); return *this; }
     json_writer& value(uint64_t v) noexcept { on_value_start(); write_num(v); return *this; }
-    json_writer& value(float v) noexcept { on_value_start(); write_num(v); return *this; }
-    json_writer& value(double v) noexcept { on_value_start(); write_num(v); return *this; }
+    json_writer& value(float v) noexcept { on_value_start(); write_float(v); return *this; }
+    json_writer& value(double v) noexcept { on_value_start(); write_float(v); return *this; }
 
     json_writer& null() noexcept { on_value_start(); write_raw("null"); return *this; }
 

@@ -2152,19 +2152,6 @@ int main()
                 print_perf("has_pending_signals", 1000000 * 2, t.elapsed_milliseconds());
 
                 t.reset();
-                mgr_chk.preallocate_entity_signals(2048);
-                mgr_chk.preallocate_component_signals(2048);
-                print_perf("preallocate_signals", 2, t.elapsed_milliseconds());
-
-                t.reset();
-                for (int i = 0; i < 1000000; ++i)
-                {
-                    lcf_sink_all(mgr_chk.entity_signal_overflow_count(),
-                                 mgr_chk.comp_signal_overflow_count());
-                }
-                print_perf("overflow_count query", 1000000 * 2, t.elapsed_milliseconds());
-
-                t.reset();
                 for (int i = 0; i < 1000000; ++i)
                 {
                     mgr_chk.disable_comp_signals();
@@ -3575,6 +3562,5 @@ int main()
         }
     }
 
-    print_summary("性能测试");
-    return 0;
+    return print_summary("性能测试");
 }

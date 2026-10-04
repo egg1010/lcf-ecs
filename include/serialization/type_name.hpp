@@ -149,8 +149,10 @@ namespace detail {
 struct type_factory_entry {
     int          type_id;           // type_id::get_type_id<T>()
     const char*  name;              // 稳定类型名 (存档格式)
-    void(*save_fn)(serialization*, void* w);   // w 为 json_writer*/binary_writer*
-    void(*load_fn)(serialization*, void* r, const entity_remap*, uint32_t saved_cv);
+    void(*save_fn)(serialization*, void* w);   // JSON save: w 为 json_writer*
+    void(*load_fn)(serialization*, void* r, const entity_remap*, uint32_t saved_cv); // JSON load
+    void(*binary_save_fn)(serialization*, void* w);  // binary save: w 为 binary_writer*
+    void(*binary_load_fn)(serialization*, void* r, const entity_remap*, uint32_t saved_cv); // binary load
     size_t       type_size;         // sizeof(T)
     bool         is_trivially_copyable;
 };

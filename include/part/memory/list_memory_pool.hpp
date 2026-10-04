@@ -872,9 +872,23 @@ public:
 		peak_allocated_bytes_ = total_allocated_bytes_;
 	}
 
-	// 轻量重置: 保留 chunk 内存, 清空 free list 和 active chunk
+	// 轻量重置: 保留 chunk/wilderness 内存, 释放独立大块, 清空 free list 和 active chunk
 	void reset() noexcept
 	{
+		// 释放独立大块 (非 wilderness, 否则泄漏)
+		big_block_header* bh = big_head_;
+		while (bh)
+		{
+			big_block_header* next = bh->next;
+			if (!bh->from_wilderness)
+			{
+				size_t aligned = (bh->user_size + CHUNK_ALIGN - 1) & ~(CHUNK_ALIGN - 1);
+				total_capacity_bytes_ -= aligned;
+				::operator delete(bh, bh->total_size, std::align_val_t{ CHUNK_ALIGN });
+			}
+			bh = next;
+		}
+
 		global_free_heads_.fill(nullptr);
 		active_chunks_.fill(nullptr);
 		all_head_ = nullptr;

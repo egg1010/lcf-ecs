@@ -418,6 +418,7 @@ public:
     [[nodiscard]] entity front() noexcept
     {
         ensure_fresh();
+        if (cached_.empty()) [[unlikely]] return entity{};
         auto* primary = sets_[primary_idx_];
         auto& indices = primary->get_entity_indices();
         uint32_t eid = indices[cached_[0]];
@@ -427,6 +428,7 @@ public:
     [[nodiscard]] entity back() noexcept
     {
         ensure_fresh();
+        if (cached_.empty()) [[unlikely]] return entity{};
         auto* primary = sets_[primary_idx_];
         auto& indices = primary->get_entity_indices();
         uint32_t eid = indices[cached_[cached_.size() - 1]];
@@ -679,6 +681,7 @@ public:
     [[nodiscard]] entity front() noexcept
     {
         ensure_fresh();
+        if (owned_size_ == 0) [[unlikely]] return entity{};
         auto* primary = sets_[primary_idx_];
         auto& indices = primary->get_entity_indices();
         return entity(indices[0], primary->get_version_unchecked(indices[0]));
@@ -687,6 +690,7 @@ public:
     [[nodiscard]] entity back() noexcept
     {
         ensure_fresh();
+        if (owned_size_ == 0) [[unlikely]] return entity{};
         auto* primary = sets_[primary_idx_];
         auto& indices = primary->get_entity_indices();
         return entity(indices[owned_size_ - 1], primary->get_version_unchecked(indices[owned_size_ - 1]));

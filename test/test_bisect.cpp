@@ -1303,7 +1303,6 @@ int main()
         print_item("getline 空流失败", !r4);
     }
 
-    print_summary("功能测试");
-    return 0;
+    return print_summary("功能测试");
 }
 

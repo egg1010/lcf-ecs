@@ -379,6 +379,5 @@ int main()
     test_format_switch_zero_copy();
     test_serializer_four_formats();
 
-    print_summary("新格式测试");
-    return 0;
+    return print_summary("新格式测试");
 }

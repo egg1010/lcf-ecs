@@ -561,6 +561,36 @@ static void test_aligned_allocate_deallocate()
 	}
 }
 
+// reset 释放独立大块 (非 wilderness), 保留 wilderness chunk
+static void test_reset_releases_independent_big_blocks()
+{
+	list_memory_pool pool;
+
+	// 600000 字节 -> total >= 512KB -> 独立 OS 大块 (from_wilderness == 0)
+	void* big_indep = pool.allocate(600000);
+	CHECK(big_indep != nullptr);
+	CHECK(pool.owns(big_indep));
+
+	void* small = pool.allocate(64);   // 走 chunk (wilderness)
+	CHECK(small != nullptr);
+
+	size_t cap_before = pool.total_capacity_bytes();
+	CHECK(cap_before > 600000);
+	CHECK(pool.big_block_count() >= 1);
+
+	pool.reset();
+
+	CHECK(pool.big_block_count() == 0);
+	CHECK(pool.total_allocated_bytes() == 0);
+	CHECK(pool.total_capacity_bytes() < 600000);   // 独立大块容量已归还
+	CHECK(pool.total_capacity_bytes() < cap_before);
+
+	void* again = pool.allocate(64);   // 保留的 wilderness 可复用
+	CHECK(again != nullptr);
+	CHECK(pool.owns(again));
+	pool.hard_deallocate(again);
+}
+
 int main()
 {
 	// Windows 控制台 UTF-8
@@ -592,6 +622,9 @@ int main()
 
 	// 对齐分配/释放配对测试
 	test_aligned_allocate_deallocate();
+
+	// reset 释放独立大块
+	test_reset_releases_independent_big_blocks();
 
 	printf("========================================\n");
 	printf("list_memory_pool 功能测试: %d 通过, %d 失败\n", g_pass, g_fail);

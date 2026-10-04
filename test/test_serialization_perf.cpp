@@ -699,6 +699,5 @@ int main()
     print_sub("容忍模式开销");
     bench_extreme_reader_tolerant(10000);
 
-    print_summary("性能测试");
-    return 0;
+    return print_summary("性能测试");
 }

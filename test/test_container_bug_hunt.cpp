@@ -388,6 +388,5 @@ int main()
         print_item("class_pool(空范围) 追加存活", c4.size() == 1 && c4[0] == 4);
     }
 
-    print_summary("功能测试");
-    return 0;
+    return print_summary("功能测试");
 }

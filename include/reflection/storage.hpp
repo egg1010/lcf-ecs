@@ -508,8 +508,9 @@ public:
     }
 
     // 注册成员方法
+    //   vt_off >= 0 表示虚函数并给出 vtable 偏移 (跨平台一致); 默认 -1 非虚
     template<auto Fn>
-    void register_method(const char* name,
+    void register_method(const char* name, int vt_off = -1,
         const std::source_location& loc = std::source_location::current()) noexcept
     {
         using mfn_type = decltype(Fn);
@@ -544,7 +545,7 @@ public:
         mm.is_const = traits::is_const;
         mm.is_static = false;
         mm.arg_type_ids = detail::make_arg_type_ids<mfn_type>();
-        mm.vtable_offset = -1;
+        mm.vtable_offset = vt_off;
         m->methods[midx] = mm;
         m->method_count.store(static_cast<uint16_t>(midx + 1), std::memory_order_release);
     }

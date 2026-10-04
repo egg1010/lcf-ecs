@@ -227,6 +227,5 @@ int main()
         print_item("Pod4 成员 d 偏移 == 12", member_offset(&Pod4::d) == 12);
     }
 
-    print_summary("功能测试");
-    return 0;
+    return print_summary("功能测试");
 }

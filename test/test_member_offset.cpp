@@ -180,6 +180,5 @@ int main()
         print_item("Big data[99] == 'Z'", b.data[99] == 'Z');
     }
 
-    print_summary("功能测试");
-    return 0;
+    return print_summary("功能测试");
 }

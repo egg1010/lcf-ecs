@@ -265,7 +265,7 @@ static void test_entity_signals()
     constexpr size_t N = 1 << 16;
     constexpr size_t OPS = 1000000;
 
-    // 4.1 enable / disable / has_pending / overflow_count
+    // 4.1 enable / disable / has_pending
     {
         entity_manager em;
         em.enable_entity_signals();
@@ -278,11 +278,10 @@ static void test_entity_signals()
                 em.disable_entity_signals();
                 em.enable_entity_signals();
                 s += em.has_pending_signals() ? 1 : 0;
-                s += em.signal_overflow_count();
             }
             (void)s;
         });
-        print_ns("enable/disable/has_pending/overflow", OPS, ns / static_cast<double>(OPS));
+        print_ns("enable/disable/has_pending", OPS, ns / static_cast<double>(OPS));
     }
 
     // 4.2 flush_signals
@@ -296,18 +295,6 @@ static void test_entity_signals()
             return em.has_pending_signals() ? 1 : 0;
         });
         print_ns("flush_signals", 1, ns);
-    }
-
-    // 4.3 reset_signal_overflow_count / preallocate_signals
-    {
-        entity_manager em;
-        double ns = best_ns(REPEAT, [&]() {
-            em.reset_signal_overflow_count();
-            em.preallocate_signals(1024);
-            compiler_barrier();
-            return em.signal_overflow_count();
-        });
-        print_ns("reset_overflow/reserve_capacity", 1, ns);
     }
 
     print_footer();

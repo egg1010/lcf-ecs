@@ -409,6 +409,5 @@ int main()
     test_tolerant_leading_plus();
     test_tolerant_mixed();
 
-    print_summary("功能测试");
-    return 0;
+    return print_summary("功能测试");
 }

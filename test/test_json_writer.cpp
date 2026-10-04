@@ -2,6 +2,7 @@
 #include "include/part/codec/json_writer.hpp"
 #include "test_common.hpp"
 #include <string>
+#include <limits>
 
 static void test_basic_object()
 {
@@ -120,6 +121,22 @@ static void test_empty_containers()
     if (!pass) std::cout << "    实际: " << s << "\n";
 }
 
+// NaN/Inf 写 null (JSON 无 nan/inf token, 保证外部解析器可读)
+static void test_non_finite_numbers()
+{
+    json_writer w;
+    w.begin_array();
+    w.value(std::numeric_limits<double>::quiet_NaN());
+    w.value(std::numeric_limits<double>::infinity());
+    w.value(-std::numeric_limits<double>::infinity());
+    w.value(std::numeric_limits<float>::quiet_NaN());
+    w.end_array();
+    std::string s = w.string();
+    bool pass = (s == "[null,null,null,null]");
+    print_item("非有限浮点写 null", pass);
+    if (!pass) std::cout << "    实际: " << s << "\n";
+}
+
 int main()
 {
     print_section(1, "json_writer 单元测试");
@@ -131,6 +148,6 @@ int main()
     test_null_and_bool();
     test_raw_value();
     test_empty_containers();
-    print_summary("功能测试");
-    return 0;
+    test_non_finite_numbers();
+    return print_summary("功能测试");
 }

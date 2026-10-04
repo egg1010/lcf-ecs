@@ -255,14 +255,6 @@ public:
     void enable_entity_signals() noexcept { signals_.set_enabled(true); }
     void disable_entity_signals() noexcept { signals_.set_enabled(false); }
 
-    [[nodiscard]] uint64_t signal_overflow_count() const noexcept { return signals_.overflow_count(); }
-    void reset_signal_overflow_count() noexcept { signals_.reset_overflow_count(); }
-
-    void preallocate_signals(size_t n) noexcept
-    {
-        signals_.reserve_overflow(n);
-    }
-
     [[nodiscard]] entity_state& get_entity_state(uint32_t entity_index) noexcept
     {
         return entity_states_[entity_index];

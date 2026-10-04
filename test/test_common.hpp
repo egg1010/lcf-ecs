@@ -297,7 +297,8 @@ struct ExtraComp {
 };
 
 // === 测试结果汇总输出 (type: "功能测试" 或 "性能测试") ===
-inline void print_summary(const char* type) {
+// 返回失败项数 (作为进程退出码, 使 CI 能捕获失败)
+inline int print_summary(const char* type) {
     // 输出最后一个模块的汇总
     if (test_stats::g_module_count > 0 && test_stats::g_current_module.op_count > 0)
     {
@@ -328,4 +329,5 @@ inline void print_summary(const char* type) {
         std::cout << "  结果: " << (test_stats::g_fail_count == 0 ? "全部通过" : "存在失败") << "\n";
     }
     std::cout << std::string(56, '=') << "\n";
+    return static_cast<int>(test_stats::g_fail_count);
 }

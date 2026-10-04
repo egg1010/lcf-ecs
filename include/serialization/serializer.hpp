@@ -74,6 +74,9 @@ private:
     dense<detail::metadata_entry> metadata_;
     dense<uint64_t> last_type_versions_;
 
+    // 最近一次 load 创建的最后一个实体 (load_entity 回传)
+    ecs::entity last_loaded_entity_{};
+
     progress_fn progress_cb_ = nullptr;
     transform_fn on_save_cb_ = nullptr;
     transform_fn on_load_cb_ = nullptr;
@@ -418,10 +421,11 @@ public:
     operating_message load_entity(std::string_view json, ecs::entity& out_e) noexcept {
         load_mode old_mode = load_mode_;
         load_mode_ = load_mode::append;
+        last_loaded_entity_ = ecs::entity{};
         auto r = load_from_string<Ts...>(json);
         load_mode_ = old_mode;
-        // 返回最后一个创建的实体
-        out_e = ecs::entity{};
+        // 回传最后创建的实体 (失败则为无效实体)
+        out_e = r ? last_loaded_entity_ : ecs::entity{};
         return r;
     }
 
@@ -1159,6 +1163,7 @@ private:
             }
             remap.old_to_new[idx] = new_e;
             remap.old_versions[idx] = ver;
+            last_loaded_entity_ = new_e;
 
             auto& state = mgr_.get_entity_state(new_e.parts_.index_);
             state.flags = flags;
@@ -1983,6 +1988,7 @@ private:
             }
             remap.old_to_new[idx] = new_e;
             remap.old_versions[idx] = ver;
+            last_loaded_entity_ = new_e;
 
             auto& state = mgr_.get_entity_state(new_e.parts_.index_);
             state.flags = flags;
@@ -2189,6 +2195,10 @@ private:
             &json_save_trampoline<T>);
         entry.load_fn = reinterpret_cast<void(*)(serialization*, void*,
             const detail::entity_remap*, uint32_t)>(&json_load_trampoline<T>);
+        entry.binary_save_fn = reinterpret_cast<void(*)(serialization*, void*)>(
+            &binary_save_trampoline<T>);
+        entry.binary_load_fn = reinterpret_cast<void(*)(serialization*, void*,
+            const detail::entity_remap*, uint32_t)>(&binary_load_trampoline<T>);
     }
 
     // ====================================================================
@@ -2532,27 +2542,145 @@ private:
     }
 
     // ====================================================================
-    // 运行时二进制保存/加载 (遍历 registry)
-    // 注: 二进制格式需要类型特化的 save_one_type_binary<T>, 运行时类型擦除
-    //     需为每个类型注册 binary trampoline. 当前简化实现: 运行时仅支持 JSON.
-    //     二进制运行时路径回退到 JSON 中间格式再转换.
+    // 运行时二进制保存/加载 (遍历 registry, 调用 binary trampoline)
+    //   与编译期 save_to_binary<Ts...> 格式同构, 类型集来自 registry
     // ====================================================================
     operating_message save_to_binary_runtime(std::string& out) noexcept {
-        // 运行时二进制暂不支持, 回退到 JSON
-        operating_message r = save_to_json_runtime(out);
-        if (!r)
+        binary_writer bw;
+        bw.value(header_.archive_version);
+        bw.value(header_.engine_version);
+
+        // 元数据
+        std::string meta_buf;
+        if (metadata_.size() > 0)
         {
-            return r;
+            json_writer mw;
+            mw.begin_object();
+            for (size_t i = 0; i < metadata_.size(); ++i)
+            {
+                mw.key(metadata_[i].key).value(metadata_[i].value);
+            }
+            mw.end_object();
+            meta_buf = mw.take();
         }
-        r.write(false, "运行时二进制保存暂不支持, 请使用 JSON 格式或 Ts... 编译期路径");
-        return r;
+        bw.value(meta_buf);
+
+        // 实体状态
+        std::string entities_buf;
+        {
+            json_writer ew;
+            ew.begin_array();
+            save_entities_runtime(ew);
+            ew.end_array();
+            entities_buf = ew.take();
+        }
+        bw.value(entities_buf);
+
+        // 统计非空类型数
+        auto& reg = detail::type_factory_registry();
+        uint32_t type_count = 0;
+        for (size_t i = 0; i < reg.size(); ++i)
+        {
+            if (reg[i].binary_save_fn && has_registered_components(reg[i].type_id))
+            {
+                ++type_count;
+            }
+        }
+        bw.value(type_count);
+
+        for (size_t i = 0; i < reg.size(); ++i)
+        {
+            if (!reg[i].binary_save_fn || !has_registered_components(reg[i].type_id))
+            {
+                continue;
+            }
+            reg[i].binary_save_fn(this, &bw);
+        }
+
+        out = bw.take();
+        return operating_message{};
     }
 
     operating_message load_from_binary_runtime(std::string_view data) noexcept {
-        // 运行时二进制暂不支持
-        operating_message r;
-        r.write(false, "运行时二进制加载暂不支持, 请使用 JSON 格式或 Ts... 编译期路径");
-        return r;
+        binary_reader r(data);
+        if (r.has_error())
+        {
+            operating_message res;
+            res.write(false, "二进制格式校验失败");
+            return res;
+        }
+
+        uint32_t archive_ver = r.read_u32();
+        if (archive_ver > header_.archive_version)
+        {
+            operating_message res;
+            res.write(false, "存档版本 ", archive_ver, " 高于当前支持版本 ",
+                            std::to_string(header_.archive_version));
+            return res;
+        }
+        [[maybe_unused]] uint32_t engine_ver = r.read_u32();
+
+        std::string meta_str = r.read_string();
+        if (!meta_str.empty())
+        {
+            json_reader mr(meta_str);
+            if (mr.enter_object())
+            {
+                std::string_view mk;
+                while (!(mk = mr.next_key()).empty())
+                {
+                    std::string val = mr.read_string();
+                    metadata_.push_back({std::string(mk), std::move(val)});
+                }
+            }
+        }
+
+        std::string entities_json = r.read_string();
+        detail::entity_remap remap;
+        if (!entities_json.empty())
+        {
+            json_reader er(entities_json);
+            if (!scan_entities(er, remap))
+            {
+                operating_message res;
+                res.write(false, "二进制存档实体扫描失败");
+                return res;
+            }
+        }
+
+        uint32_t type_count = r.read_u32();
+        for (uint32_t t = 0; t < type_count; ++t)
+        {
+            std::string saved_name = r.read_string();
+            uint32_t saved_cv = r.read_u32();
+            uint32_t type_data_len = r.read_u32();
+
+            const detail::type_factory_entry* fe =
+                detail::find_factory_by_name(saved_name);
+            if (fe && fe->binary_load_fn)
+            {
+                fe->binary_load_fn(this, &r, &remap, saved_cv);
+            }
+            else
+            {
+                r.skip(type_data_len);
+            }
+            if (r.has_error())
+            {
+                operating_message res;
+                res.write(false, "二进制加载读取错误");
+                return res;
+            }
+        }
+
+        auto& reg = detail::type_factory_registry();
+        for (size_t i = 0; i < reg.size(); ++i)
+        {
+            remap_entity_fields_by_tid(reg[i].type_id, remap);
+        }
+
+        stats_.entity_count = remap.old_to_new.size();
+        return operating_message{};
     }
 
     // ====================================================================
