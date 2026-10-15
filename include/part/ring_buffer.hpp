@@ -1,132 +1,107 @@
 #pragma once
 
-// 无界 ring_buffer: chunk 链表 + 静态 LIFO 池
-// - 块大小 ≈ 4KB, SLOTS 编译期常量 (非 2 的幂, 精确填满)
-// - 静态池按 T 共享, 同 T 不同 N 的实例共用缓存
-// - push 永不失败 (OOM abort)
-// - N 作为编译期最小保证容量, 实际无界
-
 #include <cstddef>
-#include <cstdlib>
 #include <cstdint>
 #include <new>
 #include <type_traits>
 #include <utility>
 #include "force_inline.hpp"
+#include "memory/oom_handler.hpp"
 
-// 按 T 提取 chunk 类型和静态池, 解耦 N
-// 不同 N 的 ring_buffer<T, N> 共享同一个 ring_buffer_traits<T>::instance
-template <typename T>
-struct ring_buffer_traits
-{
-    static constexpr size_t CHUNK_OVERHEAD = sizeof(void*) + 2 * sizeof(uint32_t);
-    static constexpr size_t TARGET_BYTES   = 4096;
-    static constexpr size_t SLOTS          = (TARGET_BYTES - CHUNK_OVERHEAD) / sizeof(T);
-    static_assert(SLOTS > 0, "T too large for 4KB chunk");
-
-    struct chunk
-    {
-        T slots[SLOTS];
-        chunk* next;
-        uint32_t write;
-        uint32_t read;
-    };
-
-    // 静态 LIFO 池: 缓存释放的 chunk, 避免反复 ::operator new/delete
-    struct pool
-    {
-        static constexpr size_t MAX_FREE = 64;
-
-        chunk* head{nullptr};
-        size_t count{0};
-
-        // acquire 快路径不维护 count (count 仅 release 用于 MAX_FREE 保护)
-        [[nodiscard]] FORCE_INLINE chunk* acquire() noexcept
-        {
-            if (head) [[likely]]
-            {
-                chunk* c = head;
-                head = c->next;
-                return c;
-            }
-            chunk* c = static_cast<chunk*>(::operator new(sizeof(chunk), std::nothrow));
-            if (!c) [[unlikely]] std::abort();
-            return c;
-        }
-
-        FORCE_INLINE void release(chunk* c) noexcept
-        {
-            if (count < MAX_FREE) [[likely]]
-            {
-                c->next = head;
-                head = c;
-                ++count;
-            }
-            else
-            {
-                ::operator delete(c);
-            }
-        }
-
-        ~pool() noexcept
-        {
-            while (head)
-            {
-                chunk* next = head->next;
-                ::operator delete(head);
-                head = next;
-            }
-            count = 0;
-        }
-    };
-
-    static inline pool instance{};
-};
-
-template <typename T, size_t N = 1024>
+template <typename T, size_t N>
 class ring_buffer
 {
-    using traits     = ring_buffer_traits<T>;
-    using chunk      = typename traits::chunk;
-    using chunk_pool = typename traits::pool;
-
-    static constexpr size_t SLOTS          = traits::SLOTS;
-    static constexpr size_t INITIAL_CHUNKS = (N + SLOTS - 1) / SLOTS;
-    static_assert(INITIAL_CHUNKS >= 1, "INITIAL_CHUNKS must be >= 1");
-
-    chunk* active_head_{nullptr};
-    chunk* active_tail_{nullptr};
-    size_t total_count_{0};
+    static constexpr size_t ceil_pow2(size_t n) noexcept
+    {
+        size_t p = 1;
+        while (p < n)
+        {
+            p <<= 1;
+        }
+        return p;
+    }
 
 public:
-    ring_buffer() noexcept
+    static constexpr size_t CAP = ceil_pow2(N);
+    static constexpr size_t ALIGN = alignof(T) < 16 ? 16 : alignof(T);
+
+private:
+    static_assert(N >= 1, "ring_buffer capacity must be >= 1");
+    static_assert(CAP <= static_cast<size_t>(-1) / sizeof(T), "ring_buffer byte size overflow");
+
+    T* slots_;
+    size_t head_{0};
+    size_t tail_{0};
+    size_t count_{0};
+    uint64_t dropped_{0};
+
+    [[nodiscard]] FORCE_INLINE size_t next_index(size_t i) const noexcept
     {
-        // 预热池: 首个该 T 类型实例负责预分配, 后续实例零开销
-        if (traits::instance.count < INITIAL_CHUNKS) [[unlikely]]
+        return (i + 1) & (CAP - 1);
+    }
+
+    FORCE_INLINE void destroy_at(size_t i) noexcept
+    {
+        if constexpr (!std::is_trivially_destructible_v<T>)
         {
-            size_t need = INITIAL_CHUNKS - traits::instance.count;
-            for (size_t i = 0; i < need; ++i)
-            {
-                chunk* c = static_cast<chunk*>(
-                    ::operator new(sizeof(chunk), std::nothrow));
-                if (!c) [[unlikely]] std::abort();
-                c->next = traits::instance.head;
-                traits::instance.head = c;
-                ++traits::instance.count;
-            }
+            slots_[i].~T();
         }
     }
 
-    ~ring_buffer() noexcept { clear(); }
-
-    ring_buffer(ring_buffer&& o) noexcept
-        : active_head_(o.active_head_)
-        , active_tail_(o.active_tail_)
-        , total_count_(o.total_count_)
+    // trivially_copyable 直接赋值避免 placement new 的副作用屏障 (否则热路径寄存器失效)
+    FORCE_INLINE void store_at(size_t i, const T& v) noexcept
     {
-        o.active_head_ = nullptr;
-        o.active_tail_ = nullptr;
-        o.total_count_ = 0;
+        if constexpr (std::is_trivially_copyable_v<T>)
+        {
+            slots_[i] = v;
+        }
+        else
+        {
+            new (&slots_[i]) T(v);
+        }
+    }
+
+    FORCE_INLINE void store_at(size_t i, T&& v) noexcept
+    {
+        if constexpr (std::is_trivially_copyable_v<T>)
+        {
+            slots_[i] = v;
+        }
+        else
+        {
+            new (&slots_[i]) T(std::move(v));
+        }
+    }
+
+    [[nodiscard]] static T* allocate_slots() noexcept
+    {
+        constexpr size_t bytes = CAP * sizeof(T);
+        void* p = ::operator new(bytes, std::align_val_t{ALIGN}, std::nothrow);
+        if (!p) [[unlikely]]
+        {
+            memory::handle_oom(bytes, "ring_buffer::ring_buffer");
+        }
+        return static_cast<T*>(p);
+    }
+
+public:
+    ring_buffer() noexcept
+        : slots_(allocate_slots())
+    {}
+
+    // 手写移动: 默认复制裸指针会造成双释放
+    ring_buffer(ring_buffer&& o) noexcept
+        : slots_(o.slots_)
+        , head_(o.head_)
+        , tail_(o.tail_)
+        , count_(o.count_)
+        , dropped_(o.dropped_)
+    {
+        o.slots_ = nullptr;
+        o.head_ = 0;
+        o.tail_ = 0;
+        o.count_ = 0;
+        o.dropped_ = 0;
     }
 
     ring_buffer& operator=(ring_buffer&& o) noexcept
@@ -134,361 +109,229 @@ public:
         if (this != &o) [[likely]]
         {
             clear();
-            active_head_ = o.active_head_;
-            active_tail_ = o.active_tail_;
-            total_count_ = o.total_count_;
-            o.active_head_ = nullptr;
-            o.active_tail_ = nullptr;
-            o.total_count_ = 0;
+            ::operator delete(slots_, CAP * sizeof(T), std::align_val_t{ALIGN});
+            slots_ = o.slots_;
+            head_ = o.head_;
+            tail_ = o.tail_;
+            count_ = o.count_;
+            dropped_ = o.dropped_;
+            o.slots_ = nullptr;
+            o.head_ = 0;
+            o.tail_ = 0;
+            o.count_ = 0;
+            o.dropped_ = 0;
         }
         return *this;
     }
 
-    ring_buffer(const ring_buffer&)            = delete;
+    ring_buffer(const ring_buffer&) = delete;
     ring_buffer& operator=(const ring_buffer&) = delete;
 
-    [[nodiscard]] bool push(const T& event) noexcept
+    ~ring_buffer() noexcept
     {
-        chunk* t = active_tail_;
-        if (t) [[likely]]
+        clear();
+        if (slots_) [[likely]]
         {
-            uint32_t w = t->write;
-            if (w < SLOTS) [[likely]]
-            {
-                if constexpr (std::is_trivially_copyable_v<T>)
-                {
-                    t->slots[w] = event;
-                }
-                else
-                {
-                    new (&t->slots[w]) T(event);
-                }
-                t->write = w + 1;
-                ++total_count_;
-                return true;
-            }
-        }
-        return push_slow(event);
-    }
-
-    [[nodiscard]] bool push(T&& event) noexcept
-    {
-        if constexpr (std::is_trivially_copyable_v<T>)
-        {
-            return push(static_cast<const T&>(event));
-        }
-        else
-        {
-            chunk* t = active_tail_;
-            if (t) [[likely]]
-            {
-                uint32_t w = t->write;
-                if (w < SLOTS) [[likely]]
-                {
-                    new (&t->slots[w]) T(std::move(event));
-                    t->write = w + 1;
-                    ++total_count_;
-                    return true;
-                }
-            }
-            return push_slow(std::move(event));
+            ::operator delete(slots_, CAP * sizeof(T), std::align_val_t{ALIGN});
         }
     }
 
-    template <typename... Args>
-    [[nodiscard]] bool emplace(Args&&... args) noexcept
+    [[nodiscard]] FORCE_INLINE bool try_push(const T& v) noexcept
     {
-        chunk* t = active_tail_;
-        if (t) [[likely]]
+        if (count_ == CAP) [[unlikely]]
         {
-            uint32_t w = t->write;
-            if (w < SLOTS) [[likely]]
-            {
-                new (&t->slots[w]) T(std::forward<Args>(args)...);
-                t->write = w + 1;
-                ++total_count_;
-                return true;
-            }
+            return false;
         }
-        return emplace_slow(std::forward<Args>(args)...);
+        store_at(tail_, v);
+        tail_ = next_index(tail_);
+        ++count_;
+        return true;
     }
 
-    // 槽位原地构造并返回指针, 供大对象零栈填充 (失败返回 nullptr)
-    template <typename... Args>
-    [[nodiscard]] T* emplace_get(Args&&... args) noexcept
+    [[nodiscard]] FORCE_INLINE bool try_push(T&& v) noexcept
     {
-        chunk* t = active_tail_;
-        if (t) [[likely]]
+        if (count_ == CAP) [[unlikely]]
         {
-            uint32_t w = t->write;
-            if (w < SLOTS) [[likely]]
-            {
-                T* slot = &t->slots[w];
-                new (slot) T(std::forward<Args>(args)...);
-                t->write = w + 1;
-                ++total_count_;
-                return slot;
-            }
+            return false;
         }
-        return emplace_get_slow(std::forward<Args>(args)...);
-    }
-
-private:
-    template <typename U>
-    NOINLINE bool push_slow(U&& event) noexcept
-    {
-        chunk* c = traits::instance.acquire();
-        if constexpr (std::is_trivially_copyable_v<T>)
-        {
-            c->slots[0] = std::forward<U>(event);
-        }
-        else
-        {
-            new (&c->slots[0]) T(std::forward<U>(event));
-        }
-        c->write = 1;
-        c->read  = 0;
-        c->next  = nullptr;
-        if (active_tail_) [[likely]]
-        {
-            active_tail_->next = c;
-        }
-        else
-        {
-            active_head_ = c;
-        }
-        active_tail_ = c;
-        ++total_count_;
+        store_at(tail_, std::move(v));
+        tail_ = next_index(tail_);
+        ++count_;
         return true;
     }
 
     template <typename... Args>
-    NOINLINE bool emplace_slow(Args&&... args) noexcept
+    [[nodiscard]] FORCE_INLINE T* try_emplace(Args&&... args) noexcept
     {
-        chunk* c = traits::instance.acquire();
-        new (&c->slots[0]) T(std::forward<Args>(args)...);
-        c->write = 1;
-        c->read  = 0;
-        c->next  = nullptr;
-        if (active_tail_) [[likely]]
+        if (count_ == CAP) [[unlikely]]
         {
-            active_tail_->next = c;
+            return nullptr;
         }
-        else
-        {
-            active_head_ = c;
-        }
-        active_tail_ = c;
-        ++total_count_;
-        return true;
-    }
-
-    template <typename... Args>
-    NOINLINE T* emplace_get_slow(Args&&... args) noexcept
-    {
-        chunk* c = traits::instance.acquire();
-        T* slot = &c->slots[0];
+        T* slot = &slots_[tail_];
         new (slot) T(std::forward<Args>(args)...);
-        c->write = 1;
-        c->read  = 0;
-        c->next  = nullptr;
-        if (active_tail_) [[likely]]
-        {
-            active_tail_->next = c;
-        }
-        else
-        {
-            active_head_ = c;
-        }
-        active_tail_ = c;
-        ++total_count_;
+        tail_ = next_index(tail_);
+        ++count_;
         return slot;
     }
 
-public:
+    // 满则覆盖最旧, 返回本次覆盖条数 (0 或 1)
+    [[nodiscard]] FORCE_INLINE size_t push_overwrite(const T& v) noexcept
+    {
+        size_t overwritten = overwrite_oldest_if_full();
+        store_at(tail_, v);
+        tail_ = next_index(tail_);
+        ++count_;
+        return overwritten;
+    }
+
+    [[nodiscard]] FORCE_INLINE size_t push_overwrite(T&& v) noexcept
+    {
+        size_t overwritten = overwrite_oldest_if_full();
+        store_at(tail_, std::move(v));
+        tail_ = next_index(tail_);
+        ++count_;
+        return overwritten;
+    }
+
+    template <typename... Args>
+    [[nodiscard]] FORCE_INLINE T* emplace_overwrite(Args&&... args) noexcept
+    {
+        overwrite_oldest_if_full();
+        T* slot = &slots_[tail_];
+        new (slot) T(std::forward<Args>(args)...);
+        tail_ = next_index(tail_);
+        ++count_;
+        return slot;
+    }
+
+    [[nodiscard]] FORCE_INLINE T* front() noexcept
+    {
+        return count_ ? &slots_[head_] : nullptr;
+    }
+
+    [[nodiscard]] FORCE_INLINE const T* front() const noexcept
+    {
+        return count_ ? &slots_[head_] : nullptr;
+    }
+
+    [[nodiscard]] FORCE_INLINE bool pop() noexcept
+    {
+        if (!count_) [[unlikely]]
+        {
+            return false;
+        }
+        destroy_at(head_);
+        head_ = next_index(head_);
+        --count_;
+        return true;
+    }
+
+    [[nodiscard]] FORCE_INLINE bool try_pop(T& out) noexcept
+    {
+        if (!count_) [[unlikely]]
+        {
+            return false;
+        }
+        out = std::move(slots_[head_]);
+        destroy_at(head_);
+        head_ = next_index(head_);
+        --count_;
+        return true;
+    }
+
+    // drain 回调内 try_push 合法 (新元素进入本轮尾部); 禁止回调内调覆盖版入队
     template <typename Func>
     size_t drain(Func&& handler) noexcept
     {
-        size_t count = 0;
-        while (active_head_)
+        size_t consumed = 0;
+        while (count_) [[likely]]
         {
-            chunk* c = active_head_;
-            uint32_t r = c->read;
-            uint32_t w = c->write;
-            while (r < w)
-            {
-                handler(c->slots[r]);
-                if constexpr (!std::is_trivially_copyable_v<T>)
-                {
-                    c->slots[r].~T();
-                }
-                ++r;
-                ++count;
-            }
-            active_head_ = c->next;
-            traits::instance.release(c);
+            handler(slots_[head_]);
+            destroy_at(head_);
+            head_ = next_index(head_);
+            --count_;
+            ++consumed;
         }
-        active_tail_ = nullptr;
-        total_count_ = 0;
-        return count;
+        return consumed;
     }
 
     template <typename Func>
     size_t drain_with_budget(size_t budget, Func&& handler) noexcept
     {
-        size_t count = 0;
-        while (count < budget && active_head_)
+        size_t consumed = 0;
+        while (consumed < budget && count_) [[likely]]
         {
-            chunk* c = active_head_;
-            uint32_t r = c->read;
-            uint32_t w = c->write;
-            while (count < budget && r < w)
-            {
-                handler(c->slots[r]);
-                if constexpr (!std::is_trivially_copyable_v<T>)
-                {
-                    c->slots[r].~T();
-                }
-                ++r;
-                ++count;
-                // handler 内 push 会追加到本 chunk, 故需重读 write 判定是否消费完
-                if (r == w) [[unlikely]]
-                {
-                    w = c->write;
-                }
-            }
-            c->read = r;
-            if (r == w) [[unlikely]]
-            {
-                active_head_ = c->next;
-                traits::instance.release(c);
-                if (!active_head_) [[unlikely]]
-                {
-                    active_tail_ = nullptr;
-                }
-            }
+            handler(slots_[head_]);
+            destroy_at(head_);
+            head_ = next_index(head_);
+            --count_;
+            ++consumed;
         }
-        total_count_ -= count;
-        return count;
+        return consumed;
     }
 
-    [[nodiscard]] FORCE_INLINE const T* peek() const noexcept
+    template <typename Func>
+    size_t visit(Func&& handler) const noexcept
     {
-        chunk* h = active_head_;
-        if (h && h->read < h->write) [[likely]]
+        size_t visited = 0;
+        size_t idx = head_;
+        for (size_t i = 0; i < count_; ++i)
         {
-            return &h->slots[h->read];
+            handler(slots_[idx]);
+            idx = next_index(idx);
+            ++visited;
         }
-        return nullptr;
+        return visited;
     }
 
-    [[nodiscard]] bool pop() noexcept
+    [[nodiscard]] FORCE_INLINE size_t front_run(T*& out_ptr, size_t& out_len) noexcept
     {
-        chunk* h = active_head_;
-        if (h) [[likely]]
+        if (!count_) [[unlikely]]
         {
-            uint32_t r = h->read;
-            if (r < h->write) [[likely]]
-            {
-                if constexpr (!std::is_trivially_copyable_v<T>)
-                {
-                    h->slots[r].~T();
-                }
-                ++r;
-                --total_count_;
-                if (r == h->write) [[unlikely]]
-                {
-                    active_head_ = h->next;
-                    traits::instance.release(h);
-                    if (!active_head_) [[unlikely]]
-                    {
-                        active_tail_ = nullptr;
-                    }
-                }
-                else
-                {
-                    h->read = r;
-                }
-                return true;
-            }
+            out_len = 0;
+            return 0;
         }
-        return false;
+        out_ptr = &slots_[head_];
+        out_len = (CAP - head_ < count_) ? (CAP - head_) : count_;
+        return out_len;
     }
 
-    [[nodiscard]] bool empty() const noexcept { return total_count_ == 0; }
-    [[nodiscard]] bool has_pending() const noexcept { return total_count_ != 0; }
-    [[nodiscard]] size_t pending_count() const noexcept { return total_count_; }
+    FORCE_INLINE size_t pop_run(size_t n) noexcept
+    {
+        if (n > count_) [[unlikely]]
+        {
+            n = count_;
+        }
+        for (size_t i = 0; i < n; ++i)
+        {
+            destroy_at(head_);
+            head_ = next_index(head_);
+        }
+        count_ -= n;
+        return n;
+    }
 
-    // 编译期最小保证容量 (实际无界)
-    [[nodiscard]] static constexpr size_t capacity() noexcept { return N; }
+    [[nodiscard]] FORCE_INLINE size_t size() const noexcept { return count_; }
+    [[nodiscard]] FORCE_INLINE bool empty() const noexcept { return count_ == 0; }
+    [[nodiscard]] static constexpr size_t capacity() noexcept { return CAP; }
+    [[nodiscard]] FORCE_INLINE uint64_t dropped_count() const noexcept { return dropped_; }
 
     void clear() noexcept
     {
-        if constexpr (std::is_trivially_copyable_v<T>)
-        {
-            // trivially copyable: 无需析构, 统计链长后整链拼接到池头
-            if (active_head_)
-            {
-                size_t added = 1;
-                chunk* tail_chunk = active_head_;
-                while (tail_chunk->next)
-                {
-                    tail_chunk = tail_chunk->next;
-                    ++added;
-                }
-                tail_chunk->next = traits::instance.head;
-                traits::instance.head = active_head_;
-                traits::instance.count += added;
-                // 超出 MAX_FREE 则截断尾部并 delete
-                while (traits::instance.count > traits::pool::MAX_FREE)
-                {
-                    chunk* old = traits::instance.head;
-                    traits::instance.head = old->next;
-                    ::operator delete(old);
-                    --traits::instance.count;
-                }
-                active_head_ = nullptr;
-                active_tail_ = nullptr;
-                total_count_ = 0;
-            }
-        }
-        else
-        {
-            while (active_head_)
-            {
-                chunk* next = active_head_->next;
-                for (size_t i = active_head_->read; i < active_head_->write; ++i)
-                {
-                    active_head_->slots[i].~T();
-                }
-                traits::instance.release(active_head_);
-                active_head_ = next;
-            }
-            active_tail_ = nullptr;
-            total_count_ = 0;
-        }
+        pop_run(count_);
     }
 
-    // 释放静态池所有缓存块 (内存紧张时调用)
-    static void shrink_static_pool() noexcept
+private:
+    FORCE_INLINE size_t overwrite_oldest_if_full() noexcept
     {
-        while (traits::instance.head)
+        if (count_ == CAP) [[unlikely]]
         {
-            chunk* next = traits::instance.head->next;
-            ::operator delete(traits::instance.head);
-            traits::instance.head = next;
+            destroy_at(head_);
+            head_ = next_index(head_);
+            --count_;
+            ++dropped_;
+            return 1;
         }
-        traits::instance.count = 0;
-    }
-
-    [[nodiscard]] static size_t static_pool_size() noexcept
-    {
-        return traits::instance.count;
-    }
-
-    // 单块槽位数 (编译期常量)
-    [[nodiscard]] static constexpr size_t slots_per_chunk() noexcept
-    {
-        return SLOTS;
+        return 0;
     }
 };

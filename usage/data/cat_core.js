@@ -766,12 +766,12 @@ window.DOCS_DATA['views'] = {
 
 | 接口 | 说明 |
 |------|------|
-| \`size()\` | 组件数量 |
+| \`size()\` | 组件占位数（软删除条目计入） |
 | \`empty()\` | 是否为空 |
 | \`contains(entity)\` | 是否包含指定实体的组件 |
 | \`for_each(func)\` | 遍历组件（自动检测 entity 参数：\`func(T&)\` 或 \`func(entity, T&)\`） |
 | \`for_each_safe(func)\` | 遍历组件，回调内可安全调用 \`hard_remove\` 删除当前实体（自动检测 entity 参数） |
-| \`begin()\` / \`end()\` | 实体迭代器 |
+| \`begin()\` / \`end()\` | 实体迭代器（跳过软删除条目） |
 | \`component_begin()\` / \`component_end()\` | 组件迭代器（\`T*\`） |
 | \`get_component_for_entity(entity)\` | 获取指定实体的组件引用（无则 nullptr） |
 | \`get_first_entity()\` | 返回第一个实体句柄 |
@@ -867,7 +867,7 @@ v_opt.for_each([](entity e, Position& p, Velocity& v, Health* h, Name* n) {
 
 | 接口 | 说明 |
 |------|------|
-| \`size()\` | 组件数量 |
+| \`size()\` | 组件占位数（软删除条目计入） |
 | \`empty()\` | 是否为空 |
 | \`contains(entity)\` | 检查实体是否有 T 且无 ExcludeTypes |
 | \`get_component_for_entity(entity)\` | 获取 T 的引用（无则 nullptr） |
@@ -895,7 +895,7 @@ auto v2 = mgr.view<Position>(ecs::without<Health, Name>);
 
 | 接口 | 说明 |
 |------|------|
-| \`size()\` | 组件数量 |
+| \`size()\` | 组件占位数（软删除条目计入） |
 | \`empty()\` | 是否为空 |
 | \`contains(entity)\` | 检查实体是否有 T |
 | \`get_component_for_entity(entity)\` | 获取 T 的引用（无则 nullptr） |
@@ -1075,7 +1075,7 @@ mgr.sort_component_container<Position>([](Position& a, Position& b) {
 
 | 接口 | 说明 |
 |------|------|
-| \`size()\` | 分页后数量（\`min(limit, base_size - offset)\`，offset 超界则为 0） |
+| \`size()\` | 分页后数量（\`min(limit, base_size - offset)\`，软删除条目计入） |
 | \`empty()\` | 是否为空 |
 | \`for_each(func)\` | 分页遍历（跳过前 offset 个，最多处理 limit 个） |
 
@@ -1376,7 +1376,7 @@ ev2.for_each([](Position& p, Health& h) {
 | 在 \`for_each\` 回调中增删组件 | 迭代器失效，可能导致崩溃或漏处理 | 使用 \`for_each_safe\` 安全删除，或先收集变更实体列表遍历结束后批量操作 |
 | 在 \`for_each_safe\` 回调中调用 \`swap_dense_and_pool\` / \`reorder_dense_by_indices\` / \`clear\` | 破坏 dense 布局，触发 \`std::abort\` | 迭代结束后再执行重排/清空操作 |
 | \`filter_view\` 过滤条件变化后忘记 \`rebuild()\` | 过滤结果过期，仍返回旧数据 | 组件数据变化后调用 \`rebuild()\` |
-| \`exactly_one()\` 在实体数不为 1 时使用 | 行为未定义 | 先检查 \`size() == 1\`，或使用 \`find_one()\` |
+| \`exactly_one()\` 在活实体数不为 1 时使用 | 终止（\`LCF_TRAP\`） | 先检查 \`live_count() == 1\`（\`size()\` 含软删除条目），或使用 \`find_one()\` |
 | 依赖 \`filter_changed\` 检测 \`get_ptr()\` 修改 | 直接修改内存不触发变更检测 | 通过 \`add()\` 覆盖触发变更，或使用 \`track_changes\` |
 | 在多组件 View 中混用 \`get_ptr_fast\` 和 \`get_ptr\` | 类型安全边界模糊 | 同一 View 中统一使用一种获取方式 |
 
@@ -1601,8 +1601,8 @@ rv.for_each([](entity e) {
 | \`for_each_parallel(worker_id, worker_count, func)\` | 分片并行遍历，外部线程池驱动 |
 | \`for_each_paged(offset, limit, func)\` | 分页遍历 |
 | \`for_each_changed(func)\` | 遍历自上次调用后发生变更的实体 |
-| \`size()\` | 返回主集大小（上限，非精确匹配数） |
-| \`count()\` | 精确命中数（遍历计算） |
+| \`size()\` | 命中实体数 |
+| \`count()\` | 精确命中数 |
 | \`empty()\` | 是否为空 |
 | \`contains(entity)\` | 检查实体是否匹配查询 |
 | \`get_ptr<T>(entity)\` | 获取实体的组件指针（组件不存在返回 \`nullptr\`；不检查实体是否属于该视图） |

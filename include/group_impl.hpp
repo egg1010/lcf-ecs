@@ -80,6 +80,10 @@ inline void group<First, Rest...>::rebuild() noexcept
                 }
             }
             uint32_t eid = indices[i];
+            if (sets_[primary_idx_]->sparse_dense_at(eid) == single_class_set::dense_invalid) [[unlikely]]
+            {
+                continue;
+            }
             std::array<uint32_t, N> entry{};
             entry[primary_idx_] = static_cast<uint32_t>(i);
             bool has_all = true;

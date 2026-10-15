@@ -91,12 +91,12 @@ private:
     {
         if (idx >= version_v_.size()) [[unlikely]]
         {
-            version_v_.increase_capacity(idx + 1, 1);
+            version_v_.resize_fill(idx + 1, 1);
         }
         masks_.ensure_entity(idx);
         if (idx >= entity_states_.size()) [[unlikely]]
         {
-            entity_states_.increase_capacity(idx + 1, entity_state{static_cast<uint32_t>(entity_flag::active), 0, 0, 0});
+            entity_states_.resize_fill(idx + 1, entity_state{static_cast<uint32_t>(entity_flag::active), 0, 0, 0});
         }
     }
 
@@ -124,11 +124,11 @@ public:
         size_t max_idx = static_cast<size_t>(id_manager_.maximum_id()) + count + 1;
         if (max_idx > version_v_.size())
         {
-            version_v_.increase_capacity(max_idx, 1);
+            version_v_.resize_fill(max_idx, 1);
         }
         if (max_idx > entity_states_.size())
         {
-            entity_states_.increase_capacity(max_idx, entity_state{static_cast<uint32_t>(entity_flag::active), 0, 0, 0});
+            entity_states_.resize_fill(max_idx, entity_state{static_cast<uint32_t>(entity_flag::active), 0, 0, 0});
         }
         masks_.resize_entities(static_cast<uint32_t>(max_idx));
 

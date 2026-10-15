@@ -51,6 +51,13 @@
 #define LCF_UNREACHABLE() __builtin_unreachable()
 #endif
 
+// 确定性终止: 防御性检查用; LCF_UNREACHABLE 仅优化提示, 不产生实际终止代码
+#if defined(_MSC_VER) && !defined(__clang__)
+#define LCF_TRAP() __debugbreak()
+#else
+#define LCF_TRAP() __builtin_trap()
+#endif
+
 // 函数级 AVX2 定向: GCC/Clang 用 gnu::target 激活定向函数;
 // MSVC 忽略 (intrinsics 不受 /arch 限制, 由运行时检测守卫调用)
 #if defined(_MSC_VER) && !defined(__clang__)

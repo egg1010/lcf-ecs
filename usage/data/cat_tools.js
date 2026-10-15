@@ -295,9 +295,11 @@ if (om_once("warn_overflow"))
 
 | 接口 | 说明 |
 |------|------|
-| \`om_history\` | \`ring_buffer<om_record, 1024>\`，固定 256B 消息缓冲，静态池复用 |
-| \`om_history_push(hist, om, lv)\` | 推入一条消息（截断到 256B） |
-| \`om_history_flush(hist, handler)\` | 排空历史，逐条调用 \`handler(lv, code, msg_view)\` |
+| \`om_history\` | \`ring_buffer<om_record, 1024>\`，保留最近 1024 条消息（单条截断到 256B），满则覆盖最旧 |
+| \`om_history_push(hist, om, lv)\` | 推入一条消息（截断到 256B，满则覆盖最旧） |
+| \`om_history_visit(hist, handler)\` | 只读查看历史，逐条调用 \`handler(lv, code, msg_view)\`，不消费 |
+| \`om_history_flush(hist, handler)\` | 排空历史（批量消费），逐条调用 \`handler(lv, code, msg_view)\` |
+| \`om_history_dropped(hist)\` | 历史中被覆盖淘汰的累计条数 |
 
 #### 消息订阅/回调（包装器模式）
 

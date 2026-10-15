@@ -1,4 +1,5 @@
 #pragma once
+// dense: 密集连续容器 (vector 替代品), 禁异常规范下分配失败即 terminate
 #include <new>
 #include <cstddef>
 #include <cstdint>
@@ -13,10 +14,10 @@
 #include <utility>
 #include <concepts>
 #include <functional>
-// immintrin 守卫与下方 gnu::target("avx2") 函数的激活条件对齐
-// (GCC x86-64: __AVX2__ 未定义时 target 定向函数仍激活, 需要 __m256i 类型)
+// immintrin 守卫与下方 gnu::target("avx2") 函数的激活条件对齐:
+// GCC/Clang x86-64: __AVX2__ 未定义时 target 定向函数仍激活, 需要 __m256i 类型
 #if defined(__AVX2__) || defined(__BMI__) || (defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))) \
-	|| (defined(__GNUC__) && defined(__x86_64__) && !defined(__clang__))
+	|| ((defined(__GNUC__) || defined(__clang__)) && defined(__x86_64__))
 #include <immintrin.h>
 #endif
 
@@ -55,6 +56,7 @@ struct strided_span
         using pointer = T*;
         using reference = T&;
 
+        constexpr iterator() noexcept = default;
         constexpr iterator(T* p, size_t step) noexcept : ptr_(p), step_(step) {}
         [[nodiscard]] constexpr reference operator*() const noexcept { return *ptr_; }
         constexpr iterator& operator++() noexcept { ptr_ += step_; return *this; }
@@ -119,11 +121,6 @@ private:
 	static constexpr size_t alloc_align =
 		(alignof(T) > __STDCPP_DEFAULT_NEW_ALIGNMENT__) ? alignof(T) : __STDCPP_DEFAULT_NEW_ALIGNMENT__;
 
-	// 返回真实容量: 虚标容量而不分配会让追加解引用空指针
-	[[nodiscard]] static constexpr size_t round_up_to_default(size_t n) noexcept {
-		return n;
-	}
-
 	[[nodiscard]] static constexpr size_t calculate_new_capacity(size_t current) noexcept {
 		if (current == 0) { return DEFAULT_CAPACITY; }
 
@@ -170,6 +167,9 @@ private:
 	// 用 assume_aligned 使 GCC 生成对齐 SIMD 指令 (vmovdqa 而非 vmovdqu)
 	[[nodiscard]] DENSE_ALWAYS_INLINE static T* allocate_data(size_t count) noexcept {
 		if (count == 0) { return nullptr; }
+		if (count > static_cast<size_t>(-1) / sizeof(T)) [[unlikely]] {
+			LCF_TRAP();   // 字节数溢出: 终止而非静默小分配
+		}
 		if constexpr (alignof(T) <= __STDCPP_DEFAULT_NEW_ALIGNMENT__) {
 			T* ptr = static_cast<T*>(::operator new(count * sizeof(T)));
 			return std::assume_aligned<alloc_align>(ptr);
@@ -187,7 +187,12 @@ private:
 			if constexpr (alignof(T) <= __STDCPP_DEFAULT_NEW_ALIGNMENT__) {
 				// 用 sized delete 与 std::vector 一致, 比 unsized delete 快
 				// 分配器无需查找块大小, 直接用 size hint
+				// clang MinGW target 默认不定义 __cpp_sized_deallocation, 回退 unsized
+#if defined(__cpp_sized_deallocation)
 				::operator delete(ptr, count * sizeof(T));
+#else
+				::operator delete(ptr);
+#endif
 			}
 			else {
 				constexpr size_t align = alignof(T);
@@ -267,7 +272,7 @@ private:
 #if (defined(__GNUC__) || defined(__clang__)) && defined(__x86_64__)
 	template <typename U>
 		requires (sizeof(U) <= 8 && std::is_trivially_copyable_v<U>)
-#if !defined(__AVX2__) && defined(__GNUC__) && !defined(__clang__)
+#if !defined(__AVX2__) && (defined(__GNUC__) || defined(__clang__))
 	LCF_TARGET_AVX2
 #endif
 	static void fill_small_trivial_avx2(U* dst, const U& value, size_t count) noexcept
@@ -347,14 +352,34 @@ private:
 				_mm256_storeu_si256(d + i, broadcast);
 			}
 		}
-		else
+	else
+	{
+		const size_t ymm_per_elem = elem_size / 32;
+		if (ymm_per_elem > 8 || elem_size % 32 != 0) [[unlikely]]
 		{
-			const size_t ymm_per_elem = elem_size / 32;
-			__m256i vals[8];
-			for (size_t k = 0; k < ymm_per_elem; ++k)
+			// 大元素/非32倍数尺寸回退倍增, 避免 vals 栈数组越界
+			const size_t count = bytes / elem_size;
+			if (count > 0)
 			{
-				std::memcpy(&vals[k], &value + k * 32, 32);
+				std::memcpy(dst, &value, elem_size);
+				size_t filled = 1;
+				while (filled * 2 <= count)
+				{
+					std::memcpy(dst + filled * elem_size, dst, filled * elem_size);
+					filled *= 2;
+				}
+				if (filled < count)
+				{
+					std::memcpy(dst + filled * elem_size, dst, (count - filled) * elem_size);
+				}
 			}
+			return;
+		}
+		__m256i vals[8];
+		for (size_t k = 0; k < ymm_per_elem; ++k)
+		{
+			std::memcpy(&vals[k], &value + k * 32, 32);
+		}
 			const size_t unroll = 4 * ymm_per_elem;
 			size_t i = 0;
 			for (; i + unroll <= total_ymm; i += unroll)
@@ -394,12 +419,12 @@ private:
 			for (size_t i = 0; i < count; ++i) { dst[i] = value; }
 			return;
 		}
-#if !defined(__AVX2__) && defined(__GNUC__) && !defined(__clang__)
-		if (count < 8192 && __builtin_cpu_supports("avx2"))
-		{
-			fill_small_trivial_avx2(dst, value, count);
-			return;
-		}
+#if !defined(__AVX2__) && (defined(__GNUC__) || defined(__clang__))
+	if (count < 8192 && __builtin_cpu_supports("avx2"))
+	{
+		fill_small_trivial_avx2(dst, value, count);
+		return;
+	}
 #elif defined(__AVX2__)
 		if (count < 8192)
 		{
@@ -799,7 +824,7 @@ public:
 
 	dense(size_t count, const T& value) noexcept
 		: data_ptr_(nullptr)
-		, maximum_quantity_(round_up_to_default(count))
+		, maximum_quantity_(count)
 		, index_(0) {
 		if (count > 0) [[likely]] {
 			data_ptr_ = allocate_data(maximum_quantity_);
@@ -830,13 +855,14 @@ public:
 	}
 
 	// 迭代器约束: 防止 pool(count, value) 的整型参数被误推导为迭代器
-	template <typename InputIt> requires std::input_iterator<InputIt>
+	// forward_iterator: distance 会消耗单遍迭代器, 之后遍历读到失效状态
+	template <typename InputIt> requires std::forward_iterator<InputIt>
 	dense(InputIt first, InputIt last) noexcept
 		: data_ptr_(nullptr)
 		, maximum_quantity_(0)
 		, index_(0) {
 		const size_t count = static_cast<size_t>(std::distance(first, last));
-		maximum_quantity_ = round_up_to_default(count);
+		maximum_quantity_ = count;
 
 		if (count > 0) [[likely]] {
 			data_ptr_ = allocate_data(maximum_quantity_);
@@ -944,13 +970,21 @@ public:
 		return std::assume_aligned<alloc_align>(data_ptr_)[index];
 	}
 
-	// 越界保护访问: index 越界时改访问 error_index
+	// 越界保护访问: index 越界时改访问 error_index, error_index 也越界时回落到 0
 	[[nodiscard]] DENSE_ALWAYS_INLINE constexpr T& get(size_t index, size_t error_index) noexcept {
-		return data_ptr_[index < index_ ? index : error_index];
+		if (index_ == 0) [[unlikely]] {
+			LCF_TRAP();   // 空容器无合法元素
+		}
+		const size_t i = index < index_ ? index : (error_index < index_ ? error_index : 0);
+		return data_ptr_[i];
 	}
 
 	[[nodiscard]] DENSE_ALWAYS_INLINE constexpr const T& get(size_t index, size_t error_index) const noexcept {
-		return data_ptr_[index < index_ ? index : error_index];
+		if (index_ == 0) [[unlikely]] {
+			LCF_TRAP();
+		}
+		const size_t i = index < index_ ? index : (error_index < index_ ? error_index : 0);
+		return data_ptr_[i];
 	}
 
 	[[nodiscard]] DENSE_ALWAYS_INLINE constexpr T& front() noexcept { return std::assume_aligned<alloc_align>(data_ptr_)[0]; }
@@ -999,8 +1033,8 @@ public:
 		}
 	}
 
-	// 只扩容不缩容: new_capacity <= size 时直接返回, 不销毁任何对象
-	void increase_capacity(size_t new_capacity, const T& value) noexcept {
+	// 增长 size 到 new_capacity 并用 value 填充: new_capacity <= size 时直接返回
+	void resize_fill(size_t new_capacity, const T& value) noexcept {
 		if (new_capacity <= index_) [[likely]] {
 			return;
 		}
@@ -1076,6 +1110,9 @@ public:
 	void reduce_capacity(size_t new_capacity, dense<T>& dst) noexcept {
 		if (new_capacity >= index_) [[likely]] {
 			return;
+		}
+		if (this == &dst) [[unlikely]] {
+			return;   // 自引用: dst.index_ 即 index_, 非平凡分支会死循环
 		}
 
 		const size_t move_count = index_ - new_capacity;
@@ -1282,6 +1319,9 @@ public:
 
 	void append_n(size_t n, const T& value) noexcept {
 		if (n == 0) [[unlikely]] { return; }
+		if (n > static_cast<size_t>(-1) - index_) [[unlikely]] {
+			LCF_TRAP();   // index_ + n 溢出
+		}
 		if (n > maximum_quantity_ - index_) [[unlikely]] {
 			grow_data(calculate_growth_for_reserve(index_ + n));
 		}
@@ -1352,6 +1392,9 @@ public:
 
 	DENSE_ALWAYS_INLINE void append_bulk(const T* src, size_t count) noexcept {
 		if (count == 0) { return; }
+		if (count > static_cast<size_t>(-1) - index_) [[unlikely]] {
+			LCF_TRAP();   // index_ + count 溢出
+		}
 		if (index_ + count > maximum_quantity_) [[unlikely]] {
 			grow_data(calculate_growth_for_reserve(index_ + count));
 		}
@@ -1369,6 +1412,9 @@ public:
 
 	DENSE_ALWAYS_INLINE void append_bulk_move(T* src, size_t count) noexcept {
 		if (count == 0) { return; }
+		if (count > static_cast<size_t>(-1) - index_) [[unlikely]] {
+			LCF_TRAP();
+		}
 		if (index_ + count > maximum_quantity_) [[unlikely]] {
 			grow_data(calculate_growth_for_reserve(index_ + count));
 		}
@@ -1387,6 +1433,9 @@ public:
 		static_assert(std::is_trivially_copyable_v<T>,
 			"append_incrementing requires trivially copyable T");
 		if (count == 0) { return; }
+		if (count > static_cast<size_t>(-1) - index_) [[unlikely]] {
+			LCF_TRAP();
+		}
 		if (index_ + count > maximum_quantity_) [[unlikely]] {
 			grow_data(calculate_growth_for_reserve(index_ + count));
 		}
@@ -1410,6 +1459,9 @@ public:
 
 	void fill_bulk(const T& value, size_t start, size_t count) noexcept {
 		if (count == 0) { return; }
+		if (count > static_cast<size_t>(-1) - start) [[unlikely]] {
+			LCF_TRAP();   // start + count 溢出
+		}
 		size_t end = start + count;
 		if (end > maximum_quantity_) [[unlikely]] {
 			size_t new_cap = calculate_new_capacity(maximum_quantity_);
@@ -1426,7 +1478,9 @@ public:
 		}
 
 		if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) == 1) {
-			std::memset(data_ptr_ + start, static_cast<unsigned char>(value), count);
+			unsigned char byte;
+			std::memcpy(&byte, &value, 1);   // 1 字节自定义类型不可强转 unsigned char
+			std::memset(data_ptr_ + start, byte, count);
 		}
 		else if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) <= 8) {
 			fill_small_trivial(data_ptr_ + start, value, count);
@@ -1557,31 +1611,6 @@ public:
 	}
 
 	// 末尾快路径等价 pop_back, 可批量优化为 index_ -= n
-	// 中间删除 noinline 避免污染快路径
-	NOINLINE iterator erase_middle(size_t index, size_t move_count) noexcept
-	{
-		if constexpr (std::is_trivially_copyable_v<T>) {
-			if (move_count <= 8) {
-				T* d = data_ptr_ + index;
-				for (size_t i = 0; i < move_count; ++i) {
-					d[i] = d[i + 1];
-				}
-			}
-			else {
-				move_trivial_forward(data_ptr_ + index,
-				                     data_ptr_ + index + 1, move_count);
-			}
-		}
-		else {
-			std::move(data_ptr_ + index + 1, data_ptr_ + index_, data_ptr_ + index);
-			if constexpr (!std::is_trivially_destructible_v<T>) {
-				data_ptr_[index_ - 1].~T();
-			}
-		}
-		--index_;
-		return data_ptr_ + index;
-	}
-
 	DENSE_ALWAYS_INLINE iterator erase(const_iterator pos) noexcept {
 		// 指针比较让编译器可见 pop_back == --index_, 可批量优化为 index_ -= n
 		if (pos == data_ptr_ + index_ - 1) [[likely]] {
@@ -1607,8 +1636,8 @@ public:
 		}
 
 		const size_t gap = real_end - start_index;
-		destroy_range(start_index, real_end);
 
+		// 先移动尾部 (目标对象仍存活), 再析构尾部多余, 避免移动赋值到已析构对象
 		if (real_end < index_) {
 			const size_t tail_count = index_ - real_end;
 			if constexpr (std::is_trivially_copyable_v<T>) {
@@ -1628,6 +1657,7 @@ public:
 				std::move(data_ptr_ + real_end, data_ptr_ + index_, data_ptr_ + start_index);
 			}
 		}
+		destroy_range(index_ - gap, index_);
 
 		index_ -= gap;
 		return data_ptr_ + start_index;
@@ -1685,22 +1715,22 @@ public:
 		return ::last(*this, n);
 	}
 	template <size_t N>
-	[[nodiscard]] constexpr std::span<T, N> first_fixed() noexcept
+	[[nodiscard]] constexpr std::span<T> first_fixed() noexcept
 	{
 		return ::first_fixed<N>(*this);
 	}
 	template <size_t N>
-	[[nodiscard]] constexpr std::span<const T, N> first_fixed() const noexcept
+	[[nodiscard]] constexpr std::span<const T> first_fixed() const noexcept
 	{
 		return ::first_fixed<N>(*this);
 	}
 	template <size_t N>
-	[[nodiscard]] constexpr std::span<T, N> last_fixed() noexcept
+	[[nodiscard]] constexpr std::span<T> last_fixed() noexcept
 	{
 		return ::last_fixed<N>(*this);
 	}
 	template <size_t N>
-	[[nodiscard]] constexpr std::span<const T, N> last_fixed() const noexcept
+	[[nodiscard]] constexpr std::span<const T> last_fixed() const noexcept
 	{
 		return ::last_fixed<N>(*this);
 	}
@@ -1934,25 +1964,25 @@ public:
 
 	template <size_t N>
 	requires (N > 0)
-	[[nodiscard]] constexpr std::span<T, N> window_span(size_t offset) noexcept
+	[[nodiscard]] constexpr std::span<T> window_span(size_t offset) noexcept
 	{
 		return ::window_span<N>(*this, offset);
 	}
 	template <size_t N>
 	requires (N > 0)
-	[[nodiscard]] constexpr std::span<const T, N> window_span(size_t offset) const noexcept
+	[[nodiscard]] constexpr std::span<const T> window_span(size_t offset) const noexcept
 	{
 		return ::window_span<N>(*this, offset);
 	}
 	template <size_t N>
 	requires (N > 0)
-	[[nodiscard]] constexpr std::span<T, N> chunk_span(size_t chunk_idx) noexcept
+	[[nodiscard]] constexpr std::span<T> chunk_span(size_t chunk_idx) noexcept
 	{
 		return ::chunk_span<N>(*this, chunk_idx);
 	}
 	template <size_t N>
 	requires (N > 0)
-	[[nodiscard]] constexpr std::span<const T, N> chunk_span(size_t chunk_idx) const noexcept
+	[[nodiscard]] constexpr std::span<const T> chunk_span(size_t chunk_idx) const noexcept
 	{
 		return ::chunk_span<N>(*this, chunk_idx);
 	}
@@ -2094,6 +2124,32 @@ public:
 	void transform_to(R* dst, size_t count, F&& transform) const noexcept
 	{
 		::transform_to(*this, dst, count, std::forward<F>(transform));
+	}
+
+private:
+	// 中间删除 noinline 避免污染快路径, 内部实现不外露
+	NOINLINE iterator erase_middle(size_t index, size_t move_count) noexcept
+	{
+		if constexpr (std::is_trivially_copyable_v<T>) {
+			if (move_count <= 8) {
+				T* d = data_ptr_ + index;
+				for (size_t i = 0; i < move_count; ++i) {
+					d[i] = d[i + 1];
+				}
+			}
+			else {
+				move_trivial_forward(data_ptr_ + index,
+				                     data_ptr_ + index + 1, move_count);
+			}
+		}
+		else {
+			std::move(data_ptr_ + index + 1, data_ptr_ + index_, data_ptr_ + index);
+			if constexpr (!std::is_trivially_destructible_v<T>) {
+				data_ptr_[index_ - 1].~T();
+			}
+		}
+		--index_;
+		return data_ptr_ + index;
 	}
 };
 

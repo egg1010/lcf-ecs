@@ -28,14 +28,14 @@ public:
     explicit arena_allocator(size_t capacity) noexcept
         : cursor_(static_cast<uint8_t*>(
               ::operator new(capacity, std::align_val_t{BASE_ALIGN}, std::nothrow)))
-        , end_(cursor_ + capacity)
+        , end_(cursor_ ? cursor_ + capacity : nullptr)   // M11: 分配失败不对空指针做偏移
         , base_(cursor_)
         , owns_memory_(true)
     {}
 
     arena_allocator(void* buffer, size_t size) noexcept
         : cursor_(static_cast<uint8_t*>(buffer))
-        , end_(cursor_ + size)
+        , end_(buffer ? static_cast<uint8_t*>(buffer) + size : nullptr)
         , base_(cursor_)
         , owns_memory_(false)
     {}
@@ -83,25 +83,33 @@ public:
         return *this;
     }
 
-    // 空指针/零字节由边界检查自然兜底, 无需额外分支
+    // M11: align 必须为非零 2 的幂, 整数偏移检查后再形成指针, 空 arena 返回 nullptr
     [[nodiscard]] FORCE_INLINE void* allocate(size_t n, size_t align = DEFAULT_ALIGN) noexcept
     {
-        uintptr_t addr = reinterpret_cast<uintptr_t>(cursor_);
-        uintptr_t aligned = (addr + align - 1) & ~(static_cast<uintptr_t>(align) - 1);
-        uint8_t* p = reinterpret_cast<uint8_t*>(aligned);
-        uint8_t* next = p + n;
-        if (next > end_) [[unlikely]]
+        if (align == 0 || (align & (align - 1)) != 0) [[unlikely]]
         {
             return nullptr;
         }
-        cursor_ = next;
+        if (!cursor_) [[unlikely]]
+        {
+            return nullptr;
+        }
+        uintptr_t addr = reinterpret_cast<uintptr_t>(cursor_);
+        uintptr_t aligned = (addr + align - 1) & ~(static_cast<uintptr_t>(align) - 1);
+        size_t offset = static_cast<size_t>(aligned - reinterpret_cast<uintptr_t>(base_));
+        size_t capacity = static_cast<size_t>(end_ - base_);
+        if (offset > capacity || n > capacity - offset) [[unlikely]]   // 溢出安全的容量检查
+        {
+            return nullptr;
+        }
+        cursor_ = base_ + offset + n;
         ++allocation_count_;
         size_t cur_used = static_cast<size_t>(cursor_ - base_);
         if (cur_used > peak_used_) [[unlikely]]
         {
             peak_used_ = cur_used;
         }
-        return p;
+        return base_ + offset;
     }
 
     [[nodiscard]] FORCE_INLINE void* allocate_zeroed(size_t n, size_t align = DEFAULT_ALIGN) noexcept
@@ -117,6 +125,10 @@ public:
     template <typename T>
     [[nodiscard]] FORCE_INLINE T* allocate_array(size_t count, size_t align = alignof(T)) noexcept
     {
+        if (count > static_cast<size_t>(-1) / sizeof(T)) [[unlikely]]   // M11: 乘法溢出
+        {
+            return nullptr;
+        }
         return static_cast<T*>(allocate(count * sizeof(T), align));
     }
 
@@ -162,12 +174,16 @@ public:
 
     [[nodiscard]] FORCE_INLINE size_t save_point() const noexcept
     {
-        return static_cast<size_t>(cursor_ - base_);
+        return cursor_ ? static_cast<size_t>(cursor_ - base_) : 0;
     }
 
     // 恢复到保存的分配点 (子作用域回收)
     FORCE_INLINE void restore(size_t point) noexcept
     {
+        if (!cursor_) [[unlikely]]
+        {
+            return;
+        }
         uint8_t* target = base_ + point;
         if (target <= cursor_) [[likely]]
         {
@@ -181,9 +197,10 @@ public:
         cursor_ = base_;
     }
 
-    [[nodiscard]] constexpr size_t used() const noexcept { return static_cast<size_t>(cursor_ - base_); }
-    [[nodiscard]] constexpr size_t capacity() const noexcept { return static_cast<size_t>(end_ - base_); }
-    [[nodiscard]] constexpr size_t remaining() const noexcept { return static_cast<size_t>(end_ - cursor_); }
+    // 空 arena (默认构造/分配失败) 时容量为 0, 不对空指针做差
+    [[nodiscard]] constexpr size_t used() const noexcept { return cursor_ ? static_cast<size_t>(cursor_ - base_) : 0; }
+    [[nodiscard]] constexpr size_t capacity() const noexcept { return end_ ? static_cast<size_t>(end_ - base_) : 0; }
+    [[nodiscard]] constexpr size_t remaining() const noexcept { return end_ ? static_cast<size_t>(end_ - cursor_) : 0; }
     [[nodiscard]] constexpr bool empty() const noexcept { return cursor_ == base_; }
 
     [[nodiscard]] constexpr size_t peak_used() const noexcept { return peak_used_; }

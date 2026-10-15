@@ -64,7 +64,7 @@ inline void filter_indices_to(class_pool<T>& pool, class_pool<size_t>& dst, Pred
 		if (pred(*it)) [[likely]]
 		{
 			const size_t idx = static_cast<size_t>(&(*it) - pool.data());
-			dst.push_back_unchecked(idx);
+			dst.push_back(idx);
 		}
 	}
 }

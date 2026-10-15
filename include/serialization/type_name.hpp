@@ -185,7 +185,7 @@ inline uint32_t ensure_factory_entry(int tid, const char* name,
     entry.is_trivially_copyable = trivial;
     if (static_cast<int>(idx.size()) <= tid)
     {
-        idx.increase_capacity(static_cast<size_t>(tid) + 1, -1);
+        idx.resize_fill(static_cast<size_t>(tid) + 1, -1);
     }
     const uint32_t new_idx = static_cast<uint32_t>(reg.size());
     idx[tid] = static_cast<int32_t>(new_idx);

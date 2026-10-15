@@ -12,6 +12,8 @@ window.DOCS_DATA['memory_pool'] = {
 
 变长内存池，提供分配、释放、统计、扩缩容接口。
 
+> 线程契约：单线程使用；多线程请各自持有独立实例，不跨线程共享或释放。
+
 ### memory_block — 内存块
 
 | 接口 | 说明 |
@@ -40,20 +42,20 @@ window.DOCS_DATA['memory_pool'] = {
 
 | 接口 | 说明 |
 |------|------|
-| \`memory_pool(size_t chunk_size = 4096)\` | 构造，指定块大小 |
+| \`memory_pool(size_t chunk_size = 4096)\` | 构造，chunk_size 为新块最小尺寸提示 |
 | \`memory_pool(memory_pool&&)\` | 移动构造 |
 | \`operator=(memory_pool&&)\` | 移动赋值 |
-| \`allocate(size_t size)\` | 分配内存，返回 16 字节对齐指针 |
+| \`allocate(size_t size)\` | 分配内存，返回 16 字节对齐指针，实际容量不小于请求 |
 | \`allocate_sized<Size>()\` | 模板化分配，Size 为编译期大小 |
-| \`deallocate(void* ptr)\` | 释放内存 |
-| \`deallocate(void* ptr, size_t size)\` | 释放内存（size 必须与 allocate 一致） |
-| \`deallocate_sized<Size>(void* ptr)\` | 模板化释放，与 \`allocate_sized<Size>()\` 配对 |
+| \`deallocate(void* ptr)\` | 释放内存，重复释放被安全忽略 |
+| \`deallocate(void* ptr, size_t size)\` | 释放内存（size 仅为提示，按实际块大小回收） |
+| \`deallocate_sized<Size>(void* ptr)\` | 模板化释放，Size 仅为提示，与 allocate 系列配对 |
 | \`allocate_zeroed(size_t size)\` | 分配并清零 |
-| \`allocate_aligned(size_t size, size_t align)\` | 对齐分配 |
+| \`allocate_aligned(size_t size, size_t align)\` | 对齐分配，align 自动取整到 2 的幂 |
 | \`deallocate_aligned(void* p)\` | 释放对齐分配的内存 |
 | \`reallocate(void* ptr, size_t old_size, size_t new_size)\` | 重分配 |
 | \`reallocate_inplace(void* ptr, size_t old_size, size_t new_size)\` | 原位重分配，成功返回 true |
-| \`construct<T>(Args...)\` | 分配并构造对象 |
+| \`construct<T>(Args...)\` | 分配并构造对象，自动满足 alignof(T) |
 | \`destroy<T>(T* ptr)\` | 析构并释放对象 |
 | \`total_allocated()\` | 已分配总量 |
 | \`total_used()\` | 已使用量 |
@@ -140,6 +142,8 @@ window.DOCS_DATA['list_memory_pool'] = {
   content: `## 21. list_memory_pool — 链表内存池
 
 \`#include "part/memory/list_memory_pool.hpp"\`，命名空间 \`memory\`。\`noexcept\`。
+
+> 线程契约：单线程使用；多线程请各自持有独立实例，不跨线程共享或释放。
 
 变长内存池，提供 \`allocate\`/\`hard_deallocate\`/\`soft_deallocate\` 三种释放方式。\`soft_deallocate\` 释放的块可被后续 \`allocate\` 复用。
 
@@ -236,6 +240,8 @@ window.DOCS_DATA['arena_allocator'] = {
 \`#include "part/memory/arena_allocator.hpp"\`，命名空间 \`memory\`。\`noexcept\`。
 
 线性分配器，无单个 \`deallocate\`，仅 \`reset\`/\`restore\` 整体回收。两种模式：自有内存和借用外部 buffer。
+
+> 线程契约：单线程使用；多线程请各自持有独立实例，不跨线程共享或释放。
 
 ### 接口
 
@@ -338,6 +344,8 @@ window.DOCS_DATA['slab_allocator'] = {
 
 \`#include "part/memory/slab_allocator.hpp"\`，命名空间 \`memory\`。\`noexcept\`。
 
+> 线程契约：单线程使用；多线程请各自持有独立实例，不跨线程共享或释放。
+
 固定块大小分配器，所有块大小相同。
 
 ### 接口
@@ -350,7 +358,7 @@ window.DOCS_DATA['slab_allocator'] = {
 | \`allocate()\` | 分配一个块，返回指针或 nullptr |
 | \`allocate_zeroed()\` | 分配并清零 |
 | \`deallocate(void* p)\` | 释放块 |
-| \`construct<T>(Args...)\` | 分配并构造对象 |
+| \`construct<T>(Args...)\` | 分配并构造对象，sizeof/alignof 超过块大小时返回 nullptr |
 | \`destroy<T>(T* ptr)\` | 析构并释放对象 |
 | \`reserve(size_t blocks)\` | 预分配至少 blocks 个空闲块 |
 | \`reset()\` | 重置：释放所有块到初始状态 |
@@ -420,6 +428,8 @@ window.DOCS_DATA['layered_allocator'] = {
 
 分层分配器，小块走 slab，大块走 list_memory_pool。
 
+> 线程契约：单线程使用；多线程请各自持有独立实例，不跨线程共享或释放。
+
 ### 接口
 
 | 接口 | 说明 |
@@ -427,15 +437,15 @@ window.DOCS_DATA['layered_allocator'] = {
 | \`layered_allocator()\` | 默认构造 |
 | \`layered_allocator(layered_allocator&&)\` | 移动构造 |
 | \`operator=(layered_allocator&&)\` | 移动赋值 |
-| \`allocate(size_t n)\` | 分配内存 |
+| \`allocate(size_t n)\` | 分配内存，按大小自动选择 slab 或大池 |
 | \`allocate_zeroed(size_t n)\` | 分配并清零 |
-| \`allocate_aligned(size_t n, size_t align)\` | 对齐分配 |
-| \`deallocate(void* p)\` | 释放内存 |
-| \`deallocate(void* p, size_t n)\` | 释放内存（带大小提示） |
+| \`allocate_aligned(size_t n, size_t align)\` | 对齐分配，align 自动取整到 2 的幂，按对齐保证选择路径 |
+| \`deallocate(void* p)\` | 释放内存，按指针归属自动选择路径 |
+| \`deallocate(void* p, size_t n)\` | 释放内存（n 仅为提示，按指针归属选择路径） |
 | \`deallocate_aligned(void* p)\` | 释放对齐分配的内存 |
 | \`reallocate(void* p, size_t old_n, size_t new_n)\` | 重分配 |
 | \`reallocate_inplace(void* p, size_t old_n, size_t new_n)\` | 原位重分配，成功返回 true |
-| \`construct<T>(Args...)\` | 分配并构造对象 |
+| \`construct<T>(Args...)\` | 分配并构造对象，自动满足 alignof(T) |
 | \`construct_array<T>(size_t count, Args...)\` | 分配并构造 count 个对象 |
 | \`destroy<T>(T* ptr)\` | 析构并释放对象 |
 | \`owns(const void* p)\` | 判断指针是否属于本分配器 |
@@ -512,6 +522,8 @@ window.DOCS_DATA['stl_allocator'] = {
 \`#include "part/memory/stl_allocator.hpp"\`，命名空间 \`memory\`。\`noexcept\`。
 
 将项目内存池适配为 C++ STL Allocator，可用于 \`std::vector\`/\`std::list\` 等标准容器。
+
+> 线程契约：跟随底层池；底层池为单线程使用，不跨线程共享容器。
 
 ### 接口
 

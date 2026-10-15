@@ -33,17 +33,22 @@ public:
         : pool_(other.pool_)
     {}
 
+    // M12: 溢出检查在乘法前; 空池 (默认构造) 直接 OOM 诊断
     [[nodiscard]] T* allocate(size_t n) noexcept
     {
         if (n == 0) [[unlikely]]
         {
             return nullptr;
         }
-        size_t bytes = n * sizeof(T);
         if (n > static_cast<size_t>(-1) / sizeof(T)) [[unlikely]]
         {
-            handle_oom(bytes, "stl_allocator::allocate(overflow)");
+            handle_oom(n, "stl_allocator::allocate(overflow)");
         }
+        if (!pool_) [[unlikely]]
+        {
+            handle_oom(n * sizeof(T), "stl_allocator::allocate(null pool)");
+        }
+        size_t bytes = n * sizeof(T);
         void* p = pool_->allocate(bytes);
         if (!p) [[unlikely]]
         {
@@ -54,7 +59,7 @@ public:
 
     void deallocate(T* p, size_t n) noexcept
     {
-        if (!p) [[unlikely]]
+        if (!p || !pool_) [[unlikely]]
         {
             return;
         }

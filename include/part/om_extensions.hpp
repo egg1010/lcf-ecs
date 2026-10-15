@@ -219,7 +219,7 @@ struct om_scope_cycles
     om_scope_cycles& operator=(const om_scope_cycles&) = delete;
 };
 
-// === P2: 消息历史记录 (ring_buffer 存储, 静态池复用) ===
+// === P2: 消息历史记录 (ring_buffer 覆盖语义, 保留最近 N 条) ===
 
 // 历史记录条目: trivially copyable, ring_buffer 快路径零析构
 struct om_record
@@ -232,12 +232,11 @@ struct om_record
 
 using om_history = ring_buffer<om_record, 1024>;
 
-// 推入一条消息到历史 (槽位原地填充, 不经过栈临时对象)
+// 推入一条消息到历史 (满则覆盖最旧, 原地填充)
 inline void om_history_push(om_history& hist, const operating_message& om,
                             msg_level lv = msg_level::info) noexcept
 {
-    om_record* rec = hist.emplace_get();
-    if (!rec) [[unlikely]] { return; }
+    om_record* rec = hist.emplace_overwrite();
     rec->level = lv;
     rec->code = om.code();
     std::string_view sv = om.read_message();
@@ -245,14 +244,39 @@ inline void om_history_push(om_history& hist, const operating_message& om,
     std::memcpy(rec->msg_buf, sv.data(), rec->msg_len);
 }
 
-// 排空历史, 逐条调用 handler(level, code, msg_view)
+// 只读查看历史, 逐条回调 handler(level, code, msg_view), 不消费
 template<typename Func>
-size_t om_history_flush(om_history& hist, Func&& handler) noexcept
+size_t om_history_visit(const om_history& hist, Func&& handler) noexcept
 {
-    return hist.drain([&](const om_record& rec) {
+    return hist.visit([&](const om_record& rec) {
         std::string_view sv(rec.msg_buf, rec.msg_len);
         handler(rec.level, rec.code, sv);
     });
+}
+
+// 排空历史: 批量连续段消费 (front_run + pop_run), 逐条回调 handler(level, code, msg_view)
+template<typename Func>
+size_t om_history_flush(om_history& hist, Func&& handler) noexcept
+{
+    size_t total = 0;
+    om_record* run = nullptr;
+    size_t len = 0;
+    while (hist.front_run(run, len) > 0)
+    {
+        for (size_t i = 0; i < len; ++i)
+        {
+            std::string_view sv(run[i].msg_buf, run[i].msg_len);
+            handler(run[i].level, run[i].code, sv);
+        }
+        total += hist.pop_run(len);
+    }
+    return total;
+}
+
+// 历史中被覆盖淘汰的累计条数
+[[nodiscard]] inline uint64_t om_history_dropped(const om_history& hist) noexcept
+{
+    return hist.dropped_count();
 }
 
 // === P2: 消息订阅/回调 (包装器模式, 不修改 operating_message) ===

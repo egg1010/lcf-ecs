@@ -71,7 +71,7 @@ int main()
     // 条件视图：拥有 Position 但缺少 Velocity
     mgr.view<Position>(ecs::without<Velocity>);
 
-    // 拥有 Position 且同时具备 Health
+    // 遍历 Position，同时获取 Health 指针（无 Health 时为空）
     mgr.view<Position>(ecs::with<Health>);
 
     mgr.delete_entity(e1);

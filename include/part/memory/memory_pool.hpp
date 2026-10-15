@@ -208,15 +208,28 @@ private:
     static constexpr size_t ALIGNMENT = 16;
     static constexpr size_t MIN_SPLIT = HEADER_SIZE + FREE_NODE_SIZE;
     static constexpr size_t IN_USE_FLAG = 1;
+    static constexpr size_t CACHED_FLAG = 2;
+    static constexpr size_t FLAGS_MASK = IN_USE_FLAG | CACHED_FLAG;
 
     [[nodiscard]] FORCE_INLINE static bool is_in_use(const block_header* h) noexcept
     {
         return (h->size_ & IN_USE_FLAG) != 0;
     }
 
+    [[nodiscard]] FORCE_INLINE static bool is_cached(const block_header* h) noexcept
+    {
+        return (h->size_ & CACHED_FLAG) != 0;
+    }
+
+    // 可合并 = 空闲且不在小块缓存 (在空闲链或 wilderness); 缓存块不在空闲链, 合并会破坏链表
+    [[nodiscard]] FORCE_INLINE static bool is_mergeable(const block_header* h) noexcept
+    {
+        return !is_in_use(h) && !is_cached(h);
+    }
+
     [[nodiscard]] FORCE_INLINE static size_t block_size(const block_header* h) noexcept
     {
-        return h->size_ & ~IN_USE_FLAG;
+        return h->size_ & ~FLAGS_MASK;
     }
 
     FORCE_INLINE static void set_in_use(block_header* h, bool v) noexcept
@@ -231,9 +244,21 @@ private:
         }
     }
 
+    FORCE_INLINE static void set_cached(block_header* h, bool v) noexcept
+    {
+        if (v)
+        {
+            h->size_ |= CACHED_FLAG;
+        }
+        else
+        {
+            h->size_ &= ~CACHED_FLAG;
+        }
+    }
+
     FORCE_INLINE static void set_block_size(block_header* h, size_t s) noexcept
     {
-        h->size_ = (h->size_ & IN_USE_FLAG) | (s & ~IN_USE_FLAG);
+        h->size_ = (h->size_ & FLAGS_MASK) | (s & ~FLAGS_MASK);
     }
 
     FORCE_INLINE static void size_to_index(size_t size, size_t& fl, size_t& sl) noexcept
@@ -246,6 +271,18 @@ private:
             return;
         }
         sl = (size >> (fl - SL_BITS)) - SL_COUNT;
+    }
+
+    // 搜索映射: 向上取整到桶边界, 保证桶内任一块均 >= 请求 (TLSF mapping_search)
+    //   size_to_index 为向下取整 (插入用), 同桶最小块可能小于请求
+    FORCE_INLINE static void size_to_search_index(size_t size, size_t& fl, size_t& sl) noexcept
+    {
+        if (size >= (size_t{1} << SL_BITS)) [[likely]]
+        {
+            const size_t f = static_cast<size_t>(std::bit_width(size)) - 1;
+            size += (size_t{1} << (f - SL_BITS)) - 1;
+        }
+        size_to_index(size, fl, sl);
     }
 
     [[nodiscard]] FORCE_INLINE static free_node* get_free_node(block_header* h) noexcept
@@ -271,13 +308,56 @@ private:
 
     static constexpr size_t SMALL_CLASS_COUNT = 16;
     static constexpr size_t SMALL_MAX_SIZE = 256;
+    // 小块缓存阈值: 超过 LIMIT 触发部分 flush, 每类裁到 KEEP (滞回防抖)
+    static constexpr size_t SMALL_CACHE_LIMIT = 512;
+    static constexpr size_t SMALL_CACHE_KEEP = 16;
     std::array<void*, SMALL_CLASS_COUNT> small_heads_{};
+    size_t cached_block_count_{0};   // 小块缓存块总数 (阈值裁剪与统计用)
 
     block_header* wilderness_ = nullptr;
 
     [[nodiscard]] static constexpr size_t small_class_index(size_t aligned_size) noexcept
     {
         return (aligned_size >> 4) - 1;
+    }
+
+    // 部分 flush: 每类前 SMALL_CACHE_KEEP 块保留在缓存, 其余合并回空闲链
+    //   防止缓存无界累积使 max_contiguous_free 漏算 (fragmentation 虚高)
+    void trim_cache_() noexcept
+    {
+        for (size_t idx = 0; idx < SMALL_CLASS_COUNT; ++idx)
+        {
+            // 走到保留段末尾
+            void* kept_tail = nullptr;
+            void* cur = small_heads_[idx];
+            size_t kept = 0;
+            while (cur && kept < SMALL_CACHE_KEEP)
+            {
+                kept_tail = cur;
+                cur = *static_cast<void**>(cur);
+                ++kept;
+            }
+            if (!cur)
+            {
+                continue;   // 全部保留
+            }
+            *static_cast<void**>(kept_tail) = nullptr;   // 截断保留段
+
+            // 合并剩余段 (next 先读出, 合并会覆写块头)
+            while (cur)
+            {
+                void* next = *static_cast<void**>(cur);
+                --free_block_count_;
+                --cached_block_count_;
+
+                uint8_t* bp = static_cast<uint8_t*>(cur) - HEADER_SIZE;
+                block_header* block = reinterpret_cast<block_header*>(bp);
+                set_in_use(block, false);
+                set_cached(block, false);
+                merge_adjacent_blocks(block);
+                cur = next;
+            }
+        }
     }
 
     void flush_cache() noexcept
@@ -298,10 +378,12 @@ private:
                 void* ptr = small_heads_[idx];
                 small_heads_[idx] = *static_cast<void**>(ptr);
                 --free_block_count_;
+                --cached_block_count_;
 
                 uint8_t* bp = static_cast<uint8_t*>(ptr) - HEADER_SIZE;
                 block_header* block = reinterpret_cast<block_header*>(bp);
                 set_in_use(block, false);
+                set_cached(block, false);
                 merge_adjacent_blocks(block);
             }
         }
@@ -363,7 +445,7 @@ private:
         uint8_t* next_block_ptr = reinterpret_cast<uint8_t*>(block) + HEADER_SIZE + block_size(block);
         block_header* next_block = reinterpret_cast<block_header*>(next_block_ptr);
 
-        if (!is_in_use(next_block)) [[likely]]
+        if (is_mergeable(next_block)) [[likely]]
         {
             if (next_block == wilderness_)
             {
@@ -387,7 +469,7 @@ private:
         if (block->prev_physical_) [[likely]]
         {
             block_header* prev_block = block->prev_physical_;
-            if (!is_in_use(prev_block)) [[likely]]
+            if (is_mergeable(prev_block)) [[likely]]
             {
                 if (prev_block == wilderness_)
                 {
@@ -418,17 +500,16 @@ private:
     void add_new_chunk(size_t min_size) noexcept
     {
         size_t need = min_size + 2 * HEADER_SIZE;
+        if (chunk_size_ > need) need = chunk_size_;   // M13: chunk_size 为新 chunk 最小尺寸提示
         size_t new_chunk_size;
         uint8_t* chunk_ptr = chunk_pool_.take(need, new_chunk_size);
 
         block_header* sentinel = reinterpret_cast<block_header*>(chunk_ptr + new_chunk_size - HEADER_SIZE);
-        set_block_size(sentinel, 0);
-        set_in_use(sentinel, true);
+        sentinel->size_ = IN_USE_FLAG;                       // 完整初始化, 避免读未初始化标志
         sentinel->prev_physical_ = reinterpret_cast<block_header*>(chunk_ptr);
 
         block_header* header = reinterpret_cast<block_header*>(chunk_ptr);
-        set_block_size(header, new_chunk_size - 2 * HEADER_SIZE);
-        set_in_use(header, false);
+        header->size_ = new_chunk_size - 2 * HEADER_SIZE;    // 完整初始化
         header->prev_physical_ = nullptr;
 
         if (wilderness_)
@@ -524,12 +605,17 @@ public:
             if (p) [[likely]]
             {
                 small_heads_[idx] = *static_cast<void**>(p);
+                block_header* cb = reinterpret_cast<block_header*>(
+                    static_cast<uint8_t*>(p) - HEADER_SIZE);
+                set_cached(cb, false);
+                set_in_use(cb, true);
                 total_used_ += size + HEADER_SIZE;
                 if (total_used_ > peak_used_) [[unlikely]]
                 {
                     peak_used_ = total_used_;
                 }
                 --free_block_count_;
+                --cached_block_count_;
                 return p;
             }
         }
@@ -578,7 +664,7 @@ public:
         }
 
         size_t fl, sl;
-        size_to_index(size, fl, sl);
+        size_to_search_index(size, fl, sl);   // M01: 上取整映射保证桶内块 >= 请求
 
         uint32_t sl_mask = sl_bitmaps_[fl] >> sl;
         if (sl_mask) [[likely]]
@@ -655,8 +741,15 @@ public:
             size_t idx = small_class_index(bsize);
             *static_cast<void**>(ptr) = small_heads_[idx];
             small_heads_[idx] = ptr;
+            set_in_use(block, false);
+            set_cached(block, true);      // M07: 缓存块标记, 重复释放被 is_in_use 拦截
             total_used_ -= bsize + HEADER_SIZE;
             ++free_block_count_;
+            ++cached_block_count_;
+            if (cached_block_count_ > SMALL_CACHE_LIMIT) [[unlikely]]
+            {
+                trim_cache_();            // 建议 2: 缓存超阈值部分 flush, 防统计失真
+            }
             return;
         }
 
@@ -677,27 +770,11 @@ public:
         merge_adjacent_blocks(block);
     }
 
-    // sized deallocate: size 必须与 allocate(size) 一致
+    // sized deallocate: 按 Header 真实块大小归桶, 调用方 size 仅作提示 (M08)
     FORCE_INLINE
     void deallocate(void* ptr, size_t size) noexcept
     {
-        if (!ptr) [[unlikely]]
-        {
-            return;
-        }
-
-        size_t aligned = (size + ALIGNMENT - 1) & ~(ALIGNMENT - 1);
-
-        if (aligned <= SMALL_MAX_SIZE) [[likely]]
-        {
-            size_t idx = small_class_index(aligned);
-            *static_cast<void**>(ptr) = small_heads_[idx];
-            small_heads_[idx] = ptr;
-            total_used_ -= aligned + HEADER_SIZE;
-            ++free_block_count_;
-            return;
-        }
-
+        (void)size;
         deallocate(ptr);
     }
 
@@ -762,7 +839,12 @@ public:
             if (p) [[likely]]
             {
                 small_heads_[Idx] = *static_cast<void**>(p);
+                block_header* cb = reinterpret_cast<block_header*>(
+                    static_cast<uint8_t*>(p) - HEADER_SIZE);
+                set_cached(cb, false);
+                set_in_use(cb, true);
                 total_used_ += Aligned + HEADER_SIZE;
+                --cached_block_count_;
                 return p;
             }
         }
@@ -773,30 +855,24 @@ public:
     FORCE_INLINE
     void deallocate_sized(void* ptr) noexcept
     {
-        if (!ptr) [[unlikely]]
-        {
-            return;
-        }
-
-        constexpr size_t Aligned = (Size + ALIGNMENT - 1) & ~(ALIGNMENT - 1);
-
-        if constexpr (Aligned <= SMALL_MAX_SIZE)
-        {
-            constexpr size_t Idx = small_class_index(Aligned);
-            *static_cast<void**>(ptr) = small_heads_[Idx];
-            small_heads_[Idx] = ptr;
-            total_used_ -= Aligned + HEADER_SIZE;
-            return;
-        }
-
+        // 按 Header 真实块大小归桶 (M08), Size 仅作静态提示
         deallocate(ptr);
     }
 
+    // M05: alignof(T) 超过池基础对齐 (16B) 时走 allocate_aligned, destroy 对称释放
     template <typename T, typename... Args>
     [[nodiscard]] FORCE_INLINE
     T* construct(Args&&... args) noexcept
     {
-        void* ptr = allocate_sized<sizeof(T)>();
+        void* ptr;
+        if constexpr (alignof(T) > ALIGNMENT)
+        {
+            ptr = allocate_aligned(sizeof(T), alignof(T));
+        }
+        else
+        {
+            ptr = allocate_sized<sizeof(T)>();
+        }
         if (!ptr) [[unlikely]]
         {
             return nullptr;
@@ -813,7 +889,14 @@ public:
             return;
         }
         ptr->~T();
-        deallocate_sized<sizeof(T)>(ptr);
+        if constexpr (alignof(T) > ALIGNMENT)
+        {
+            deallocate_aligned(ptr);
+        }
+        else
+        {
+            deallocate_sized<sizeof(T)>(ptr);
+        }
     }
 
     // 原位重分配: 检查物理相邻的下一块是否空闲且可合并
@@ -1104,6 +1187,7 @@ public:
         total_allocated_ = 0;
         total_used_ = 0;
         free_block_count_ = 0;
+        cached_block_count_ = 0;
     }
 };
 

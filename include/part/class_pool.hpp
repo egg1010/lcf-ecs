@@ -59,11 +59,6 @@ private:
 	static constexpr size_t SMALL_CAPACITY_THRESHOLD = 1024;
 	static constexpr size_t MEDIUM_CAPACITY_THRESHOLD = 65536;
 
-	// 返回真实容量: 虚标容量而不分配会让追加解引用空指针
-	[[nodiscard]] static constexpr size_t round_up_to_default(size_t n) noexcept {
-		return n;
-	}
-
 	[[nodiscard]] static constexpr size_t calculate_new_capacity(size_t current) noexcept {
 		if (current == 0) { return DEFAULT_CAPACITY; }
 		return current * 4;
@@ -216,6 +211,7 @@ private:
 	static void relocate_sparse(T* dst, const T* src, const uint64_t* src_bits, size_t count) noexcept;
 
 	static void copy_trivial_data(T* __restrict dst, const T* __restrict src, size_t count) noexcept;
+	static void fill_trivial_small(T* dst, const T& value, size_t count) noexcept;
 	void grow_data_and_bitmap(size_t new_capacity) noexcept;
 
 public:
@@ -291,24 +287,11 @@ public:
 		Ref operator*() const noexcept { return *ptr_; }
 		Ptr operator->() const noexcept { return ptr_; }
 
-		// 返回 >= start 的下一个设置位位置, 没有则返回 total
-		// 属性 pure/noinline 由 LCF_PURE/NOINLINE 宏跨平台处理 (见 force_inline.hpp)
-		LCF_PURE static NOINLINE size_t find_next_set_bit(
-			const uint64_t* bits, size_t start, size_t total) noexcept
+		// 从 word_idx 起整字扫描, 返回下一设置位位置, 没有则返回 total
+		LCF_PURE static NOINLINE size_t scan_set_bit_words(
+			const uint64_t* bits, size_t word_idx, size_t total) noexcept
 		{
-			if (start >= total) { return total; }
-
-			size_t word_idx = start / BITS_PER_WORD;
-			size_t bit_in_word = start % BITS_PER_WORD;
 			const size_t total_words = (total + BITS_PER_WORD - 1) / BITS_PER_WORD;
-
-			uint64_t word = bits[word_idx] >> bit_in_word;
-			if (word != 0)
-			{
-				return word_idx * BITS_PER_WORD + bit_in_word + std::countr_zero(word);
-			}
-
-			++word_idx;
 #ifdef __AVX2__
 			for (; word_idx + 4 <= total_words; word_idx += 4)
 			{
@@ -328,13 +311,31 @@ public:
 #endif
 			for (; word_idx < total_words; ++word_idx)
 			{
-				word = bits[word_idx];
+				const uint64_t word = bits[word_idx];
 				if (word != 0)
 				{
 					return word_idx * BITS_PER_WORD + std::countr_zero(word);
 				}
 			}
 			return total;
+		}
+
+		// 返回 >= start 的下一个设置位位置, 没有则返回 total
+		// 属性 pure/noinline 由 LCF_PURE/NOINLINE 宏跨平台处理 (见 force_inline.hpp)
+		LCF_PURE static NOINLINE size_t find_next_set_bit(
+			const uint64_t* bits, size_t start, size_t total) noexcept
+		{
+			if (start >= total) { return total; }
+
+			const size_t word_idx = start / BITS_PER_WORD;
+			const size_t bit_in_word = start % BITS_PER_WORD;
+			const uint64_t word = bits[word_idx] >> bit_in_word;
+			if (word != 0)
+			{
+				return word_idx * BITS_PER_WORD + bit_in_word + std::countr_zero(word);
+			}
+
+			return scan_set_bit_words(bits, word_idx + 1, total);
 		}
 
 		void skip_to_next_valid() noexcept {
@@ -357,8 +358,18 @@ public:
 				constexpr size_t pf_dist = (sizeof(T) < 64) ? (64 / sizeof(T)) : 1;
 				PREFETCH_R(ptr_ + pf_dist);
 				const size_t idx = static_cast<size_t>(ptr_ - origin_);
-				const size_t total = static_cast<size_t>(end_ - origin_);
-				ptr_ = origin_ + find_next_set_bit(bits, idx, total);
+				// 同 word 内快路径: 免函数调用; miss 时跳过已判空的首字, 直接整字扫描
+				const size_t word_idx = idx / BITS_PER_WORD;
+				const uint64_t word = bits[word_idx] >> (idx % BITS_PER_WORD);
+				if (word != 0) [[likely]]
+				{
+					ptr_ += std::countr_zero(word);
+				}
+				else
+				{
+					const size_t total = static_cast<size_t>(end_ - origin_);
+					ptr_ = origin_ + scan_set_bit_words(bits, word_idx + 1, total);
+				}
 			}
 			return *this;
 		}
@@ -425,7 +436,8 @@ public:
 	explicit class_pool(size_t capacity) noexcept;
 	class_pool(size_t count, const T& value) noexcept;
 	// 迭代器约束: 防止 pool(count, value) 的整型参数被误推导为迭代器
-	template <typename InputIt> requires std::input_iterator<InputIt>
+	// forward_iterator: distance 会消耗单遍迭代器, 之后遍历读到失效状态
+	template <typename InputIt> requires std::forward_iterator<InputIt>
 	class_pool(InputIt first, InputIt last) noexcept;
 	class_pool(std::initializer_list<T> init) noexcept;
 	class_pool(const class_pool& other) noexcept;
@@ -458,15 +470,23 @@ public:
 		return data_ptr_[index];
 	}
 
-	// 越界保护访问: index 越界时改访问 error_index
+	// 越界保护访问: index 越界时改访问 error_index, error_index 也越界时回落到 0
 	[[nodiscard]] constexpr T& get(size_t index, size_t error_index) noexcept
 	{
-		return data_ptr_[index < index_ ? index : error_index];
+		if (index_ == 0) [[unlikely]] {
+			LCF_TRAP();   // 空容器无合法元素
+		}
+		const size_t i = index < index_ ? index : (error_index < index_ ? error_index : 0);
+		return data_ptr_[i];
 	}
 
 	[[nodiscard]] constexpr const T& get(size_t index, size_t error_index) const noexcept
 	{
-		return data_ptr_[index < index_ ? index : error_index];
+		if (index_ == 0) [[unlikely]] {
+			LCF_TRAP();
+		}
+		const size_t i = index < index_ ? index : (error_index < index_ ? error_index : 0);
+		return data_ptr_[i];
 	}
 
 	[[nodiscard]] constexpr size_type capacity() const noexcept { return maximum_quantity_; }
@@ -489,7 +509,7 @@ public:
 	}
 
 	void increase_capacity(size_t new_capacity) noexcept;
-	void increase_capacity(size_t new_capacity, const T& value) noexcept;
+	void resize_fill(size_t new_capacity, const T& value) noexcept;
 	void shrink_to_fit() noexcept;
 	void reduce_capacity(size_t new_capacity) noexcept;
 	void reduce_capacity(size_t new_capacity, class_pool<T>& dst) noexcept;
@@ -644,10 +664,10 @@ public:
 	[[nodiscard]] std::span<const T> first(size_t n) const noexcept;
 	[[nodiscard]] std::span<T> last(size_t n) noexcept;
 	[[nodiscard]] std::span<const T> last(size_t n) const noexcept;
-	template <size_t N> [[nodiscard]] std::span<T, N> first_fixed() noexcept;
-	template <size_t N> [[nodiscard]] std::span<const T, N> first_fixed() const noexcept;
-	template <size_t N> [[nodiscard]] std::span<T, N> last_fixed() noexcept;
-	template <size_t N> [[nodiscard]] std::span<const T, N> last_fixed() const noexcept;
+	template <size_t N> [[nodiscard]] std::span<T> first_fixed() noexcept;
+	template <size_t N> [[nodiscard]] std::span<const T> first_fixed() const noexcept;
+	template <size_t N> [[nodiscard]] std::span<T> last_fixed() noexcept;
+	template <size_t N> [[nodiscard]] std::span<const T> last_fixed() const noexcept;
 
 	[[nodiscard]] pool_strided_span<T> strided_span_view(size_t start, size_t step, size_t count) noexcept;
 	template <typename F> void strided_for_each(size_t start, size_t step, F&& f) noexcept;
@@ -712,13 +732,13 @@ public:
 	requires (N > 0) && std::invocable<F, std::span<const T, N>>
 	void for_each_chunk(F&& f) const noexcept;
 	template <size_t N> requires (N > 0)
-	[[nodiscard]] std::span<T, N> window_span(size_t offset) noexcept;
+	[[nodiscard]] std::span<T> window_span(size_t offset) noexcept;
 	template <size_t N> requires (N > 0)
-	[[nodiscard]] std::span<const T, N> window_span(size_t offset) const noexcept;
+	[[nodiscard]] std::span<const T> window_span(size_t offset) const noexcept;
 	template <size_t N> requires (N > 0)
-	[[nodiscard]] std::span<T, N> chunk_span(size_t chunk_idx) noexcept;
+	[[nodiscard]] std::span<T> chunk_span(size_t chunk_idx) noexcept;
 	template <size_t N> requires (N > 0)
-	[[nodiscard]] std::span<const T, N> chunk_span(size_t chunk_idx) const noexcept;
+	[[nodiscard]] std::span<const T> chunk_span(size_t chunk_idx) const noexcept;
 
 	template <typename F> requires std::invocable<F, size_t, T&>
 	void for_each_enumerated(F&& f) noexcept;
@@ -849,25 +869,25 @@ inline std::span<const T> class_pool<T>::last(size_t n) const noexcept
 }
 template <typename T>
 template <size_t N>
-inline std::span<T, N> class_pool<T>::first_fixed() noexcept
+inline std::span<T> class_pool<T>::first_fixed() noexcept
 {
 	return ::first_fixed<N>(*this);
 }
 template <typename T>
 template <size_t N>
-inline std::span<const T, N> class_pool<T>::first_fixed() const noexcept
+inline std::span<const T> class_pool<T>::first_fixed() const noexcept
 {
 	return ::first_fixed<N>(*this);
 }
 template <typename T>
 template <size_t N>
-inline std::span<T, N> class_pool<T>::last_fixed() noexcept
+inline std::span<T> class_pool<T>::last_fixed() noexcept
 {
 	return ::last_fixed<N>(*this);
 }
 template <typename T>
 template <size_t N>
-inline std::span<const T, N> class_pool<T>::last_fixed() const noexcept
+inline std::span<const T> class_pool<T>::last_fixed() const noexcept
 {
 	return ::last_fixed<N>(*this);
 }
@@ -1073,25 +1093,25 @@ inline void class_pool<T>::for_each_chunk(F&& f) const noexcept
 }
 template <typename T>
 template <size_t N> requires (N > 0)
-inline std::span<T, N> class_pool<T>::window_span(size_t offset) noexcept
+inline std::span<T> class_pool<T>::window_span(size_t offset) noexcept
 {
 	return ::window_span<N>(*this, offset);
 }
 template <typename T>
 template <size_t N> requires (N > 0)
-inline std::span<const T, N> class_pool<T>::window_span(size_t offset) const noexcept
+inline std::span<const T> class_pool<T>::window_span(size_t offset) const noexcept
 {
 	return ::window_span<N>(*this, offset);
 }
 template <typename T>
 template <size_t N> requires (N > 0)
-inline std::span<T, N> class_pool<T>::chunk_span(size_t chunk_idx) noexcept
+inline std::span<T> class_pool<T>::chunk_span(size_t chunk_idx) noexcept
 {
 	return ::chunk_span<N>(*this, chunk_idx);
 }
 template <typename T>
 template <size_t N> requires (N > 0)
-inline std::span<const T, N> class_pool<T>::chunk_span(size_t chunk_idx) const noexcept
+inline std::span<const T> class_pool<T>::chunk_span(size_t chunk_idx) const noexcept
 {
 	return ::chunk_span<N>(*this, chunk_idx);
 }

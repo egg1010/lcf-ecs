@@ -32,11 +32,19 @@ private:
 
     static constexpr size_t DEFAULT_BLOCKS_PER_CHUNK = 256;
 
+    // 块地址 = chunk 基址 + j*block_size_; 基址对齐到此值时所有块均满足该对齐
+    //   取 block_size_ 整除的最大 2 的幂 (block_size_ 为 2 的幂时即自身)
+    [[nodiscard]] static constexpr size_t block_alignment(size_t block_size) noexcept
+    {
+        return block_size & (~block_size + 1);
+    }
+
     void grow() noexcept
     {
         size_t chunk_size = block_size_ * blocks_per_chunk_;
+        size_t chunk_align = block_alignment(block_size_);
         uint8_t* data = static_cast<uint8_t*>(
-            ::operator new(chunk_size, std::nothrow));
+            ::operator new(chunk_size, std::align_val_t{ chunk_align }, std::nothrow));
         if (!data) [[unlikely]] return;
 
         chunks_.emplace_back(data, chunk_size);
@@ -75,9 +83,10 @@ public:
 
     ~slab_allocator() noexcept
     {
+        size_t chunk_align = block_alignment(block_size_);
         for (size_t i = 0; i < chunks_.size(); ++i)
         {
-            ::operator delete(chunks_[i].data);
+            ::operator delete(chunks_[i].data, std::align_val_t{ chunk_align });
         }
     }
 
@@ -108,9 +117,10 @@ public:
     {
         if (this != &other) [[likely]]
         {
+            size_t chunk_align = block_alignment(block_size_);
             for (size_t i = 0; i < chunks_.size(); ++i)
             {
-                ::operator delete(chunks_[i].data);
+                ::operator delete(chunks_[i].data, std::align_val_t{ chunk_align });
             }
             free_list_head_ = other.free_list_head_;
             chunks_ = std::move(other.chunks_);
@@ -221,9 +231,14 @@ public:
         return p;
     }
 
+    // M05: 校验 sizeof/alignof 均不超过块容量与块对齐, 不满足返回 nullptr
     template <typename T, typename... Args>
     [[nodiscard]] FORCE_INLINE T* construct(Args&&... args) noexcept
     {
+        if (sizeof(T) > block_size_ || alignof(T) > block_size_) [[unlikely]]
+        {
+            return nullptr;
+        }
         void* ptr = allocate();
         if (!ptr) [[unlikely]]
         {

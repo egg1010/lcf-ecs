@@ -412,6 +412,21 @@ void class_pool<T>::copy_trivial_data(T* __restrict dst, const T* __restrict src
 	}
 }
 
+// 小尺寸 trivial 类型通用填充: 倍增法 (先写首元素, memmove 指数倍增, ERMS 下接近带宽)
+// 不可 memcpy(dst, &value, 块大小) 复制: 越读 value 对象, 块内掺入相邻内存垃圾
+template <typename T>
+void class_pool<T>::fill_trivial_small(T* dst, const T& value, size_t count) noexcept {
+	dst[0] = value;
+	size_t filled = 1;
+	while (filled * 2 <= count) {
+		std::memmove(dst + filled, dst, filled * sizeof(T));
+		filled *= 2;
+	}
+	if (filled < count) {
+		std::memmove(dst + filled, dst, (count - filled) * sizeof(T));
+	}
+}
+
 template <typename T>
 void class_pool<T>::grow_data_and_bitmap(size_t new_capacity) noexcept {
 	if (new_capacity <= maximum_quantity_) [[likely]] {
@@ -482,7 +497,7 @@ class_pool<T>::class_pool(size_t count, const T& value) noexcept
 	: data_ptr_(nullptr)
 	, sparse_bits_(nullptr)
 	, live_bits_(nullptr)
-	, maximum_quantity_(round_up_to_default(count))
+	, maximum_quantity_(count)
 	, index_(0) {
 	if (count > 0) [[likely]] {
 		data_ptr_ = allocate_data(maximum_quantity_);
@@ -498,7 +513,7 @@ class_pool<T>::class_pool(size_t count, const T& value) noexcept
 }
 
 template <typename T>
-template <typename InputIt> requires std::input_iterator<InputIt>
+template <typename InputIt> requires std::forward_iterator<InputIt>
 class_pool<T>::class_pool(InputIt first, InputIt last) noexcept
 	: data_ptr_(nullptr)
 	, sparse_bits_(nullptr)
@@ -506,7 +521,7 @@ class_pool<T>::class_pool(InputIt first, InputIt last) noexcept
 	, maximum_quantity_(0)
 	, index_(0) {
 	const size_t count = static_cast<size_t>(std::distance(first, last));
-	maximum_quantity_ = round_up_to_default(count);
+	maximum_quantity_ = count;
 
 	if (count > 0) [[likely]] {
 		data_ptr_ = allocate_data(maximum_quantity_);
@@ -751,8 +766,8 @@ void class_pool<T>::push_back_unchecked(const T& value) noexcept {
 	if (count_cache_ != static_cast<size_t>(-1)) [[likely]] {
 		++count_cache_;
 	}
-	if (index_ >= maximum_quantity_) [[unlikely]] {
-		grow_data_and_bitmap(calculate_new_capacity(maximum_quantity_));
+	if constexpr (sizeof(T) > 128) {
+		if (index_ >= maximum_quantity_) { LCF_UNREACHABLE(); }
 	}
 	if constexpr (std::is_trivially_copyable_v<T>) {
 		std::memcpy(&data_ptr_[index_], &value, sizeof(T));
@@ -769,8 +784,8 @@ void class_pool<T>::push_back_unchecked(T&& value) noexcept {
 	if (count_cache_ != static_cast<size_t>(-1)) [[likely]] {
 		++count_cache_;
 	}
-	if (index_ >= maximum_quantity_) [[unlikely]] {
-		grow_data_and_bitmap(calculate_new_capacity(maximum_quantity_));
+	if constexpr (sizeof(T) > 128) {
+		if (index_ >= maximum_quantity_) { LCF_UNREACHABLE(); }
 	}
 	if constexpr (std::is_trivially_copyable_v<T>) {
 		std::memcpy(&data_ptr_[index_], &value, sizeof(T));
@@ -788,8 +803,8 @@ void class_pool<T>::emplace_back_unchecked(Args&&... args) noexcept {
 	if (count_cache_ != static_cast<size_t>(-1)) [[likely]] {
 		++count_cache_;
 	}
-	if (index_ >= maximum_quantity_) [[unlikely]] {
-		grow_data_and_bitmap(calculate_new_capacity(maximum_quantity_));
+	if constexpr (sizeof(T) > 128) {
+		if (index_ >= maximum_quantity_) { LCF_UNREACHABLE(); }
 	}
 	new (&data_ptr_[index_]) T(std::forward<Args>(args)...);
 	bitmap_set(sparse_bits_, index_);
@@ -803,8 +818,8 @@ void class_pool<T>::emplace_back_dense_unchecked(Args&&... args) noexcept {
 	if (count_cache_ != static_cast<size_t>(-1)) [[likely]] {
 		++count_cache_;
 	}
-	if (index_ >= maximum_quantity_) [[unlikely]] {
-		grow_data_and_bitmap(calculate_new_capacity(maximum_quantity_));
+	if constexpr (sizeof(T) > 128) {
+		if (index_ >= maximum_quantity_) { LCF_UNREACHABLE(); }
 	}
 	new (&data_ptr_[index_]) T(std::forward<Args>(args)...);
 	sparse_bits_[index_ / BITS_PER_WORD] |= (1ull << (index_ % BITS_PER_WORD));
@@ -821,12 +836,15 @@ void class_pool<T>::append_n(size_t n, const T& value) noexcept {
 		grow_data_and_bitmap(calculate_growth_for_reserve(index_ + n));
 	}
 
-	if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) <= 8)
+	if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) == 1)
 	{
-		for (size_t i = 0; i < n; ++i)
-		{
-			std::memcpy(&data_ptr_[index_ + i], &value, sizeof(T));
-		}
+		unsigned char byte;
+		std::memcpy(&byte, &value, 1);
+		std::memset(data_ptr_ + index_, byte, n);
+	}
+	else if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) <= 8)
+	{
+		fill_trivial_small(data_ptr_ + index_, value, n);
 	}
 	else
 	{
@@ -891,8 +909,9 @@ template <typename T>
 void class_pool<T>::clear() noexcept {
 	destroy_all();
 	invalidate_count_cache();
-	if (sparse_bits_ != nullptr && maximum_quantity_ > 0) [[likely]] {
-		const size_t words = bitmap_word_count(maximum_quantity_);
+	// 仅清零 [0, index_) 覆盖到的整字区间: 位图约定保证 >= index_ 的位均为 0
+	if (sparse_bits_ != nullptr && index_ > 0) [[likely]] {
+		const size_t words = bitmap_word_count(index_);
 		std::memset(std::assume_aligned<alignof(uint64_t)>(sparse_bits_), 0,
 		            words * sizeof(uint64_t));
 		std::memset(std::assume_aligned<alignof(uint64_t)>(live_bits_), 0,
@@ -964,7 +983,7 @@ void class_pool<T>::increase_capacity(size_t new_capacity) noexcept {
 }
 
 template <typename T>
-void class_pool<T>::increase_capacity(size_t new_capacity, const T& value) noexcept {
+void class_pool<T>::resize_fill(size_t new_capacity, const T& value) noexcept {
 	invalidate_count_cache();
 	if (new_capacity <= index_) [[likely]] {
 		return;
@@ -978,35 +997,40 @@ void class_pool<T>::increase_capacity(size_t new_capacity, const T& value) noexc
 	T* dst = data_ptr_ + index_;
 
 	if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) == 1) {
-		std::memset(dst, static_cast<unsigned char>(value), count);
+		unsigned char byte;
+		std::memcpy(&byte, &value, 1);   // 1 字节自定义类型不可强转 unsigned char
+		std::memset(dst, byte, count);
 	}
 	else if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) <= 8) {
-		const size_t elem_per_ymm = 32 / sizeof(T);
-		const size_t chunks = count / elem_per_ymm;
-		const size_t remainder = count - chunks * elem_per_ymm;
 #ifdef __AVX2__
-		__m256i broadcast;
-		if constexpr (sizeof(T) == 2) {
-			broadcast = _mm256_set1_epi16(std::bit_cast<int16_t>(value));
-		}
-		else if constexpr (sizeof(T) == 4) {
-			broadcast = _mm256_set1_epi32(std::bit_cast<int32_t>(value));
+		if constexpr (sizeof(T) == 2 || sizeof(T) == 4 || sizeof(T) == 8) {
+			const size_t elem_per_ymm = 32 / sizeof(T);
+			const size_t chunks = count / elem_per_ymm;
+			const size_t remainder = count - chunks * elem_per_ymm;
+			__m256i broadcast;
+			if constexpr (sizeof(T) == 2) {
+				broadcast = _mm256_set1_epi16(std::bit_cast<int16_t>(value));
+			}
+			else if constexpr (sizeof(T) == 4) {
+				broadcast = _mm256_set1_epi32(std::bit_cast<int32_t>(value));
+			}
+			else {
+				broadcast = _mm256_set1_epi64x(std::bit_cast<int64_t>(value));
+			}
+			__m256i* d = static_cast<__m256i*>(static_cast<void*>(dst));
+			for (size_t i = 0; i < chunks; ++i) {
+				_mm256_storeu_si256(d + i, broadcast);
+			}
+			for (size_t i = 0; i < remainder; ++i) {
+				dst[chunks * elem_per_ymm + i] = value;
+			}
 		}
 		else {
-			broadcast = _mm256_set1_epi64x(std::bit_cast<int64_t>(value));
-		}
-		__m256i* d = static_cast<__m256i*>(static_cast<void*>(dst));
-		for (size_t i = 0; i < chunks; ++i) {
-			_mm256_storeu_si256(d + i, broadcast);
+			fill_trivial_small(dst, value, count);
 		}
 #else
-		for (size_t i = 0; i < chunks; ++i) {
-			std::memcpy(dst + i * elem_per_ymm, &value, elem_per_ymm * sizeof(T));
-		}
+		fill_trivial_small(dst, value, count);
 #endif
-		for (size_t i = 0; i < remainder; ++i) {
-			dst[chunks * elem_per_ymm + i] = value;
-		}
 	}
 	else if constexpr (std::is_trivially_copyable_v<T>) {
 		for (size_t i = 0; i < count; ++i) {
@@ -1024,6 +1048,7 @@ void class_pool<T>::increase_capacity(size_t new_capacity, const T& value) noexc
 
 template <typename T>
 void class_pool<T>::shrink_to_fit() noexcept {
+	invalidate_count_cache();
 	if (index_ == 0 && data_ptr_ != nullptr) [[unlikely]] {
 		release_bitmap();
 		deallocate_data(data_ptr_, maximum_quantity_);
@@ -1037,9 +1062,15 @@ void class_pool<T>::shrink_to_fit() noexcept {
 
 	if (index_ < maximum_quantity_ && index_ > 0) [[likely]] {
 		T* new_data = allocate_data(index_);
+		const bool was_inline = is_inline_bitmap();
+		const uint64_t saved_inline = was_inline ? inline_bits_ : 0;
+		const uint64_t saved_live = was_inline ? inline_live_bits_ : 0;
 		uint64_t* new_bits = obtain_bitmap(index_);
 		uint64_t* new_live = obtain_live_bitmap(index_);
-		const bool was_inline = is_inline_bitmap();
+		if (was_inline) {
+			inline_bits_ = saved_inline;
+			inline_live_bits_ = saved_live;
+		}
 
 		if constexpr (std::is_trivially_copyable_v<T>) {
 			copy_trivial_data(new_data, data_ptr_, index_);
@@ -1050,8 +1081,10 @@ void class_pool<T>::shrink_to_fit() noexcept {
 		else {
 			relocate_sparse<true>(new_data, data_ptr_, live_bits_, index_);
 		}
-		copy_bitmap(new_bits, sparse_bits_, index_);
-		copy_bitmap(new_live, live_bits_, index_);
+		if (new_bits != sparse_bits_) {
+			copy_bitmap(new_bits, sparse_bits_, index_);
+			copy_bitmap(new_live, live_bits_, index_);
+		}
 
 		deallocate_data(data_ptr_, maximum_quantity_);
 		if (!was_inline) {
@@ -1105,9 +1138,15 @@ void class_pool<T>::reduce_capacity(size_t new_capacity) noexcept {
 	}
 
 	T* new_data = allocate_data(new_capacity);
+	const bool was_inline = is_inline_bitmap();
+	const uint64_t saved_inline = was_inline ? inline_bits_ : 0;
+	const uint64_t saved_live = was_inline ? inline_live_bits_ : 0;
 	uint64_t* new_bits = obtain_bitmap(new_capacity);
 	uint64_t* new_live = obtain_live_bitmap(new_capacity);
-	const bool was_inline = is_inline_bitmap();
+	if (was_inline) {
+		inline_bits_ = saved_inline;
+		inline_live_bits_ = saved_live;
+	}
 
 	if constexpr (std::is_trivially_copyable_v<T>) {
 		const size_t bytes = index_ * sizeof(T);
@@ -1123,8 +1162,10 @@ void class_pool<T>::reduce_capacity(size_t new_capacity) noexcept {
 	else {
 		relocate_sparse<true>(new_data, data_ptr_, live_bits_, index_);
 	}
-	copy_bitmap(new_bits, sparse_bits_, new_capacity);
-	copy_bitmap(new_live, live_bits_, new_capacity);
+	if (new_bits != sparse_bits_) {
+		copy_bitmap(new_bits, sparse_bits_, new_capacity);
+		copy_bitmap(new_live, live_bits_, new_capacity);
+	}
 
 	deallocate_data(data_ptr_, maximum_quantity_);
 	if (!was_inline) {
@@ -1143,6 +1184,9 @@ void class_pool<T>::reduce_capacity(size_t new_capacity, class_pool<T>& dst) noe
 	invalidate_count_cache();
 	if (new_capacity >= index_) [[likely]] {
 		return;
+	}
+	if (this == &dst) [[unlikely]] {
+		return;   // 自引用: dst.index_ 即 index_, 非平凡分支会死循环
 	}
 
 	const size_t move_count = index_ - new_capacity;
@@ -1171,9 +1215,15 @@ void class_pool<T>::reduce_capacity(size_t new_capacity, class_pool<T>& dst) noe
 
 	if (new_capacity < maximum_quantity_) {
 		T* new_data = allocate_data(new_capacity);
+		const bool was_inline = is_inline_bitmap();
+		const uint64_t saved_inline = was_inline ? inline_bits_ : 0;
+		const uint64_t saved_live = was_inline ? inline_live_bits_ : 0;
 		uint64_t* new_bits = obtain_bitmap(new_capacity);
 		uint64_t* new_live = obtain_live_bitmap(new_capacity);
-		const bool was_inline = is_inline_bitmap();
+		if (was_inline) {
+			inline_bits_ = saved_inline;
+			inline_live_bits_ = saved_live;
+		}
 
 		if constexpr (std::is_trivially_copyable_v<T>) {
 			copy_trivial_data(new_data, data_ptr_, index_);
@@ -1184,8 +1234,10 @@ void class_pool<T>::reduce_capacity(size_t new_capacity, class_pool<T>& dst) noe
 		else {
 			relocate_sparse<true>(new_data, data_ptr_, live_bits_, index_);
 		}
-		copy_bitmap(new_bits, sparse_bits_, new_capacity);
-		copy_bitmap(new_live, live_bits_, new_capacity);
+		if (new_bits != sparse_bits_) {
+			copy_bitmap(new_bits, sparse_bits_, new_capacity);
+			copy_bitmap(new_live, live_bits_, new_capacity);
+		}
 
 		deallocate_data(data_ptr_, maximum_quantity_);
 		if (!was_inline) {
@@ -1336,9 +1388,9 @@ typename class_pool<T>::iterator class_pool<T>::erase(const_iterator pos) noexce
 				data_ptr_[index].~T();
 				bitmap_reset(live_bits_, index);
 			}
-			size_t dst = index;
-			size_t src = index + 1;
-			const size_t total_words = (index_ + BITS_PER_WORD - 1) / BITS_PER_WORD;
+		size_t dst = index;
+		size_t src = index + 1;
+		[[maybe_unused]] const size_t total_words = (index_ + BITS_PER_WORD - 1) / BITS_PER_WORD;
 			while (src < index_) {
 				size_t word_idx = src / BITS_PER_WORD;
 				size_t bit_in_word = src % BITS_PER_WORD;
@@ -1379,6 +1431,9 @@ typename class_pool<T>::iterator class_pool<T>::erase(const_iterator pos) noexce
 				bitmap_set(live_bits_, i);
 			}
 			for (size_t i = dst; i < index_; ++i) {
+				if (bitmap_test(live_bits_, i)) {
+					data_ptr_[i].~T();
+				}
 				bitmap_reset(sparse_bits_, i);
 				bitmap_reset(live_bits_, i);
 			}
@@ -1495,9 +1550,9 @@ typename class_pool<T>::iterator class_pool<T>::erase(const_iterator first, cons
 					bitmap_reset(live_bits_, i);
 				}
 			}
-			size_t dst = start_index;
-			size_t src = real_end;
-			const size_t total_words = (index_ + BITS_PER_WORD - 1) / BITS_PER_WORD;
+		size_t dst = start_index;
+		size_t src = real_end;
+		[[maybe_unused]] const size_t total_words = (index_ + BITS_PER_WORD - 1) / BITS_PER_WORD;
 			while (src < index_) {
 				size_t word_idx = src / BITS_PER_WORD;
 				size_t bit_in_word = src % BITS_PER_WORD;
@@ -1537,6 +1592,9 @@ typename class_pool<T>::iterator class_pool<T>::erase(const_iterator first, cons
 				bitmap_set(live_bits_, i);
 			}
 			for (size_t i = dst; i < index_; ++i) {
+				if (bitmap_test(live_bits_, i)) {
+					data_ptr_[i].~T();
+				}
 				bitmap_reset(sparse_bits_, i);
 				bitmap_reset(live_bits_, i);
 			}
@@ -1639,10 +1697,23 @@ T& class_pool<T>::emplace_at(size_t index, Args&&... args) noexcept {
 	}
 
 	if (is_dense_ && !extended) [[likely]] {
+		if constexpr (!std::is_trivially_destructible_v<T>) {
+			data_ptr_[index].~T();
+			bitmap_reset(live_bits_, index);
+		}
+		new (&data_ptr_[index]) T(std::forward<Args>(args)...);
+		bitmap_set(sparse_bits_, index);
+		bitmap_set(live_bits_, index);
 		return data_ptr_[index];
 	}
 
 	if (bitmap_test(sparse_bits_, index)) [[likely]] {
+		if constexpr (!std::is_trivially_destructible_v<T>) {
+			data_ptr_[index].~T();
+			bitmap_reset(live_bits_, index);
+		}
+		new (&data_ptr_[index]) T(std::forward<Args>(args)...);
+		bitmap_set(live_bits_, index);
 		return data_ptr_[index];
 	}
 
@@ -1654,7 +1725,12 @@ T& class_pool<T>::emplace_at(size_t index, Args&&... args) noexcept {
 	bitmap_set(sparse_bits_, index);
 	bitmap_set(live_bits_, index);
 	if (!extended) {
-		--hole_count_;
+		if (hole_count_ > 0 && hole_count_ != static_cast<size_t>(-1)) {
+			--hole_count_;
+		}
+		else {
+			hole_count_ = static_cast<size_t>(-1);
+		}
 	}
 	update_dense_status();
 	return data_ptr_[index];
@@ -1699,7 +1775,12 @@ T& class_pool<T>::sparse_emplace_at(size_t index, Args&&... args) noexcept {
 		bitmap_reset(live_bits_, index);
 	}
 	else if (!extended) {
-		--hole_count_;
+		if (hole_count_ > 0 && hole_count_ != static_cast<size_t>(-1)) {
+			--hole_count_;
+		}
+		else {
+			hole_count_ = static_cast<size_t>(-1);
+		}
 		if (bitmap_test(live_bits_, index)) {
 			data_ptr_[index].~T();
 			bitmap_reset(live_bits_, index);
@@ -1726,7 +1807,9 @@ void class_pool<T>::sparse_erase_at(size_t index) noexcept {
 	bitmap_reset(sparse_bits_, index);
 	bitmap_reset(live_bits_, index);
 	if (was_allocated) {
-		++hole_count_;
+		if (hole_count_ != static_cast<size_t>(-1)) {
+			++hole_count_;
+		}
 		is_dense_ = 0;
 	}
 }
@@ -1736,7 +1819,9 @@ void class_pool<T>::soft_sparse_delete(size_t index) noexcept {
 	invalidate_count_cache();
 	if (index < maximum_quantity_ && bitmap_test(sparse_bits_, index)) {
 		bitmap_reset(sparse_bits_, index);
-		++hole_count_;
+		if (hole_count_ != static_cast<size_t>(-1)) {
+			++hole_count_;
+		}
 		is_dense_ = 0;
 	}
 }
@@ -1903,39 +1988,37 @@ void class_pool<T>::recompute_is_dense() noexcept {
 
 template <typename T>
 void class_pool<T>::bulk_set_bits(size_t start, size_t end) noexcept {
-	size_t sw = start / BITS_PER_WORD;
-	size_t ew = (end - 1) / BITS_PER_WORD;
+	if (start >= end) [[unlikely]] { return; }
+
+	const size_t last = end - 1;
+	const size_t sw = start / BITS_PER_WORD;
+	const size_t ew = last / BITS_PER_WORD;
 	if (sw == ew) {
-		uint64_t mask = ((1ull << (end % BITS_PER_WORD)) - 1) ^ ((1ull << (start % BITS_PER_WORD)) - 1);
+		const uint64_t mask = (~0ull >> (63 - last % BITS_PER_WORD)) & (~0ull << (start % BITS_PER_WORD));
 		sparse_bits_[sw] |= mask;
 		live_bits_[sw] |= mask;
+		return;
 	}
-	else {
-		if (start % BITS_PER_WORD != 0) {
-			uint64_t mask = ~((1ull << (start % BITS_PER_WORD)) - 1);
-			sparse_bits_[sw] |= mask;
-			live_bits_[sw] |= mask;
-		}
-		size_t w = sw + 1;
+
+	sparse_bits_[sw] |= ~0ull << (start % BITS_PER_WORD);
+	live_bits_[sw] |= ~0ull << (start % BITS_PER_WORD);
+	sparse_bits_[ew] |= ~0ull >> (63 - last % BITS_PER_WORD);
+	live_bits_[ew] |= ~0ull >> (63 - last % BITS_PER_WORD);
+	if (ew > sw + 1) {
 #ifdef __AVX2__
-		{
-			const __m256i all_ones = _mm256_set1_epi64x(~0ull);
-			for (; w + 4 <= ew; w += 4)
-			{
-				_mm256_storeu_si256(reinterpret_cast<__m256i*>(sparse_bits_ + w), all_ones);
-				_mm256_storeu_si256(reinterpret_cast<__m256i*>(live_bits_ + w), all_ones);
-			}
+		const __m256i ones = _mm256_set1_epi64x(~0ull);
+		size_t w = sw + 1;
+		for (; w + 4 <= ew; w += 4) {
+			_mm256_storeu_si256(reinterpret_cast<__m256i*>(sparse_bits_ + w), ones);
+			_mm256_storeu_si256(reinterpret_cast<__m256i*>(live_bits_ + w), ones);
 		}
-#endif
-		for (; w < ew; ++w) {
+		for (; w < ew; ++w) { sparse_bits_[w] = ~0ull; live_bits_[w] = ~0ull; }
+#else
+		for (size_t w = sw + 1; w < ew; ++w) {
 			sparse_bits_[w] = ~0ull;
 			live_bits_[w] = ~0ull;
 		}
-		if (end % BITS_PER_WORD != 0) {
-			uint64_t mask = (1ull << (end % BITS_PER_WORD)) - 1;
-			sparse_bits_[ew] |= mask;
-			live_bits_[ew] |= mask;
-		}
+#endif
 	}
 }
 
@@ -2052,36 +2135,41 @@ void class_pool<T>::fill_bulk(const T& value, size_t start, size_t count) noexce
 		index_ = end;
 	}
 	if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) == 1) {
-		std::memset(data_ptr_ + start, static_cast<unsigned char>(value), count);
+		unsigned char byte;
+		std::memcpy(&byte, &value, 1);   // 1 字节自定义类型不可强转 unsigned char
+		std::memset(data_ptr_ + start, byte, count);
 	}
 	else if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) <= 8) {
-		const size_t elem_per_ymm = 32 / sizeof(T);
-		const size_t chunks = count / elem_per_ymm;
-		const size_t remainder = count - chunks * elem_per_ymm;
 #ifdef __AVX2__
-		__m256i broadcast;
-		if constexpr (sizeof(T) == 2) {
-			broadcast = _mm256_set1_epi16(std::bit_cast<int16_t>(value));
-		}
-		else if constexpr (sizeof(T) == 4) {
-			broadcast = _mm256_set1_epi32(std::bit_cast<int32_t>(value));
+		if constexpr (sizeof(T) == 2 || sizeof(T) == 4 || sizeof(T) == 8) {
+			const size_t elem_per_ymm = 32 / sizeof(T);
+			const size_t chunks = count / elem_per_ymm;
+			const size_t remainder = count - chunks * elem_per_ymm;
+			__m256i broadcast;
+			if constexpr (sizeof(T) == 2) {
+				broadcast = _mm256_set1_epi16(std::bit_cast<int16_t>(value));
+			}
+			else if constexpr (sizeof(T) == 4) {
+				broadcast = _mm256_set1_epi32(std::bit_cast<int32_t>(value));
+			}
+			else {
+				broadcast = _mm256_set1_epi64x(std::bit_cast<int64_t>(value));
+			}
+			__m256i* d = static_cast<__m256i*>(static_cast<void*>(data_ptr_ + start));
+			for (size_t i = 0; i < chunks; ++i)
+			{
+				_mm256_storeu_si256(d + i, broadcast);
+			}
+			for (size_t i = 0; i < remainder; ++i) {
+				data_ptr_[start + chunks * elem_per_ymm + i] = value;
+			}
 		}
 		else {
-			broadcast = _mm256_set1_epi64x(std::bit_cast<int64_t>(value));
-		}
-		__m256i* d = static_cast<__m256i*>(static_cast<void*>(data_ptr_ + start));
-		for (size_t i = 0; i < chunks; ++i)
-		{
-			_mm256_storeu_si256(d + i, broadcast);
+			fill_trivial_small(data_ptr_ + start, value, count);
 		}
 #else
-		for (size_t i = 0; i < chunks; ++i) {
-			std::memcpy(data_ptr_ + start + i * elem_per_ymm, &value, elem_per_ymm * sizeof(T));
-		}
+		fill_trivial_small(data_ptr_ + start, value, count);
 #endif
-		for (size_t i = 0; i < remainder; ++i) {
-			data_ptr_[start + chunks * elem_per_ymm + i] = value;
-		}
 	}
 	else if constexpr (std::is_trivially_copyable_v<T>) {
 		for (size_t i = 0; i < count; ++i) {

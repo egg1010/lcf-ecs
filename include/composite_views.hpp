@@ -51,7 +51,7 @@
                 };
                 (update_block(type_id::get_type_id<ExcludeTypes>()), ...);
                 exclude_masks_.clear();
-                exclude_masks_.increase_capacity(max_block_ + 1, 0);
+                exclude_masks_.resize_fill(max_block_ + 1, 0);
                 auto fill_mask = [&](int tid) noexcept {
                     uint32_t block = block_of(tid);
                     uint32_t offset = static_cast<uint32_t>(tid - 1) % 64;
@@ -87,8 +87,10 @@
             auto* pool = set_->template get_typed_pool_ptr<T>();
             if (!pool) [[unlikely]] return entity{};
             auto& indices = set_->get_entity_indices();
+            const bool tomb = set_->has_tombstones();
             for (size_t i = 0; i < indices.size(); ++i)
             {
+                if (tomb && !set_->is_dense_slot_live(i)) [[unlikely]] continue;
                 uint32_t idx = indices[i];
                 uint32_t ver = set_->get_version_unchecked(idx);
                 if (!is_excluded(idx)) return entity(idx, ver);
@@ -189,7 +191,18 @@
         {
             if (!set_ || set_->size() == 0) [[unlikely]] return entity{};
             auto& indices = set_->get_entity_indices();
-            return entity(indices[0], set_->get_version_unchecked(indices[0]));
+            if (!set_->has_tombstones()) [[likely]]
+            {
+                return entity(indices[0], set_->get_version_unchecked(indices[0]));
+            }
+            for (size_t i = 0; i < indices.size(); ++i)
+            {
+                if (set_->is_dense_slot_live(i))
+                {
+                    return entity(indices[i], set_->get_version_unchecked(indices[i]));
+                }
+            }
+            return entity{};
         }
 
         template <typename Func, bool Filter>
@@ -280,12 +293,32 @@
             if (set_a_ && set_a_->size() > 0)
             {
                 auto& idx = set_a_->get_entity_indices();
-                return entity(idx[0], set_a_->get_version_unchecked(idx[0]));
+                if (!set_a_->has_tombstones()) [[likely]]
+                {
+                    return entity(idx[0], set_a_->get_version_unchecked(idx[0]));
+                }
+                for (size_t i = 0; i < idx.size(); ++i)
+                {
+                    if (set_a_->is_dense_slot_live(i))
+                    {
+                        return entity(idx[i], set_a_->get_version_unchecked(idx[i]));
+                    }
+                }
             }
             if (set_b_ && set_b_->size() > 0)
             {
                 auto& idx = set_b_->get_entity_indices();
-                return entity(idx[0], set_b_->get_version_unchecked(idx[0]));
+                if (!set_b_->has_tombstones()) [[likely]]
+                {
+                    return entity(idx[0], set_b_->get_version_unchecked(idx[0]));
+                }
+                for (size_t i = 0; i < idx.size(); ++i)
+                {
+                    if (set_b_->is_dense_slot_live(i))
+                    {
+                        return entity(idx[i], set_b_->get_version_unchecked(idx[i]));
+                    }
+                }
             }
             return entity{};
         }
@@ -432,7 +465,7 @@
             size_t max_idx = max_entity_index();
             if (max_idx == 0) return;
             dense<uint64_t> visited;
-            visited.increase_capacity((max_idx >> 6) + 1, 0);
+            visited.resize_fill((max_idx >> 6) + 1, 0);
 
             for (size_t set_idx = 0; set_idx < N; ++set_idx)
             {
@@ -510,10 +543,12 @@
             auto* pool = set->template get_typed_pool_ptr<T>();
             if (!pool) return;
             size_t pool_size = pool->size();
+            const bool tomb = set->has_tombstones();
             filtered_.clear();
             filtered_.increase_capacity(pool_size);
             for (size_t i = 0; i < pool_size; ++i)
             {
+                if (tomb && !set->is_dense_slot_live(i)) [[unlikely]] continue;
                 if (pred_((*pool)[i]))
                     filtered_.push_back_unchecked(i);
             }
@@ -637,8 +672,10 @@
             if (!pool_a || !pool_b) return;
             auto& indices = set_a->get_entity_indices();
             size_t b_sparse_size = set_b->get_sparse_size();
+            const bool tomb_a = set_a->has_tombstones();
             for (size_t i = 0; i < pool_a->size(); ++i)
             {
+                if (tomb_a && !set_a->is_dense_slot_live(i)) [[unlikely]] continue;
                 if (!pred_((*pool_a)[i])) continue;
                 uint32_t eid = indices[i];
                 if (eid >= b_sparse_size) continue;
@@ -764,9 +801,11 @@
             if (!pool_a) return;
             auto& indices = set_a->get_entity_indices();
             size_t b_sparse_size = set_b ? set_b->get_sparse_size() : 0;
+            const bool tomb_a = set_a->has_tombstones();
 
             for (size_t i = 0; i < pool_a->size(); ++i)
             {
+                if (tomb_a && !set_a->is_dense_slot_live(i)) [[unlikely]] continue;
                 if (!pred_((*pool_a)[i])) continue;
                 uint32_t eid = indices[i];
                 uint64_t b_dense = UINT32_MAX;
@@ -784,8 +823,10 @@
                 if (pool_b)
                 {
                     auto& idx_b = set_b->get_entity_indices();
+                    const bool tomb_b = set_b->has_tombstones();
                     for (size_t i = 0; i < idx_b.size(); ++i)
                     {
+                        if (tomb_b && !set_b->is_dense_slot_live(i)) [[unlikely]] continue;
                         entity e(idx_b[i], set_b->get_version_unchecked(idx_b[i]));
                         if (set_a)
                         {

@@ -46,14 +46,14 @@ protected:
             const uint32_t b = type_id::mask_block_of(ids[i]);
             if (b > max_block_) max_block_ = b;
         }
-        required_masks_.increase_capacity(max_block_ + 1, 0);
+        required_masks_.resize_fill(max_block_ + 1, 0);
         for (size_t i = 0; i < N; ++i)
         {
             required_masks_[type_id::mask_block_of(ids[i])]
                 |= 1ULL << type_id::mask_offset_of(ids[i]);
         }
         use_mask_path_ = (N >= 3) || ((max_block_ + 1) <= 5);
-        req_sets_.increase_capacity(N, nullptr);
+        req_sets_.resize_fill(N, nullptr);
         for (size_t i = 0; i < N; ++i) req_sets_[i] = sets_[i];
     }
 
@@ -109,6 +109,10 @@ protected:
                     }
                 }
                 uint32_t eid = indices[read];
+                if (primary->sparse_dense_at(eid) == single_class_set::dense_invalid) [[unlikely]]
+                {
+                    continue;
+                }
                 bool has_all = true;
                 for (size_t k = 0; k < N; ++k)
                 {

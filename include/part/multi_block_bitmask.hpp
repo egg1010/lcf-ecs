@@ -69,9 +69,9 @@ private:
 	void resize_both_(size_t new_size) noexcept
 	{
 		if (new_size > inline_bits_.size()) [[unlikely]]
-			inline_bits_.increase_capacity(new_size, 0);
+			inline_bits_.resize_fill(new_size, 0);
 		if (new_size > overflows_.size()) [[unlikely]]
-			overflows_.increase_capacity(new_size, nullptr);
+			overflows_.resize_fill(new_size, nullptr);
 	}
 
 	// 深拷贝辅助
@@ -83,7 +83,7 @@ private:
 		if (o.overflows_.size() > 0)
 		{
 			overflows_.clear();
-			overflows_.increase_capacity(o.overflows_.size(), nullptr);
+			overflows_.resize_fill(o.overflows_.size(), nullptr);
 			for (size_t i = 0; i < o.overflows_.size(); ++i)
 			{
 				if (o.overflows_[i] != nullptr)

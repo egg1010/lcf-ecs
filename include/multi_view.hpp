@@ -90,7 +90,7 @@
             dense_mappings_soa_.clear();
             compact_mappings_.clear();
             cached_entity_versions_.clear();
-            cached_entity_versions_.increase_capacity(n, uint32_t{0});
+            cached_entity_versions_.resize_fill(n, uint32_t{0});
 
             std::array<size_t, N> set_sparse_size;
             for (size_t k = 0; k < N; ++k)
@@ -107,7 +107,7 @@
             };
 
             // memcmp 失败: 单遍历构建 SoA + 统计有效数
-            dense_mappings_soa_.increase_capacity(n, std::array<uint32_t, N>{});
+            dense_mappings_soa_.resize_fill(n, std::array<uint32_t, N>{});
             auto* soa_data = dense_mappings_soa_.data();
             cached_count_ = 0;
 
@@ -150,7 +150,7 @@
             if (!all_valid_ && cached_count_ > 0)
             {
                 compact_mappings_.clear();
-                compact_mappings_.increase_capacity(cached_count_, std::array<uint32_t, N>{});
+                compact_mappings_.resize_fill(cached_count_, std::array<uint32_t, N>{});
                 auto* src = dense_mappings_soa_.data();
                 auto* dst = compact_mappings_.data();
                 size_t w = 0;
@@ -681,9 +681,23 @@
         {
             if (!all_sets_valid()) [[unlikely]] return entity{};
             auto* primary = sets_[primary_idx_];
-            if (index >= primary->size()) [[unlikely]] return entity{};
             auto& indices = primary->get_entity_indices();
-            return entity(indices[index], primary->get_version_unchecked(indices[index]));
+            if (!primary->has_tombstones()) [[likely]]
+            {
+                if (index >= primary->size()) [[unlikely]] return entity{};
+                return entity(indices[index], primary->get_version_unchecked(indices[index]));
+            }
+            size_t live_seen = 0;
+            for (size_t i = 0; i < indices.size(); ++i)
+            {
+                if (!primary->is_dense_slot_live(i)) [[unlikely]] continue;
+                if (live_seen == index)
+                {
+                    return entity(indices[i], primary->get_version_unchecked(indices[i]));
+                }
+                ++live_seen;
+            }
+            return entity{};
         }
 
         template <typename Func>
@@ -835,7 +849,7 @@
 
                 const size_t n = sorted_indices_.size();
                 sorted_entities_.increase_capacity(n);
-                std::apply([n](auto&... pools) { (pools.increase_capacity(n), ...); }, sorted_pool_copies_);
+                std::apply([n](auto&... pools) { (pools.resize_fill(n), ...); }, sorted_pool_copies_);
 
                 if (base_.pools_aligned_)
                 {
@@ -916,7 +930,7 @@
                     auto* raw = reinterpret_cast<uint32_t*>(base_.dense_mappings_soa_.data());
                     if constexpr (std::is_same_v<std::decay_t<Compare>, std::less<SortType>>)
                     {
-                        radix_keys_buf_.increase_capacity(n, SortType{});
+                        radix_keys_buf_.resize_fill(n, SortType{});
                         for (size_t i = 0; i < n; ++i)
                         {
                             uint32_t d = raw[i * stride + SortIdx];
@@ -988,7 +1002,7 @@
             sorted_component_view(multi_view base, Compare cmp) noexcept
                 : base_(base), cmp_(std::move(cmp))
             {
-                last_versions_.increase_capacity(N, 0);
+                last_versions_.resize_fill(N, 0);
                 rebuild();
             }
 
@@ -1036,7 +1050,7 @@
 
                 struct sort_entry { KeyType key; size_t index; };
                 dense<sort_entry> entries;
-                entries.increase_capacity(n, {});
+                entries.resize_fill(n, {});
 
                 auto* first_pool = base_.sets_[0]->template get_typed_pool_ptr<First>()->data();
                 First default_first{};
@@ -1072,8 +1086,8 @@
                     });
                 }
 
-                sorted_indices_.increase_capacity(n, size_t{0});
-                group_keys_.increase_capacity(n, KeyType{});
+                sorted_indices_.resize_fill(n, size_t{0});
+                group_keys_.resize_fill(n, KeyType{});
                 for (size_t i = 0; i < n; ++i)
                 {
                     sorted_indices_[i] = entries[i].index;
@@ -1182,7 +1196,7 @@
             grouped_component_view(multi_view base, KeyFunc key_func) noexcept
                 : base_(base), key_func_(std::move(key_func))
             {
-                last_versions_.increase_capacity(N, 0);
+                last_versions_.resize_fill(N, 0);
                 rebuild();
             }
 
@@ -1318,7 +1332,7 @@
         public:
             changed_view(multi_view base) noexcept : base_(base)
             {
-                last_versions_.increase_capacity(N, 0);
+                last_versions_.resize_fill(N, 0);
                 rebuild();
             }
 

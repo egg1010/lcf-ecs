@@ -52,7 +52,13 @@ inline runtime_query::runtime_query(manager* mgr, std::span<const int> required_
     {
         required_ids_.push_back(tid);
     }
-    if (required_ids_.empty()) [[unlikely]] return;
+
+    for (int tid : excluded_ids)
+    {
+        uint32_t b = type_id::mask_block_of(tid);
+        if (b > max_block_) max_block_ = b;
+        exc_sets_.push_back(mgr->get_single_class_set_by_id(tid));
+    }
 
     for (int tid : required_ids_)
     {
@@ -63,15 +69,8 @@ inline runtime_query::runtime_query(manager* mgr, std::span<const int> required_
     }
     primary_set_ = single_class_set::select_primary_set(req_sets_.data(), req_sets_.size());
 
-    for (int tid : excluded_ids)
-    {
-        uint32_t b = type_id::mask_block_of(tid);
-        if (b > max_block_) max_block_ = b;
-        exc_sets_.push_back(mgr->get_single_class_set_by_id(tid));
-    }
-
-    req_masks_.increase_capacity(max_block_ + 1, 0);
-    exc_masks_.increase_capacity(max_block_ + 1, 0);
+    req_masks_.resize_fill(max_block_ + 1, 0);
+    exc_masks_.resize_fill(max_block_ + 1, 0);
     for (int tid : required_ids_)
     {
         req_masks_[type_id::mask_block_of(tid)] |= 1ULL << type_id::mask_offset_of(tid);
@@ -81,7 +80,7 @@ inline runtime_query::runtime_query(manager* mgr, std::span<const int> required_
         exc_masks_[type_id::mask_block_of(tid)] |= 1ULL << type_id::mask_offset_of(tid);
     }
 
-    use_mask_path_ = (req_sets_.size() >= 3) || ((max_block_ + 1) <= 5);
+    use_mask_path_ = !required_ids_.empty() && ((req_sets_.size() >= 3) || ((max_block_ + 1) <= 5));
 }
 
 inline runtime_query::runtime_query(manager* mgr, std::span<const runtime_term> terms) noexcept
@@ -96,9 +95,9 @@ inline runtime_query::runtime_query(manager* mgr, std::span<const runtime_term> 
     }
 
     req_masks_.clear();
-    req_masks_.increase_capacity(max_block_ + 1, 0);
+    req_masks_.resize_fill(max_block_ + 1, 0);
     exc_masks_.clear();
-    exc_masks_.increase_capacity(max_block_ + 1, 0);
+    exc_masks_.resize_fill(max_block_ + 1, 0);
 
     // term 分发上下文
     struct term_ctx
@@ -195,9 +194,21 @@ inline bool runtime_view::contains(entity e) noexcept
 {
     ensure_fresh();
     if (!all_sets_valid()) [[unlikely]] return false;
+    if (query_.primary_set_ == nullptr)
+    {
+        if (!query_.has_or_) [[unlikely]] return false;
+        return is_entity_hit(e.parts_.index_, e.parts_.version_);
+    }
     if (query_.use_mask_path_)
     {
-        return query_.check_blocks(e.parts_.index_, mgr_);
+        if (!query_.check_blocks(e.parts_.index_, mgr_)) return false;
+        uint32_t primary_ver = 0;
+        if (query_.primary_set_->sparse_find(e.parts_.index_, primary_ver)
+            == single_class_set::dense_invalid)
+        {
+            return false;
+        }
+        return primary_ver == e.parts_.version_;
     }
     return is_entity_hit(e.parts_.index_, e.parts_.version_);
 }
@@ -332,7 +343,7 @@ inline void runtime_view::for_each_hit_impl(Func&& func) noexcept
         if (max_sparse == 0) return;
 
         dense<bool> visited;
-        visited.increase_capacity(max_sparse, false);
+        visited.resize_fill(max_sparse, false);
 
         for (size_t k = 0; k < query_.or_sets_.size(); ++k)
         {

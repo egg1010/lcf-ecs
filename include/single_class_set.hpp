@@ -1233,7 +1233,12 @@ public:
             {
                 sparse_set_at(e.parts_.index_, dense_idx, ver);
             }
+            void* old_pool_data = typed_pool_data_;
             pool->push_back(std::forward<T>(object));
+            if (pool->data() != old_pool_data) [[unlikely]]
+            {
+                bump_pool_version();
+            }
             if (on_add_) [[unlikely]] on_add_(e, &(*pool)[dense_idx], on_add_data_);
         }
         ++version_;
@@ -1301,6 +1306,7 @@ public:
                     return result;
                 }
                 typed_pool_data_ = dp->data;
+                bump_pool_version();
             }
             else if (dense_idx >= dp->capacity) [[unlikely]]
             {
@@ -1310,6 +1316,7 @@ public:
                     return result;
                 }
                 typed_pool_data_ = dp->data;
+                bump_pool_version();
             }
             sparse_reserve_(sparse_size_ + 1);
             sparse_[e.parts_.index_] = sparse_entry{dense_idx, e.parts_.version_};
@@ -1403,6 +1410,7 @@ public:
                     return result;
                 }
                 typed_pool_data_ = dp->data;
+                bump_pool_version();
             }
             std::memcpy(dp->element(dense_idx), data, dp->component_size);
             ++dp->size;  // 与 dense_ 同步 (不变量: dp->size == dense_.size())
@@ -1713,8 +1721,17 @@ public:
         }
 
         // 登记死槽供 add 复用; 墓碑的物理移除延迟到 compact (组件数据暂留)
-        free_dense_.push_back(se->dense);
+        const uint32_t slot = se->dense;
+        free_dense_.push_back(slot);
         sparse_[e.parts_.index_] = {dense_invalid, 0};
+        if (slot < versions_.size())
+        {
+            versions_[slot] = 0;
+        }
+        if (slot < entity_change_tracking_.size())
+        {
+            entity_change_tracking_[slot] = change_tracking_entry{};
+        }
         ++version_;
         ++position_epoch_;
         try_auto_compact_();
@@ -1835,6 +1852,7 @@ public:
     , on_remove_data_(other.on_remove_data_)
     , on_modify_(other.on_modify_)
     , on_modify_data_(other.on_modify_data_)
+    , free_dense_(std::move(other.free_dense_))
     {
         position_epoch_ = other.position_epoch_;
         other.sparse_ = nullptr;
@@ -2009,9 +2027,10 @@ public:
         // 迭代期禁止交换: 会破坏迭代器位置
         if (iteration_depth_ > 0) [[unlikely]] std::abort();
         if (i == j) [[unlikely]] return;
-        uint32_t tmp = dense_[i];
-        dense_[i] = dense_[j];
-        dense_[j] = tmp;
+        const uint32_t a = dense_[i];
+        const uint32_t b = dense_[j];
+        dense_[i] = b;
+        dense_[j] = a;
         if (i < versions_.size() && j < versions_.size())
         {
             uint32_t tmp_v = versions_[i];
@@ -2020,8 +2039,23 @@ public:
         }
         // 单次更新 dense 字段, 替代原 sparse_version_at_unchecked + sparse_set_unchecked
         // (dense_[i]/dense_[j] 已交换, 它们的 sparse_entry 一定已构造)
-        sparse_[dense_[i]].dense = static_cast<uint32_t>(i);
-        sparse_[dense_[j]].dense = static_cast<uint32_t>(j);
+        // 墓碑端不回写 sparse (回写会复活软删条目), 登记新死槽供复用
+        if (sparse_[a].dense == static_cast<uint32_t>(i)) [[likely]]
+        {
+            sparse_[a].dense = static_cast<uint32_t>(j);
+        }
+        else
+        {
+            free_dense_.push_back(static_cast<uint32_t>(j));
+        }
+        if (sparse_[b].dense == static_cast<uint32_t>(j)) [[likely]]
+        {
+            sparse_[b].dense = static_cast<uint32_t>(i);
+        }
+        else
+        {
+            free_dense_.push_back(static_cast<uint32_t>(i));
+        }
         if (i < entity_change_tracking_.size() && j < entity_change_tracking_.size())
         {
             change_tracking_entry ct_tmp = entity_change_tracking_[i];
@@ -2050,8 +2084,8 @@ public:
             }
 #endif
         }
-        // 槽位互换: 热集 dense_index 全部过期
-        ++position_epoch_;
+        // 槽位互换: 热集 dense_index 全部过期, 视图缓存一并失效
+        bump_pool_version();
     }
 
     template <typename T>

@@ -10,8 +10,9 @@
 #include "force_inline.hpp"
 
 // 容器视图概念: 约束 data/size/is_dense/is_constructed_at/begin/end
+// 及算法体内实际使用的 operator[]/count/span/rbegin/rend
 template <typename C>
-concept viewable_container = requires(C& c, size_t i) {
+concept viewable_container = requires(C& c, const C& cc, size_t i) {
     typename C::value_type;
     { c.data() };
     { c.size() } -> std::convertible_to<size_t>;
@@ -19,6 +20,13 @@ concept viewable_container = requires(C& c, size_t i) {
     { c.is_constructed_at(i) } -> std::convertible_to<bool>;
     { c.begin() };
     { c.end() };
+    { c[i] };
+    { c.count() } -> std::convertible_to<size_t>;
+    { c.span() };
+    { c.rbegin() };
+    { c.rend() };
+    { cc.crbegin() };
+    { cc.crend() };
 };
 
 // 通用视图 (全局命名空间, dense 与 class_pool 共用)
@@ -124,34 +132,39 @@ template <viewable_container C>
 	return std::span<const V>(c.data() + c.size() - n, n);
 }
 
+// 动态长度 span: 容器不足 N 时截断, 避免 span<T,N>(ptr, count<N) 违反前置条件
 template <size_t N, viewable_container C>
-[[nodiscard]] inline std::span<typename C::value_type, N> first_fixed(C& c) noexcept
-{
-	using V = typename C::value_type;
-	return std::span<V, N>(c.data(), N <= c.size() ? N : c.size());
-}
-
-template <size_t N, viewable_container C>
-[[nodiscard]] inline std::span<const typename C::value_type, N> first_fixed(const C& c) noexcept
-{
-	using V = typename C::value_type;
-	return std::span<const V, N>(c.data(), N <= c.size() ? N : c.size());
-}
-
-template <size_t N, viewable_container C>
-[[nodiscard]] inline std::span<typename C::value_type, N> last_fixed(C& c) noexcept
+[[nodiscard]] inline std::span<typename C::value_type> first_fixed(C& c) noexcept
 {
 	using V = typename C::value_type;
 	const size_t sz = c.size();
-	return std::span<V, N>(c.data() + (N >= sz ? 0 : sz - N), N >= sz ? sz : N);
+	return std::span<V>(c.data(), N < sz ? N : sz);
 }
 
 template <size_t N, viewable_container C>
-[[nodiscard]] inline std::span<const typename C::value_type, N> last_fixed(const C& c) noexcept
+[[nodiscard]] inline std::span<const typename C::value_type> first_fixed(const C& c) noexcept
 {
 	using V = typename C::value_type;
 	const size_t sz = c.size();
-	return std::span<const V, N>(c.data() + (N >= sz ? 0 : sz - N), N >= sz ? sz : N);
+	return std::span<const V>(c.data(), N < sz ? N : sz);
+}
+
+template <size_t N, viewable_container C>
+[[nodiscard]] inline std::span<typename C::value_type> last_fixed(C& c) noexcept
+{
+	using V = typename C::value_type;
+	const size_t sz = c.size();
+	const size_t use = N >= sz ? sz : N;
+	return std::span<V>(c.data() + (sz - use), use);
+}
+
+template <size_t N, viewable_container C>
+[[nodiscard]] inline std::span<const typename C::value_type> last_fixed(const C& c) noexcept
+{
+	using V = typename C::value_type;
+	const size_t sz = c.size();
+	const size_t use = N >= sz ? sz : N;
+	return std::span<const V>(c.data() + (sz - use), use);
 }
 
 template <viewable_container C, typename F>
@@ -303,6 +316,7 @@ LCF_FLATTEN inline void transform_for_each(const C& c, FTransform&& tr, FConsume
 	}
 }
 
+// dst 必须为未构造内存 (placement new 语义, 非平凡类型覆盖活对象会泄漏)
 template <viewable_container C, typename R, typename F>
     requires std::invocable<F, const typename C::value_type&>
 inline void transform_to(const C& c, R* dst, size_t count, F&& tr) noexcept
@@ -845,44 +859,44 @@ LCF_FLATTEN inline void for_each_chunk(const C& c, F&& f) noexcept
 
 template <size_t N, viewable_container C>
     requires (N > 0)
-[[nodiscard]] inline std::span<typename C::value_type, N> window_span(C& c, size_t offset) noexcept
+[[nodiscard]] inline std::span<typename C::value_type> window_span(C& c, size_t offset) noexcept
 {
 	using V = typename C::value_type;
 	const size_t sz = c.size();
 	const size_t use = (offset < sz && offset + N <= sz) ? N : (offset < sz ? sz - offset : 0);
-	return std::span<V, N>(c.data() + offset, use);
+	return std::span<V>(c.data() + offset, use);
 }
 
 template <size_t N, viewable_container C>
     requires (N > 0)
-[[nodiscard]] inline std::span<const typename C::value_type, N> window_span(const C& c, size_t offset) noexcept
+[[nodiscard]] inline std::span<const typename C::value_type> window_span(const C& c, size_t offset) noexcept
 {
 	using V = typename C::value_type;
 	const size_t sz = c.size();
 	const size_t use = (offset < sz && offset + N <= sz) ? N : (offset < sz ? sz - offset : 0);
-	return std::span<const V, N>(c.data() + offset, use);
+	return std::span<const V>(c.data() + offset, use);
 }
 
 template <size_t N, viewable_container C>
     requires (N > 0)
-[[nodiscard]] inline std::span<typename C::value_type, N> chunk_span(C& c, size_t chunk_idx) noexcept
+[[nodiscard]] inline std::span<typename C::value_type> chunk_span(C& c, size_t chunk_idx) noexcept
 {
 	using V = typename C::value_type;
 	const size_t offset = chunk_idx * N;
 	const size_t sz = c.size();
 	const size_t use = (offset < sz && offset + N <= sz) ? N : (offset < sz ? sz - offset : 0);
-	return std::span<V, N>(c.data() + offset, use);
+	return std::span<V>(c.data() + offset, use);
 }
 
 template <size_t N, viewable_container C>
     requires (N > 0)
-[[nodiscard]] inline std::span<const typename C::value_type, N> chunk_span(const C& c, size_t chunk_idx) noexcept
+[[nodiscard]] inline std::span<const typename C::value_type> chunk_span(const C& c, size_t chunk_idx) noexcept
 {
 	using V = typename C::value_type;
 	const size_t offset = chunk_idx * N;
 	const size_t sz = c.size();
 	const size_t use = (offset < sz && offset + N <= sz) ? N : (offset < sz ? sz - offset : 0);
-	return std::span<const V, N>(c.data() + offset, use);
+	return std::span<const V>(c.data() + offset, use);
 }
 
 template <viewable_container C, typename F>
@@ -993,6 +1007,7 @@ LCF_FLATTEN inline void for_each_zip(const C& a, const U* b, size_t count, F&& f
 	}
 }
 
+// dst 必须为未构造内存
 template <viewable_container C, typename U, typename R, typename F>
     requires std::invocable<F, const typename C::value_type&, const U&>
 inline void zip_with_to(const C& a, const U* b, R* dst, size_t count, F&& f) noexcept
@@ -1172,6 +1187,7 @@ template <viewable_container C>
 	return n - (n % elems_per_ymm);
 }
 
+// dst 必须为未构造内存
 template <viewable_container C>
 inline void copy_to(const C& c, typename C::value_type* dst, size_t count) noexcept
 {
@@ -1210,6 +1226,7 @@ inline void copy_to(const C& c, std::span<typename C::value_type> dst) noexcept
 	copy_to(c, dst.data(), dst.size());
 }
 
+// dst 必须为未构造内存
 template <viewable_container C>
 inline void move_to(C& c, typename C::value_type* dst, size_t count) noexcept
 {

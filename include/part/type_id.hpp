@@ -4,7 +4,6 @@
 #include <cstring>
 #include <new>
 #include <string_view>
-#include "id_.hpp"
 #include "force_inline.hpp"
 
 // 自定义类型 (运行期按名字注册) 的存储语义描述
@@ -20,7 +19,7 @@ struct type_def
 class type_id
 {
 private:
-    inline static id_allocation<int> type_id_allocator{};
+    inline static std::atomic<int> type_id_counter_{0};
 
     // ---- 运行期名字注册表 ----
     // 编码同 string_to_code::code_value::encode_inline (字节级单射, 非哈希);
@@ -98,14 +97,14 @@ public:
     [[nodiscard]] static FORCE_INLINE
     int get_type_id() noexcept
     {
-        static int id = type_id_allocator.get_id();
+        static int id = type_id_counter_.fetch_add(1, std::memory_order_relaxed) + 1;
         return id;
     }
 
     [[nodiscard]] static FORCE_INLINE
     int current_max_id() noexcept
     {
-        return type_id_allocator.maximum_id();
+        return type_id_counter_.load(std::memory_order_relaxed);
     }
 
     // type id → multi_block_bitmask 布局 (位块/块内偏移), 全库唯一出处
@@ -250,14 +249,14 @@ public:
         }
         else
         {
-            const int id = type_id_allocator.get_id();
+            const int id = type_id_counter_.fetch_add(1, std::memory_order_relaxed) + 1;
             if (def_publish_(slot, p, n, key, id, &def))
             {
                 result = id;
             }
             else
             {
-                type_id_allocator.free_id(id);
+                type_id_counter_.fetch_sub(1, std::memory_order_relaxed);
             }
         }
 

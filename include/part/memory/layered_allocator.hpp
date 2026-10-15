@@ -22,20 +22,14 @@ private:
     std::array<slab_allocator, SLAB_COUNT> slabs_;
     list_memory_pool big_pool_;
 
-    // slab 地址区间缓存, 供 find_slab 二分查找
-    struct addr_range
-    {
-        const uint8_t* min;
-        const uint8_t* max;
-        uint8_t index;
-    };
-    alignas(64) std::array<addr_range, SLAB_COUNT> ranges_{};
-    size_t range_count_{0};
-    bool ranges_dirty_{true};
-
     // 无分支定位: 16→0, 17-32→1, 33-64→2, 65-128→3
+    //   n<=16 显式返回 0, 避免 bit_width(n-1)-4 对 n=1..8 无符号下溢 (M10)
     [[nodiscard]] static constexpr size_t slab_index(size_t n) noexcept
     {
+        if (n <= SLAB_SIZES[0])
+        {
+            return 0;
+        }
         if (n <= SLAB_MAX)
         {
             return std::bit_width(n - 1) - 4;
@@ -43,47 +37,15 @@ private:
         return SLAB_COUNT;
     }
 
-    void refresh_ranges() const noexcept
-    {
-        auto* self = const_cast<layered_allocator*>(this);
-        for (size_t i = 0; i < SLAB_COUNT; ++i)
-        {
-            self->ranges_[i].min = slabs_[i].min_addr();
-            self->ranges_[i].max = slabs_[i].max_addr();
-            self->ranges_[i].index = static_cast<uint8_t>(i);
-        }
-        std::sort(self->ranges_.begin(), self->ranges_.end(),
-            [](const addr_range& a, const addr_range& b) { return a.min < b.min; });
-        self->range_count_ = SLAB_COUNT;
-        self->ranges_dirty_ = false;
-    }
-
+    // M03: 逐 slab 精确 owns 判定, 各 slab chunk 地址可交错, 不能用整体跨度二分
+    //   owns 内部先 min/max 快速拒绝, 多数情况 O(1); 命中范围才二分 chunk
     [[nodiscard]] FORCE_INLINE size_t find_slab(const void* p) const noexcept
     {
-        const uint8_t* up = static_cast<const uint8_t*>(p);
-        if (ranges_dirty_) [[unlikely]]
+        for (size_t i = 0; i < SLAB_COUNT; ++i)
         {
-            refresh_ranges();
-        }
-        size_t lo = 0, hi = range_count_;
-        while (lo < hi)
-        {
-            size_t mid = lo + (hi - lo) / 2;
-            if (ranges_[mid].max <= up)
+            if (slabs_[i].owns(p))
             {
-                lo = mid + 1;
-            }
-            else
-            {
-                hi = mid;
-            }
-        }
-        if (lo < range_count_)
-        {
-            const auto& r = ranges_[lo];
-            if (up >= r.min && up < r.max)
-            {
-                return r.index;
+                return i;
             }
         }
         return SLAB_COUNT;
@@ -120,10 +82,9 @@ public:
             void* p = slabs_[idx].allocate();
             if (p) [[likely]]
             {
-                ranges_dirty_ = true;
                 return p;
             }
-            return big_pool_.allocate(n);
+            return big_pool_.allocate(n);   // M09: 回退块, 释放时经 owns 判定回大池
         }
         return big_pool_.allocate(n);
     }
@@ -144,7 +105,8 @@ public:
         big_pool_.soft_deallocate(p);
     }
 
-    // 带大小提示, O(1) 定位
+    // 带大小提示: 按档位直查候选 slab, 经 owns 确认后释放
+    //   slab 分配失败回退到大池的块不属 slab, owns 拦截后正确回大池 (M09)
     FORCE_INLINE void deallocate(void* p, size_t n) noexcept
     {
         if (!p) [[unlikely]]
@@ -154,8 +116,11 @@ public:
         size_t idx = slab_index(n);
         if (idx < SLAB_COUNT) [[likely]]
         {
-            slabs_[idx].deallocate(p);
-            return;
+            if (slabs_[idx].owns(p)) [[likely]]
+            {
+                slabs_[idx].deallocate(p);
+                return;
+            }
         }
         big_pool_.soft_deallocate(p);
     }
@@ -196,10 +161,19 @@ public:
         return new_p;
     }
 
+    // M05: 过度对齐类型 (alignof(T) > 16) 走 allocate_aligned, destroy 对称释放
     template <typename T, typename... Args>
     [[nodiscard]] FORCE_INLINE T* construct(Args&&... args) noexcept
     {
-        void* ptr = allocate(sizeof(T));
+        void* ptr;
+        if constexpr (alignof(T) > SLAB_SIZES[0])
+        {
+            ptr = allocate_aligned(sizeof(T), alignof(T));
+        }
+        else
+        {
+            ptr = allocate(sizeof(T));
+        }
         if (!ptr) [[unlikely]]
         {
             return nullptr;
@@ -215,7 +189,14 @@ public:
             return;
         }
         ptr->~T();
-        deallocate(ptr, sizeof(T));
+        if constexpr (alignof(T) > SLAB_SIZES[0])
+        {
+            deallocate_aligned(ptr);
+        }
+        else
+        {
+            deallocate(ptr, sizeof(T));
+        }
     }
 
     [[nodiscard]] bool owns(const void* p) const noexcept
@@ -236,7 +217,6 @@ public:
             slabs_[i].reset();
         }
         big_pool_.release_all_memory();
-        ranges_dirty_ = true;
     }
 
     [[nodiscard]] size_t total_allocated_bytes() const noexcept
@@ -269,7 +249,6 @@ public:
                 void* p = slabs_[idx].allocate_zeroed();
                 if (p) [[likely]]
                 {
-                    ranges_dirty_ = true;
                     return p;
                 }
             }
@@ -296,16 +275,27 @@ public:
         return false;
     }
 
-    // slab 块固定 16/32/64/128 对齐, align <= SLAB_MAX 且为 2 的幂时 slab 可满足
+    // M04: 按 align 路由, 仅当请求对齐不超过 slab 档位实际保证时才走 slab
+    //   slab 档位 i 块大小 SLAB_SIZES[i], 块按其大小对齐, 故可保证 min(SLAB_SIZES[idx], n 的 2 幂整除值)
     [[nodiscard]] void* allocate_aligned(size_t n, size_t align) noexcept
     {
         if (n == 0 || align == 0) [[unlikely]]
         {
             return nullptr;
         }
-        if (n <= SLAB_MAX && align <= SLAB_MAX) [[likely]]
+        align = std::bit_ceil(align);   // 对齐掩码要求 2 的幂
+        if (n <= SLAB_MAX) [[likely]]
         {
-            return allocate(n);
+            size_t idx = slab_index(n);
+            if (idx < SLAB_COUNT && align <= SLAB_SIZES[idx]) [[likely]]
+            {
+                // 档位块大小是 2 的幂, 块按块大小对齐, 故满足 align <= 块大小
+                void* p = slabs_[idx].allocate();
+                if (p) [[likely]]
+                {
+                    return p;
+                }
+            }
         }
         return big_pool_.allocate_aligned(n, align);
     }
