@@ -7,14 +7,14 @@
 #include <type_traits>
 #include <cstring>
 #include "single_class_set.hpp"
-#include "part/type_id.hpp"
+#include "../part/type_id.hpp"
 #include "entity_manager.hpp"
 #include "group.hpp"
 #include "reorder.hpp"
 #include "runtime_view.hpp"
-#include "part/radix_sort_helper.hpp"
-#include "part/tiered_sort.hpp"
-#include "part/signal_queue.hpp"
+#include "../part/radix_sort_helper.hpp"
+#include "../part/tiered_sort.hpp"
+#include "../part/signal_queue.hpp"
 #include "view_tags.hpp"
 
 // MinGW x64 ABI 仅保证 16 字节栈对齐, GCC 在工厂方法栈上构造 group 参数时

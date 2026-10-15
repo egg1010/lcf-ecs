@@ -1,7 +1,7 @@
-// test_highlevel_entity.cpp - 高层封装测试: entity / view_tags
+﻿// test_highlevel_entity.cpp - 高层封装测试: entity / view_tags
 #include "test_common.hpp"
-#include "include/entity.hpp"
-#include "include/view_tags.hpp"
+#include "include/ecs/entity.hpp"
+#include "include/ecs/view_tags.hpp"
 #include <type_traits>
 #include <unordered_set>
 

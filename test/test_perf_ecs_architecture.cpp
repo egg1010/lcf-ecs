@@ -1,7 +1,7 @@
-// test_perf_ecs_architecture.cpp - ECS 架构综合性能测试
+﻿// test_perf_ecs_architecture.cpp - ECS 架构综合性能测试
 //   规模单位: 100 万组件; 输出单位: MB/s 吞吐, ns/组件 延迟, MB 内存; 含缓存命中率
 #include "test_common.hpp"
-#include "include/component.hpp"
+#include "include/ecs/component.hpp"
 #include <array>
 
 struct position

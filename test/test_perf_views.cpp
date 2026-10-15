@@ -1,6 +1,6 @@
-// test_perf_views.cpp - 性能测试: 视图系统遍历与缓存
+﻿// test_perf_views.cpp - 性能测试: 视图系统遍历与缓存
 #include "test_common.hpp"
-#include "include/component.hpp"
+#include "include/ecs/component.hpp"
 #include <array>
 
 struct position

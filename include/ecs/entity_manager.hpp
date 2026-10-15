@@ -1,10 +1,10 @@
 #pragma once
 
 #include "entity.hpp"
-#include "part/id_.hpp"
-#include "part/dense.hpp"
-#include "part/signal_queue.hpp"
-#include "part/multi_block_bitmask.hpp"
+#include "../part/id_.hpp"
+#include "../part/dense.hpp"
+#include "../part/signal_queue.hpp"
+#include "../part/multi_block_bitmask.hpp"
 
 namespace ecs
 {

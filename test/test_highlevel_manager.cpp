@@ -1,7 +1,7 @@
-// test_highlevel_manager.cpp - 高层封装测试: ecs::manager
+﻿// test_highlevel_manager.cpp - 高层封装测试: ecs::manager
 #include "test_common.hpp"
-#include "include/component.hpp"
-#include "include/entity.hpp"
+#include "include/ecs/component.hpp"
+#include "include/ecs/entity.hpp"
 #include <functional>
 
 struct position

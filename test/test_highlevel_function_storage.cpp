@@ -1,8 +1,8 @@
-// test_highlevel_function_storage.cpp - 高层封装测试: 函数存储 (回调作为组件)
+﻿// test_highlevel_function_storage.cpp - 高层封装测试: 函数存储 (回调作为组件)
 #include "test_common.hpp"
-#include "include/component.hpp"
+#include "include/ecs/component.hpp"
 #include "include/part/t_fun.hpp"
-#include "include/entity.hpp"
+#include "include/ecs/entity.hpp"
 
 static int add_ints(int a, int b) { return a + b; }
 static int mul_ints(int a, int b) { return a * b; }

@@ -5,7 +5,7 @@
 #include "group.hpp"
 #include "reorder.hpp"
 #include "single_class_set.hpp"
-#include "part/type_id.hpp"
+#include "../part/type_id.hpp"
 
 namespace ecs
 {

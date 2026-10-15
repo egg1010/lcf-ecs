@@ -1,6 +1,6 @@
-// test_perf_manager.cpp - 性能测试: ecs::manager 组件接口
+﻿// test_perf_manager.cpp - 性能测试: ecs::manager 组件接口
 #include "test_common.hpp"
-#include "include/component.hpp"
+#include "include/ecs/component.hpp"
 
 struct position
 {

@@ -1,6 +1,6 @@
 #pragma once
-#include "part/dense.hpp"
-#include "part/void_any.hpp"
+#include "../part/dense.hpp"
+#include "../part/void_any.hpp"
 #include "entity.hpp"
 #include <cstdint>
 #include <utility>

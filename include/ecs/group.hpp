@@ -3,7 +3,7 @@
 #include <array>
 #include <limits>
 #include "single_class_set.hpp"
-#include "part/dense.hpp"
+#include "../part/dense.hpp"
 #include "entity.hpp"
 // PREFETCH_R 宏: 集中定义于 part/force_inline.hpp
 

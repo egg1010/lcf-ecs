@@ -1,7 +1,7 @@
-// test_highlevel_runtime_view.cpp - 高层封装测试: runtime_view
+﻿// test_highlevel_runtime_view.cpp - 高层封装测试: runtime_view
 #include "test_common.hpp"
-#include "include/component.hpp"
-#include "include/entity.hpp"
+#include "include/ecs/component.hpp"
+#include "include/ecs/entity.hpp"
 #include <array>
 
 struct position

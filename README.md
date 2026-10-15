@@ -1,6 +1,6 @@
 # lcf-ecs
 
-> 轻量级 C++20 header-only ECS 库，内置 AVX2/SSE2 SIMD 路径与 LTO。
+> 轻量级 C++20 header-only ECS 库
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![C++ Standard](https://img.shields.io/badge/C%2B%2B-20-00599C.svg)](https://isocpp.org/)
@@ -12,10 +12,12 @@
 
 ## 目录
 
-- [构建](#构建)
-- [快速上手](#快速上手)
-- [文档](#文档)
-- [License](#license)
+- [lcf-ecs](#lcf-ecs)
+  - [目录](#目录)
+  - [构建](#构建)
+  - [快速上手](#快速上手)
+  - [文档](#文档)
+  - [License](#license)
 
 ## 构建
 
@@ -37,10 +39,10 @@ cmake --build build --parallel
 
 ## 快速上手
 
-复制 `include/` 文件夹到项目中，然后 `#include "include/component.hpp"`。
+复制 `include/` 文件夹到项目中，然后 `#include "include/ecs/component.hpp"`。
 
 ```cpp
-#include "include/component.hpp"
+#include "include/ecs/component.hpp"
 
 struct Position { float x, y, z; };
 struct Velocity { float x, y, z; };

@@ -1,7 +1,7 @@
-// test_highlevel_single_class_set.cpp - 高层封装测试: single_class_set
+﻿// test_highlevel_single_class_set.cpp - 高层封装测试: single_class_set
 #include "test_common.hpp"
-#include "include/single_class_set.hpp"
-#include "include/entity.hpp"
+#include "include/ecs/single_class_set.hpp"
+#include "include/ecs/entity.hpp"
 
 using ecs::single_class_set;
 

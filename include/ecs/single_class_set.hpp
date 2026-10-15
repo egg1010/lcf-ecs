@@ -6,12 +6,12 @@
 #include <cstring>
 #include <cstdlib>
 #include <limits>
-#include "part/operating_message.hpp"
+#include "../part/operating_message.hpp"
 #include "entity.hpp"
-#include "part/dense.hpp"
-#include "part/type_id.hpp"
-#include "part/tiered_sort.hpp"
-#include "part/memory/memory_pool.hpp"
+#include "../part/dense.hpp"
+#include "../part/type_id.hpp"
+#include "../part/tiered_sort.hpp"
+#include "../part/memory/memory_pool.hpp"
 // PREFETCH_R 宏: 集中定义于 part/force_inline.hpp
 
 
