@@ -4,7 +4,7 @@
 
 #include "../part/dense.hpp"
 #include "../part/safety.hpp"
-#include "../entity.hpp"
+#include "../ecs/entity.hpp"
 #include <cstdint>
 #include <cstring>
 #include <string>

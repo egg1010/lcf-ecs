@@ -174,7 +174,8 @@ private:
     //   块未预留时跳过 (防御未注册类型, 清位无害, 置位由注册路径保证块已预留)
     void set_entity_mask_for_type(entity entitys, int tid) noexcept
     {
-        if (entitys.is_valid() && type_id::mask_block_of(tid) < entity_manager_.num_mask_blocks()) [[likely]]
+        if (entity_manager_.is_entity_alive(entitys)
+            && type_id::mask_block_of(tid) < entity_manager_.num_mask_blocks()) [[likely]]
         {
             entity_manager_.set_mask_bit_no_bounds_check(entitys.parts_.index_,
                 type_id::mask_block_of(tid), type_id::mask_offset_of(tid));
@@ -183,7 +184,8 @@ private:
 
     void clear_entity_mask_for_type(entity entitys, int tid) noexcept
     {
-        if (entitys.is_valid() && type_id::mask_block_of(tid) < entity_manager_.num_mask_blocks()) [[likely]]
+        if (entity_manager_.is_entity_alive(entitys)
+            && type_id::mask_block_of(tid) < entity_manager_.num_mask_blocks()) [[likely]]
         {
             entity_manager_.clear_mask_bit_no_bounds_check(entitys.parts_.index_,
                 type_id::mask_block_of(tid), type_id::mask_offset_of(tid));
@@ -215,15 +217,25 @@ private:
     }
 
     template <typename T>
-    void add_component_without_message(entity entitys, T&& component) noexcept
+    operating_message add_component_without_message(entity entitys, T&& component) noexcept
     {
         using DecayedT = std::decay_t<T>;
         int type_id = type_id::get_type_id<DecayedT>();
         register_component_meta<DecayedT>();
-        components_c_[type_id].add(entitys, std::forward<T>(component));
-        set_entity_mask_for_type(entitys, type_id);
-        push_change_record(0, entitys.parts_.index_, static_cast<uint32_t>(type_id), static_cast<uint32_t>(components_c_[type_id].size() - 1));
-        if (!components_c_[type_id].on_add_) push_comp_signal(0, entitys.parts_.index_, static_cast<uint32_t>(type_id));
+        if (!entity_manager_.is_entity_alive(entitys)) [[unlikely]]
+        {
+            operating_message fail;
+            fail.write(false, "manager::addc(): entity is not alive, index=", entitys.parts_.index_);
+            return fail;
+        }
+        operating_message result = components_c_[type_id].add(entitys, std::forward<T>(component));
+        if (result) [[likely]]
+        {
+            commit_add(entitys, type_id,
+                       static_cast<uint32_t>(components_c_[type_id].size() - 1),
+                       components_c_[type_id]);
+        }
+        return result;
     }
 
 public:
@@ -231,7 +243,7 @@ public:
 
     bool is_entity_valid(entity entitys) const noexcept
     {
-        return entity_manager_.is_version_valid(entitys);
+        return entity_manager_.is_entity_alive(entitys);
     }
 
     void preallocate_entities(size_t count) noexcept
@@ -271,6 +283,12 @@ public:
         using DecayedT = std::decay_t<T>;
         int type_id = type_id::get_type_id<DecayedT>();
         register_component_meta<DecayedT>();
+        if (!entity_manager_.is_entity_alive(entitys)) [[unlikely]]
+        {
+            operating_message fail;
+            fail.write(false, "manager::add(): entity is not alive, index=", entitys.parts_.index_);
+            return fail;
+        }
         operating_message result = components_c_[type_id].add(entitys, std::forward<T>(component));
         // 仅成功时置掩码/记变更/发信号: 失败置掩码会造成掩码与存储不一致
         if (result) [[likely]]
@@ -289,13 +307,22 @@ public:
         int type_id = type_id::get_type_id<DecayedT>();
         register_component_meta<DecayedT>();
         ensure_type_exists(type_id);
+        for (const auto& e : entities)
+        {
+            if (!entity_manager_.is_entity_alive(e)) [[unlikely]]
+            {
+                operating_message fail;
+                fail.write(false, "manager::add_batch(): entity is not alive, index=", e.parts_.index_);
+                return fail;
+            }
+        }
         operating_message result = components_c_[type_id].add_batch(entities, components);
-        // 仅成功时置掩码 (invalid entity 时报错且不写入, 置掩码会与存储不一致)
         if (result) [[likely]]
         {
+            single_class_set& set = components_c_[type_id];
             for (const auto& e : entities)
             {
-                set_entity_mask_for_type(e, type_id);
+                commit_add(e, type_id, set.sparse_dense_at(e.parts_.index_), set);
             }
         }
         return result;
@@ -495,9 +522,12 @@ public:
         single_class_set* set = get_single_class_set<T>();
         if (set)
         {
-            // soft_remove 仅逻辑隐藏,组件未析构,不触发 on_remove_ 也不入队
-            commit_soft_remove(entitys, type_id::get_type_id<T>());
-            return set->soft_remove(entitys);
+            operating_message result = set->soft_remove(entitys);
+            if (result) [[likely]]
+            {
+                commit_soft_remove(entitys, type_id::get_type_id<T>());
+            }
+            return result;
         }
         operating_message result;
         result.write(false, "manager::soft_remove(): component set does not exist, type=", type_id::get_type_id<T>());
@@ -511,9 +541,12 @@ public:
         if (set)
         {
             const int type_id = type_id::get_type_id<T>();
-            // 即时回调与延迟队列互斥:注册了 on_remove_ 则同步触发,否则入队
-            commit_remove(entitys, type_id, *set);
-            return set->hard_remove(entitys);
+            operating_message result = set->hard_remove(entitys);
+            if (result) [[likely]]
+            {
+                commit_remove(entitys, type_id, *set);
+            }
+            return result;
         }
         operating_message result;
         result.write(false, "manager::hard_remove(): component set does not exist, type=", type_id::get_type_id<T>());
@@ -669,12 +702,24 @@ public:
         using DecayedT = std::decay_t<T>;
         int type_id = type_id::get_type_id<DecayedT>();
         if (type_id < static_cast<int>(components_c_.size())) [[likely]]
-            components_c_[type_id].clear();
+        {
+            single_class_set& set = components_c_[type_id];
+            auto& indices = set.get_entity_indices();
+            for (size_t i = 0; i < indices.size(); ++i)
+            {
+                if (set.is_dense_slot_live(i))
+                {
+                    const uint32_t eid = indices[i];
+                    clear_entity_mask_for_type(entity(eid, set.get_version_unchecked(eid)), type_id);
+                }
+            }
+            set.clear();
+        }
     }
 
     void delete_entity(entity& entitys) noexcept
     {
-        if (!entitys.is_valid()) [[unlikely]] return;
+        if (!entity_manager_.is_entity_alive(entitys)) [[unlikely]] return;
         // 仅遍历实体实际拥有的组件类型 (O(实体组件数) 而非 O(类型总数))
         // 迭代副本 block, hard_remove 修改原掩码不影响循环
         entity_manager_.for_each_set_bit(entitys.parts_.index_, [&](uint32_t block_idx, uint32_t bit_offset) {
@@ -691,18 +736,10 @@ public:
     // 注意: 不重置 entity_manager_ 的版本号, 旧 entity 句柄自动失效
     void clear() noexcept
     {
-        // 先销毁所有实体 (触发回调, 回收 id, 版本递增使旧句柄失效)
-        uint32_t max_idx = entity_manager_.entity_index_count();
-        for (uint32_t i = 0; i < max_idx; ++i)
-        {
-            entity e;
-            e.parts_.index_ = i;
-            e.parts_.version_ = entity_manager_.get_version_at(i);
-            if (e.is_valid() && entity_manager_.is_version_valid(e))
-            {
-                delete_entity(e);
-            }
-        }
+        // 仅销毁真实存活实体 (预分配未发放槽位与索引 0 不回收)
+        entity_manager_.for_each_alive_entity([this](entity e) noexcept {
+            delete_entity(e);
+        });
         // 兜底: 清空所有组件容器 (确保彻底)
         for (size_t i = 0; i < components_c_.size(); ++i)
         {
@@ -969,6 +1006,11 @@ public:
             result.write(false, "manager::add_def(): unknown def id ", def_id);
             return result;
         }
+        if (!entity_manager_.is_entity_alive(entitys)) [[unlikely]]
+        {
+            result.write(false, "manager::add_def(): entity is not alive, index=", entitys.parts_.index_);
+            return result;
+        }
         register_def_component_meta(def_id);
         single_class_set& set = components_c_[def_id];
         result = set.add_def(entitys, def_id, *d, data);
@@ -1023,8 +1065,12 @@ public:
         single_class_set* set = get_single_class_set_by_id(def_id);
         if (set && set->get_type_id_value() == def_id)
         {
-            commit_remove(entitys, def_id, *set);
-            return set->hard_remove(entitys);
+            result = set->hard_remove(entitys);
+            if (result) [[likely]]
+            {
+                commit_remove(entitys, def_id, *set);
+            }
+            return result;
         }
         result.write(false, "manager::hard_remove_def(): def set does not exist, id=", def_id);
         return result;
@@ -1048,8 +1094,12 @@ public:
         single_class_set* set = get_single_class_set_by_id(def_id);
         if (set && set->get_type_id_value() == def_id)
         {
-            commit_soft_remove(entitys, def_id);
-            return set->soft_remove(entitys);
+            result = set->soft_remove(entitys);
+            if (result) [[likely]]
+            {
+                commit_soft_remove(entitys, def_id);
+            }
+            return result;
         }
         result.write(false, "manager::soft_remove_def(): def set does not exist, id=", def_id);
         return result;
@@ -1183,7 +1233,8 @@ class query_context
     {
         if (position_epoch_ != set_->position_epoch_) [[unlikely]]
         {
-            pool_data_ = set_->get_typed_pool<T>()->data();
+            dense<T>* pool = set_->get_typed_pool_ptr<T>();
+            pool_data_ = pool ? pool->data() : nullptr;
             position_epoch_ = set_->position_epoch_;
         }
     }
@@ -1191,9 +1242,19 @@ class query_context
 public:
     query_context(manager& mgr) noexcept
         : set_(mgr.get_single_class_set<T>())
-        , pool_data_(set_ ? set_->get_typed_pool<T>()->data() : nullptr)
-        , position_epoch_(set_ ? set_->position_epoch_ : 0)
-    {}
+        , pool_data_(nullptr)
+        , position_epoch_(0)
+    {
+        if (set_)
+        {
+            dense<T>* pool = set_->get_typed_pool_ptr<T>();
+            if (pool)
+            {
+                pool_data_ = pool->data();
+                position_epoch_ = set_->position_epoch_;
+            }
+        }
+    }
 
     [[nodiscard]] T* get_ptr(entity e) noexcept
     {

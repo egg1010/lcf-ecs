@@ -40,6 +40,7 @@ private:
     dense<uint32_t> version_v_;
     multi_block_bitmask masks_;
     dense<entity_state> entity_states_;
+    dense<uint8_t> alive_;
 
     dense<entity> preallocated_entities_;
     size_t current_preallocated_index_ = 0;
@@ -93,6 +94,10 @@ private:
         {
             version_v_.resize_fill(idx + 1, 1);
         }
+        if (idx >= alive_.size()) [[unlikely]]
+        {
+            alive_.resize_fill(idx + 1, static_cast<uint8_t>(0));
+        }
         masks_.ensure_entity(idx);
         if (idx >= entity_states_.size()) [[unlikely]]
         {
@@ -104,6 +109,7 @@ private:
     {
         uint32_t idx = id_manager_.get_id();
         ensure_version_capacity(idx);
+        alive_[idx] = 1;
         return entity(idx, version_v_[idx]);
     }
 
@@ -130,6 +136,10 @@ public:
         {
             entity_states_.resize_fill(max_idx, entity_state{static_cast<uint32_t>(entity_flag::active), 0, 0, 0});
         }
+        if (max_idx > alive_.size())
+        {
+            alive_.resize_fill(max_idx, static_cast<uint8_t>(0));
+        }
         masks_.resize_entities(static_cast<uint32_t>(max_idx));
 
         for (size_t i = 0; i < count; ++i)
@@ -144,6 +154,17 @@ public:
         return entitys.parts_.index_ < version_v_.size() && entitys.parts_.version_ == version_v_[entitys.parts_.index_];
     }
 
+    [[nodiscard]] bool is_alive(uint32_t idx) const noexcept
+    {
+        return idx < alive_.size() && alive_[idx] != 0;
+    }
+
+    [[nodiscard]] bool is_entity_alive(entity entitys) const noexcept
+    {
+        return entitys.parts_.index_ < alive_.size() && alive_[entitys.parts_.index_] != 0
+            && is_version_valid(entitys);
+    }
+
     [[nodiscard]] size_t maximum_entity_index() const noexcept { return version_v_.size(); }
 
     [[nodiscard]] uint32_t get_version(uint32_t idx) const noexcept
@@ -153,10 +174,11 @@ public:
 
     void destroy_entity(entity &entitys) noexcept
     {
-        if(!is_version_valid(entitys)) [[unlikely]] return;
+        if(!is_entity_alive(entitys)) [[unlikely]] return;
+        alive_[entitys.parts_.index_] = 0;
+        version_v_[entitys.parts_.index_]++;
         notify_destroyed(entitys);
         id_manager_.free_id(entitys.parts_.index_);
-        version_v_[entitys.parts_.index_]++;
         masks_.clear_entity(entitys.parts_.index_);
         if (entitys.parts_.index_ < entity_states_.size())
         {
@@ -201,6 +223,19 @@ public:
         return static_cast<uint32_t>(version_v_.size());
     }
 
+    template <typename Func>
+    void for_each_alive_entity(Func&& func) noexcept
+    {
+        const size_t n = version_v_.size() < alive_.size() ? version_v_.size() : alive_.size();
+        for (size_t i = 0; i < n; ++i)
+        {
+            if (alive_[i])
+            {
+                func(entity(static_cast<uint32_t>(i), version_v_[i]));
+            }
+        }
+    }
+
     // 取指定索引的当前版本号
     [[nodiscard]] uint32_t get_version_at(uint32_t idx) const noexcept
     {
@@ -237,6 +272,8 @@ public:
         entity e = current_preallocated_index_ < preallocated_entities_.size()
             ? preallocated_entities_[current_preallocated_index_++]
             : allocate_entity();
+        ensure_version_capacity(e.parts_.index_);
+        alive_[e.parts_.index_] = 1;
         notify_created(e);
         return e;
     }

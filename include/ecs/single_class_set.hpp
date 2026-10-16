@@ -1470,11 +1470,12 @@ public:
     }
 
     // 信任路径: 跳过类型检查 (调用方保证类型匹配), 经缓存的 typed_pool_data_ 寻址
+    //   未初始化池 (占位 set) 返回 nullptr, 不得回退 get_typed_pool (断言/越界)
     template <typename T>
     [[nodiscard]] T* get_ptr_fast(entity e) noexcept
     {
         if (!typed_pool_data_) [[unlikely]]
-            return &(*get_typed_pool<T>())[sparse_dense_at(e.parts_.index_)];
+            return nullptr;
         const uint32_t d = hot_lookup_fill_(e, position_epoch_);
         return d == dense_invalid ? nullptr : static_cast<T*>(typed_pool_data_) + d;
     }
@@ -1483,7 +1484,7 @@ public:
     [[nodiscard]] const T* get_ptr_fast(entity e) const noexcept
     {
         if (!typed_pool_data_) [[unlikely]]
-            return &(*get_typed_pool<T>())[sparse_dense_at(e.parts_.index_)];
+            return nullptr;
         const uint32_t d = hot_lookup_(e, position_epoch_);
         return d == dense_invalid ? nullptr : static_cast<const T*>(typed_pool_data_) + d;
     }

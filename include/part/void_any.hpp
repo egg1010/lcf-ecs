@@ -20,6 +20,11 @@ inline memory::layered_allocator void_any_pool_{};
     return void_any_pool_.allocate(n);
 }
 
+[[nodiscard]] inline void* void_any_allocate_aligned(size_t n, size_t alignment) noexcept
+{
+    return void_any_pool_.allocate_aligned(n, alignment);
+}
+
 inline void void_any_deallocate(void* p) noexcept
 {
     void_any_pool_.deallocate(p);
@@ -30,31 +35,34 @@ inline void void_any_deallocate(void* p) noexcept
     return ::operator new(n, std::nothrow);
 }
 
+[[nodiscard]] inline void* void_any_allocate_aligned(size_t n, size_t alignment) noexcept
+{
+    if (alignment > __STDCPP_DEFAULT_NEW_ALIGNMENT__) [[unlikely]]
+    {
+        return ::operator new(n, std::align_val_t{alignment}, std::nothrow);
+    }
+    return ::operator new(n, std::nothrow);
+}
+
 inline void void_any_deallocate(void* p) noexcept
 {
     ::operator delete(p);
 }
 #endif
 
-// 编译期类型标签: 每个类型 T 拥有唯一地址, 链接期常量, 无守卫检查
-// static inline char tag = 0 是常量初始化, 程序启动前完成, 无运行时 guard
-// 地址本身作为类型标识符, 用于 inline 路径的快速比较
 namespace void_any_detail {
-    template<typename T>
-    struct type_tag_holder {
-        static inline char tag = 0;
-    };
-
     // 类型擦除操作表, 提取到命名空间级别
     // 所有 define_void_any 实例化共享同一 vtable 静态对象
     // 是跨布局交换接口可用的前提
     struct vtable {
         int type_id;
         size_t element_size;
+        size_t element_alignment;
         void (*destroy)(void* data) noexcept;
         void (*copy_to)(void* dst, const void* src) noexcept;
         void (*move_to)(void* dst, void* src) noexcept;
         void* (*clone)(const void* src) noexcept;
+        const void* heap_counterpart;
     };
 
     // SSO 模式 vtable 工厂, 跨实例化共享
@@ -65,6 +73,8 @@ namespace void_any_detail {
             vtable v{};
             v.type_id = type_id::get_type_id<T>();
             v.element_size = sizeof(T);
+            v.element_alignment = alignof(T);
+            v.heap_counterpart = static_cast<const void*>(&get_heap_vtable<T>());
 
             if constexpr (std::is_trivially_copyable_v<T>)
             {
@@ -116,6 +126,8 @@ namespace void_any_detail {
             vtable v{};
             v.type_id = type_id::get_type_id<T>();
             v.element_size = sizeof(T);
+            v.element_alignment = alignof(T);
+            v.heap_counterpart = nullptr;
 
             if constexpr (std::is_trivially_copyable_v<T>)
             {
@@ -129,7 +141,7 @@ namespace void_any_detail {
                 {
                     v.clone = [](const void* src) noexcept -> void*
                     {
-                        void* new_ptr = void_any_allocate(sizeof(T));
+                        void* new_ptr = void_any_allocate_aligned(sizeof(T), alignof(T));
                         if (!new_ptr) [[unlikely]]
                         {
                             return nullptr;
@@ -156,7 +168,7 @@ namespace void_any_detail {
                 {
                     v.clone = [](const void* src) noexcept -> void*
                     {
-                        void* new_ptr = void_any_allocate(sizeof(T));
+                        void* new_ptr = void_any_allocate_aligned(sizeof(T), alignof(T));
                         if (!new_ptr) [[unlikely]]
                         {
                             return nullptr;
@@ -182,6 +194,7 @@ template<size_t SsoSize = 56, size_t SsoAlign = 8>
 class define_void_any
 {
     static_assert(SsoSize % 8 == 0, "SsoSize must be a multiple of 8");
+    static_assert(SsoSize <= 120, "SsoSize exceeds 7-bit size encoding limit (max 120)");
     static_assert(SsoAlign >= 8, "SsoAlign must be at least 8");
 
     // 友元: 不同模板实参的实例化可互访私有成员 (跨布局交换需要)
@@ -251,9 +264,9 @@ private:
         return (vtable_sso_type_ & trivial_copy_bit) != 0;
     }
 
-    [[nodiscard]] FORCE_INLINE const char* get_inline_type_tag_ptr() const noexcept
+    [[nodiscard]] FORCE_INLINE int get_inline_type_id() const noexcept
     {
-        return reinterpret_cast<const char*>((vtable_sso_type_ & vtable_ptr_mask) >> 1);
+        return static_cast<int>((vtable_sso_type_ & vtable_ptr_mask) >> 1);
     }
 
     [[nodiscard]] FORCE_INLINE uint8_t get_encoded_size() const noexcept
@@ -365,16 +378,15 @@ private:
     }
 
     // 内联模式: SSO + trivially_copyable + trivially_destructible, 无需 vtable
-    // type_tag 地址是链接期常量, 编码到 [53:1], 构造时无 guard 检查
+    // 全局 type id 编码到 [53:1], 与 vtable 路径共用同一 ID 域
     template<typename T>
     static FORCE_INLINE uintptr_t get_inline_encoded() noexcept
     {
-        const char* tag = &void_any_detail::type_tag_holder<T>::tag;
-        uintptr_t ptr_val = reinterpret_cast<uintptr_t>(tag);
+        const int tid = type_id::get_type_id<T>();
         return inline_type_id_bit | sso_bit
              | trivial_dtor_bit | trivial_copy_bit
              | (static_cast<uintptr_t>(sizeof(T)) << size_shift)
-             | ((ptr_val << 1) & vtable_ptr_mask);
+             | (static_cast<uintptr_t>(tid) << 1);
     }
 
     // SSO vtable 模式: 合并 vtable 初始化与编码值计算, 单次 guard 检查
@@ -422,7 +434,16 @@ private:
         if (!has_value_fast()) { return; }
 
 #if INTPTR_MAX == INT64_MAX
-        if (is_inline_type_id()) [[likely]] { return; }
+        if (is_inline_type_id()) [[likely]]
+        {
+#if defined(VOID_ANY_ENABLE_SSO)
+            if (!is_sso()) [[unlikely]]
+            {
+                void_any_deallocate(storage_.ptr_);
+            }
+#endif
+            return;
+        }
 #endif
 
         if (is_trivially_destructible()) [[likely]]
@@ -459,6 +480,16 @@ private:
 #endif
     }
 
+    FORCE_INLINE void clear_metadata() noexcept
+    {
+#if INTPTR_MAX == INT64_MAX
+        vtable_sso_type_ = 0;
+#else
+        vtable_ = nullptr;
+        is_sso_ = false;
+#endif
+    }
+
     // 非 SSO 构建下的跨布局交换: 仅堆指针
     template<size_t SsoSize2, size_t SsoAlign2>
     FORCE_INLINE void cross_layout_swap_heap_only(
@@ -490,8 +521,8 @@ private:
     // 启用 SSO 时的跨布局交换实现
     // 三层路径:
     //   1) 任一方为堆: 双方转堆后交换编码与堆指针
-    //   2) 双方 SSO, 容量互够: 交换编码, 借临时区交换 SSO buffer 有效字节
-    //   3) 双方 SSO, 容量互不够: 退化为路径 1
+    //   2) 双方 SSO, 容量与对齐互够: 交换编码, 借临时区交换 SSO buffer 有效字节
+    //   3) 容量或对齐互不满足: 双方转堆后交换指针
     template<size_t SsoSize2, size_t SsoAlign2>
     FORCE_INLINE void cross_layout_swap_impl(
         define_void_any<SsoSize2, SsoAlign2>& other) noexcept
@@ -534,21 +565,25 @@ private:
             return;
         }
 
-        // 双方均为 SSO, 容量互检
+        // 双方均为 SSO, 容量与对齐互检
+        // 对齐下界: vtable 值取 element_alignment, 内联值取所在容器 sso_alignment
+        //   (construct_from 保证 SSO 值 alignof(T) <= 所在容器 sso_alignment)
         uint8_t sz_this = get_encoded_size();
         uint8_t sz_other = other.get_encoded_size();
         const bool trivial_both = is_trivially_copyable() && other.is_trivially_copyable();
+        const bool this_inline = is_inline_type_id();
+        const bool other_inline = other.is_inline_type_id();
+        const vtable* vt_this = this_inline ? nullptr : get_vtable();
+        const vtable* vt_other = other_inline ? nullptr : other.get_vtable();
+        const size_t align_this = this_inline ? sso_alignment
+                                              : (vt_this ? vt_this->element_alignment : sso_alignment);
+        const size_t align_other = other_inline ? other_t::sso_alignment
+                                                : (vt_other ? vt_other->element_alignment
+                                                            : other_t::sso_alignment);
 
-        if (sz_this <= other_sso_capacity && sz_other <= my_sso_capacity)
+        if (sz_this <= other_sso_capacity && sz_other <= my_sso_capacity
+            && align_this <= other_t::sso_alignment && align_other <= sso_alignment)
         {
-            // 在编码交换前捕获 vtable 与 inline 状态
-            // 交换后 get_vtable()/is_inline_type_id() 指向对方, 无法描述原数据
-            // 内联模式的 get_vtable() 返回 type_tag 伪指针, 不可解引用, 必须先判 inline
-            const vtable* vt_this = get_vtable();
-            const vtable* vt_other = other.get_vtable();
-            const bool this_inline = is_inline_type_id();
-            const bool other_inline = other.is_inline_type_id();
-
             uintptr_t tmp_enc = vtable_sso_type_;
             vtable_sso_type_ = other.vtable_sso_type_;
             other.vtable_sso_type_ = tmp_enc;
@@ -608,7 +643,7 @@ private:
             return;
         }
 
-        // 容量互不满足: 双方转堆后交换指针
+        // 容量或对齐互不满足: 双方转堆后交换指针
         if (!this_empty && is_sso())
         {
             move_sso_to_heap();
@@ -645,18 +680,19 @@ private:
 #endif
     }
 
-    // 将 SSO 数据迁移到堆分配, 编码转为堆模式
-    // 用于跨布局交换时容量互不满足的场景
+    // 将 SSO 数据迁移到堆分配, 编码切换为 heap vtable / heap 编码
+    // 用于跨布局交换时容量或对齐互不满足的场景
+#if defined(VOID_ANY_ENABLE_SSO)
     FORCE_INLINE void move_sso_to_heap() noexcept
     {
         if (!is_sso()) { return; }
 #if INTPTR_MAX == INT64_MAX
         // inline 模式: trivially copyable + trivially destructible, 无 vtable
-        // 拷贝 SSO 数据到堆, 清除 sso_bit 即可 (析构无需调用)
+        // 拷贝 SSO 数据到堆, 清除 sso_bit (析构走 inline 堆分支释放)
         if (is_inline_type_id())
         {
             uint8_t sz = get_encoded_size();
-            void* new_ptr = void_any_allocate(sz);
+            void* new_ptr = void_any_allocate_aligned(sz, sso_alignment);
             if (!new_ptr) [[unlikely]]
             {
                 std::abort();
@@ -668,8 +704,7 @@ private:
         }
 
         const vtable* vt = get_vtable();
-        uint8_t sz = get_encoded_size();
-        void* new_ptr = void_any_allocate(sz);
+        void* new_ptr = void_any_allocate_aligned(vt->element_size, vt->element_alignment);
         if (!new_ptr) [[unlikely]]
         {
             std::abort();
@@ -680,13 +715,16 @@ private:
         }
         else
         {
-            std::memcpy(new_ptr, storage_.sso_data_, sz);
+            std::memcpy(new_ptr, storage_.sso_data_, vt->element_size);
         }
         storage_.ptr_ = new_ptr;
-        vtable_sso_type_ &= ~sso_bit;
+        const vtable* heap_vt = static_cast<const vtable*>(vt->heap_counterpart);
+        vtable_sso_type_ = reinterpret_cast<uintptr_t>(heap_vt)
+                         | (vtable_sso_type_ & (trivial_dtor_bit | trivial_copy_bit));
 #else
         uint8_t sz = get_encoded_size();
-        void* new_ptr = void_any_allocate(sz);
+        void* new_ptr = void_any_allocate_aligned(
+            vtable_ ? vtable_->element_size : sz, vtable_ ? vtable_->element_alignment : sso_alignment);
         if (!new_ptr) [[unlikely]]
         {
             std::abort();
@@ -703,11 +741,15 @@ private:
         is_sso_ = false;
 #endif
     }
+#endif
 
     template<typename T>
     FORCE_INLINE void construct_from(T&& object) noexcept
     {
         using DecayedT = std::decay_t<T>;
+        static_assert(std::is_trivially_copyable_v<DecayedT>
+                          || std::is_nothrow_move_constructible_v<DecayedT>,
+                      "define_void_any requires nothrow move constructible (or trivially copyable)");
         [[maybe_unused]] constexpr bool trivial_dtor = std::is_trivially_destructible_v<DecayedT>;
         [[maybe_unused]] constexpr bool trivial_copy = std::is_trivially_copyable_v<DecayedT>;
 
@@ -741,7 +783,7 @@ private:
         set_encoded(&get_heap_vtable<DecayedT>(), false, trivial_dtor, trivial_copy, 0);
 #endif
 
-        void* new_ptr = void_any_allocate(sizeof(DecayedT));
+        void* new_ptr = void_any_allocate_aligned(sizeof(DecayedT), alignof(DecayedT));
 
         if (!new_ptr) [[unlikely]]
         {
@@ -790,7 +832,7 @@ public:
 #if INTPTR_MAX == INT64_MAX
             if (is_inline_type_id()) [[unlikely]]
             {
-                same_type = (get_inline_type_tag_ptr() == &void_any_detail::type_tag_holder<DecayedT>::tag);
+                same_type = (get_inline_type_id() == type_id::get_type_id<DecayedT>());
             }
             else
             {
@@ -806,9 +848,16 @@ public:
                 {
                     std::memcpy(data_ptr, &object, sizeof(DecayedT));
                 }
-                else
+                else if constexpr (std::is_nothrow_assignable_v<DecayedT&, T&&>)
                 {
                     *static_cast<DecayedT*>(data_ptr) = std::forward<T>(object);
+                }
+                else
+                {
+                    // 不可赋值或赋值可能抛异常: 销毁重建
+                    destroy_data();
+                    clear_metadata();
+                    construct_from(std::forward<T>(object));
                 }
                 return;
             }
@@ -816,17 +865,18 @@ public:
 
         // 慢路径: 析构旧值 + 构造新值
         destroy_data();
-#if INTPTR_MAX == INT64_MAX
-        vtable_sso_type_ = 0;
-#else
-        vtable_ = nullptr;
-#endif
+        clear_metadata();
         construct_from(std::forward<T>(object));
     }
 
     FORCE_INLINE define_void_any(const define_void_any& other) noexcept
     {
-#if INTPTR_MAX == INT64_MAX
+#if !defined(VOID_ANY_ENABLE_SSO)
+        vtable_ = other.vtable_;
+        if (!vtable_) { return; }
+        ptr_ = (vtable_->clone && other.ptr_) ? vtable_->clone(other.ptr_) : nullptr;
+        if (!ptr_) { vtable_ = nullptr; }
+#elif INTPTR_MAX == INT64_MAX
         uintptr_t vst = other.vtable_sso_type_;
         vtable_sso_type_ = vst;
 
@@ -855,21 +905,30 @@ public:
                 }
                 else
                 {
-                    std::memcpy(storage_.sso_data_, other.storage_.sso_data_, vt->element_size);
+                    // 不可复制类型拒绝复制: 目标保持空状态
+                    vtable_sso_type_ = 0;
                 }
             }
         }
         else
         {
             const vtable* vt = reinterpret_cast<const vtable*>(vst & vtable_ptr_mask);
-            storage_.ptr_ = vt->clone ? vt->clone(other.storage_.ptr_) : nullptr;
+            void* cloned = (vt->clone && other.storage_.ptr_) ? vt->clone(other.storage_.ptr_) : nullptr;
+            if (cloned)
+            {
+                storage_.ptr_ = cloned;
+            }
+            else
+            {
+                // 复制失败: 目标保持空状态
+                vtable_sso_type_ = 0;
+            }
         }
 #else
         vtable_ = other.vtable_;
         is_sso_ = other.is_sso_;
         if (!other.has_value_fast()) { return; }
 
-#if defined(VOID_ANY_ENABLE_SSO)
         if (other.is_sso()) [[likely]]
         {
             if (other.is_trivially_copyable()) [[likely]]
@@ -885,25 +944,36 @@ public:
                 }
                 else
                 {
-                    std::memcpy(storage_.sso_data_, other.storage_.sso_data_, vt->element_size);
+                    vtable_ = nullptr;
+                    is_sso_ = false;
                 }
             }
         }
         else
         {
             const vtable* vt = other.get_vtable();
-            storage_.ptr_ = vt->clone ? vt->clone(other.storage_.ptr_) : nullptr;
+            void* cloned = (vt->clone && other.storage_.ptr_) ? vt->clone(other.storage_.ptr_) : nullptr;
+            if (cloned)
+            {
+                storage_.ptr_ = cloned;
+            }
+            else
+            {
+                vtable_ = nullptr;
+                is_sso_ = false;
+            }
         }
-#else
-        const vtable* vt = other.get_vtable();
-        ptr_ = (vt->clone && other.ptr_) ? vt->clone(other.ptr_) : nullptr;
-#endif
 #endif
     }
 
     FORCE_INLINE define_void_any(define_void_any&& other) noexcept
     {
-#if INTPTR_MAX == INT64_MAX
+#if !defined(VOID_ANY_ENABLE_SSO)
+        vtable_ = other.vtable_;
+        ptr_ = other.ptr_;
+        other.vtable_ = nullptr;
+        other.ptr_ = nullptr;
+#elif INTPTR_MAX == INT64_MAX
         uintptr_t vst = other.vtable_sso_type_;
         vtable_sso_type_ = vst;
 
@@ -933,7 +1003,9 @@ public:
                 }
                 else
                 {
-                    std::memcpy(storage_.sso_data_, other.storage_.sso_data_, vt->element_size);
+                    // 不可移动类型拒绝移动: 目标保持空状态, 源保持不变
+                    vtable_sso_type_ = 0;
+                    return;
                 }
             }
         }
@@ -949,7 +1021,6 @@ public:
 
         if (!other.has_value_fast()) { return; }
 
-#if defined(VOID_ANY_ENABLE_SSO)
         if (other.is_sso()) [[likely]]
         {
             if (other.is_trivially_copyable()) [[likely]]
@@ -965,7 +1036,9 @@ public:
                 }
                 else
                 {
-                    std::memcpy(storage_.sso_data_, other.storage_.sso_data_, vt->element_size);
+                    vtable_ = nullptr;
+                    is_sso_ = false;
+                    return;
                 }
             }
         }
@@ -973,9 +1046,6 @@ public:
         {
             storage_.ptr_ = other.storage_.ptr_;
         }
-#else
-        ptr_ = other.ptr_;
-#endif
 
         other.vtable_ = nullptr;
 #endif
@@ -986,7 +1056,12 @@ public:
         if (this != &other) [[likely]]
         {
             destroy_data();
-#if INTPTR_MAX == INT64_MAX
+#if !defined(VOID_ANY_ENABLE_SSO)
+            vtable_ = other.vtable_;
+            if (!vtable_) { return *this; }
+            ptr_ = (vtable_->clone && other.ptr_) ? vtable_->clone(other.ptr_) : nullptr;
+            if (!ptr_) { vtable_ = nullptr; }
+#elif INTPTR_MAX == INT64_MAX
             uintptr_t vst = other.vtable_sso_type_;
             vtable_sso_type_ = vst;
 
@@ -1015,14 +1090,24 @@ public:
                     }
                     else
                     {
-                        std::memcpy(storage_.sso_data_, other.storage_.sso_data_, vt->element_size);
+                        // 不可复制类型拒绝复制: 目标保持空状态
+                        vtable_sso_type_ = 0;
                     }
                 }
             }
             else
             {
                 const vtable* vt = reinterpret_cast<const vtable*>(vst & vtable_ptr_mask);
-                storage_.ptr_ = vt->clone ? vt->clone(other.storage_.ptr_) : nullptr;
+                void* cloned = (vt->clone && other.storage_.ptr_) ? vt->clone(other.storage_.ptr_) : nullptr;
+                if (cloned)
+                {
+                    storage_.ptr_ = cloned;
+                }
+                else
+                {
+                    // 复制失败: 目标保持空状态
+                    vtable_sso_type_ = 0;
+                }
             }
 #else
             vtable_ = other.vtable_;
@@ -1030,7 +1115,6 @@ public:
 
             if (!other.has_value_fast()) { return *this; }
 
-#if defined(VOID_ANY_ENABLE_SSO)
             if (other.is_sso()) [[likely]]
             {
                 if (other.is_trivially_copyable()) [[likely]]
@@ -1046,19 +1130,25 @@ public:
                     }
                     else
                     {
-                        std::memcpy(storage_.sso_data_, other.storage_.sso_data_, vt->element_size);
+                        vtable_ = nullptr;
+                        is_sso_ = false;
                     }
                 }
             }
             else
             {
                 const vtable* vt = other.get_vtable();
-                storage_.ptr_ = vt->clone ? vt->clone(other.storage_.ptr_) : nullptr;
+                void* cloned = (vt->clone && other.storage_.ptr_) ? vt->clone(other.storage_.ptr_) : nullptr;
+                if (cloned)
+                {
+                    storage_.ptr_ = cloned;
+                }
+                else
+                {
+                    vtable_ = nullptr;
+                    is_sso_ = false;
+                }
             }
-#else
-            const vtable* vt = other.get_vtable();
-            ptr_ = (vt->clone && other.ptr_) ? vt->clone(other.ptr_) : nullptr;
-#endif
 #endif
         }
         return *this;
@@ -1069,7 +1159,12 @@ public:
         if (this != &other) [[likely]]
         {
             destroy_data();
-#if INTPTR_MAX == INT64_MAX
+#if !defined(VOID_ANY_ENABLE_SSO)
+            vtable_ = other.vtable_;
+            ptr_ = other.ptr_;
+            other.vtable_ = nullptr;
+            other.ptr_ = nullptr;
+#elif INTPTR_MAX == INT64_MAX
             uintptr_t vst = other.vtable_sso_type_;
             vtable_sso_type_ = vst;
 
@@ -1099,7 +1194,9 @@ public:
                     }
                     else
                     {
-                        std::memcpy(storage_.sso_data_, other.storage_.sso_data_, vt->element_size);
+                        // 不可移动类型拒绝移动: 目标保持空状态, 源保持不变
+                        vtable_sso_type_ = 0;
+                        return *this;
                     }
                 }
             }
@@ -1115,7 +1212,6 @@ public:
 
             if (!other.has_value_fast()) { return *this; }
 
-#if defined(VOID_ANY_ENABLE_SSO)
             if (other.is_sso()) [[likely]]
             {
                 if (other.is_trivially_copyable()) [[likely]]
@@ -1131,7 +1227,9 @@ public:
                     }
                     else
                     {
-                        std::memcpy(storage_.sso_data_, other.storage_.sso_data_, vt->element_size);
+                        vtable_ = nullptr;
+                        is_sso_ = false;
+                        return *this;
                     }
                 }
             }
@@ -1139,9 +1237,6 @@ public:
             {
                 storage_.ptr_ = other.storage_.ptr_;
             }
-#else
-            ptr_ = other.ptr_;
-#endif
 
             other.vtable_ = nullptr;
 #endif
@@ -1155,9 +1250,7 @@ public:
 #if INTPTR_MAX == INT64_MAX
         if (is_inline_type_id()) [[unlikely]]
         {
-            // 返回 type_tag 指针低 32 位作为伪 type_id
-            // 仅用于类型区分, 不与 vtable 路径的 int type_id 混用
-            return static_cast<int>(reinterpret_cast<uintptr_t>(get_inline_type_tag_ptr()));
+            return get_inline_type_id();
         }
 #endif
         return get_vtable()->type_id;
@@ -1170,8 +1263,7 @@ public:
 #if INTPTR_MAX == INT64_MAX
         if (is_inline_type_id()) [[unlikely]]
         {
-            // 指针比较: 编译期常量, 无 guard 检查
-            if (get_inline_type_tag_ptr() != &void_any_detail::type_tag_holder<T>::tag) [[unlikely]] { return nullptr; }
+            if (get_inline_type_id() != type_id::get_type_id<T>()) [[unlikely]] { return nullptr; }
             return static_cast<T*>(get_void_ptr());
         }
 #endif
@@ -1186,7 +1278,7 @@ public:
 #if INTPTR_MAX == INT64_MAX
         if (is_inline_type_id()) [[unlikely]]
         {
-            if (get_inline_type_tag_ptr() != &void_any_detail::type_tag_holder<T>::tag) [[unlikely]] { return nullptr; }
+            if (get_inline_type_id() != type_id::get_type_id<T>()) [[unlikely]] { return nullptr; }
             return static_cast<const T*>(get_void_ptr());
         }
 #endif
@@ -1209,41 +1301,13 @@ public:
     template<typename T>
     [[nodiscard]] FORCE_INLINE T* get_ptr_unchecked() noexcept
     {
-#if defined(VOID_ANY_ENABLE_SSO)
-        using DecayedT = std::decay_t<T>;
-        constexpr bool use_sso = sizeof(DecayedT) <= sso_buffer_size
-                              && alignof(DecayedT) <= sso_alignment;
-        if constexpr (use_sso)
-        {
-            return reinterpret_cast<T*>(storage_.sso_data_);
-        }
-        else
-        {
-            return static_cast<T*>(storage_.ptr_);
-        }
-#else
-        return static_cast<T*>(ptr_);
-#endif
+        return static_cast<T*>(get_void_ptr());
     }
 
     template<typename T>
     [[nodiscard]] FORCE_INLINE const T* get_ptr_unchecked() const noexcept
     {
-#if defined(VOID_ANY_ENABLE_SSO)
-        using DecayedT = std::decay_t<T>;
-        constexpr bool use_sso = sizeof(DecayedT) <= sso_buffer_size
-                              && alignof(DecayedT) <= sso_alignment;
-        if constexpr (use_sso)
-        {
-            return reinterpret_cast<const T*>(storage_.sso_data_);
-        }
-        else
-        {
-            return static_cast<const T*>(storage_.ptr_);
-        }
-#else
-        return static_cast<const T*>(ptr_);
-#endif
+        return static_cast<const T*>(get_void_ptr());
     }
 
     template<typename T>
@@ -1282,29 +1346,37 @@ public:
     }
 
     // 同布局交换: 与同类型 void_any 交换
+    // 四态组合 (empty/sso/heap x empty/sso/heap) 受控转移:
+    //   sso↔sso 借临时区三方交换; sso↔heap 经临时区搬运对象; 其余交换编码与指针
     FORCE_INLINE void swap(define_void_any& other) noexcept
     {
-        // 交换前记录状态 (编码交换后 is_sso 等会指向对方)
+#if defined(VOID_ANY_ENABLE_SSO)
         const bool this_sso = is_sso();
         const bool other_sso = other.is_sso();
 
 #if INTPTR_MAX == INT64_MAX
-        // 取交换前的 vtable 和 size (用于 non-trivially copyable 的 move_to 交换)
-        // 内联模式的 get_vtable() 返回 type_tag 伪指针, 不可解引用, 必须先判 inline
-        const vtable* this_vt = this_sso ? get_vtable() : nullptr;
-        const vtable* other_vt = other_sso ? other.get_vtable() : nullptr;
-        const bool this_inline = this_sso ? is_inline_type_id() : false;
-        const bool other_inline = other_sso ? other.is_inline_type_id() : false;
+        const vtable* this_vt = (this_sso && !is_inline_type_id()) ? get_vtable() : nullptr;
+        const vtable* other_vt = (other_sso && !other.is_inline_type_id()) ? other.get_vtable() : nullptr;
+        const bool this_inline = this_sso && is_inline_type_id();
+        const bool other_inline = other_sso && other.is_inline_type_id();
         const bool this_trivial = is_trivially_copyable();
         const bool other_trivial = other.is_trivially_copyable();
-        uint8_t this_sz = get_encoded_size();
-        uint8_t other_sz = other.get_encoded_size();
+        const uint8_t this_sz = get_encoded_size();
+        const uint8_t other_sz = other.get_encoded_size();
 
-        // 交换编码
         uintptr_t tmp_enc = vtable_sso_type_;
         vtable_sso_type_ = other.vtable_sso_type_;
         other.vtable_sso_type_ = tmp_enc;
 #else
+        const vtable* this_vt = this_sso ? get_vtable() : nullptr;
+        const vtable* other_vt = other_sso ? other.get_vtable() : nullptr;
+        const bool this_inline = false;
+        const bool other_inline = false;
+        const bool this_trivial = is_trivially_copyable();
+        const bool other_trivial = other.is_trivially_copyable();
+        const uint8_t this_sz = this_sso ? get_encoded_size() : uint8_t{0};
+        const uint8_t other_sz = other_sso ? other.get_encoded_size() : uint8_t{0};
+
         const vtable* tmp_vt = vtable_;
         vtable_ = other.vtable_;
         other.vtable_ = tmp_vt;
@@ -1313,7 +1385,6 @@ public:
         other.is_sso_ = tmp_sso;
 #endif
 
-#if defined(VOID_ANY_ENABLE_SSO)
         if (this_sso && other_sso)
         {
             if (this_trivial && other_trivial)
@@ -1374,12 +1445,83 @@ public:
                 }
             }
         }
+        else if (this_sso && !other_sso)
+        {
+            // 本方 SSO -> 对方 (原堆或空), 对方堆值 -> 本方
+            if (!this_inline && this_vt && !this_vt->move_to && !this_trivial) [[unlikely]]
+            {
+                return;
+            }
+            alignas(SsoAlign) uint8_t tmp_buf[SsoSize];
+            if (this_inline)
+            {
+                std::memcpy(tmp_buf, storage_.sso_data_, this_sz);
+            }
+            else if (this_vt && this_vt->move_to)
+            {
+                this_vt->move_to(tmp_buf, storage_.sso_data_);
+            }
+            else
+            {
+                std::memcpy(tmp_buf, storage_.sso_data_, this_sz);
+            }
+
+            void* other_ptr = other.storage_.ptr_;
+            storage_.ptr_ = other_ptr;
+
+            if (this_inline)
+            {
+                std::memcpy(other.storage_.sso_data_, tmp_buf, this_sz);
+            }
+            else if (this_vt && this_vt->move_to)
+            {
+                this_vt->move_to(other.storage_.sso_data_, tmp_buf);
+            }
+            else
+            {
+                std::memcpy(other.storage_.sso_data_, tmp_buf, this_sz);
+            }
+        }
+        else if (!this_sso && other_sso)
+        {
+            // 对方 SSO -> 本方 (原堆或空), 本方堆值 -> 对方
+            if (!other_inline && other_vt && !other_vt->move_to && !other_trivial) [[unlikely]]
+            {
+                return;
+            }
+            alignas(SsoAlign) uint8_t tmp_buf[SsoSize];
+            if (other_inline)
+            {
+                std::memcpy(tmp_buf, other.storage_.sso_data_, other_sz);
+            }
+            else if (other_vt && other_vt->move_to)
+            {
+                other_vt->move_to(tmp_buf, other.storage_.sso_data_);
+            }
+            else
+            {
+                std::memcpy(tmp_buf, other.storage_.sso_data_, other_sz);
+            }
+
+            void* this_ptr = storage_.ptr_;
+            other.storage_.ptr_ = this_ptr;
+
+            if (other_inline)
+            {
+                std::memcpy(storage_.sso_data_, tmp_buf, other_sz);
+            }
+            else if (other_vt && other_vt->move_to)
+            {
+                other_vt->move_to(storage_.sso_data_, tmp_buf);
+            }
+            else
+            {
+                std::memcpy(storage_.sso_data_, tmp_buf, other_sz);
+            }
+        }
         else
         {
-            // 至少一方 heap: 交换堆指针
-            void* tmp_ptr = storage_.ptr_;
-            storage_.ptr_ = other.storage_.ptr_;
-            other.storage_.ptr_ = tmp_ptr;
+            // heap↔heap (含空): 编码与指针已交换, 完成
         }
 #else
         void* tmp_p = ptr_;

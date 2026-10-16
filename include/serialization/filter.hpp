@@ -2,7 +2,7 @@
 #pragma once
 
 #include "../part/dense.hpp"
-#include "../component.hpp"
+#include "../ecs/component.hpp"
 #include <cstdint>
 
 namespace serialize {

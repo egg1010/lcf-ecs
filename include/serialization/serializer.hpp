@@ -7,7 +7,7 @@
 #include "../part/codec/archive_codec.hpp"
 #include "../part/codec/codec_registry.hpp"
 #include "archive_logic.hpp"
-#include "../component.hpp"
+#include "../ecs/component.hpp"
 #include "../part/operating_message.hpp"
 #include "../part/codec/json_writer.hpp"
 #include "../part/codec/json_reader.hpp"

@@ -5,7 +5,7 @@
 
 #include "../part/codec/archive_codec.hpp"
 #include "archive_types.hpp"
-#include "../component.hpp"
+#include "../ecs/component.hpp"
 #include "../part/operating_message.hpp"
 #include "../part/dense.hpp"
 #include "../part/safety.hpp"
