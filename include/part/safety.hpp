@@ -146,6 +146,53 @@ inline std::string base64_decode(std::string_view s) noexcept
     return out;
 }
 
+inline bool base64_decode_strict(std::string_view s, std::string& out) noexcept
+{
+    out.clear();
+    if (s.size() % 4 != 0)
+    {
+        return false;
+    }
+    out.reserve((s.size() / 4) * 3);
+    size_t pad = 0;
+    uint32_t buf = 0;
+    int bits = 0;
+    for (size_t i = 0; i < s.size(); ++i)
+    {
+        char c = s[i];
+        if (c == '=')
+        {
+            if (i + 2 < s.size())
+            {
+                return false;
+            }
+            ++pad;
+            if (pad > 2)
+            {
+                return false;
+            }
+            continue;
+        }
+        if (pad != 0)
+        {
+            return false;
+        }
+        int v = b64_decode_char(c);
+        if (v < 0)
+        {
+            return false;
+        }
+        buf = (buf << 6) | static_cast<uint32_t>(v);
+        bits += 6;
+        if (bits >= 8)
+        {
+            bits -= 8;
+            out.push_back(static_cast<char>((buf >> bits) & 0xFF));
+        }
+    }
+    return true;
+}
+
 } // namespace detail
 
 // ============================================================================

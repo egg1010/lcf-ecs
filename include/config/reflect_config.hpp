@@ -4,7 +4,7 @@
 // 用户可在包含反射头文件前覆盖这些宏
 
 // === 聚合类型字段遍历上限 ===
-// 影响 aggregate_reflect 的编译期字段探测能力
+// 影响 aggregate_traverse 的编译期字段探测能力
 // 必须是 16/32/64/128/256 之一
 #if !defined(REFLECT_MAX_FIELDS)
 #  define REFLECT_MAX_FIELDS 64

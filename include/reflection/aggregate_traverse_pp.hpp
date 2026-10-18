@@ -1,6 +1,6 @@
 #pragma once
 
-// aggregate_reflect_pp.hpp - 预处理器宏库 (自动生成)
+// aggregate_traverse_pp.hpp - 预处理器宏库 (自动生成)
 
 // === 基础工具 ===
 #define REFLECT_CAT(a, b) REFLECT_CAT_I(a, b)

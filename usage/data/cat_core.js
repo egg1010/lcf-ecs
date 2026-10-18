@@ -2307,8 +2307,8 @@ window.DOCS_DATA['reflection_usage'] = {
 | \`REGISTER_PRIVATE_OFFSETS(Cls, ...)\` + \`PRIV_FIELD(name, offset, Type)\` | 手填偏移量注册私有成员，用于无法修改的第三方类型 |
 | \`REGISTER_TYPE_ONLY(Cls)\` | 只注册类型元信息，不自动遍历字段。用于无字段类型，或配合 \`register_array_field\` 手动注册 |
 | \`REGISTER_ENUM(EnumType, v1, v2, ...)\` | 注册枚举类型，自动生成 \`{E::v, #v}\` 名值对，支持 1~10 个枚举值 |
-| \`REGISTER_BASE(Derived, Base)\` | 注册单继承关系（\`offset=0\`），用于向上/向下转型 |
-| \`REGISTER_BASE_OFFSET(Derived, Base, off)\` | 注册多继承关系，手填派生类→基类指针调整量 |
+| \`REGISTER_BASE(Derived, Base)\` | 注册继承关系；指针调整由编译期类型转换承担，单/多继承均适用 |
+| \`REGISTER_BASE_OFFSET(Derived, Base, off)\` | 显式指定派生类→基类指针调整量（特殊布局时使用） |
 | \`REGISTER_FIELD_ATTR(Cls, field, key, value)\` | 为字段注册属性/注解，\`value\` 任意类型（\`void_any\` 存储） |
 | \`REGISTER_CONVERT(From, To)\` | 注册类型转换（要求 \`From\` 可隐式转换到 \`To\`） |
 
@@ -2323,7 +2323,6 @@ window.DOCS_DATA['reflection_usage'] = {
 | \`reflect::try_get<T>()\` | 软失败版本，未注册返回 \`query_view::valid()==false\`，不 abort |
 | \`reflect::try_get_by_name(name)\` | 软失败版本（按名），不 abort |
 | \`reflect::global()\` | 全局存储对象 |
-| \`reflect::global().find_type_by_hash(hash)\` | 按 \`name_hash\`（FNV-1a(name)）查找 \`type_meta*\`，跨编译器/DLL 稳定标识，未找到返回 nullptr |
 
 ### 11.3 query_view 接口
 
@@ -2331,7 +2330,7 @@ window.DOCS_DATA['reflection_usage'] = {
 |------|------|
 | \`name()\` | 类型名 |
 | \`valid()\` | 是否绑定有效元数据（\`try_get\` 后用于判断是否注册） |
-| \`meta()\` | 取底层 \`const type_meta*\`，用于访问 name_hash/构造/继承等扩展字段 |
+| \`meta()\` | 取底层 \`const type_meta*\`，用于访问构造/继承/容器等扩展字段 |
 | \`size()\` | \`sizeof(T)\` |
 | \`align()\` | \`alignof(T)\` |
 | \`field_count()\` | 字段数 |
@@ -2343,13 +2342,15 @@ window.DOCS_DATA['reflection_usage'] = {
 | \`method_by_name(name)\` | 按名取方法元数据，未找到返回 nullptr |
 | \`get<R>(obj, i)\` | 按索引取字段引用（编译期偏移） |
 | \`get<R>(obj, i)\` (const) | const 对象版本 |
-| \`get_by_name<R>(obj, name)\` | 按名取字段引用 |
+| \`get_by_name<R>(obj, name)\` | 按名取字段引用；字段不存在即终止（带诊断） |
 | \`get_by_name<R>(obj, name)\` (const) | const 对象版本 |
+| \`try_get_by_name<R>(obj, name)\` | 安全取字段指针，未找到返回 \`nullptr\` |
+| \`try_get_by_name<R>(obj, name)\` (const) | const 对象版本 |
 | \`get_ptr(obj, name)\` | 按名取字段 \`void*\` |
 | \`get_ptr(obj, name)\` (const) | const 对象版本 |
-| \`invoke<R>(obj, name, args...)\` | 调用方法，返回 R。参数数量不匹配或未注册触发 \`std::abort()\` |
-| \`try_invoke<R>(obj, name, args...)\` | 软失败版本。\`R=void\` 返回 \`bool\`；非 void 返回 \`std::optional<R>\`。失败不 abort |
-| \`find_overload(name, given_ids, n_args)\` | 按参数类型 id 精确匹配重载，返回 \`const method_meta*\`；无精确匹配回退首个同名方法；未找到返回 nullptr |
+| \`invoke<R>(obj, name, args...)\` | 调用方法，返回 R。参数数量/类型不匹配、返回类型不匹配或未注册均触发 \`std::abort()\` |
+| \`try_invoke<R>(obj, name, args...)\` | 软失败版本。\`R=void\` 返回 \`bool\`；非 void 返回 \`std::optional<R>\`。参数或返回类型不匹配即失败，不 abort |
+| \`find_overload(name, given_ids, n_args)\` | 按参数类型 id 精确匹配重载，返回 \`const method_meta*\`；无精确匹配返回 nullptr |
 | \`get_by_path(obj, path)\` | 按 \`a.b.c\` 嵌套路径取字段 \`void*\`，递归查找子类型；任一级未找到返回 nullptr |
 | \`get_by_path(obj, path)\` (const) | const 对象版本 |
 | \`get_by_path_as<T>(obj, path)\` | 路径访问并转型为 \`T*\` |
@@ -2363,8 +2364,8 @@ window.DOCS_DATA['reflection_usage'] = {
 | \`array_rank(i)\` | 数组维度数（0=标量，1~4=数组） |
 | \`array_total_elements(i)\` | 数组总元素数（非数组为 0） |
 | \`array_element_stride(i)\` | 数组元素步长（字节） |
-| \`array_extent(field_idx, dim)\` | 第 \`dim\` 维元素数 |
-| \`array_element_ptr(obj, field_idx, element_idx)\` | 取数组元素指针，越界返回 nullptr |
+| \`array_extent(field_idx, dim)\` | 第 \`dim\` 维元素数（\`uint32_t\`） |
+| \`array_element_ptr(obj, field_idx, element_idx)\` | 取数组元素指针，越界或非数组返回 nullptr |
 | \`array_element_ptr(obj, field_idx, element_idx)\` (const) | const 对象版本 |
 | \`array_element_ptr_by_name(obj, name, element_idx)\` | 按名取数组元素指针 |
 | \`for_each_array_element(obj, field_idx, f)\` | 遍历数组元素，\`f(ptr, idx, type_id)\` |
@@ -2372,9 +2373,11 @@ window.DOCS_DATA['reflection_usage'] = {
 | **便捷接口** | |
 | \`array_info(field_idx)\` | 聚合查询，返回 \`const field_meta*\`，非数组返回 nullptr |
 | \`array_info_by_name(name)\` | 按名聚合查询 |
-| \`array_get<T>(obj, field_idx, element_idx)\` | 类型安全访问 |
+| \`array_get<T>(obj, field_idx, element_idx)\` | 类型安全访问；越界即终止（带诊断） |
 | \`array_get<T>(obj, field_idx, element_idx)\` (const) | const 对象版本 |
-| \`array_get_by_name<T>(obj, name, element_idx)\` | 按名类型安全访问 |
+| \`array_get_by_name<T>(obj, name, element_idx)\` | 按名类型安全访问；越界或字段不存在即终止 |
+| \`try_array_get<T>(obj, field_idx, element_idx)\` | 安全取数组元素指针，越界返回 \`nullptr\` |
+| \`try_array_get<T>(obj, field_idx, element_idx)\` (const) | const 对象版本 |
 | \`array_set<T>(obj, field_idx, element_idx, value)\` | 类型安全写入 |
 | \`array_set_by_name<T>(obj, name, element_idx, value)\` | 按名类型安全写入 |
 
@@ -2389,7 +2392,7 @@ window.DOCS_DATA['reflection_usage'] = {
 | \`create()\` | 堆分配默认构造，返回 \`void*\`；不可构造或未绑定返回 nullptr |
 | \`create_inplace(buf)\` | 就地默认构造（\`buf\` 需足够大且对齐），返回 \`void*\` |
 | \`destroy(obj)\` | 析构对象（不释放内存，用于就地对象） |
-| \`destroy_heap(obj)\` | 析构并释放堆内存（配合 \`create()\` 使用） |
+| \`destroy_heap(obj)\` | 析构并释放堆内存，与 \`create()\` 配对（含过对齐类型的对齐释放） |
 | \`reflect::get_construct<T>()\` | 按类型取 \`construct_view\` |
 | \`reflect::get_construct(q)\` | 由 \`query_view\` 构造 \`construct_view\` |
 
@@ -2451,7 +2454,7 @@ window.DOCS_DATA['reflection_usage'] = {
 
 ### 11.8 container_view — 容器反射
 
-\`#include "reflection/container.hpp"\`。统一访问顺序容器（\`dense<T>\`/\`std::vector\` 等）的元素。需先 \`register_sequential<T>()\` 注册容器特征。
+\`#include "reflection/container.hpp"\`。统一访问顺序容器（\`dense<T>\`/\`std::vector\` 等）的元素。类型注册时自动登记容器特征，无需额外调用。
 
 | 接口 | 说明 |
 |------|------|
@@ -2465,7 +2468,7 @@ window.DOCS_DATA['reflection_usage'] = {
 | \`push_back(element)\` | 追加元素（\`const void*\`） |
 | \`push_back<T>(value)\` | 模板版本 |
 | \`clear()\` | 清空容器 |
-| \`preallocate(n)\` | 预留容量 |
+| \`reserve(n)\` | 预留容量 |
 | \`for_each(f)\` | 遍历元素，\`f(void* element, size_t index)\` |
 | \`reflect::as_container(obj, type_id)\` | 由对象指针与类型 id 构造 \`container_view\` |
 | \`reflect::as_container(q, obj)\` | 由 \`query_view\`（字段类型）与对象指针构造 |
@@ -2498,7 +2501,7 @@ window.DOCS_DATA['reflection_usage'] = {
 
 ### 11.11 compare_view — 字段比较/克隆
 
-\`#include "reflection/compare.hpp"\`。逐字段相等比较、克隆、赋值与析构。数组字段逐元素处理；无 \`type_ops\` 的字段回退到 \`memcmp\`/\`memcpy\`。
+\`#include "reflection/compare.hpp"\`。逐字段相等比较、克隆、赋值与析构。数组字段逐元素处理；未登记字段操作表的字段回退到 \`memcmp\`/\`memcpy\`。
 
 | 接口 | 说明 |
 |------|------|
@@ -2511,7 +2514,7 @@ window.DOCS_DATA['reflection_usage'] = {
 
 ### 11.12 hash_view — 字段哈希
 
-\`#include "reflection/hash.hpp"\`。逐字段 FNV-1a 哈希组合。有 \`type_ops::hash_fn\` 的字段用其计算，否则字节级 FNV-1a。
+\`#include "reflection/hash.hpp"\`。逐字段 FNV-1a 哈希组合。已登记字段操作表的字段用其哈希函数计算，否则按字节级 FNV-1a。
 
 | 接口 | 说明 |
 |------|------|
@@ -2683,7 +2686,7 @@ REGISTER_TYPE_ONLY(Derived);
 REGISTER_PRIVATE_OFFSETS(Derived,
     PRIV_FIELD("base_val",    offsetof(Derived, base_val),    int),
     PRIV_FIELD("derived_val", offsetof(Derived, derived_val), int));
-REGISTER_BASE(Derived, Base);   // 注册单继承关系
+REGISTER_BASE(Derived, Base);   // 注册继承关系（指针调整自动）
 
 auto iv = reflect::get_inheritance<Derived>();
 iv.base_count();                       // 1
@@ -2775,15 +2778,8 @@ auto q2 = reflect::get<Calculator>();
 int ids[] = { type_id::get_type_id<int>(), type_id::get_type_id<int>() };
 const reflect::method_meta* m = q2.find_overload("add", ids, 2);  // 精确匹配 add(int,int)
 
-// === #10 类型名稳定标识 (name_hash) ===
-auto v3 = reflect::get<Vec3>();
-v3.meta()->name_hash;                                        // FNV-1a("Vec3")
-const reflect::type_meta* found =
-    reflect::global().find_type_by_hash(fnv1a_runtime("Vec3"));  // 按 hash 查找
-
 // === #5 容器反射 ===
-reflect::global().register_type_only<dense<int>>("dense<int>");
-global_container_ops().register_sequential<dense<int>>();   // 注册容器特征
+reflect::global().register_type_only<dense<int>>("dense<int>");  // 类型注册时自动登记容器特征
 
 dense<int> vec;
 vec.push_back(10);
@@ -2814,7 +2810,8 @@ ccv.push_back<int>(30);     // 追加元素
 | 类型 id 超过 \`MAX_TYPE_ID\`（65536） | 注册被忽略 | 类型总数不超过上限 |
 | 含 C 数组字段的类型直接用 \`REGISTER\` | 结构化绑定展开数组为多个标量字段，字段计数错误 | 改用 \`REGISTER_MEMBERS\`（自动判断标量/数组 + 推导数组元数据） |
 | \`REGISTER_MEMBERS\` 数组维度数超过 4 | 注册被忽略 | 维度数限制 1~4，更高维度需拆分为结构体嵌套 |
-| \`array_element_ptr\` 越界访问 | 返回 nullptr，解引用崩溃 | \`element_idx\` 必须 < \`array_total_elements\` |
+| \`array_element_ptr\` 越界访问 | 返回 nullptr | \`element_idx\` 须 < \`array_total_elements\`；\`array_get\` 越界会带诊断终止 |
+| 认为必须先注册类型再注册成员/方法/属性/继承/转换 | 无需如此 | 这些注册会自动创建类型元信息，顺序无关 |
 | 未 \`REGISTER_BASE\` 就调用 \`upcast\` | 返回 nullptr | 先 \`REGISTER_BASE(Derived, Base)\` 注册继承关系 |
 | 未 \`REGISTER_ENUM\` 就调用 \`get_enum\` | \`enum_view::valid()==false\` | 先 \`REGISTER_ENUM(E, ...)\` 注册枚举 |
 | 未 \`REGISTER_FIELD_ATTR\` 就调用 \`get_attr\` | 返回 nullptr | 先 \`REGISTER_FIELD_ATTR\` 注册属性 |
@@ -2822,7 +2819,7 @@ ccv.push_back<int>(30);     // 追加元素
 | \`convert_to\` 的 \`From\` 不可隐式转换到 \`To\` | 编译错误 | \`REGISTER_CONVERT\` 要求 \`is_convertible_v<From, To>\` |
 | \`clone\` 的 \`dst\` 已构造 | 内存泄漏/双重析构 | \`clone\` 仅用于未初始化内存；已构造对象用 \`copy_assign\` |
 | \`create_inplace\` 的 \`buf\` 未对齐 | placement new 未对齐访问崩溃 | \`alignas(T) char buf[sizeof(T)]\` |
-| 容器未 \`register_sequential\` 就用 \`as_container\` | \`container_view::valid()==false\` | 先 \`global_container_ops().register_sequential<T>()\` |
+| 容器类型未注册就用 \`as_container\` | \`container_view::valid()==false\` | 先 \`REGISTER\`/\`register_type_only\` 注册类型（容器特征随之登记） |
 | \`get_by_path\` 路径中间字段未注册子类型 | 返回 nullptr | 中间字段类型也需 \`REGISTER\`/\`REGISTER_MEMBERS\` |
 | \`REGISTER_ENUM\` 枚举值超过 10 个 | 宏展开错误 | 超过 10 个值时直接调 \`reflect::global().register_enum<E>(name, {...})\` |
 
@@ -2849,81 +2846,384 @@ window.DOCS_DATA['serialization'] = {
 
 \`#include "serialization/serialization.hpp"\`，命名空间 \`ecs\`。\`noexcept\`。
 
-序列化模块提供 ECS 组件持久化能力。\`serialization\` 主类支持 JSON 与原生二进制两种格式；编码器抽象层（\`archive_codec\` + \`codec_registry\`）提供 JSON / 二进制 / Protobuf / FlatBuffer 四种格式的统一接口，支持格式自动检测与切换。组件序列化优先级：用户手写 \`to_json()\`/\`from_json()\` > 反射注册字段 > base64。实体引用通过两阶段加载自动重映射，保证加载后实体身份关系正确。
-
-JSON 读写器（\`part/codec/json_writer.hpp\`、\`part/codec/json_reader.hpp\`）为通用基础模块，可独立使用。
-
-模块文件结构（\`include/serialization/\` 目录）：
+模块分两层。**通用对象序列化**（\`object_archive\`）与 \`part/codec\` 编解码原语不依赖 ECS，可序列化任意数据；**ECS 存档**（\`full_archive\`）在其之上枚举实体与组件。两层共用同一份字段层与编解码原语。
 
 | 文件 | 内容 |
 |------|------|
-| \`part/codec/archive_codec.hpp\` | 编码器抽象接口（\`archive_writer\`/\`archive_reader\`/\`archive_codec\`） |
-| \`part/codec/codec_json.hpp\` | JSON 编码器（\`json_codec\`） |
-| \`part/codec/codec_binary.hpp\` | 原生二进制编码器（\`binary_codec\`，magic \`LCE1\`） |
-| \`part/codec/codec_protobuf.hpp\` | Protobuf 风格编码器（\`protobuf_codec\`，magic \`LCPB\`） |
-| \`part/codec/codec_flatbuffer.hpp\` | FlatBuffer 风格编码器（\`flatbuffer_codec\`，magic \`LCFB\`） |
+| \`serialization.hpp\` | 统一入口（包含下列全部子文件） |
+| \`object_archive.hpp\` | 通用对象序列化（单对象 / 对象数组，不依赖 ECS） |
+| \`full_archive.hpp\` | 完整 ECS 存档门面 |
+| \`model.hpp\` | 存档模型（header / metadata / entity_remap / limits / 格式与模式枚举） |
+| \`codec_bridge.hpp\` | 格式分派 + 变换链 |
+| \`field_codec.hpp\` | 反射字段 ↔ 编码器 |
+| \`payload_codec.hpp\` | ECS 组件载荷编解码 |
+| \`type_registry.hpp\` | 稳定类型名 + 类型工厂表 + 枚举 / 实体引用字段注册 |
+| \`entity_source.hpp\` | 运行期 ECS 枚举 |
+| \`entity_identity.hpp\` | 实体索引保序重建 |
+| \`archive_filter.hpp\` | 选择性过滤器 |
+| \`migration.hpp\` | 字段级迁移 + 组件版本控制 |
+| \`stats.hpp\` | 统计信息 |
+| \`schema_export.hpp\` | 跨语言 schema 导出（\`.proto\` / \`.fbs\`） |
+| \`part/codec/archive_codec.hpp\` | 编码器抽象接口 |
+| \`part/codec/codec_json.hpp\` / \`codec_binary.hpp\` / \`codec_protobuf.hpp\` / \`codec_flatbuffer.hpp\` | 四种内置编码器 |
 | \`part/codec/codec_registry.hpp\` | 编码器注册表 + 格式自动检测 |
-| \`serialization/archive_types.hpp\` | 归档公共类型（\`archive_header\`/\`entity_remap\`/\`metadata_entry\`） |
-| \`serialization/archive_logic.hpp\` | 公共逻辑层（与格式无关的实体收集/过滤/版本操作） |
-| \`serialization/safety.hpp\` | 安全限制 + 字节序处理 + Base64 编解码 + RLE 压缩工具 |
-| \`serialization/type_name.hpp\` | 稳定类型名注册 + 实体引用字段注册 + 枚举类型注册 |
-| \`serialization/reflect_bridge.hpp\` | 反射桥接概念 + 自动序列化/反序列化（含嵌套对象/数组/枚举） |
-| \`serialization/filter.hpp\` | 选择性序列化过滤器（按 layer/tag/group/flags/白名单） |
-| \`serialization/migration.hpp\` | 字段级迁移 + 组件版本控制 |
-| \`serialization/stats.hpp\` | 序列化统计信息 |
-| \`part/codec/binary_writer.hpp\` | 原生二进制写入器（类型头含总字节数） |
-| \`part/codec/binary_reader.hpp\` | 原生二进制读取器 |
-| \`serialization/serializer.hpp\` | 序列化器主类 |
-| \`serialization/serialization.hpp\` | 统一入口（包含上述全部子文件） |
+| \`part/codec/json_writer.hpp\` / \`json_reader.hpp\` / \`binary_writer.hpp\` / \`binary_reader.hpp\` | 读写原语 |
+| \`part/safety.hpp\` / \`part/crc32c.hpp\` | 安全限制 + base64 / RLE / CRC32C 工具 |
 
-### 12.1 组件序列化约定
+---
 
-| 组件类型 | 序列化方式 | 要求 |
+# 一、通用对象序列化（不依赖 ECS）
+
+### 12.1 载荷约定
+
+| 数据类型 | 序列化方式 | 要求 |
 |---------|-----------|------|
-| trivially copyable | base64 编码二进制数据 | 无额外要求 |
-| 非 trivial | JSON 对象（\`to_json()\` 返回值） | 提供 \`std::string to_json() const\` 和 \`void from_json(std::string_view)\` |
-| 已注册反射 | 遍历字段自动生成 JSON 对象 | 字段类型为基本类型、\`std::string\`、嵌套对象、数组或已注册枚举 |
+| 提供 \`to_json()\` / \`from_json()\` | 原生 JSON 值 | 两方法成对提供 |
+| 已注册反射（\`REGISTER_MEMBERS\`） | 遍历字段生成对象 / 数组 | 字段为基本类型、\`std::string\`、嵌套对象、数组或已注册枚举 |
+| trivially copyable 且未反射 | 原始字节（JSON 格式下为 base64 字符串） | 无 |
+| 其他 | 空载荷（加载时跳过） | — |
 
-未满足上述要求的类型在编译期触发 \`static_assert\`。
+### 12.2 object_archive 接口
 
-### 12.2 serialization 接口
+\`#include "serialization/object_archive.hpp"\`，命名空间 \`ecs\`。序列化任意数据类型，不需要 \`register_components\`，不依赖 \`manager\`。
 
 | 接口 | 说明 |
 |------|------|
-| \`serialization(manager& m)\` | 构造，绑定 manager |
-| \`save_to_file<Ts...>(path, fmt)\` | 保存指定类型组件到文件，\`fmt\` 可选 \`format::json\`（默认）/ \`binary\` / \`protobuf\` / \`flatbuffer\` |
-| \`save_to_string<Ts...>(out, fmt)\` | 保存指定类型组件到字符串 |
-| \`save_changed<Ts...>(out, fmt)\` | 增量保存，仅输出版本变化的组件类型（无变化返回 \`"{}"\`） |
-| \`save_entity<Ts...>(e, out)\` | 单实体序列化，只保存指定实体的组件 |
-| \`load_from_file<Ts...>(path)\` | 从文件加载，自动检测格式（JSON/Binary/Protobuf/FlatBuffer） |
-| \`load_from_string<Ts...>(data)\` | 从字符串加载，自动检测格式（四格式），支持压缩/变换 |
-| \`validate_file(path)\` | 仅校验文件格式，不加载组件 |
-| \`validate_string(data)\` | 仅校验字符串格式，不加载组件 |
-| \`limits()\` | 获取安全限制配置引用 |
-| \`archive_version()\` / \`set_archive_version(v)\` | 存档版本读写 |
-| \`engine_version()\` / \`set_engine_version(v)\` | 引擎版本读写 |
-| \`set_filter(f)\` / \`filter()\` | 设置/获取选择性序列化过滤器 |
-| \`set_load_mode(m)\` / \`get_load_mode()\` | 设置/获取加载模式（\`replace\`/\`append\`/\`merge\`） |
-| \`set_metadata(key, value)\` / \`get_metadata(key)\` | 设置/查询存档元数据 |
-| \`all_metadata()\` | 获取全部元数据 |
-| \`last_stats()\` | 获取上一次保存/加载的统计信息 |
-| \`set_progress_callback(cb)\` | 设置进度回调（\`void(*)(size_t, size_t)\`） |
-| \`on_save(cb)\` / \`on_load(cb)\` | 设置保存/加载变换钩子（\`void(*)(std::string&)\`） |
-| \`set_compression(c, d)\` | 注册压缩/解压函数对 |
-| \`set_encryption(e, d)\` | 注册加密/解密函数对（\`std::string(*)(const std::string&)\`），保存时序 serialize→checksum→compress→encrypt→on_save，加载反向 |
-| \`set_checksum_enabled(b)\` / \`is_checksum_enabled()\` | 启用/查询 CRC32C 校验（默认启用，8 字节 \`LCCS\` 前缀），加载时自动校验检测损坏 |
-| \`set_load_policy(p)\` / \`get_load_policy()\` | 加载策略（\`strict\` 遇错即失败 / \`best_effort\` 跳过损坏组件继续，跳过数记入 \`stats.skipped_count\`） |
-| \`save_to_stream<Ts...>(os, fmt)\` | 流式保存到 \`std::ostream\`，减少峰值内存（JSON 分段刷新，Binary 每类型独立缓冲） |
-| \`save_to_archive<Ts...>(path)\` | 写入分块存档（\`LCAX\` 格式，每类型独立块 + 索引表） |
-| \`load_from_archive<Ts...>(path)\` | 从分块存档选择性加载（只读 \`Ts...\` 中存在的类型块） |
-| \`read_archive_index(path)\` | 仅读取分块存档索引，不加载数据（返回 \`dense<archive_chunk_entry>\`） |
-| \`load_from_string_runtime(data)\` | 运行时按存档类型名查 registry 加载（无需 \`Ts...\`，需先 \`register_type_factory<T>\`） |
-| \`serialization::save<Ts...>(m, path, fmt)\` | 静态便捷保存接口 |
-| \`serialization::load<Ts...>(m, path)\` | 静态便捷加载接口 |
+| \`object_archive()\` | 构造 |
+| \`bridge\` | \`codec_bridge\`：校验开关、压缩 / 加密函数对、保存 / 加载变换钩子 |
+| \`limits\` | \`safety_limits\`：文件大小、元素数等上限 |
+| \`format_version\` | 存档格式版本，加载时高于当前值拒绝（默认 1） |
+| \`save_object(out, fmt, obj)\` / \`load_object(data, obj)\` | 单对象字符串读写 |
+| \`save_array(out, fmt, items, count)\` / \`load_array(data, dense<T>& out)\` | 对象数组字符串读写，\`items\` 为 \`const T*\` |
+| \`save_object_to_file(path, fmt, obj)\` / \`load_object_from_file(path, obj)\` | 单对象文件读写 |
+| \`save_array_to_file(path, fmt, items, count)\` / \`load_array_from_file(path, dense<T>& out)\` | 对象数组文件读写 |
 
-### 12.3 安全限制
+\`fmt\` 为 \`archive_format::json\`（默认）/ \`binary\` / \`protobuf\` / \`flatbuffer\`；加载自动检测格式。
 
-\`safety_limits\` 结构体控制加载时的各项上限，防止恶意输入。通过 \`serialization::limits()\` 访问与修改。
+### 12.3 使用示例
+
+\`\`\`cpp
+#include "serialization/serialization.hpp"
+
+struct item_record { int id; float weight; std::string name; };
+REGISTER_TYPE_ONLY(item_record);
+REGISTER_MEMBERS(item_record, id, weight, name);
+
+object_archive oa;
+
+// 单对象
+item_record one{7, 1.5f, "alpha"};
+std::string js;
+oa.save_object(js, archive_format::json, one);
+item_record back{};
+oa.load_object(js, back);
+
+// 对象数组 (配置表 / 数据块)
+dense<item_record> items;
+items.push_back(item_record{1, 1.0f, "a"});
+items.push_back(item_record{2, 2.0f, "b"});
+std::string bin;
+oa.save_array(bin, archive_format::protobuf, items.data(), items.size());
+
+dense<item_record> loaded;
+oa.load_array(bin, loaded);              // 自动检测格式
+
+// 变换链 (校验默认启用)
+oa.bridge.enable_checksum = true;
+oa.bridge.compress_cb = rle_compress;
+oa.bridge.decompress_cb = rle_decompress;
+oa.bridge.encrypt_cb = my_encrypt;
+oa.bridge.decrypt_cb = my_decrypt;
+\`\`\`
+
+### 12.4 对象存档表示
+
+JSON 格式的根结构：
+
+\`\`\`json
+{
+  "v": 1,
+  "items": [
+    {"id": 7, "weight": 1.5, "name": "alpha"}
+  ]
+}
+\`\`\`
+
+- \`v\`：格式版本
+- \`items\`：对象数组；单对象即长度为 1
+- 元素内容按 12.1 生成（反射类型为对象，原始字节为 base64 字符串）
+
+### 12.5 编码器抽象接口
+
+\`#include "part/codec/archive_codec.hpp"\`。各编码器实现下列接口，与格式无关。
+
+\`archive_writer\`：
+
+| 接口 | 说明 |
+|------|------|
+| \`begin_object()\` / \`end_object()\` | 对象起止 |
+| \`begin_array(count)\` / \`end_array()\` | 数组起止 |
+| \`key(k)\` | 字段键 |
+| \`write_bool(v)\` / \`write_i32(v)\` / \`write_u32(v)\` / \`write_i64(v)\` / \`write_u64(v)\` | 写入整数 |
+| \`write_f32(v)\` / \`write_f64(v)\` | 写入浮点 |
+| \`write_string(v)\` | 写入字符串 |
+| \`write_bytes(data, len)\` | 写入原始字节 |
+| \`write_raw(fragment)\` | 嵌入已格式化片段 |
+| \`take()\` / \`size()\` | 取走结果 / 当前长度 |
+
+\`archive_reader\`：
+
+| 接口 | 说明 |
+|------|------|
+| \`enter_object()\` / \`leave_object()\` | 进入 / 退出对象 |
+| \`enter_array()\` / \`leave_array()\` | 进入 / 退出数组 |
+| \`next_element()\` / \`end_element()\` | 数组迭代 |
+| \`next_key()\` | 下一字段键（空表示结束） |
+| \`read_bool()\` / \`read_i32()\` / \`read_u32()\` / \`read_i64()\` / \`read_u64()\` | 读取整数 |
+| \`read_f32()\` / \`read_f64()\` | 读取浮点 |
+| \`read_string_view()\` / \`read_string()\` | 读取字符串（视图 / 拷贝） |
+| \`read_bytes_view(len)\` | 读取字节视图 |
+| \`set_element_size(size)\` | 声明数组元素编码宽度 |
+| \`skip_value()\` | 跳过当前值 |
+| \`has_error()\` / \`last_error()\` / \`peek_type()\` | 状态查询 |
+
+\`archive_codec\`：
+
+| 接口 | 说明 |
+|------|------|
+| \`magic[4]\` | 格式标识（可覆写 \`matches\` 自定义检测） |
+| \`create_writer()\` / \`create_reader(data)\` | 创建读写器 |
+| \`destroy_writer(w)\` / \`destroy_reader(r)\` | 销毁 |
+| \`matches(data)\` / \`validate(data)\` | 格式检测 / 结构校验 |
+
+### 12.6 编码器注册表
+
+\`#include "part/codec/codec_registry.hpp"\`。
+
+| 接口 | 说明 |
+|------|------|
+| \`codec_registry::instance()\` | 单例 |
+| \`register_codec(c)\` | 注册自定义编码器 |
+| \`detect(data)\` | 按各编码器 \`matches\` 检测格式 |
+| \`get(idx)\` / \`count()\` | 按索引取编码器 / 数量 |
+| \`get_codec(fmt_idx)\` | 按 \`codec_index\` 取编码器 |
+| \`detect_codec(data)\` | 自动检测并返回编码器 |
+
+\`codec_index\`：\`json=0\` / \`binary=1\` / \`protobuf=2\` / \`flatbuffer=3\`。
+
+### 12.7 四种内置编码器
+
+| 编码器 | 格式标识 | 头文件 | 字段标识方式 |
+|--------|---------|--------|------------|
+| \`json_codec\` | 首字符 \`{\` | \`codec_json.hpp\` | 字段名 |
+| \`binary_codec\` | \`LCE1\` | \`codec_binary.hpp\` | 字段名 |
+| \`protobuf_codec\` | 无（按 wire 结构判定） | \`codec_protobuf.hpp\` | 字段编号 = 写入顺序 |
+| \`flatbuffer_codec\` | file_identifier \`LCFB\` | \`codec_flatbuffer.hpp\` | 字段编号 = 写入顺序 |
+
+JSON / 二进制按字段名读写；Protobuf / FlatBuffers 不依赖键名，按写入顺序分配字段编号，读取按同样顺序推进，因此任意键名（含非 ECS 数据）均可正确往返。
+
+### 12.8 json_writer 接口
+
+\`#include "part/codec/json_writer.hpp"\`，全局命名空间。
+
+| 接口 | 说明 |
+|------|------|
+| \`json_writer(reserve, pretty)\` | 构造，预分配缓冲、可选美化输出 |
+| \`begin_object()\` / \`end_object()\` | 对象 |
+| \`begin_array()\` / \`end_array()\` | 数组 |
+| \`key(k)\` | 键 |
+| \`value(v)\` | 值（string / int / uint / float / double / bool） |
+| \`null()\` | null 值 |
+| \`raw_value(json)\` | 嵌入原始 JSON 片段 |
+| \`string()\` / \`take()\` | 取结果 |
+
+### 12.9 json_reader 接口
+
+\`#include "part/codec/json_reader.hpp"\`，全局命名空间。
+
+| 接口 | 说明 |
+|------|------|
+| \`json_reader(src)\` | 构造，传入 JSON 字符串 |
+| \`enter_object()\` / \`exit_object()\` | 进入 / 退出对象 |
+| \`enter_array()\` / \`exit_array()\` | 进入 / 退出数组 |
+| \`next_key()\` | 下一键（空表示结束） |
+| \`next_element()\` / \`end_element()\` | 数组迭代 |
+| \`read_int32()\` / \`read_uint32()\` / \`read_int64()\` / \`read_uint64()\` | 读取整数 |
+| \`read_double()\` / \`read_bool()\` / \`read_string()\` | 读取其他标量 |
+| \`read_raw_value()\` | 读取原始 JSON 片段 |
+| \`skip_value()\` | 跳过当前值 |
+| \`has_error()\` / \`last_error()\` / \`clear_error()\` | 错误状态 |
+
+### 12.10 用户手写 JSON 偏差容忍
+
+\`json_reader\` 兼容常见非标准写法：
+
+| 偏差 | 示例 | 支持 |
+|------|------|------|
+| 多余空白 | \`{ "a" : 1 }\` | ✓ |
+| 尾随逗号 | \`{"a":1,}\` / \`[1,2,]\` | ✓ |
+| 单引号字符串 | \`{'a':'x'}\` | ✓ |
+| 块注释 | \`{"a":1/* c */}\` | ✓ |
+| 行注释 | \`{"a":1}\` 后跟 \`// c\` | ✓ |
+| 数字前导 \`+\` | \`{"a":+1}\` | ✓ |
+
+### 12.11 反射字段层（field_codec）
+
+四种格式共用同一份反射字段实现。
+
+| 字段类型 | 处理方式 |
+|---------|---------|
+| 基本类型（int / float / bool / string） | 直接读写 |
+| 嵌套对象 | 递归进入子对象 |
+| 数组字段 | 逐元素读写 |
+| 已注册枚举 | 按底层整数读写 |
+
+| 接口 | 说明 |
+|------|------|
+| \`to_archive(w, obj)\` / \`from_archive(r, obj)\` | 反射对象 ↔ 编码器读写 |
+| \`has_json_serialize<T>\` / \`has_json_deserialize<T>\` | 概念：类型提供 \`to_json\` / \`from_json\` |
+| \`is_reflected<T>()\` / \`is_type_reflected(tid)\` | 反射注册查询 |
+
+### 12.12 跨语言 schema 导出
+
+\`#include "serialization/schema_export.hpp"\`。
+
+| 接口 | 说明 |
+|------|------|
+| \`to_proto<Ts...>()\` | proto3 schema 文本 |
+| \`to_fbs<Ts...>()\` | FlatBuffers schema 文本（file_identifier \`LCFB\`） |
+
+字段编号约定：根 \`version\` / \`engine\` / \`meta\` / \`cv\` / \`entities\` / \`components\` = f1..f6；实体 \`i\` / \`v\` / \`f\` / \`t\` / \`l\` / \`g\` = f1..f6；组件条目 \`i\` / \`v\` / \`d\` = f1..f3；组件表按注册顺序编号。
+
+### 12.13 原语使用示例
+
+\`\`\`cpp
+#include "serialization/serialization.hpp"
+
+// 直接使用编码器
+protobuf_codec pc;
+archive_writer* w = pc.create_writer();
+w->begin_object();
+w->key("version"); w->write_u32(42);
+w->key("name");    w->write_string("hello");
+w->end_object();
+std::string data = w->take();
+pc.destroy_writer(w);
+
+archive_reader* r = pc.create_reader(data);
+if (r->enter_object()) {
+    std::string_view k;
+    while (!(k = r->next_key()).empty()) {
+        if (k == "f1") { (void)r->read_u32(); }
+        else if (k == "f2") { (void)r->read_string_view(); }
+        else { r->skip_value(); }
+    }
+}
+pc.destroy_reader(r);
+
+// 自动检测格式
+const archive_codec* codec = detect_codec(data);
+
+// 注册自定义编码器
+class my_codec final : public archive_codec {
+    // create_writer / create_reader / destroy_writer / destroy_reader / matches
+};
+codec_registry::instance().register_codec(&my_codec_instance);
+\`\`\`
+
+---
+
+# 二、ECS 存档（full_archive）
+
+### 12.14 组件载荷约定
+
+| 组件类型 | 序列化方式 | 要求 |
+|---------|-----------|------|
+| 提供 \`to_json()\` / \`from_json()\` | 原生 JSON 值 | 两方法成对提供 |
+| 已注册反射 | 按反射字段顺序写入类型化字段 | 字段编号 = 声明顺序 |
+| trivially copyable 且未反射 | 原始字节 | 无 |
+| 其他 | 空载荷（加载时跳过） | — |
+
+### 12.15 full_archive 接口
+
+\`#include "serialization/full_archive.hpp"\`，命名空间 \`ecs\`。ECS 存档唯一入口，\`register_components\` 一次后保存 / 加载免 \`Ts...\`。
+
+| 接口 | 说明 |
+|------|------|
+| \`full_archive(manager& m)\` | 构造，绑定 manager |
+| \`register_components<Ts...>()\` | 注册组件类型（幂等），保存与加载两端次序须一致 |
+| \`save_to_string(out, fmt)\` / \`save_to_file(path, fmt)\` | 全量保存，\`fmt\` 同 12.2 |
+| \`load_from_string(data)\` / \`load_from_file(path)\` | 全量加载，自动检测格式 |
+| \`set_archive_version(v)\` / \`archive_version()\` | 存档版本读写 |
+| \`set_engine_version(v)\` / \`engine_version()\` | 引擎版本读写 |
+| \`set_metadata(key, value)\` / \`get_metadata(key)\` / \`all_metadata()\` | 元数据读写 |
+| \`set_checksum_enabled(b)\` / \`is_checksum_enabled()\` | CRC32C 校验开关（默认启用） |
+| \`set_filter(f)\` / \`filter()\` | 选择性过滤器 |
+| \`set_load_mode(m)\` / \`get_load_mode()\` | 加载模式 |
+| \`set_load_policy(p)\` / \`get_load_policy()\` | 加载策略 |
+| \`set_compression(c, d)\` / \`set_encryption(e, d)\` | 压缩 / 加密函数对 |
+| \`on_save(cb)\` / \`on_load(cb)\` / \`set_progress_callback(cb)\` | 变换钩子 / 进度回调 |
+| \`limits()\` / \`last_stats()\` | 安全限制 / 上一次统计 |
+| \`component_schema()\` | 运行期收集的组件类型描述 |
+| \`schema_proto()\` / \`schema_fbs()\` | 按注册表生成 \`.proto\` / \`.fbs\` |
+
+### 12.16 使用示例
+
+\`\`\`cpp
+#include "serialization/serialization.hpp"
+
+ecs::manager mgr;
+auto e1 = mgr.create_entity();
+mgr.add(e1, Position{1.0f, 2.0f, 3.0f});
+mgr.get_entity_state(e1.parts_.index_).tag = 5;
+
+full_archive saver(mgr);
+saver.register_components<Position, Velocity>();
+saver.set_metadata("author", "dev");
+saver.set_checksum_enabled(false);
+
+std::string data;
+saver.save_to_string(data, archive_format::protobuf);
+
+ecs::manager mgr2;
+full_archive loader(mgr2);
+loader.register_components<Position, Velocity>();
+loader.load_from_string(data);          // 自动检测格式
+
+uint32_t idx = mgr2.get_single_class_set<Position>()->get_entity_indices()[0];
+// 索引与状态还原: idx == e1.parts_.index_, mgr2.get_entity_state(idx).tag == 5
+
+std::string proto = saver.schema_proto();
+std::string fbs   = saver.schema_fbs();
+\`\`\`
+
+### 12.17 存档表示
+
+JSON 格式的根结构：
+
+\`\`\`json
+{
+  "version": 1,
+  "engine": 0,
+  "meta": {"author": "dev"},
+  "cv": {"Hp": 2},
+  "entities": [{"i": 1, "v": 1, "f": 0, "t": 5, "l": 0, "g": 0}],
+  "components": {"Hp": [{"i": 1, "v": 1, "d": {"c": 42, "m": 100}}]}
+}
+\`\`\`
+
+- \`version\` / \`engine\`：存档 / 引擎版本，加载时高版本拒绝
+- \`meta\` / \`cv\`：元数据 / 组件版本表（嵌套对象）
+- \`entities\`：实体表；\`i\` 索引、\`v\` 版本、\`f\` / \`t\` / \`l\` / \`g\` 为 flags / tag / layer / group_id
+- \`components\`：组件表，键为类型名，元素为 \`i\` / \`v\` / \`d\`
+- \`d\`：组件载荷（同 12.14）
+- 官方 JSON 值：\`NaN\` / \`Infinity\` 映射为 \`null\`，读回取默认值
+
+覆盖范围：存活实体（含无组件实体）、实体状态全部字段、全部已注册模板组件、运行期 def 组件、元数据与组件版本表；瞬态队列与系统表不在范围内。
+
+### 12.18 安全限制
+
+\`safety_limits\` 控制加载上限，经 \`full_archive::limits()\` 或 \`object_archive::limits\` 修改。
 
 | 字段 | 默认值 | 说明 |
 |------|--------|------|
@@ -2934,764 +3234,105 @@ JSON 读写器（\`part/codec/json_writer.hpp\`、\`part/codec/json_reader.hpp\`
 | \`max_depth\` | 64 | JSON 最大嵌套深度 |
 | \`max_entity_count\` | 10,000,000 | 最大实体数 |
 
-### 12.4 类型名注册与运行时工厂
+### 12.19 类型名与引用字段注册
 
-跨编译器加载存档时，\`typeid(T).name()\` 返回值不同会导致类型名不匹配。\`register_type_name\` 注册稳定类型名保证可移植性。\`register_type_factory\` 注册运行时工厂，支持 \`load_from_string_runtime\` 无需 \`Ts...\` 加载。\`register_type_alias\` 注册旧类型名别名，加载旧存档时自动映射到新类型。
+跨编译器时 \`typeid(T).name()\` 不一致，用稳定名保证可移植。
 
 | 接口 | 说明 |
 |------|------|
 | \`register_type_name<T>(stable_name)\` | 注册类型 T 的稳定名 |
-| \`lookup_type_name(type_id)\` | 按 type_id 查稳定名 |
-| \`lookup_type_id(name)\` | 按稳定名查 type_id |
+| \`register_type_alias<T>(old_name)\` | 注册旧名别名（旧名 → T） |
+| \`lookup_type_name(type_id)\` / \`lookup_type_id(name)\` | 名字 ↔ id 查询 |
 | \`register_entity_field<T>(field_name)\` | 注册 entity 引用字段（加载时自动重映射） |
-| \`register_type_factory<T>(stable_name)\` | 注册类型工厂（幂等），支持运行时加载路径 |
-| \`register_type_alias<T>(old_name)\` | 注册类型别名（旧名 → T），加载旧存档时自动映射，必须在 \`register_type_factory<T>\` 之后调用 |
+| \`register_enum<T>()\` / \`lookup_enum_underlying(type_id)\` | 枚举底层类型注册 / 查询 |
 
-### 12.5 JSON 格式
-
-\`\`\`json
-{
-  "version": 1,
-  "engine": 0,
-  "meta": {"author": "alice", "desc": "测试存档"},
-  "cv": {"Hp": 2},
-  "entities": [
-    {"i": 索引, "v": 版本, "f": flags, "t": tag, "l": layer, "g": group_id}
-  ],
-  "components": {
-    "类型名": [
-      {"i": 索引, "v": 版本, "d": 组件数据}
-    ]
-  }
-}
-\`\`\`
-
-- \`version\` / \`engine\`：存档版本 / 引擎版本（加载时高版本会被拒绝）
-- \`meta\`：存档元数据（可选，由 \`set_metadata\` 设置）
-- \`cv\`：组件版本表（可选，键为类型名，值为版本号，用于迁移）
-- \`i\`：实体索引
-- \`v\`：实体版本号
-- \`f\`/\`t\`/\`l\`/\`g\`：实体状态（flags/tag/layer/group_id）
-- \`d\`：组件数据（trivially copyable 类型为 base64 字符串，非 trivial 类型为 JSON 对象）
-
-### 12.6 json_writer 接口
-
-\`#include "part/codec/json_writer.hpp"\`，全局命名空间。
+### 12.20 选择性过滤与单实体保存
 
 | 接口 | 说明 |
 |------|------|
-| \`json_writer(reserve, pretty)\` | 构造，预分配缓冲区，可选美化输出 |
-| \`begin_object()\` / \`end_object()\` | 对象 |
-| \`begin_array()\` / \`end_array()\` | 数组 |
-| \`key(k)\` | 键 |
-| \`value(v)\` | 值（string/int/uint/float/double/bool） |
-| \`null()\` | null 值 |
-| \`raw_value(json)\` | 原始 JSON 片段（嵌入已格式化的 JSON） |
-| \`string()\` | 获取结果字符串 |
-| \`take()\` | 取走结果字符串 |
+| \`serialize_filter::by_layer(l)\` | 仅保留指定 layer |
+| \`serialize_filter::by_tag(t)\` | 仅保留指定 tag |
+| \`serialize_filter::by_group(g)\` | 仅保留指定 group |
+| \`serialize_filter::by_flags(mask, value)\` | \`(flags & mask) == value\` |
+| \`serialize_filter::by_entities(ids)\` | 仅保留白名单索引；收窄到单个实体即单实体保存 |
 
-### 12.7 json_reader 接口
+多条件为 AND 关系，经 \`full_archive::set_filter(&filter)\` 应用。
 
-\`#include "part/codec/json_reader.hpp"\`，全局命名空间。
-
-| 接口 | 说明 |
-|------|------|
-| \`json_reader(src)\` | 构造，传入 JSON 字符串 |
-| \`enter_object()\` / \`exit_object()\` | 进入/退出对象 |
-| \`enter_array()\` / \`exit_array()\` | 进入/退出数组 |
-| \`next_key()\` | 读取下一个键（空 view 表示结束） |
-| \`next_element()\` | 数组是否有下一元素（自动处理逗号） |
-| \`end_element()\` | 显式结束当前元素（跳过逗号） |
-| \`read_bool()\` / \`is_null()\` | 读取 bool / 判断 null |
-| \`read_int32()\` / \`read_uint32()\` / \`read_int64()\` / \`read_uint64()\` | 读取整数 |
-| \`read_float()\` / \`read_double()\` | 读取浮点 |
-| \`read_string()\` | 读取字符串 |
-| \`read_raw_value()\` | 读取原始 JSON 片段 |
-| \`skip_value()\` | 跳过当前值 |
-| \`has_error()\` / \`last_error()\` | 错误状态 |
-| \`clear_error()\` | 清除错误状态（用于 best_effort 模式恢复继续解析） |
-
-### 12.8 用户手写 JSON 偏差容忍
-
-json_reader 兼容用户手写 JSON 的常见偏差（非标准但常见）：
-
-| 偏差类型 | 示例 | 支持 |
-|---------|------|------|
-| 多空格/换行/tab | \`{ "a" : 1 }\` | ✓ |
-| 尾随逗号 | \`{"a":1,}\` / \`[1,2,]\` | ✓ |
-| 单引号字符串 | \`{'a':'x'}\` | ✓ |
-| 块注释 \`/* */\` | \`{"a":1/* c */}\` | ✓ |
-| 行注释 \`//\` | \`{"a":1}\\n// c\` | ✓ |
-| 数字前导 \`+\` 号 | \`{"a":+1}\` | ✓ |
-
-\`\`\`cpp
-// 用户手写的非标准 JSON 也能正确解析
-std::string user_json = R"({
-    // 用户配置
-    'name' : 'Alice',
-    'age' : +30,
-    'scores' : [ +90, +85, +95, ],
-    /* 元数据 */
-    'meta' : { 'active' : true, },
-})";
-
-json_reader r(user_json);
-r.enter_object();
-std::string_view k;
-while (!(k = r.next_key()).empty()) {
-    // ... 正常解析
-}
-\`\`\`
-
-### 使用
-
-\`\`\`cpp
-#include "serialization/serialization.hpp"
-
-// === trivially copyable 组件 (自动 base64) ===
-struct Vec3 { float x, y, z; };
-static_assert(std::is_trivially_copyable_v<Vec3>);
-
-manager mgr;
-entity e1 = mgr.create_entity();
-entity e2 = mgr.create_entity();
-mgr.add<Vec3>(e1, Vec3{1.0f, 2.0f, 3.0f});
-mgr.add<Vec3>(e2, Vec3{4.0f, 5.0f, 6.0f});
-
-// 保存
-serialization(mgr).save_to_file<Vec3>("save.json");
-
-// 加载到新 manager
-manager mgr2;
-serialization(mgr2).load_from_file<Vec3>("save.json");
-
-// === 非 trivial 组件 (to_json/from_json) ===
-struct PlayerInfo {
-    std::string name;
-    int level;
-    std::string to_json() const {
-        json_writer w;
-        w.begin_object();
-        w.key("name").value(name);
-        w.key("level").value(level);
-        w.end_object();
-        return w.take();
-    }
-    void from_json(std::string_view s) {
-        json_reader r(s);
-        r.enter_object();
-        std::string_view k;
-        while (!(k = r.next_key()).empty()) {
-            if (k == "name") name = r.read_string();
-            else if (k == "level") level = r.read_int32();
-            else r.skip_value();
-        }
-    }
-};
-
-// 多类型混合保存/加载
-manager mgr3;
-entity e = mgr3.create_entity();
-mgr3.add<Vec3>(e, Vec3{1, 0, 0});
-mgr3.add<PlayerInfo>(e, PlayerInfo{"Alice", 99});
-
-serialization(mgr3).save_to_file<Vec3, PlayerInfo>("save2.json");
-
-manager mgr4;
-serialization(mgr4).load_from_file<Vec3, PlayerInfo>("save2.json");
-
-// === 保存到字符串 ===
-std::string json;
-serialization(mgr).save_to_string<Vec3>(json);
-
-// === 从字符串加载 ===
-manager mgr5;
-serialization(mgr5).load_from_string<Vec3>(json);
-
-// === 二进制格式 (trivial 类型直存, 体积更小) ===
-serialization(mgr).save_to_file<Vec3>("save.bin", serialization::format::binary);
-
-// 二进制加载 (同一个 load_from_file 接口, 自动检测格式)
-manager mgr6;
-serialization(mgr6).load_from_file<Vec3>("save.bin");
-
-// === Protobuf 格式 (紧凑 wire format, 适合网络传输) ===
-serialization(mgr).save_to_file<Vec3>("save.pb", serialization::format::protobuf);
-
-// === FlatBuffer 格式 (零拷贝读取, O(1) 字段访问) ===
-serialization(mgr).save_to_file<Vec3>("save.fb", serialization::format::flatbuffer);
-
-// === 格式自动检测 ===
-// load_from_string / load_from_file 根据前 4 字节 magic 自动判断:
-// "{"    → JSON
-// "LCE1" → Binary
-// "LCPB" → Protobuf
-// "LCFB" → FlatBuffer
-std::string pb_data;
-serialization(mgr).save_to_string<Vec3>(pb_data, serialization::format::protobuf);
-manager mgr7;
-serialization(mgr7).load_from_string<Vec3>(pb_data);  // 自动走 Protobuf 路径
-
-// === 仅校验格式 (不加载组件) ===
-auto check = serialization(mgr).validate_string(json);
-if (!check) { /* 格式错误 */ }
-
-// === 跨编译器稳定类型名 ===
-register_type_name<Vec3>("Vec3");
-register_type_name<PlayerInfo>("PlayerInfo");
-
-// === 安全限制配置 ===
-serialization s(mgr);
-s.limits().max_file_size = 64 * 1024 * 1024;  // 限制 64MB
-s.limits().max_entity_count = 10000;          // 限制 1 万实体
-s.save_to_file<Vec3>("save.json");
-
-// === 版本控制 ===
-serialization s2(mgr);
-s2.set_archive_version(2);
-s2.set_engine_version(100);
-s2.save_to_file<Vec3>("save_v2.json");
-
-// 加载时高版本存档会被拒绝
-manager mgr8;
-serialization(mgr8).set_archive_version(1);
-auto r = serialization(mgr8).load_from_file<Vec3>("save_v2.json");
-if (!r) { /* r.read_message() 包含版本不匹配信息 */ }
-
-// === 选择性序列化 (filter) ===
-manager mgr_f;
-entity e_a = mgr_f.create_entity();
-entity e_b = mgr_f.create_entity();
-mgr_f.get_entity_state(e_a.parts_.index_).layer = 1;
-mgr_f.get_entity_state(e_b.parts_.index_).layer = 2;
-mgr_f.add<Hp>(e_a, Hp(10, 100));
-mgr_f.add<Hp>(e_b, Hp(20, 100));
-
-serialize_filter filter;
-filter.by_layer(1);  // 仅保存 layer==1 的实体
-serialization sf(mgr_f);
-sf.set_filter(&filter);
-std::string fjson;
-sf.save_to_string<Hp>(fjson);  // 只含 e_a 的 Hp
-
-// === 单实体序列化 ===
-std::string ejson;
-serialization(mgr_f).save_entity<Hp>(e_b, ejson);  // 只含 e_b 的 Hp
-
-// === 存档元数据 ===
-serialization sm(mgr_f);
-sm.set_metadata("author", "alice");
-sm.set_metadata("level", "boss-fight");
-std::string mjson;
-sm.save_to_string<Hp>(mjson);  // JSON 含 "meta" 字段
-manager mgr_m;
-serialization sm2(mgr_m);
-sm2.load_from_string<Hp>(mjson);
-const std::string* author = sm2.get_metadata("author");  // "alice"
-
-// === 加载模式 ===
-manager mgr_dst;
-entity e_old = mgr_dst.create_entity();
-mgr_dst.add<Hp>(e_old, Hp(999, 999));
-
-// replace: 清空旧数据后加载
-serialization(mgr_dst).set_load_mode(load_mode::replace).load_from_string<Hp>(mjson);
-// append/merge: 保留旧数据追加加载
-serialization(mgr_dst).set_load_mode(load_mode::append).load_from_string<Hp>(mjson);
-
-// === 字段级迁移 ===
-// 1. 先存 v1 存档 (未注册版本, cv 字段不写入)
-std::string v1_json;
-serialization(mgr_f).save_to_string<Hp>(v1_json);
-
-// 2. 升级到 v2 并注册迁移函数
-register_component_version<Hp>(2);
-register_migration<Hp>(1, 2, [](json_reader& old, json_writer& neu) {
-    if (!old.enter_object()) { neu.raw_value("{}"); return; }
-    neu.begin_object();
-    std::string_view k;
-    while (!(k = old.next_key()).empty()) {
-        if (k == "m") neu.key("m").value(old.read_int32() + 100);  // max + 100
-        else neu.key(k).raw_value(old.read_raw_value());
-    }
-    neu.end_object();
-});
-
-// 3. 加载 v1 存档触发迁移 (saved_cv=1 默认, current_cv=2)
-manager mgr_mig;
-serialization(mgr_mig).load_from_string<Hp>(v1_json);  // Hp.max 被 +100
-
-// === 增量序列化 ===
-serialization si(mgr_f);
-std::string inc1;
-si.save_changed<Hp, Vec3>(inc1);  // 首次全量
-std::string inc2;
-si.save_changed<Hp, Vec3>(inc2);  // 无变化, 输出 "{}"
-
-// === 压缩与变换钩子 ===
-serialization sc(mgr_f);
-sc.set_compression(rle_compress, rle_decompress);
-sc.on_save([](std::string& data) { data += "//SIG"; });      // 加签
-sc.on_load([](std::string& data) {                             // 验签
-    auto pos = data.rfind("//SIG");
-    if (pos != std::string::npos) data.erase(pos);
-});
-std::string cjson;
-sc.save_to_string<Hp>(cjson);  // 压缩 + 加签
-manager mgr_c;
-serialization sc2(mgr_c);
-sc2.set_compression(rle_compress, rle_decompress);
-sc2.on_load([](std::string& data) {
-    auto pos = data.rfind("//SIG");
-    if (pos != std::string::npos) data.erase(pos);
-});
-sc2.load_from_string<Hp>(cjson);  // 验签 + 解压
-
-// === 统计信息 ===
-serialization ss(mgr_f);
-std::string sj;
-ss.save_to_string<Hp, Vec3>(sj);
-const auto& stats = ss.last_stats();
-// stats.total_bytes / stats.per_type[i].component_count / .bytes
-
-// === 便捷静态接口 ===
-serialization::save<Hp>(mgr_f, "quick.json");
-manager mgr_q;
-serialization::load<Hp>(mgr_q, "quick.json");
-\`\`\`
-
-### 12.9 二进制格式布局
-
-\`\`\`
-偏移  内容
-0     magic "LCE1" (4 字节)
-4     endianness (1, = LE)
-5     format version (1)
-6     reserved (2 字节)
-8     archive_version (uint32 LE)
-12    engine_version (uint32 LE)
-16    meta_len (uint32 LE) + meta_json (元数据 JSON 子串)
-     entities_json_len (uint32 LE) + entities_json (实体状态, JSON 子串)
-     type_count (uint32 LE)
-     [每个类型: 类型名(string) + 组件版本(uint32) + 类型数据长度(uint32) + 类型数据]
-\`\`\`
-
-类型数据布局：\`元素数(uint32) + [entity_index(uint32) + version(uint32) + 组件数据]*\`。trivially copyable 类型组件数据为原始字节(LE)，非 trivial 类型为 JSON 子串。类型头含总字节数，加载时遇未知类型可按长度跳过，避免读取错位。
-
-### 12.10 选择性序列化过滤器
-
-\`serialize_filter\` 结构体按实体状态过滤，只序列化符合条件的实体及其组件。
-
-\`\`\`cpp
-struct serialize_filter {
-    bool use_layer = false;    uint32_t layer = 0;
-    bool use_tag = false;      uint32_t tag = 0;
-    bool use_group = false;    uint32_t group_id = 0;
-    bool use_flags = false;    uint32_t flags_mask = 0;  uint32_t flags_value = 0;
-    bool use_whitelist = false;  dense<uint32_t> entity_whitelist;
-    // 链式构造
-    serialize_filter& by_layer(uint32_t l);
-    serialize_filter& by_tag(uint32_t t);
-    serialize_filter& by_group(uint32_t g);
-    serialize_filter& by_flags(uint32_t mask, uint32_t value);
-    serialize_filter& by_entities(dense<uint32_t>&& ids);
-};
-\`\`\`
-
-| 字段 | 含义 |
-|------|------|
-| \`use_layer\` / \`layer\` | 仅保留指定 layer 的实体 |
-| \`use_tag\` / \`tag\` | 仅保留指定 tag 的实体 |
-| \`use_group\` / \`group_id\` | 仅保留指定 group 的实体 |
-| \`use_flags\` / \`flags_mask\` / \`flags_value\` | \`(state.flags & mask) == value\` 的实体 |
-| \`use_whitelist\` / \`entity_whitelist\` | 仅保留索引在白名单内的实体 |
-
-多条件组合为 AND 关系。\`matches_entity\` 同时检查白名单与状态条件。
-
-### 12.11 单实体序列化
-
-\`save_entity<Ts...>(e, out)\` 利用过滤器只序列化指定实体的组件，用于实体快照、网络同步等场景。
-
-### 12.12 加载模式（load_mode）
+### 12.21 加载模式
 
 | 模式 | 行为 |
 |------|------|
-| \`load_mode::replace\` | 加载前调用 \`manager::clear()\` 清空所有实体与组件，再创建新实体 |
-| \`load_mode::append\` | 保留现有实体，直接追加加载的实体（默认） |
-| \`load_mode::merge\` | 保留现有实体，追加加载（与 append 行为一致，预留语义扩展） |
+| \`load_mode::replace\` | 先 \`manager::clear()\`，再按存档索引保序重建（默认） |
+| \`load_mode::append\` | 保留现有实体，追加加载（不保序） |
+| \`load_mode::merge\` | 与 append 一致（预留语义扩展） |
 
-### 12.13 存档元数据
+### 12.22 存档元数据
 
-通过 \`set_metadata(key, value)\` 存入自定义键值对，保存时写入 \`meta\` 字段，加载时回填。用于记录保存时间、作者、关卡名等信息。
+\`set_metadata(key, value)\` 存入自定义键值对，保存写入 \`meta\`，加载回填；\`get_metadata(key)\` / \`all_metadata()\` 读取。
 
-\`\`\`json
-{
-  "version": 1,
-  "meta": {"author": "test_user", "desc": "测试存档"},
-  "entities": [...],
-  "components": {...}
-}
-\`\`\`
-
-### 12.14 字段级迁移 + 组件版本控制
-
-\`register_component_version<T>(version)\` 注册组件当前版本，保存时写入 \`cv\` 字段。\`register_migration<T>(from, to, fn)\` 注册迁移函数，加载时按 \`from → from+1 → ... → to\` 链式调用。
+### 12.23 组件版本与字段级迁移
 
 | 接口 | 说明 |
 |------|------|
-| \`register_component_version<T>(version)\` | 注册组件当前版本 |
-| \`register_migration<T>(from, to, migrate_fn)\` | 注册单步迁移函数 |
+| \`register_component_version<T>(version)\` | 注册组件当前版本，保存写入 \`cv\` |
+| \`register_migration<T>(from, to, fn)\` | 注册单步迁移函数，加载按 \`from → to\` 链式调用 |
 | \`lookup_component_version<T>()\` | 查询组件当前版本 |
-| \`migrate_component(tid, from, to, old_data, w)\` | 执行迁移链 |
+| \`register_field_rename<T>(old_name, new_name)\` | 加载时字段改名 |
+| \`register_field_drop<T>(field_name)\` | 加载时丢弃字段 |
+| \`register_field_default<T>(field_name, default_json)\` | 缺失字段注入默认值 |
 
-迁移函数签名 \`void(*)(json_reader& old, json_writer& neu)\`：从 \`old\` 读取旧 JSON，写入 \`neu\` 新 JSON。需自行调用 \`old.enter_object()\`。
+迁移函数签名 \`void(*)(json_reader& old, json_writer& neu)\`，需自行调用 \`old.enter_object()\`。存档无 \`cv\` 条目时不迁移。
 
-\`\`\`json
-{
-  "version": 1,
-  "cv": {"Hp": 2},
-  "entities": [...],
-  "components": {"Hp": [{"i":1, "v":1, "d":{"c":42,"m":100}}]}
-}
-\`\`\`
+### 12.24 加载策略
 
-未注册版本的组件加载时按 \`saved_ver\` 处理（不迁移）。存档无 \`cv\` 字段时 \`saved_ver\` 默认为 1。
+\`strict\`（默认）遇错即失败；\`best_effort\` 跳过损坏组件继续加载，跳过数记入 \`last_stats().skipped_count\`。
 
-### 12.14.1 字段级 schema 演进
+### 12.25 校验与加密
 
-不依赖组件版本号，每次加载自动应用字段重命名、丢弃、默认值注入。无注册时零开销（原样返回）。
+保存按 \`校验 → 压缩 → 加密 → on_save\` 依次变换，加载严格逆序。
 
 | 接口 | 说明 |
 |------|------|
-| \`register_field_rename<T>(old_name, new_name)\` | 旧字段名 → 新字段名（加载时自动转换） |
-| \`register_field_drop<T>(field_name)\` | 加载时跳过此字段（已废弃） |
-| \`register_field_default<T>(field_name, default_json)\` | 缺失字段注入默认值（\`default_json\` 为 JSON 值片段，如 \`"100"\`/\`"\"hello\""\`/\`"{\\"x\\":1}"\`） |
+| \`set_checksum_enabled(b)\` | 启用（默认）/ 关闭 CRC32C 校验，启用后数据前加 8 字节 \`LCCS\` 前缀 |
+| \`set_encryption(encrypt_fn, decrypt_fn)\` | 加密 / 解密函数对，\`std::string(*)(const std::string&)\` |
 
-\`\`\`cpp
-// 字段重命名: 旧存档 "m" → 新代码 "max"
-register_field_rename<Hp>("m", "max");
+兼容未启用校验的数据：无 \`LCCS\` 前缀时原样处理。需外部工具读取格式标识时，先 \`set_checksum_enabled(false)\`。
 
-// 丢弃废弃字段
-register_field_drop<Hp>("deprecated_flag");
-
-// 缺失字段注入默认值
-register_field_default<Hp>("max_mp", "100");
-register_field_default<PlayerInfo>("title", "\\"default\\"");
-\`\`\`
-
-### 12.14.2 加载策略（load_policy）
+### 12.26 压缩与变换钩子
 
 | 接口 | 说明 |
 |------|------|
-| \`set_load_policy(p)\` | \`strict\`（默认）遇错即失败；\`best_effort\` 跳过损坏组件继续加载 |
-| \`get_load_policy()\` | 查询当前策略 |
+| \`set_compression(compress_fn, decompress_fn)\` | 保存后压缩、加载前解压 |
+| \`on_save(cb)\` / \`on_load(cb)\` | 保存后 / 加载前自定义变换，\`void(*)(std::string&)\` |
 
-\`best_effort\` 模式下，损坏组件的跳过数记入 \`stats.skipped_count\`，\`json_reader::clear_error()\` 清除错误状态后继续解析。
+\`part/safety.hpp\` 提供 \`rle_compress\` / \`rle_decompress\`。
 
-### 12.14.3 CRC32C 校验与加密管线
-
-保存管线时序：\`serialize → checksum → compress → encrypt → on_save\`；加载反向。
+### 12.27 进度回调与统计
 
 | 接口 | 说明 |
 |------|------|
-| \`set_checksum_enabled(b)\` | 启用（默认）/禁用 CRC32C 校验，启用后数据前添加 8 字节 \`LCCS\` 前缀（magic + uint32 checksum） |
-| \`set_encryption(encrypt_fn, decrypt_fn)\` | 注册加密/解密函数对，签名 \`std::string(*)(const std::string&)\` |
+| \`set_progress_callback(cb)\` | \`void(*)(size_t current, size_t total)\` |
+| \`last_stats()\` | \`serialize_stats\`：\`entity_count\` / \`total_bytes\` / \`archive_version\` / \`skipped_count\` / \`per_type\`（每类型组件数与字节数） |
 
-**机制说明**
-
-启用校验时，保存产物整体包一层前缀：\`[LCCS 4B][CRC32C 4B][原格式数据]\`。校验覆盖纯序列化产物（不含前缀自身），算在压缩与加密之前——校验的是逻辑内容而非传输形态，更换压缩/加密方案不影响校验值。加密在最外层（密文会摧毁一切 magic 标识），因此加载时解密最先执行。
-
-加载侧按严格逆序剥离，\`LCCS\` 前缀在两个可能的深度浮出，各剥离一次：
-
-| 存档形态 | 解密后的内容 | 第一次剥离 | 解压 | 第二次剥离 |
-|---------|-------------|----------|------|----------|
-| 未压缩 | \`LCCS+校验+数据\` | 命中，剥掉 | 跳过 | 不命中，跳过 |
-| 压缩过 | 压缩乱码 | 不命中，跳过 | 解压 | 命中，剥掉 |
-
-剥离为探测式：前 4 字节不是 \`LCCS\` 即原样放行。由此获得三项兼容性——加载无前缀的旧存档、加载 \`set_checksum_enabled(false)\` 存出的数据、以及剥离阶段结束后"偏移 0 必为格式 magic"的恒定前提。
-
-格式检测（\`detect_codec\`）只消费剥离后的裸数据，按各格式 magic（JSON 用首字符 \`{\`）选择解码器，不认识 \`LCCS\`。若需直接检查存档的格式 magic（如外部工具校验），先 \`set_checksum_enabled(false)\` 保存，或自行跳过前 8 字节；\`save_to_string\` 的默认产物以 \`LCCS\` 开头。
-
-\`\`\`cpp
-// 校验默认启用, 加载时自动检测损坏
-serialization s(mgr);
-s.save_to_file<Hp>("save.json");  // 数据含 LCCS 前缀
-
-// 禁用校验 (如外部工具直接读取格式 magic 时)
-s.set_checksum_enabled(false);
-
-// 加密管线
-s.set_encryption(my_encrypt, my_decrypt);
-s.save_to_file<Hp>("save.enc");  // serialize→checksum→compress→encrypt
-\`\`\`
-
-### 12.14.4 流式保存（save_to_stream）
-
-\`save_to_stream<Ts...>(os, fmt)\` 直接写入 \`std::ostream\`，减少峰值内存。JSON 分段刷新（峰值 = 单段），Binary 每类型独立缓冲（峰值 = 单类型）。\`protobuf\`/\`flatbuffer\` 回退到内存构建。
-
-\`\`\`cpp
-std::ofstream os("large.json");
-serialization(mgr).save_to_stream<Vec3, PlayerInfo>(os, serialization::format::json);
-\`\`\`
-
-### 12.14.5 分块存档（archive_index）
-
-\`LCAX\` 格式：单文件分块，每类型独立块 + 索引表，支持选择性加载（只读需要的类型块）。
-
-格式布局：\`[magic "LCAX" 4B][archive_ver 4B][engine_ver 4B][fmt 1B][reserved 3B][chunk_count 4B][index_table N×56B][chunk_data...]\`
-
-\`archive_chunk_entry\`（56 字节）：\`name_hash\`/\`offset\`/\`size\`/\`comp_count\`/\`name[32]\`。块类型：\`__meta__\`/\`__entities__\`/\`__cv__\`/\`<类型名>\`。
-
-| 接口 | 说明 |
-|------|------|
-| \`save_to_archive<Ts...>(path)\` | 写入分块存档 |
-| \`load_from_archive<Ts...>(path)\` | 选择性加载（只读 \`Ts...\` 中存在的类型块，兼容别名） |
-| \`read_archive_index(path)\` | 仅读取索引（返回 \`dense<archive_chunk_entry>\`），不加载数据 |
-
-\`\`\`cpp
-// 写入分块存档
-serialization(mgr).save_to_archive<Vec3, PlayerInfo>("world.lcax");
-
-// 仅读取索引 (查看存档包含哪些类型)
-auto index = serialization(mgr).read_archive_index("world.lcax");
-for (size_t i = 0; i < index.size(); ++i) {
-    // index[i].name / .comp_count / .size
-}
-
-// 选择性加载 (只加载 Vec3, 跳过 PlayerInfo)
-manager mgr2;
-serialization(mgr2).load_from_archive<Vec3>("world.lcax");
-\`\`\`
-
-### 12.15 增量序列化（save_changed）
-
-\`save_changed<Ts...>(out, fmt)\` 跟踪各组件池版本号，仅当某类型池版本变化时输出该类型。首次调用全量输出；无变化时返回 \`"{}"\`。适用于频繁自动保存场景，减少 IO。
-
-### 12.16 压缩与变换钩子
-
-| 接口 | 说明 |
-|------|------|
-| \`set_compression(compress_fn, decompress_fn)\` | 注册压缩/解压函数对，保存后压缩、加载前解压（仅对 JSON 路径生效，二进制不压缩） |
-| \`on_save(cb)\` | 保存后变换数据（如加密、签名） |
-| \`on_load(cb)\` | 加载前变换数据（如解密、校验） |
-
-\`safety.hpp\` 提供 \`rle_compress\` / \`rle_decompress\` 工具函数（RLE1 格式，针对重复字节序列）。变换顺序：save → compress → on_save；on_load → decompress → load。
-
-### 12.17 进度回调与统计
-
-| 接口 | 说明 |
-|------|------|
-| \`set_progress_callback(cb)\` | 设置 \`void(*)(size_t current, size_t total)\` 回调 |
-| \`last_stats()\` | 获取 \`serialize_stats\`，含 \`entity_count\`、\`total_bytes\`、\`archive_version\`、\`skipped_count\`（best_effort 跳过数）、\`per_type\`（每类型组件数与字节数） |
-
-### 12.18 反射桥接扩展
-
-\`reflect_bridge\` 支持嵌套对象、数组字段、枚举类型的自动序列化：
-
-| 字段类型 | 处理方式 |
-|---------|---------|
-| 基本类型（int/float/bool/string） | 直接读写 |
-| 嵌套对象（字段为已注册反射类型） | 递归调用 \`to_json\`/\`from_json\` |
-| 数组字段（\`array_rank > 0\`） | 遍历元素逐个序列化，按 \`element_stride\` 步进 |
-| 已注册枚举 | \`register_enum<T>()\` 注册底层类型，序列化为整数 |
-
-### 12.19 编码器抽象接口
-
-\`archive_writer\` / \`archive_reader\` / \`archive_codec\` 提供与具体格式无关的读写接口，各格式编码器（JSON / 二进制 / Protobuf / FlatBuffer）实现该接口。\`#include "part/codec/archive_codec.hpp"\`，命名空间 \`ecs\`。
-
-\`archive_type\` 枚举标识字段类型：\`null_t\` / \`bool_t\` / \`int32_t\` / \`uint32_t\` / \`int64_t\` / \`uint64_t\` / \`float32_t\` / \`float64_t\` / \`string_t\` / \`bytes_t\` / \`object_t\` / \`array_t\`。
-
-\`archive_writer\` 接口：
-
-| 接口 | 说明 |
-|------|------|
-| \`begin_object()\` / \`end_object()\` | 写入对象起止 |
-| \`begin_array(count=0)\` / \`end_array()\` | 写入数组起止，\`count=0\` 表示元素数未知 |
-| \`key(k)\` | 写入字段键 |
-| \`write_bool(v)\` / \`write_i32(v)\` / \`write_u32(v)\` | 写入标量 |
-| \`write_i64(v)\` / \`write_u64(v)\` | 写入 64 位整数 |
-| \`write_f32(v)\` / \`write_f64(v)\` | 写入浮点 |
-| \`write_string(v)\` | 写入字符串 |
-| \`write_bytes(data, len)\` | 写入原始字节（trivially copyable 组件） |
-| \`write_raw(fragment)\` | 嵌入已格式化片段（用户 \`to_json\` 输出） |
-| \`take()\` | 取走结果字符串 |
-| \`size()\` | 当前缓冲区大小 |
-
-\`archive_reader\` 接口（\`read_string_view\` 返回 \`string_view\` 指向原缓冲区，零拷贝）：
-
-| 接口 | 说明 |
-|------|------|
-| \`enter_object()\` / \`leave_object()\` | 进入/退出对象 |
-| \`enter_array()\` / \`leave_array()\` | 进入/退出数组 |
-| \`next_element()\` / \`end_element()\` | 数组迭代 |
-| \`next_key()\` | 读取下一字段键，空视图表示对象结束 |
-| \`read_bool()\` / \`read_i32()\` / \`read_u32()\` | 读取标量 |
-| \`read_i64()\` / \`read_u64()\` | 读取 64 位整数 |
-| \`read_f32()\` / \`read_f64()\` | 读取浮点 |
-| \`read_string_view()\` / \`read_string()\` | 读取字符串（前者零拷贝） |
-| \`read_bytes_view(len)\` | 读取字节视图 |
-| \`skip_value()\` | 跳过当前值（未知字段） |
-| \`has_error()\` / \`last_error()\` | 错误状态 |
-| \`peek_type()\` | 当前值类型 |
-
-\`archive_codec\` 工厂接口：
-
-| 接口 | 说明 |
-|------|------|
-| \`magic[4]\` | 格式标识（4 字节，用于自动检测） |
-| \`create_writer()\` | 创建写入器 |
-| \`create_reader(data)\` | 创建读取器，绑定数据视图 |
-| \`destroy_writer(w)\` / \`destroy_reader(r)\` | 销毁实例 |
-| \`matches(data)\` | 检测数据是否匹配本格式 |
-
-### 12.20 编码器注册表
-
-\`codec_registry\` 单例管理所有内置格式编码器，按 magic 头自动检测格式。\`#include "part/codec/codec_registry.hpp"\`。
-
-| 接口 | 说明 |
-|------|------|
-| \`codec_registry::instance()\` | 获取单例 |
-| \`register_codec(c)\` | 注册自定义编码器 |
-| \`detect(data)\` | 按 magic 头检测格式，返回 \`archive_codec*\` |
-| \`get(idx)\` | 按索引获取编码器 |
-| \`count()\` | 已注册编码器数 |
-
-\`codec_index\` 命名空间提供索引常量：\`json=0\` / \`binary=1\` / \`protobuf=2\` / \`flatbuffer=3\`。
-
-自由函数：
-
-| 接口 | 说明 |
-|------|------|
-| \`get_codec(fmt_idx)\` | 按索引获取编码器 |
-| \`detect_codec(data)\` | 自动检测并返回编码器 |
-
-### 12.21 四种内置编码器
-
-| 编码器 | magic | 头文件 | 字段标识方式 |
-|--------|-------|--------|------------|
-| \`json_codec\` | \`{\`（首字符） | \`codec_json.hpp\` | 字段名（字符串键） |
-| \`binary_codec\` | \`LCE1\` | \`codec_binary.hpp\` | 字段名（字符串键） |
-| \`protobuf_codec\` | \`LCPB\` | \`codec_protobuf.hpp\` | 字段编号（\`f1\`/\`f2\`/...） |
-| \`flatbuffer_codec\` | \`LCFB\` | \`codec_flatbuffer.hpp\` | 字段编号（\`f1\`/\`f2\`/...） |
-
-各编码器均实现 \`archive_codec\` 工厂接口。\`create_writer()\` 返回 \`archive_writer*\`，\`create_reader(data)\` 返回 \`archive_reader*\`，用完需调用 \`destroy_writer\`/\`destroy_reader\` 释放。
-
-### 12.22 公共逻辑层
-
-\`archive_logic\` 提供与格式无关的实体收集、过滤、版本检查、组件序列化分发逻辑，通过 \`archive_writer\`/\`archive_reader\` 接口操作编码器。\`#include "serialization/archive_logic.hpp"\`，命名空间 \`ecs\`。
-
-| 接口 | 说明 |
-|------|------|
-| \`archive_logic(manager& m)\` | 构造，绑定 manager |
-| \`set_filter(f)\` / \`filter()\` | 设置/获取选择性过滤器 |
-| \`stats()\` / \`reset_stats()\` | 统计信息 / 重置 |
-| \`save_header(w, archive_ver, engine_ver, metadata)\` | 保存存档头（版本 + 元数据） |
-| \`save_component_versions<Ts...>(w)\` | 保存组件版本表 |
-| \`save_entities<Ts...>(w)\` | 保存实体状态（含去重） |
-| \`save_components<Ts...>(w)\` | 保存组件数据 |
-| \`load_header(r, max_ver, metadata, err)\` | 加载存档头，返回 \`{archive_ver, engine_ver}\` |
-| \`scan_entities(r, remap, max_count)\` | 扫描实体并建立重映射 |
-
-### 12.23 多格式编码使用
-
-\`\`\`cpp
-#include "serialization/serialization.hpp"
-
-// === 直接使用编码器 ===
-protobuf_codec pc;
-archive_writer* w = pc.create_writer();
-w->begin_object();
-w->key("version"); w->write_u32(42);
-w->key("name");    w->write_string("hello");
-w->end_object();
-std::string data = w->take();
-pc.destroy_writer(w);
-
-// 读取（零拷贝：string_view 指向原缓冲区）
-archive_reader* r = pc.create_reader(data);
-if (r->enter_object()) {
-    std::string_view k;
-    while (!(k = r->next_key()).empty()) {
-        if (k == "f1") {
-            uint32_t ver = r->read_u32();
-        } else if (k == "f2") {
-            std::string_view name = r->read_string_view();  // 零拷贝
-        } else {
-            r->skip_value();
-        }
-    }
-}
-pc.destroy_reader(r);
-
-// === 格式自动检测 ===
-const archive_codec* codec = detect_codec(data);
-if (codec) {
-    archive_reader* auto_r = codec->create_reader(data);
-    // ... 按 archive_reader 接口读取
-    codec->destroy_reader(auto_r);
-}
-
-// === 通过 serialization 主类统一使用四格式 (推荐) ===
-manager mgr;
-entity e1 = mgr.create_entity();
-mgr.add<Vec3>(e1, Vec3{1.0f, 2.0f, 3.0f});
-
-serialization saver(mgr);
-saver.set_archive_version(2);
-saver.set_metadata("author", "dev");
-
-// 四种格式用同一个接口, 仅切换 format 枚举
-std::string json_data, bin_data, pb_data, fb_data;
-saver.save_to_string<Vec3>(json_data, serialization::format::json);
-saver.save_to_string<Vec3>(bin_data, serialization::format::binary);
-saver.save_to_string<Vec3>(pb_data, serialization::format::protobuf);
-saver.save_to_string<Vec3>(fb_data, serialization::format::flatbuffer);
-
-// 加载时自动检测格式 (无需指定)
-manager mgr2;
-serialization loader(mgr2);
-loader.load_from_string<Vec3>(pb_data);   // 自动识别 LCPB
-loader.load_from_string<Vec3>(fb_data);   // 自动识别 LCFB
-
-// === 直接使用编码器 (高级场景, 需要手动管理生命周期) ===
-protobuf_codec pc;
-archive_writer* w = pc.create_writer();
-w->begin_object();
-w->key("version"); w->write_u32(42);
-w->end_object();
-std::string data = w->take();
-pc.destroy_writer(w);
-
-// === 注册自定义编码器 ===
-class my_codec final : public archive_codec {
-    // 实现 create_writer / create_reader / destroy_* / matches
-};
-codec_registry::instance().register_codec(&my_codec_instance);
-\`\`\`
+---
 
 ### 注意事项
 
 | 错误做法 | 问题 | 正确做法 |
 |---------|------|---------|
-| 未提供 \`to_json\`/\`from_json\` 且非 trivially copyable | 编译错误 | 提供 \`to_json\`/\`from_json\` 或确保类型 trivially copyable |
-| \`to_json\` 与 \`from_json\` 字段不一致 | 反序列化数据丢失 | 两端字段保持一致 |
-| 加载类型与保存时不一致 | 类型名不匹配，组件被跳过 | 加载时显式指定所有需要的类型 |
-| 跨编译器加载未注册类型名 | 类型名（\`typeid(T).name()\`）不同 | 使用 \`register_type_name\` 注册稳定名 |
-| 加载超限文件 | 触发安全限制失败 | 调整 \`limits()\` 上限或检查文件来源 |
-| 组件含 entity 引用未注册字段 | 引用指向旧索引 | 使用 \`register_entity_field<T>(field_name)\` 注册 |
-| 加载高于当前版本的存档 | 版本检查失败被拒绝 | 升级 \`set_archive_version\` 或降级存档 |
-| 迁移函数未调用 \`old.enter_object()\` | 读取不到字段，迁移失败 | 在迁移 lambda 开头调用 \`old.enter_object()\` |
-| 先注册版本再保存再加载 | saved_cv == current_cv，不触发迁移 | 模拟真实场景：先存 v1 存档，再升级版本注册迁移，后加载 |
-| 对二进制格式调用 \`set_compression\` | 不生效（仅 JSON 路径压缩） | 改用外部压缩或在 save 后手动压缩 |
-| \`replace\` 模式加载到含信号 manager | 旧实体被销毁触发信号 | 信号触发属预期行为，注意信号槽清理 |
-| \`create_writer\`/\`create_reader\` 后未调用 \`destroy_*\` | 内存泄漏 | 用完立即调用对应 destroy 方法 |
-| Protobuf/FlatBuffer 字段按写入顺序编号 | 按字段名读取失败 | 用 \`f1\`/\`f2\`/... 等编号键迭代 |
-| Protobuf/FlatBuffer save/load 用不同 \`Ts...\` 顺序 | 字段编号错位，数据错乱 | save 和 load 必须用相同的 \`Ts...\` 类型和顺序 |
-| \`read_string_view\` 返回的视图在原缓冲区释放后失效 | 悬空指针 | 视图生命周期绑定到原 \`string\`，需保留原数据 |
+| 未提供 \`to_json\` / \`from_json\`，且未反射、非 trivially copyable | 载荷为空，加载被跳过 | 提供两方法、注册反射或确保 trivially copyable |
+| \`to_json\` 与 \`from_json\` 字段不一致 | 数据丢失 | 两端字段保持一致 |
+| 保存与加载注册的组件类型或次序不一致 | 组件表字段错位、组件被跳过 | 两端 \`register_components\` 一致 |
+| 跨编译器加载未注册稳定名 | 类型名不匹配 | 用 \`register_type_name\` 注册稳定名 |
+| 组件含 entity 引用字段未注册 | 引用指向旧索引 | 用 \`register_entity_field<T>(field_name)\` 注册 |
+| 加载高于当前版本的存档 | 版本检查失败 | 提高 \`set_archive_version\` 或降级存档 |
+| 迁移函数未调用 \`old.enter_object()\` | 读取不到字段 | 在迁移 lambda 开头调用 |
+| 启用校验后直接读格式标识 | 前 8 字节为 \`LCCS\` | 先 \`set_checksum_enabled(false)\`，或用 \`detect_codec\` |
+| \`replace\` 加载到含信号的 manager | 旧实体销毁触发信号 | 属预期行为，注意信号槽清理 |
+| \`create_writer\` / \`create_reader\` 后未 \`destroy_*\` | 内存泄漏 | 用完立即销毁 |
+| Protobuf / FlatBuffers 按字段名读取 | 读取返回编号键 | 用 \`f1\` / \`f2\` / ... 迭代 |
+| \`read_string_view\` 视图超出源缓冲生命周期 | 悬空指针 | 保留源缓冲区 |
 
----
-
-# 二、宏配置
 `
 };
 

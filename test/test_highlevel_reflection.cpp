@@ -1,6 +1,10 @@
 // test_highlevel_reflection.cpp - 高层封装测试: 反射模块
 #include "test_common.hpp"
 #include "include/reflection/reflection.hpp"
+#include "include/reflection/inheritance.hpp"
+#include <array>
+#include <cstdint>
+#include <string>
 #include <string_view>
 
 struct vec3
@@ -17,11 +21,58 @@ struct calc
     int scale(int k) { return base * k; }
 };
 
+struct sa_component
+{
+    std::array<int, 3> xs;
+};
+
+struct person_component
+{
+    std::string name;
+};
+
+struct aligned_component
+{
+    alignas(64) int x;
+};
+
+struct ib_a { int a; };
+struct ib_b { int b; };
+struct ib_d : ib_a, ib_b { int d; };
+
+struct ord_component
+{
+    int m() { return 3; }
+};
+
+static int register_method_first() noexcept
+{
+    reflect::global().register_method<&ord_component::m>("m");
+    return 0;
+}
+
+static const int g_method_first = register_method_first();
+
 REGISTER_TYPE_ONLY(vec3);
 REGISTER_MEMBERS(vec3, x, y, z);
 REGISTER_TYPE_ONLY(calc);
 REGISTER_MEMBERS(calc, base);
 REGISTER_FNS(calc, add, scale);
+REGISTER_TYPE_ONLY(sa_component);
+REGISTER_MEMBERS(sa_component, xs);
+REGISTER_TYPE_ONLY(person_component);
+REGISTER_MEMBERS(person_component, name);
+REGISTER_TYPE_ONLY(aligned_component);
+REGISTER_MEMBERS(aligned_component, x);
+REGISTER_TYPE_ONLY(ib_a);
+REGISTER_MEMBERS(ib_a, a);
+REGISTER_TYPE_ONLY(ib_b);
+REGISTER_MEMBERS(ib_b, b);
+REGISTER_TYPE_ONLY(ib_d);
+REGISTER_MEMBERS(ib_d, d);
+REGISTER_BASE(ib_d, ib_a);
+REGISTER_BASE(ib_d, ib_b);
+REGISTER_TYPE_ONLY(ord_component);
 
 int main()
 {
@@ -85,6 +136,84 @@ int main()
             if (f) { ++named; }
         }
         t_check("三个字段均可查", named == 3);
+    }
+
+    t_section(6, "数组步长与安全访问");
+    {
+        auto q = reflect::try_get<sa_component>();
+        const reflect::field_meta* f = q.field_by_name("xs");
+        sa_component s{};
+        char* p0 = static_cast<char*>(q.array_element_ptr(&s, 0, 0));
+        char* p1 = static_cast<char*>(q.array_element_ptr(&s, 0, 1));
+        t_check("std::array 元素步长", f != nullptr
+                && f->element_stride == sizeof(int)
+                && (p1 - p0) == static_cast<ptrdiff_t>(sizeof(int))
+                && f->total_elements == 3);
+
+        t_check("try_get_by_name 未知字段为空", q.try_get_by_name<int>(&s, "nope") == nullptr);
+        t_check("try_array_get 越界为空", q.try_array_get<int>(&s, 0, 99) == nullptr);
+        int* ok_ptr = q.try_get_by_name<int>(&s, "nope");
+        t_check("安全访问不崩溃", ok_ptr == nullptr);
+    }
+
+    t_section(7, "方法类型校验与重载分派");
+    {
+        auto q = reflect::try_get<calc>();
+        calc c{10};
+        t_check("合法调用", q.invoke<int>(&c, "add", 3, 4) == 7);
+        t_check("参数类型不匹配拒绝",
+                q.try_invoke<void>(&c, "add", std::string("x"), std::string("y")) == false
+                && q.try_invoke<int>(&c, "add", 1.5, 2.5).has_value() == false);
+        t_check("返回类型不匹配拒绝",
+                q.try_invoke<void>(&c, "scale", 5) == false
+                && q.try_invoke<void>(&c, "add", 1, 2) == false);
+    }
+
+    t_section(8, "哈希契约与深拷贝");
+    {
+        float pos = 0.0f;
+        float neg = -0.0f;
+        auto hv = reflect::get_hash<vec3>();
+        auto cv = reflect::get_compare<vec3>();
+        vec3 a{pos, 1.0f, 2.0f};
+        vec3 b{neg, 1.0f, 2.0f};
+        t_check("+0/-0 字段相等", cv.equal(&a, &b));
+        t_check("+0/-0 哈希一致", hv.hash(&a) == hv.hash(&b));
+
+        person_component src;
+        src.name = std::string(64, 'x');
+        alignas(person_component) char buf[sizeof(person_component)];
+        reflect::get_compare<person_component>().clone(&src, buf);
+        person_component* dst = reinterpret_cast<person_component*>(buf);
+        t_check("非平凡字段深拷贝", dst->name == src.name
+                && dst->name.data() != src.name.data());
+        dst->~person_component();
+    }
+
+    t_section(9, "继承调整与对齐生命周期");
+    {
+        ib_d obj{};
+        obj.b = 42;
+        const reflect::type_meta* dm = reflect::global().get_type(type_id::get_type_id<ib_d>());
+        void* up = reflect::inheritance_view(dm).upcast(&obj, type_id::get_type_id<ib_b>());
+        t_check("第二基类 upcast 一致", up == static_cast<ib_b*>(&obj)
+                && static_cast<ib_b*>(up)->b == 42);
+
+        auto ac = reflect::get_construct<aligned_component>();
+        void* heap = ac.create();
+        bool aligned = heap != nullptr
+                       && (reinterpret_cast<uintptr_t>(heap) % alignof(aligned_component)) == 0;
+        ac.destroy_heap(heap);
+        t_check("过对齐 create/destroy_heap", aligned);
+    }
+
+    t_section(10, "注册顺序无关");
+    {
+        auto q = reflect::try_get<ord_component>();
+        t_check("方法先于类型注册仍可用", q.valid() && q.method_count() == 1
+                && q.method_by_name("m") != nullptr);
+        ord_component o{};
+        t_check("后注册方法可调用", q.invoke<int>(&o, "m") == 3);
     }
 
     return t_end("reflection ");

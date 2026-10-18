@@ -15,6 +15,95 @@
 
 namespace reflect {
 
+namespace detail {
+
+// 单份重载解析: 按方法名与参数类型 id 精确匹配
+[[nodiscard]] inline const method_meta* find_overload(
+    const type_meta* meta, const char* name, const int* given_ids, size_t n_args) noexcept
+{
+    if (!meta)
+    {
+        return nullptr;
+    }
+    size_t n = meta->method_count.load(std::memory_order_acquire);
+    for (size_t i = 0; i < n; ++i)
+    {
+        const method_meta& mm = meta->methods[i];
+        if (std::strcmp(mm.name, name) != 0)
+        {
+            continue;
+        }
+        if (mm.arg_count != n_args)
+        {
+            continue;
+        }
+        if (mm.arg_count == 0)
+        {
+            return &mm;
+        }
+        if (mm.arg_type_ids == nullptr)
+        {
+            continue;
+        }
+        bool exact = true;
+        for (uint8_t j = 0; j < mm.arg_count; ++j)
+        {
+            if (mm.arg_type_ids[j] != given_ids[j])
+            {
+                exact = false;
+                break;
+            }
+        }
+        if (exact)
+        {
+            return &mm;
+        }
+    }
+    return nullptr;
+}
+
+// 单份调用骨架: 解析重载并校验返回类型, 失败返回 nullptr
+template<typename R, typename... Args>
+[[nodiscard]] inline const method_meta* resolve_call(
+    const type_meta* meta, const char* name, Args&&... args) noexcept
+{
+    if (!meta)
+    {
+        return nullptr;
+    }
+    ((void)args, ...);
+    // 首元素 0 占位: 零参数时避免零长度数组 (MSVC 拒绝, GCC 扩展容忍)
+    int given_ids[] = { 0, type_id::get_type_id<std::decay_t<Args>>()... };
+    const method_meta* m = find_overload(meta, name, given_ids + 1, sizeof...(Args));
+    if (m == nullptr || m->return_type_id != return_type_id<R>())
+    {
+        return nullptr;
+    }
+    return m;
+}
+
+// 单份调用骨架: 参数转发 + 结果缓冲
+template<typename R, typename... Args>
+inline R call_method(const method_meta* m, void* obj, Args&&... args) noexcept
+{
+    std::array<const void*, sizeof...(Args)> arg_ptrs = { static_cast<const void*>(&args)... };
+    if constexpr (std::is_void_v<R>)
+    {
+        m->invoker(obj, arg_ptrs.data(), nullptr);
+    }
+    else
+    {
+        alignas(alignof(R)) std::array<char, sizeof(R)> result_buf{};
+        m->invoker(obj, arg_ptrs.data(), result_buf.data());
+        R* result_ptr = reinterpret_cast<R*>(result_buf.data());
+        R ret = std::move(*result_ptr);
+        result_ptr->~R();
+        return ret;
+    }
+}
+
+} // namespace detail
+
 class query_view
 {
     const type_meta* meta_{nullptr};
@@ -42,6 +131,10 @@ public:
 
     [[nodiscard]] const field_meta& field(size_t i) const noexcept
     {
+        if (!meta_ || i >= field_count())
+        {
+            detail::abort_with_location("query_view: field index out of range");
+        }
         return meta_->fields[i];
     }
 
@@ -65,6 +158,10 @@ public:
 
     [[nodiscard]] const method_meta& method(size_t i) const noexcept
     {
+        if (!meta_ || i >= method_count())
+        {
+            detail::abort_with_location("query_view: method index out of range");
+        }
         return meta_->methods[i];
     }
 
@@ -96,22 +193,41 @@ public:
     template<typename R>
     [[nodiscard]] const R& get(const void* obj, size_t i) const noexcept
     {
-        return *reinterpret_cast<const R*>(
-            static_cast<const char*>(obj) + field(i).offset);
+        return get<R>(const_cast<void*>(obj), i);
     }
 
     template<typename R>
     [[nodiscard]] R& get_by_name(void* obj, const char* name) const noexcept
     {
-        return *reinterpret_cast<R*>(
-            static_cast<char*>(obj) + field_by_name(name)->offset);
+        R* p = try_get_by_name<R>(obj, name);
+        if (p == nullptr)
+        {
+            detail::abort_with_location("query_view: field not found");
+        }
+        return *p;
     }
 
     template<typename R>
     [[nodiscard]] const R& get_by_name(const void* obj, const char* name) const noexcept
     {
-        return *reinterpret_cast<const R*>(
-            static_cast<const char*>(obj) + field_by_name(name)->offset);
+        return get_by_name<R>(const_cast<void*>(obj), name);
+    }
+
+    template<typename R>
+    [[nodiscard]] R* try_get_by_name(void* obj, const char* name) const noexcept
+    {
+        if (!meta_ || !obj)
+        {
+            return nullptr;
+        }
+        const field_meta* f = field_by_name(name);
+        return f ? reinterpret_cast<R*>(static_cast<char*>(obj) + f->offset) : nullptr;
+    }
+
+    template<typename R>
+    [[nodiscard]] const R* try_get_by_name(const void* obj, const char* name) const noexcept
+    {
+        return try_get_by_name<R>(const_cast<void*>(obj), name);
     }
 
     [[nodiscard]] void* get_ptr(void* obj, const char* name) const noexcept
@@ -126,12 +242,7 @@ public:
 
     [[nodiscard]] const void* get_ptr(const void* obj, const char* name) const noexcept
     {
-        if (!meta_)
-        {
-            return nullptr;
-        }
-        const field_meta* f = field_by_name(name);
-        return f ? static_cast<const char*>(obj) + f->offset : nullptr;
+        return get_ptr(const_cast<void*>(obj), name);
     }
 
     // === 数组字段查询 ===
@@ -165,7 +276,7 @@ public:
         return meta_ ? meta_->fields[i].element_stride : 0;
     }
 
-    [[nodiscard]] uint16_t array_extent(size_t field_idx, uint8_t dim) const noexcept
+    [[nodiscard]] uint32_t array_extent(size_t field_idx, uint8_t dim) const noexcept
     {
         if (!meta_ || dim >= 4)
         {
@@ -177,12 +288,12 @@ public:
     // 取数组元素指针
     [[nodiscard]] void* array_element_ptr(void* obj, size_t field_idx, uint32_t element_idx) const noexcept
     {
-        if (!meta_)
+        if (!meta_ || !obj || field_idx >= field_count())
         {
             return nullptr;
         }
         const field_meta& fm = meta_->fields[field_idx];
-        if (element_idx >= fm.total_elements)
+        if (fm.array_rank == 0 || element_idx >= fm.total_elements)
         {
             return nullptr;
         }
@@ -191,16 +302,7 @@ public:
 
     [[nodiscard]] const void* array_element_ptr(const void* obj, size_t field_idx, uint32_t element_idx) const noexcept
     {
-        if (!meta_)
-        {
-            return nullptr;
-        }
-        const field_meta& fm = meta_->fields[field_idx];
-        if (element_idx >= fm.total_elements)
-        {
-            return nullptr;
-        }
-        return static_cast<const char*>(obj) + fm.offset + element_idx * fm.element_stride;
+        return array_element_ptr(const_cast<void*>(obj), field_idx, element_idx);
     }
 
     // 按名取数组元素指针
@@ -244,22 +346,44 @@ public:
 
     // 类型安全访问
     template<typename T>
+    [[nodiscard]] T* try_array_get(void* obj, size_t field_idx, uint32_t element_idx) const noexcept
+    {
+        return static_cast<T*>(array_element_ptr(obj, field_idx, element_idx));
+    }
+
+    template<typename T>
+    [[nodiscard]] const T* try_array_get(const void* obj, size_t field_idx, uint32_t element_idx) const noexcept
+    {
+        return try_array_get<T>(const_cast<void*>(obj), field_idx, element_idx);
+    }
+
+    template<typename T>
     [[nodiscard]] T& array_get(void* obj, size_t field_idx, uint32_t element_idx) const noexcept
     {
-        return *static_cast<T*>(array_element_ptr(obj, field_idx, element_idx));
+        T* p = try_array_get<T>(obj, field_idx, element_idx);
+        if (p == nullptr)
+        {
+            detail::abort_with_location("query_view: array element out of range");
+        }
+        return *p;
     }
 
     template<typename T>
     [[nodiscard]] const T& array_get(const void* obj, size_t field_idx, uint32_t element_idx) const noexcept
     {
-        return *static_cast<const T*>(array_element_ptr(obj, field_idx, element_idx));
+        return array_get<T>(const_cast<void*>(obj), field_idx, element_idx);
     }
 
     // 类型安全访问 (按名)
     template<typename T>
     [[nodiscard]] T& array_get_by_name(void* obj, const char* name, uint32_t element_idx) const noexcept
     {
-        return *static_cast<T*>(array_element_ptr_by_name(obj, name, element_idx));
+        T* p = static_cast<T*>(array_element_ptr_by_name(obj, name, element_idx));
+        if (p == nullptr)
+        {
+            detail::abort_with_location("query_view: array element out of range");
+        }
+        return *p;
     }
 
     // 类型安全写入
@@ -288,7 +412,7 @@ public:
     template<typename F>
     void for_each_array_element(void* obj, size_t field_idx, F&& f) const noexcept
     {
-        if (!meta_)
+        if (!meta_ || field_idx >= field_count())
         {
             return;
         }
@@ -307,142 +431,49 @@ public:
     template<typename F>
     void for_each_array_element(const void* obj, size_t field_idx, F&& f) const noexcept
     {
-        if (!meta_)
-        {
-            return;
-        }
-        const field_meta& fm = meta_->fields[field_idx];
-        if (fm.array_rank == 0)
-        {
-            return;
-        }
-        const char* base = static_cast<const char*>(obj) + fm.offset;
-        for (uint32_t i = 0; i < fm.total_elements; ++i)
-        {
-            f(base + i * fm.element_stride, i, fm.type_id);
-        }
+        for_each_array_element(const_cast<void*>(obj), field_idx, std::forward<F>(f));
     }
 
     // #12 按参数类型 id 精确匹配的重载查找
     [[nodiscard]] const method_meta* find_overload(
         const char* name, const int* given_ids, size_t n_args) const noexcept
     {
-        if (!meta_)
-        {
-            return nullptr;
-        }
-        size_t n = meta_->method_count.load(std::memory_order_acquire);
-        const method_meta* fallback = nullptr;
-        for (size_t i = 0; i < n; ++i)
-        {
-            const method_meta& mm = meta_->methods[i];
-            if (std::strcmp(mm.name, name) != 0)
-            {
-                continue;
-            }
-            if (mm.arg_count != n_args)
-            {
-                continue;
-            }
-            // 精确匹配 arg_type_ids
-            if (mm.arg_type_ids)
-            {
-                bool exact = true;
-                for (uint8_t j = 0; j < mm.arg_count; ++j)
-                {
-                    if (mm.arg_type_ids[j] != given_ids[j])
-                    {
-                        exact = false;
-                        break;
-                    }
-                }
-                if (exact)
-                {
-                    return &mm;
-                }
-            }
-            if (!fallback)
-            {
-                fallback = &mm;  // 无 arg_type_ids 或不精确, 作为回退
-            }
-        }
-        return fallback;
+        return detail::find_overload(meta_, name, given_ids, n_args);
     }
 
     // 方法调用 (失败 abort, #12 支持重载按类型匹配)
     template<typename R = void, typename... Args>
     R invoke(void* obj, const char* name, Args&&... args) const noexcept
     {
-        if (!meta_)
-        {
-            detail::abort_with_location("invoke: query_view invalid");
-        }
-        // 首元素 0 占位: 零参数时避免零长度数组 (MSVC 拒绝, GCC 扩展容忍)
-        int given_ids[] = { 0, type_id::get_type_id<std::decay_t<Args>>()... };
-        const method_meta* m = find_overload(name, given_ids + 1, sizeof...(Args));
+        const method_meta* m = detail::resolve_call<R>(meta_, name, args...);
         if (m == nullptr)
         {
-            detail::abort_with_location("invoke: method not found");
+            detail::abort_with_location("invoke: method not found or return type mismatch");
         }
-
-        std::array<const void*, sizeof...(Args)> arg_ptrs = { static_cast<const void*>(&args)... };
-
-        if constexpr (std::is_void_v<R>)
-        {
-            m->invoker(obj, arg_ptrs.data(), nullptr);
-        }
-        else
-        {
-            alignas(alignof(R)) std::array<char, sizeof(R)> result_buf{};
-            m->invoker(obj, arg_ptrs.data(), result_buf.data());
-            R* result_ptr = reinterpret_cast<R*>(result_buf.data());
-            R ret = std::move(*result_ptr);
-            result_ptr->~R();
-            return ret;
-        }
+        return detail::call_method<R>(m, obj, std::forward<Args>(args)...);
     }
 
     // 软失败方法调用 (void 返回 bool, 非 void 返回 optional<R>)
     template<typename R = void, typename... Args>
     [[nodiscard]] auto try_invoke(void* obj, const char* name, Args&&... args) const noexcept
     {
+        const method_meta* m = detail::resolve_call<R>(meta_, name, args...);
         if constexpr (std::is_void_v<R>)
         {
-            if (!meta_)
+            if (m == nullptr)
             {
                 return false;
             }
-            // 首元素 0 占位: 零参数时避免零长度数组 (MSVC 拒绝, GCC 扩展容忍)
-            int given_ids[] = { 0, type_id::get_type_id<std::decay_t<Args>>()... };
-            const method_meta* m = find_overload(name, given_ids + 1, sizeof...(Args));
-            if (!m)
-            {
-                return false;
-            }
-            std::array<const void*, sizeof...(Args)> arg_ptrs = { static_cast<const void*>(&args)... };
-            m->invoker(obj, arg_ptrs.data(), nullptr);
+            detail::call_method<void>(m, obj, std::forward<Args>(args)...);
             return true;
         }
         else
         {
-            if (!meta_)
+            if (m == nullptr)
             {
                 return std::optional<R>{};
             }
-            // 首元素 0 占位: 零参数时避免零长度数组 (MSVC 拒绝, GCC 扩展容忍)
-            int given_ids[] = { 0, type_id::get_type_id<std::decay_t<Args>>()... };
-            const method_meta* m = find_overload(name, given_ids + 1, sizeof...(Args));
-            if (!m)
-            {
-                return std::optional<R>{};
-            }
-            std::array<const void*, sizeof...(Args)> arg_ptrs = { static_cast<const void*>(&args)... };
-            alignas(alignof(R)) std::array<char, sizeof(R)> result_buf{};
-            m->invoker(obj, arg_ptrs.data(), result_buf.data());
-            R* result_ptr = reinterpret_cast<R*>(result_buf.data());
-            std::optional<R> ret(std::move(*result_ptr));
-            result_ptr->~R();
-            return ret;
+            return std::optional<R>(detail::call_method<R>(m, obj, std::forward<Args>(args)...));
         }
     }
 
@@ -487,38 +518,7 @@ public:
 
     [[nodiscard]] const void* get_by_path(const void* obj, const char* path) const noexcept
     {
-        if (!meta_ || !path)
-        {
-            return nullptr;
-        }
-        const char* dot = std::strchr(path, '.');
-        size_t len = dot ? static_cast<size_t>(dot - path) : std::strlen(path);
-        size_t n = meta_->field_count.load(std::memory_order_acquire);
-        const field_meta* found = nullptr;
-        for (size_t i = 0; i < n; ++i)
-        {
-            const field_meta& fm = meta_->fields[i];
-            if (fm.name && std::strlen(fm.name) == len && std::strncmp(fm.name, path, len) == 0)
-            {
-                found = &fm;
-                break;
-            }
-        }
-        if (!found)
-        {
-            return nullptr;
-        }
-        const void* next = static_cast<const char*>(obj) + found->offset;
-        if (!dot)
-        {
-            return next;
-        }
-        const type_meta* sub = global().get_type(found->type_id);
-        if (!sub)
-        {
-            return nullptr;
-        }
-        return query_view(sub).get_by_path(next, dot + 1);
+        return get_by_path(const_cast<void*>(obj), path);
     }
 
     template<typename T>
@@ -530,7 +530,7 @@ public:
     template<typename T>
     [[nodiscard]] const T* get_by_path_as(const void* obj, const char* path) const noexcept
     {
-        return static_cast<const T*>(get_by_path(obj, path));
+        return get_by_path_as<T>(const_cast<void*>(obj), path);
     }
 
     template<typename F>
@@ -553,18 +553,7 @@ public:
     template<typename F>
     void for_each_field(const void* obj, F&& f) const noexcept
     {
-        if (!meta_)
-        {
-            return;
-        }
-        size_t n = meta_->field_count.load(std::memory_order_acquire);
-        for (size_t i = 0; i < n; ++i)
-        {
-            const field_meta& fm = meta_->fields[i];
-            f(fm.name,
-              static_cast<const char*>(obj) + fm.offset,
-              fm.type_id);
-        }
+        for_each_field(const_cast<void*>(obj), std::forward<F>(f));
     }
 
     template<typename F>

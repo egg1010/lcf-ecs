@@ -104,6 +104,9 @@ public:
     // 返回字节视图 (零拷贝), 调用方负责 memcpy
     [[nodiscard]] virtual std::string_view read_bytes_view(size_t len) noexcept = 0;
 
+    // === 声明当前数组元素的编码宽度 (布局依赖格式需覆写, 默认无操作) ===
+    virtual void set_element_size(size_t /*size*/) noexcept {}
+
     // === 跳过当前值 (未知字段/类型) ===
     virtual void skip_value() noexcept = 0;
 
@@ -135,7 +138,7 @@ struct archive_codec
     virtual ~archive_codec() = default;
 
     // 检测数据是否匹配本格式
-    [[nodiscard]] bool matches(std::string_view data) const noexcept {
+    [[nodiscard]] virtual bool matches(std::string_view data) const noexcept {
         if (data.size() < 4)
         {
             return false;

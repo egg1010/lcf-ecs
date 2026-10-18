@@ -1,10 +1,10 @@
 // migration.hpp - 字段级迁移 + 组件版本控制
 #pragma once
 
-#include "dense.hpp"
-#include "type_id.hpp"
-#include "codec/json_writer.hpp"
-#include "codec/json_reader.hpp"
+#include "../part/dense.hpp"
+#include "../part/type_id.hpp"
+#include "../part/codec/json_writer.hpp"
+#include "../part/codec/json_reader.hpp"
 #include <cstdint>
 #include <cstring>
 #include <functional>

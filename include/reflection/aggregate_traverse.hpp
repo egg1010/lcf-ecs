@@ -1,11 +1,12 @@
 #pragma once
 
-// aggregate_reflect.hpp - 聚合类型编译期字段计数与遍历
+// aggregate_traverse.hpp - 聚合类型编译期字段计数与遍历
+// 命名空间: reflect
 
 #include <type_traits>
 #include <cstddef>
 #include <utility>
-#include "force_inline.hpp"
+#include "../part/force_inline.hpp"
 #include "member_offset.hpp"
 #include "../config/reflect_config.hpp"
 
@@ -16,9 +17,10 @@ static_assert(REFLECT_MAX_FIELDS == 16 ||
               REFLECT_MAX_FIELDS == 256,
               "REFLECT_MAX_FIELDS must be 16/32/64/128/256");
 
-#include "aggregate_reflect_pp.hpp"
+#include "aggregate_traverse_pp.hpp"
 
-namespace detail_aggregate_reflect {
+namespace reflect {
+namespace detail {
 
 // 通用转换类型 (SFINAE 探测用)
 struct any_type {
@@ -83,26 +85,21 @@ FORCE_INLINE void for_each_member(T& obj, F&& f)
 #undef REFLECT_CALL
 #undef REFLECT_BRANCH
 
-template<typename T, typename M>
-FORCE_INLINE size_t offset_of_member(M T::*member) noexcept
-{
-    return detail_member_offset::offset_of(member);
-}
-
-} // namespace detail_aggregate_reflect
-
-// === 对外导出 (全局命名空间) ===
+// 编译期字段数 (非聚合为 0, 上限由 REFLECT_MAX_FIELDS 决定)
 template<typename T>
-inline constexpr size_t aggregate_field_count_v = detail_aggregate_reflect::field_count_v<T>;
+inline constexpr size_t aggregate_field_count_v = field_count_v<T>;
 
 template<typename T, typename F>
 FORCE_INLINE void for_each_aggregate_member(T& obj, F&& f)
 {
-    detail_aggregate_reflect::for_each_member(obj, std::forward<F>(f));
+    for_each_member(obj, std::forward<F>(f));
 }
 
 template<typename T, typename M>
 FORCE_INLINE size_t member_offset(M T::*member) noexcept
 {
-    return detail_aggregate_reflect::offset_of_member(member);
+    return offset_of(member);
 }
+
+} // namespace detail
+} // namespace reflect

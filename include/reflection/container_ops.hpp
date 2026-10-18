@@ -1,14 +1,16 @@
-// container_traits.hpp - 容器特征探测与类型擦除操作
-// 无命名空间, 通用化, 基于 C++20 concepts
-// 探测 sequential_container 概念, 生成函数指针表
 #pragma once
+
+// container_ops.hpp - 容器特征探测与类型擦除操作
+// 命名空间: reflect
 
 #include <cstdint>
 #include <cstddef>
 #include <concepts>
 #include <type_traits>
 #include <array>
-#include "type_id.hpp"
+#include "../part/type_id.hpp"
+
+namespace reflect {
 
 // 容器类别
 enum class container_category : uint8_t
@@ -34,6 +36,8 @@ struct container_ops_table
     void (*clear_fn)(void*) noexcept{nullptr};
     void (*reserve_fn)(void*, size_t) noexcept{nullptr};
 };
+
+namespace detail {
 
 // === Concepts ===
 
@@ -113,33 +117,6 @@ struct container_traits_impl<T>
     }
 };
 
-// 全局容器操作表注册器
-class container_ops_registry
-{
-public:
-    std::array<container_ops_table, MAX_TYPE_ID> entries_{};
+} // namespace detail
 
-    template<typename T>
-        requires sequential_container<T>
-    void register_sequential() noexcept
-    {
-        int tid = type_id::get_type_id<T>();
-        if (tid >= 0 && tid < static_cast<int>(MAX_TYPE_ID))
-        {
-            entries_[tid] = container_traits_impl<T>::make_table();
-        }
-    }
-
-    [[nodiscard]] const container_ops_table* get(int tid) const noexcept
-    {
-        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID)) return nullptr;
-        return entries_[tid].category != container_category::none ? &entries_[tid] : nullptr;
-    }
-};
-
-// 全局实例
-inline container_ops_registry& global_container_ops() noexcept
-{
-    static container_ops_registry inst;
-    return inst;
-}
+} // namespace reflect

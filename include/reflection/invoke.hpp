@@ -1,15 +1,21 @@
 #pragma once
 
-// type_erasure.hpp - 类型擦除的方法调用器
+// invoke.hpp - 类型擦除的方法调用器
+// 命名空间: reflect
 
 #include <cstddef>
 #include <utility>
 #include <type_traits>
-#include "force_inline.hpp"
-#include "type_id.hpp"
-#include "dense.hpp"
+#include "../part/force_inline.hpp"
+#include "../part/type_id.hpp"
+#include "../part/dense.hpp"
 
-namespace detail_type_erasure {
+namespace reflect {
+
+// invoker 函数指针类型 (统一签名)
+using invoker_func = void(*)(void* obj, const void* const* args, void* result);
+
+namespace detail {
 
 // 方法签名 traits (提取 class_type / return_type / arg_count / is_const / is_static)
 template<typename MFnType>
@@ -117,7 +123,7 @@ struct arg_ids_maker<R(C::*)(Args...)> {
     static dense<int> make() noexcept {
         dense<int> ids;
         ids.reserve_exact(sizeof...(Args));
-        (ids.push_back(type_id::get_type_id<Args>()), ...);
+        (ids.push_back(type_id::get_type_id<std::decay_t<Args>>()), ...);
         return ids;
     }
 };
@@ -127,7 +133,7 @@ struct arg_ids_maker<R(C::*)(Args...) const> {
     static dense<int> make() noexcept {
         dense<int> ids;
         ids.reserve_exact(sizeof...(Args));
-        (ids.push_back(type_id::get_type_id<Args>()), ...);
+        (ids.push_back(type_id::get_type_id<std::decay_t<Args>>()), ...);
         return ids;
     }
 };
@@ -137,19 +143,11 @@ struct arg_ids_maker<R(*)(Args...)> {
     static dense<int> make() noexcept {
         dense<int> ids;
         ids.reserve_exact(sizeof...(Args));
-        (ids.push_back(type_id::get_type_id<Args>()), ...);
+        (ids.push_back(type_id::get_type_id<std::decay_t<Args>>()), ...);
         return ids;
     }
 };
 
-} // namespace detail_type_erasure
+} // namespace detail
 
-// === 对外导出 (全局命名空间) ===
-using detail_type_erasure::mfn_traits;
-using detail_type_erasure::mfn_invoker_t;
-using detail_type_erasure::sfn_invoker_t;
-using detail_type_erasure::return_type_id;
-using detail_type_erasure::arg_ids_maker;
-
-// invoker 函数指针类型 (统一签名)
-using invoker_func = void(*)(void* obj, const void* const* args, void* result);
+} // namespace reflect

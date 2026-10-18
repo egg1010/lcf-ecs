@@ -38,8 +38,9 @@ public:
     void write_bytes(const void* data, size_t len) noexcept override {
         w_.write_raw_bytes(data, len);
     }
+    // write_raw: 未知长度的原始片段, 写长度前缀 (与 read_bytes_view(0) 配对)
     void write_raw(std::string_view fragment) noexcept override {
-        w_.write_raw_bytes(fragment.data(), fragment.size());
+        w_.value(fragment);
     }
 
     [[nodiscard]] std::string take() noexcept override { return w_.take(); }
@@ -89,7 +90,15 @@ public:
     }
 
     [[nodiscard]] std::string_view read_bytes_view(size_t len) noexcept override {
-        // 零拷贝: 直接返回原缓冲区指针
+        // 零拷贝: 直接返回原缓冲区指针; len=0 表示未知长度, 先读长度前缀
+        if (len == 0)
+        {
+            len = r_.read_u32();
+            if (r_.has_error())
+            {
+                return {};
+            }
+        }
         if (r_.remaining() < len)
         {
             r_.skip(len);

@@ -57,7 +57,15 @@ public:
         {
             return;
         }
-        if (meta_ && meta_->destruct_) meta_->destruct_(obj);
+        if (meta_ && meta_->free_heap_)
+        {
+            meta_->free_heap_(obj);
+            return;
+        }
+        if (meta_ && meta_->destruct_)
+        {
+            meta_->destruct_(obj);
+        }
         ::operator delete(obj);
     }
 };

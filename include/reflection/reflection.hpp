@@ -4,13 +4,13 @@
 // 用户只需 #include "reflection/reflection.hpp" 即可使用全部反射功能
 // 命名空间: reflect
 
-// 底层可复用组件 (part, 无命名空间, 通用化)
-#include "../part/aggregate_reflect.hpp"
-#include "../part/type_erasure.hpp"
-#include "../part/member_offset.hpp"
+// 底层可复用组件 (reflect 命名空间内)
 #include "../part/fnv1a.hpp"
-#include "../part/type_ops.hpp"
-#include "../part/container_traits.hpp"
+#include "member_offset.hpp"
+#include "invoke.hpp"
+#include "field_ops.hpp"
+#include "container_ops.hpp"
+#include "aggregate_traverse.hpp"
 
 // 反射专用组件 (reflect 命名空间)
 #include "meta.hpp"

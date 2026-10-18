@@ -1,12 +1,15 @@
 #pragma once
 
 // member_offset.hpp - 成员偏移量访问工具
+// 命名空间: reflect
 
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <type_traits>
-#include "force_inline.hpp"
+#include "../part/force_inline.hpp"
+
+namespace reflect {
 
 // 私有成员偏移量描述
 struct offset_desc
@@ -14,10 +17,11 @@ struct offset_desc
     const char* name;
     size_t offset;
     int type_id;
-    uint32_t size;  // 类型大小 (字节), 用于 compare/hash 回退
+    uint32_t size;
+    bool trivially_copyable;
 };
 
-namespace detail_member_offset {
+namespace detail {
 
 // 通过成员指针计算偏移量 (需访问权限)
 template<typename T, typename M>
@@ -49,9 +53,6 @@ FORCE_INLINE const M& offset_access(const void* obj, size_t offset) noexcept
     return *reinterpret_cast<const M*>(static_cast<const char*>(obj) + offset);
 }
 
-} // namespace detail_member_offset
+} // namespace detail
 
-// === 对外导出 (全局命名空间) ===
-using detail_member_offset::offset_of;
-using detail_member_offset::ub_access;
-using detail_member_offset::offset_access;
+} // namespace reflect

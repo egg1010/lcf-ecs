@@ -1,10 +1,10 @@
 // container.hpp - 容器反射查询接口 (#5)
 // 命名空间: reflect
-// 基于 part/container_traits.hpp 的 container_ops_table 实现容器操作
+// 基于 container_ops.hpp 的 container_ops_table 实现容器操作
 #pragma once
 
 #include "query.hpp"
-#include "../part/container_traits.hpp"
+#include "container_ops.hpp"
 
 namespace reflect {
 
@@ -110,7 +110,7 @@ public:
 // 从对象指针构造容器视图
 [[nodiscard]] inline container_view as_container(void* obj, int type_id) noexcept
 {
-    const container_ops_table* ops = global_container_ops().get(type_id);
+    const container_ops_table* ops = detail::global_ops().get_container(type_id);
     return container_view(obj, ops);
 }
 

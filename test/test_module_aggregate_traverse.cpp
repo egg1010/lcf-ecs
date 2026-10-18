@@ -1,6 +1,6 @@
-// test_module_aggregate_reflect.cpp - 模块功能测试: aggregate_reflect
+// test_module_aggregate_traverse.cpp - 模块功能测试: aggregate_traverse
 #include "test_common.hpp"
-#include "include/part/aggregate_reflect.hpp"
+#include "include/reflection/aggregate_traverse.hpp"
 
 struct agg3
 {
@@ -22,13 +22,13 @@ struct nested_agg
 
 int main()
 {
-    t_begin("test_module_aggregate_reflect — 模块功能测试: aggregate_reflect");
+    t_begin("test_module_aggregate_traverse — 模块功能测试: aggregate_traverse");
 
     t_section(1, "字段数量检测");
     {
-        t_check("agg3 字段数 == 3", aggregate_field_count_v<agg3> == 3);
-        t_check("agg1 字段数 == 1", aggregate_field_count_v<agg1> == 1);
-        t_check("nested_agg 字段数 == 2", aggregate_field_count_v<nested_agg> == 2);
+        t_check("agg3 字段数 == 3", reflect::detail::aggregate_field_count_v<agg3> == 3);
+        t_check("agg1 字段数 == 1", reflect::detail::aggregate_field_count_v<agg1> == 1);
+        t_check("nested_agg 字段数 == 2", reflect::detail::aggregate_field_count_v<nested_agg> == 2);
     }
 
     t_section(2, "成员遍历");
@@ -36,7 +36,7 @@ int main()
         agg3 o{7, 2.5, 'z'};
         int cnt = 0;
         double sum = 0.0;
-        for_each_aggregate_member(o, [&](auto& m, size_t idx) {
+        reflect::detail::for_each_aggregate_member(o, [&](auto& m, size_t idx) {
             (void)idx;
             ++cnt;
             sum += static_cast<double>(m);
@@ -50,7 +50,7 @@ int main()
         agg3 o{1, 2.0, 'a'};
         size_t last_idx = 999;
         int cnt = 0;
-        for_each_aggregate_member(o, [&](auto& m, size_t idx) {
+        reflect::detail::for_each_aggregate_member(o, [&](auto& m, size_t idx) {
             (void)m;
             last_idx = idx;
             ++cnt;
@@ -60,11 +60,11 @@ int main()
 
     t_section(4, "成员偏移");
     {
-        size_t off_a = member_offset(&agg3::a);
-        size_t off_b = member_offset(&agg3::b);
+        size_t off_a = reflect::detail::member_offset(&agg3::a);
+        size_t off_b = reflect::detail::member_offset(&agg3::b);
         t_check("首成员偏移 0", off_a == 0);
         t_check("第二成员偏移 > 0", off_b > off_a);
     }
 
-    return t_end("aggregate_reflect ");
+    return t_end("aggregate_traverse ");
 }

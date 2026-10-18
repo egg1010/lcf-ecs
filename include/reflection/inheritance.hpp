@@ -94,13 +94,19 @@ public:
             const auto& be = meta_->base_offsets[i];
             if (be.base_type_id == base_type_id)
             {
+                if (be.adjust_fn != nullptr)
+                {
+                    return be.adjust_fn(derived_obj);
+                }
                 return static_cast<char*>(derived_obj) + be.offset;
             }
             // 递归向上转型
             const type_meta* base = global().get_type(be.base_type_id);
             if (base)
             {
-                void* intermediate = static_cast<char*>(derived_obj) + be.offset;
+                void* intermediate = be.adjust_fn != nullptr
+                    ? be.adjust_fn(derived_obj)
+                    : static_cast<char*>(derived_obj) + be.offset;
                 void* result = inheritance_view(base).upcast(intermediate, base_type_id);
                 if (result)
                 {

@@ -57,9 +57,9 @@ public:
     explicit json_archive_reader(std::string_view data) noexcept : r_(data) {}
 
     bool enter_object() noexcept override { return r_.enter_object(); }
-    void leave_object() noexcept override { /* json_reader 无显式 leave */ }
+    void leave_object() noexcept override { (void)r_.exit_object(); }
     bool enter_array() noexcept override { return r_.enter_array(); }
-    void leave_array() noexcept override { /* json_reader 无显式 leave */ }
+    void leave_array() noexcept override { }
     bool next_element() noexcept override { return r_.next_element(); }
     void end_element() noexcept override { r_.end_element(); }
 
@@ -72,11 +72,18 @@ public:
     [[nodiscard]] uint64_t read_u64() noexcept override { return r_.read_uint64(); }
     [[nodiscard]] float read_f32() noexcept override { return static_cast<float>(r_.read_double()); }
     [[nodiscard]] double read_f64() noexcept override { return r_.read_double(); }
+    // 字符串值解码 (转义解码到池化缓冲保稳定); 非字符串值 (对象/数组/数字/布尔/null)
+    // 直接返回原始 JSON 片段视图
     [[nodiscard]] std::string_view read_string_view() noexcept override {
-        // 无转义: view 指向原缓冲区 (稳定); 有转义: 解码到池化缓冲保稳定
+        std::string_view raw = r_.read_raw_value();
+        if (raw.empty() || raw.front() != '"')
+        {
+            return raw;
+        }
         std::string decode;
         std::string_view v;
-        if (!r_.read_string(decode, v)) return {};
+        json_reader sub(raw);
+        if (!sub.read_string(decode, v)) return {};
         if (v.data() == decode.data() && !decode.empty()) {
             tmp_pool_.push_back(std::make_unique<std::string>(std::move(decode)));
             return std::string_view(*tmp_pool_.back());
@@ -84,10 +91,16 @@ public:
         return v;
     }
 
+    // 字符串值 = base64 字节; 非字符串值 = 原始 JSON 片段
     [[nodiscard]] std::string_view read_bytes_view(size_t len) noexcept override {
-        // JSON 路径: bytes 存为 base64 字符串, 解码后返回池化缓冲区
-        (void)len;  // JSON 长度由流内 base64 内容决定
-        std::string_view b64 = r_.read_string();
+        (void)len;
+        std::string_view raw = r_.read_raw_value();
+        if (raw.empty() || raw.front() != '"')
+        {
+            return raw;
+        }
+        json_reader sub(raw);
+        std::string b64 = sub.read_string();
         tmp_pool_.push_back(std::make_unique<std::string>(detail::base64_decode(b64)));
         return std::string_view(*tmp_pool_.back());
     }

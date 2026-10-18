@@ -1,10 +1,10 @@
 // compare.hpp - 字段比较/克隆查询接口 (#8)
 // 命名空间: reflect
-// 基于 part/type_ops.hpp 的 type_ops_table 实现逐字段比较与克隆
+// 复用 meta.hpp 的单份字段遍历骨架, 逐字段/逐元素比较与拷贝
 #pragma once
 
 #include "query.hpp"
-#include "../part/type_ops.hpp"
+#include "field_ops.hpp"
 
 namespace reflect {
 
@@ -31,48 +31,26 @@ public:
         {
             return false;
         }
-
-        size_t n = meta_->field_count.load(std::memory_order_acquire);
-        for (size_t i = 0; i < n; ++i)
-        {
-            const field_meta& fm = meta_->fields[i];
-            const char* pa = static_cast<const char*>(a) + fm.offset;
-            const char* pb = static_cast<const char*>(b) + fm.offset;
-
-            if (fm.array_rank > 0)
-            {
-                // 数组字段: 逐元素比较
-                const type_ops_table* ops = global_type_ops().get(fm.type_id);
-                if (!ops || !ops->equal_fn)
+        return detail::visit_field_slots(a, b, *meta_,
+            [](const detail::field_slot& s, const field_meta&) noexcept {
+                if (s.ops && s.ops->equal_fn)
                 {
-                    return false;
-                }
-                for (uint32_t e = 0; e < fm.total_elements; ++e)
-                {
-                    if (!ops->equal_fn(pa + e * fm.element_stride,
-                                       pb + e * fm.element_stride))
-                        return false;
-                }
-            }
-            else
-            {
-                const type_ops_table* ops = global_type_ops().get(fm.type_id);
-                if (!ops || !ops->equal_fn)
-                {
-                    // 无 ops 回退到 memcmp
-                    if (std::memcmp(pa, pb, fm.element_stride) != 0)
+                    for (uint32_t e = 0; e < s.count; ++e)
                     {
-                        return false;
+                        if (!s.ops->equal_fn(s.base + e * s.stride, s.other + e * s.stride))
+                        {
+                            return false;
+                        }
                     }
-                    continue;
+                    return true;
                 }
-                if (!ops->equal_fn(pa, pb))
+                if (!s.trivially_copyable)
                 {
-                    return false;
+                    detail::abort_with_location("equal: field type ops missing for non-trivial field");
                 }
-            }
-        }
-        return true;
+                return std::memcmp(s.base, s.other,
+                                   static_cast<size_t>(s.count) * s.stride) == 0;
+            });
     }
 
     // 逐字段克隆 (copy_construct, dst 必须是未初始化内存)
@@ -82,38 +60,25 @@ public:
         {
             return;
         }
-        size_t n = meta_->field_count.load(std::memory_order_acquire);
-        for (size_t i = 0; i < n; ++i)
-        {
-            const field_meta& fm = meta_->fields[i];
-            const char* ps = static_cast<const char*>(src) + fm.offset;
-            char* pd = static_cast<char*>(dst) + fm.offset;
-
-            if (fm.array_rank > 0)
-            {
-                const type_ops_table* ops = global_type_ops().get(fm.type_id);
-                if (!ops || !ops->copy_construct_fn)
+        detail::visit_field_slots(dst, src, *meta_,
+            [](const detail::field_slot& s, const field_meta&) noexcept {
+                char* pd = const_cast<char*>(s.base);
+                const char* ps = s.other;
+                if (s.ops && s.ops->copy_construct_fn)
                 {
-                    std::memcpy(pd, ps, fm.total_elements * fm.element_stride);
-                    continue;
+                    for (uint32_t e = 0; e < s.count; ++e)
+                    {
+                        s.ops->copy_construct_fn(pd + e * s.stride, ps + e * s.stride);
+                    }
+                    return true;
                 }
-                for (uint32_t e = 0; e < fm.total_elements; ++e)
+                if (!s.trivially_copyable)
                 {
-                    ops->copy_construct_fn(pd + e * fm.element_stride,
-                                           ps + e * fm.element_stride);
+                    detail::abort_with_location("clone: field type ops missing for non-trivial field");
                 }
-            }
-            else
-            {
-                const type_ops_table* ops = global_type_ops().get(fm.type_id);
-                if (!ops || !ops->copy_construct_fn)
-                {
-                    std::memcpy(pd, ps, fm.element_stride);
-                    continue;
-                }
-                ops->copy_construct_fn(pd, ps);
-            }
-        }
+                std::memcpy(pd, ps, static_cast<size_t>(s.count) * s.stride);
+                return true;
+            });
     }
 
     // 逐字段 copy_assign (dst 已构造)
@@ -123,38 +88,25 @@ public:
         {
             return;
         }
-        size_t n = meta_->field_count.load(std::memory_order_acquire);
-        for (size_t i = 0; i < n; ++i)
-        {
-            const field_meta& fm = meta_->fields[i];
-            const char* ps = static_cast<const char*>(src) + fm.offset;
-            char* pd = static_cast<char*>(dst) + fm.offset;
-
-            if (fm.array_rank > 0)
-            {
-                const type_ops_table* ops = global_type_ops().get(fm.type_id);
-                if (!ops || !ops->copy_assign_fn)
+        detail::visit_field_slots(dst, src, *meta_,
+            [](const detail::field_slot& s, const field_meta&) noexcept {
+                char* pd = const_cast<char*>(s.base);
+                const char* ps = s.other;
+                if (s.ops && s.ops->copy_assign_fn)
                 {
-                    std::memcpy(pd, ps, fm.total_elements * fm.element_stride);
-                    continue;
+                    for (uint32_t e = 0; e < s.count; ++e)
+                    {
+                        s.ops->copy_assign_fn(pd + e * s.stride, ps + e * s.stride);
+                    }
+                    return true;
                 }
-                for (uint32_t e = 0; e < fm.total_elements; ++e)
+                if (!s.trivially_copyable)
                 {
-                    ops->copy_assign_fn(pd + e * fm.element_stride,
-                                        ps + e * fm.element_stride);
+                    detail::abort_with_location("copy_assign: field type ops missing for non-trivial field");
                 }
-            }
-            else
-            {
-                const type_ops_table* ops = global_type_ops().get(fm.type_id);
-                if (!ops || !ops->copy_assign_fn)
-                {
-                    std::memcpy(pd, ps, fm.element_stride);
-                    continue;
-                }
-                ops->copy_assign_fn(pd, ps);
-            }
-        }
+                std::memcpy(pd, ps, static_cast<size_t>(s.count) * s.stride);
+                return true;
+            });
     }
 
     // 逐字段析构 (对象销毁前调用)
@@ -164,34 +116,19 @@ public:
         {
             return;
         }
-        size_t n = meta_->field_count.load(std::memory_order_acquire);
-        for (size_t i = 0; i < n; ++i)
-        {
-            const field_meta& fm = meta_->fields[i];
-            char* p = static_cast<char*>(obj) + fm.offset;
-
-            if (fm.array_rank > 0)
-            {
-                const type_ops_table* ops = global_type_ops().get(fm.type_id);
-                if (!ops || !ops->destroy_fn)
+        detail::visit_field_slots(obj, nullptr, *meta_,
+            [](const detail::field_slot& s, const field_meta&) noexcept {
+                if (!s.ops || !s.ops->destroy_fn)
                 {
-                    continue;
+                    return true;
                 }
-                for (uint32_t e = 0; e < fm.total_elements; ++e)
+                char* p = const_cast<char*>(s.base);
+                for (uint32_t e = 0; e < s.count; ++e)
                 {
-                    ops->destroy_fn(p + e * fm.element_stride);
+                    s.ops->destroy_fn(p + e * s.stride);
                 }
-            }
-            else
-            {
-                const type_ops_table* ops = global_type_ops().get(fm.type_id);
-                if (!ops || !ops->destroy_fn)
-                {
-                    continue;
-                }
-                ops->destroy_fn(p);
-            }
-        }
+                return true;
+            });
     }
 };
 

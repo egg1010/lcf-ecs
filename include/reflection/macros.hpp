@@ -5,8 +5,8 @@
 // 宏在命名空间作用域使用 (通过 inline 变量初始化)
 
 #include "storage.hpp"
-#include "../part/member_offset.hpp"
-#include "../part/aggregate_reflect_pp.hpp"
+#include "member_offset.hpp"
+#include "aggregate_traverse_pp.hpp"
 
 namespace reflect {
 
@@ -63,6 +63,7 @@ struct reflect_access;
     }()
 
 #define REFLECT_FN_ONE(Cls, method) \
+    ::reflect::global().register_type_only<Cls>(#Cls); \
     if constexpr (std::is_member_function_pointer_v<decltype(&Cls::method)>) \
     { \
         ::reflect::global().register_method<&Cls::method>(#method); \
@@ -88,7 +89,7 @@ struct reflect_access;
 //       PRIV_FIELD("balance_", 32, int));
 #define REGISTER_PRIVATE_OFFSETS(Cls, ...) \
     inline int REFLECT_UNIQUE(_reflect_reg_priv_) = []{ \
-        static const ::offset_desc _descs[] = { __VA_ARGS__ }; \
+        static const ::reflect::offset_desc _descs[] = { __VA_ARGS__ }; \
         ::reflect::global().register_private_offsets<Cls>( \
             _descs, sizeof(_descs) / sizeof(_descs[0])); \
         return 0; \
@@ -96,7 +97,7 @@ struct reflect_access;
 
 // 私有成员描述
 #define PRIV_FIELD(field_name, offset, Type) \
-    ::offset_desc{ field_name, offset, ::type_id::get_type_id<Type>(), static_cast<uint32_t>(sizeof(Type)) }
+    ::reflect::offset_desc{ field_name, offset, ::type_id::get_type_id<Type>(), static_cast<uint32_t>(sizeof(Type)), std::is_trivially_copyable_v<Type> }
 
 // === 侵入式自动推导注册 (类内 friend + 类外字段名列表) ===
 // 类内标记宏: 展开为 friend 声明, 授权反射访问器访问私有成员
@@ -137,7 +138,7 @@ struct reflect_access;
 // 用法 (静态重载): REGISTER_FN_OVERLOAD(Calculator, multiply, static_cast<int(*)(int,int)>(&Calculator::multiply))
 #define REGISTER_FN_OVERLOAD(Cls, method, ptr) \
     inline int REFLECT_UNIQUE(_reflect_fn_ov_) = []{ \
-        if constexpr (std::is_member_function_pointer_v<ptr>) \
+        if constexpr (std::is_member_function_pointer_v<decltype(ptr)>) \
         { \
             ::reflect::global().register_method<ptr>(#method); \
         } \
@@ -180,12 +181,16 @@ struct reflect_access;
 // 单继承 offset=0, 多继承需手填 offset
 #define REGISTER_BASE(Derived, Base) \
     inline int REFLECT_UNIQUE(_reflect_base_) = []{ \
-        ::reflect::global().register_base<Derived, Base>(0); \
+        ::reflect::global().register_type_only<Derived>(#Derived); \
+        ::reflect::global().register_type_only<Base>(#Base); \
+        ::reflect::global().register_base_typed<Derived, Base>(); \
         return 0; \
     }()
 
 #define REGISTER_BASE_OFFSET(Derived, Base, off) \
     inline int REFLECT_UNIQUE(_reflect_base_off_) = []{ \
+        ::reflect::global().register_type_only<Derived>(#Derived); \
+        ::reflect::global().register_type_only<Base>(#Base); \
         ::reflect::global().register_base<Derived, Base>(off); \
         return 0; \
     }()
@@ -196,6 +201,7 @@ struct reflect_access;
 //       REGISTER_FIELD_ATTR(Player, name, "category", "Combat");
 #define REGISTER_FIELD_ATTR(Cls, field, key, value) \
     inline int REFLECT_UNIQUE(_reflect_attr_) = []{ \
+        ::reflect::global().register_type_only<Cls>(#Cls); \
         ::reflect::global().register_field_attr<Cls, \
             decltype(Cls::field), &Cls::field>(#field, key, value); \
         return 0; \
@@ -205,6 +211,7 @@ struct reflect_access;
 // 用法: REGISTER_CONVERT(int, int64_t);
 #define REGISTER_CONVERT(From, To) \
     inline int REFLECT_UNIQUE(_reflect_convert_) = []{ \
+        ::reflect::global().register_type_only<From>(#From); \
         ::reflect::global().register_convert<From, To>(); \
         return 0; \
     }()

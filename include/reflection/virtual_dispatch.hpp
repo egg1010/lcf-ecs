@@ -60,68 +60,13 @@ public:
     template<typename R = void, typename... Args>
     R invoke_virtual(void* obj, const char* name, Args&&... args) const noexcept
     {
-        // is_virtual 查询依赖 register_method 时传入的 vtable 偏移
-        // 调用本身走成员函数指针, 虚函数自动派发到实际类型
-        if (!meta_)
+        // 复用 query 的单份重载解析与结果缓冲
+        const method_meta* m = detail::resolve_call<R>(meta_, name, args...);
+        if (m == nullptr)
         {
-            detail::abort_with_location("invoke_virtual: query_view invalid");
+            detail::abort_with_location("invoke_virtual: method not found or return type mismatch");
         }
-        // 首元素 0 占位: 零参数时避免零长度数组 (MSVC 拒绝, GCC 扩展容忍)
-        int given_ids[] = { 0, type_id::get_type_id<std::decay_t<Args>>()... };
-        const method_meta* m = nullptr;
-        size_t n = meta_->method_count.load(std::memory_order_acquire);
-        for (size_t i = 0; i < n; ++i)
-        {
-            const method_meta& mm = meta_->methods[i];
-            if (std::strcmp(mm.name, name) != 0)
-            {
-                continue;
-            }
-            if (mm.arg_count != sizeof...(Args))
-            {
-                continue;
-            }
-            if (mm.arg_type_ids)
-            {
-                bool exact = true;
-                for (uint8_t j = 0; j < mm.arg_count; ++j)
-                {
-                    if (mm.arg_type_ids[j] != given_ids[j + 1])
-                    {
-                        exact = false;
-                        break;
-                    }
-                }
-                if (exact)
-                {
-                    m = &mm;
-                    break;
-                }
-            }
-            if (!m)
-            {
-                m = &mm;
-            }
-        }
-        if (!m)
-        {
-            detail::abort_with_location("invoke_virtual: method not found");
-        }
-
-        std::array<const void*, sizeof...(Args)> arg_ptrs = { static_cast<const void*>(&args)... };
-        if constexpr (std::is_void_v<R>)
-        {
-            m->invoker(obj, arg_ptrs.data(), nullptr);
-        }
-        else
-        {
-            alignas(alignof(R)) std::array<char, sizeof(R)> result_buf{};
-            m->invoker(obj, arg_ptrs.data(), result_buf.data());
-            R* result_ptr = reinterpret_cast<R*>(result_buf.data());
-            R ret = std::move(*result_ptr);
-            result_ptr->~R();
-            return ret;
-        }
+        return detail::call_method<R>(m, obj, std::forward<Args>(args)...);
     }
 };
 

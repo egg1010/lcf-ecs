@@ -22,7 +22,7 @@ private:
     inline static std::atomic<int> type_id_counter_{0};
 
     // ---- 运行期名字注册表 ----
-    // 编码同 string_to_code::code_value::encode_inline (字节级单射, 非哈希);
+    // 编码为字节级单射 (长度 + 最多前 8 字节内容拼接), 非哈希;
     // 因 type_id 位于核心包含图, 此处本地实现避免拖入 utf8pp 依赖
     // 短名(<=8B): 编码值 + 长度即身份, 槽内直存 id, 查询单 cache line
     // 长名(>8B):  前 8 字节为槽内 key, 注册表条目存全名 memcmp 验证

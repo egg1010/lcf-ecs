@@ -3,7 +3,8 @@
 #include "include/serialization/serialization.hpp"
 #include <string>
 
-using serialize::serialization;
+using serialize::full_archive;
+using serialize::archive_format;
 
 struct position
 {
@@ -29,19 +30,20 @@ int main()
             auto e = mgr.create_entity();
             mgr.add(e, position{static_cast<float>(i), 0.0f, 0.0f});
         }
-        serialization s(mgr);
-        s.set_checksum_enabled(false);
+        full_archive fa(mgr);
+        fa.register_components<position>();
+        fa.set_checksum_enabled(false);
 
         std::string json;
         double ms = t_bench_best_ms([&]() {
-            s.save_to_string<position>(json, serialization::format::json);
+            fa.save_to_string(json, archive_format::json);
             g_sink += json.size();
         }, 3);
         t_perf("save JSON", N, ms);
 
         std::string bin;
         ms = t_bench_best_ms([&]() {
-            s.save_to_string<position>(bin, serialization::format::binary);
+            fa.save_to_string(bin, archive_format::binary);
             g_sink += bin.size();
         }, 3);
         t_perf("save binary", N, ms);
@@ -59,26 +61,29 @@ int main()
                 auto e = src.create_entity();
                 src.add(e, position{static_cast<float>(i), 0.0f, 0.0f});
             }
-            serialization s(src);
-            s.set_checksum_enabled(false);
-            s.save_to_string<position>(json, serialization::format::json);
-            s.save_to_string<position>(bin, serialization::format::binary);
+            full_archive sa(src);
+            sa.register_components<position>();
+            sa.set_checksum_enabled(false);
+            sa.save_to_string(json, archive_format::json);
+            sa.save_to_string(bin, archive_format::binary);
         }
 
         double ms = t_bench_best_ms([&]() {
             ecs::manager dst;
-            serialization s(dst);
-            s.set_checksum_enabled(false);
-            auto r = s.load_from_string<position>(json);
+            full_archive da(dst);
+            da.register_components<position>();
+            da.set_checksum_enabled(false);
+            auto r = da.load_from_string(json);
             g_sink += r ? 1 : 0;
         }, 3);
         t_perf("load JSON", N, ms);
 
         ms = t_bench_best_ms([&]() {
             ecs::manager dst;
-            serialization s(dst);
-            s.set_checksum_enabled(false);
-            auto r = s.load_from_string<position>(bin);
+            full_archive da(dst);
+            da.register_components<position>();
+            da.set_checksum_enabled(false);
+            auto r = da.load_from_string(bin);
             g_sink += r ? 1 : 0;
         }, 3);
         t_perf("load binary", N, ms);

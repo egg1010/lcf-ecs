@@ -34,6 +34,16 @@ private:
     bool has_err_{false};
     int  depth_{0};
     static constexpr int k_max_depth = 256;
+    bool obj_comma_[k_max_depth] = {};
+    bool arr_comma_[k_max_depth] = {};
+
+    static int hex_val(char c) noexcept
+    {
+        if (c >= '0' && c <= '9') { return c - '0'; }
+        if (c >= 'a' && c <= 'f') { return c - 'a' + 10; }
+        if (c >= 'A' && c <= 'F') { return c - 'A' + 10; }
+        return -1;
+    }
 
     void set_error(std::string_view msg) noexcept
     {
@@ -142,23 +152,59 @@ private:
                     case 'u':
                     {
                         if (end_ - p_ < 4) { set_error("\\u 转义不完整"); return false; }
-                        char hex[5] = {p_[0], p_[1], p_[2], p_[3], 0};
-                        p_ += 4;
-                        unsigned code = static_cast<unsigned>(std::strtoul(hex, nullptr, 16));
-                        if (code < 0x80)
+                        unsigned cp = 0;
+                        for (int k = 0; k < 4; ++k)
                         {
-                            decode_buf.push_back(static_cast<char>(code));
+                            int hv = hex_val(p_[k]);
+                            if (hv < 0) { set_error("\\u 非法十六进制"); return false; }
+                            cp = (cp << 4) | static_cast<unsigned>(hv);
                         }
-                        else if (code < 0x800)
+                        p_ += 4;
+                        if (cp >= 0xD800 && cp <= 0xDBFF)
                         {
-                            decode_buf.push_back(static_cast<char>(0xC0 | (code >> 6)));
-                            decode_buf.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+                            if (end_ - p_ < 6 || p_[0] != '\\' || p_[1] != 'u')
+                            {
+                                set_error("孤立高代理项");
+                                return false;
+                            }
+                            unsigned lo = 0;
+                            for (int k = 0; k < 4; ++k)
+                            {
+                                int hv = hex_val(p_[2 + k]);
+                                if (hv < 0) { set_error("\\u 非法十六进制"); return false; }
+                                lo = (lo << 4) | static_cast<unsigned>(hv);
+                            }
+                            if (lo < 0xDC00 || lo > 0xDFFF)
+                            {
+                                set_error("非法代理项对");
+                                return false;
+                            }
+                            p_ += 6;
+                            cp = 0x10000u + ((cp - 0xD800u) << 10) + (lo - 0xDC00u);
+                            decode_buf.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+                            decode_buf.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+                            decode_buf.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+                            decode_buf.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+                        }
+                        else if (cp >= 0xDC00 && cp <= 0xDFFF)
+                        {
+                            set_error("孤立低代理项");
+                            return false;
+                        }
+                        else if (cp < 0x80)
+                        {
+                            decode_buf.push_back(static_cast<char>(cp));
+                        }
+                        else if (cp < 0x800)
+                        {
+                            decode_buf.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+                            decode_buf.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
                         }
                         else
                         {
-                            decode_buf.push_back(static_cast<char>(0xE0 | (code >> 12)));
-                            decode_buf.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
-                            decode_buf.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+                            decode_buf.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+                            decode_buf.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+                            decode_buf.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
                         }
                         break;
                     }
@@ -225,6 +271,7 @@ public:
     [[nodiscard]] operating_message last_error() const noexcept { return err_; }
     // #D3 清除错误状态, 用于 best_effort 模式恢复继续解析
     void clear_error() noexcept { has_err_ = false; }
+    [[nodiscard]] bool at_end() noexcept { skip_ws(); return p_ >= end_; }
 
     // === 容器导航 ===
 
@@ -232,6 +279,7 @@ public:
     {
         if (!expect('{')) return false;
         if (++depth_ > k_max_depth) { set_error("嵌套过深"); return false; }
+        obj_comma_[depth_ - 1] = false;
         return true;
     }
 
@@ -261,6 +309,7 @@ public:
     {
         if (!expect('[')) return false;
         if (++depth_ > k_max_depth) { set_error("嵌套过深"); return false; }
+        arr_comma_[depth_ - 1] = false;
         return true;
     }
 
@@ -285,7 +334,7 @@ public:
 
     // === Object key 遍历 ===
 
-    // 返回空 view 表示无更多键或到达 '}' (容忍尾随逗号)
+    // 返回空 view 表示无更多键或到达 '}'
     std::string_view next_key() noexcept
     {
         skip_ws();
@@ -293,30 +342,34 @@ public:
         {
             ++p_;
             --depth_;
-            need_comma_consumed_ = false;
             return std::string_view{};
         }
-        if (p_ < end_ && *p_ == ',')
+        const int d = depth_ - 1;
+        if (d >= 0 && d < k_max_depth && obj_comma_[d])
         {
+            if (p_ >= end_ || *p_ != ',')
+            {
+                set_error("对象缺少逗号分隔");
+                return std::string_view{};
+            }
             ++p_;
             skip_ws();
             if (p_ < end_ && *p_ == '}')
             {
-                ++p_;
-                --depth_;
-                need_comma_consumed_ = false;
+                set_error("对象尾随逗号");
                 return std::string_view{};
             }
         }
         std::string_view k;
         if (!parse_string(key_buf_, k)) return std::string_view{};
         if (!expect(':')) return std::string_view{};
+        if (d >= 0 && d < k_max_depth) { obj_comma_[d] = true; }
         return k;
     }
 
     // === Array 元素遍历 ===
 
-    // 是否有下一个元素, 自动消费逗号, 返回 false 表示数组结束 (容忍尾随逗号)
+    // 是否有下一个元素, 返回 false 表示数组结束
     bool next_element() noexcept
     {
         skip_ws();
@@ -326,14 +379,19 @@ public:
             --depth_;
             return false;
         }
-        if (p_ < end_ && *p_ == ',')
+        const int d = depth_ - 1;
+        if (d >= 0 && d < k_max_depth && arr_comma_[d])
         {
+            if (p_ >= end_ || *p_ != ',')
+            {
+                set_error("数组缺少逗号分隔");
+                return false;
+            }
             ++p_;
             skip_ws();
             if (p_ < end_ && *p_ == ']')
             {
-                ++p_;
-                --depth_;
+                set_error("数组尾随逗号");
                 return false;
             }
         }
@@ -342,8 +400,8 @@ public:
 
     void end_element() noexcept
     {
-        skip_ws();
-        if (p_ < end_ && *p_ == ',') ++p_;
+        const int d = depth_ - 1;
+        if (d >= 0 && d < k_max_depth) { arr_comma_[d] = true; }
     }
 
     // === 值读取 ===
@@ -363,8 +421,10 @@ public:
         return match_keyword("null");
     }
 
+    // 官方 JSON 无 NaN/Infinity token, 写侧映射为 null; 读侧 null 取默认值
     int32_t read_int32() noexcept
     {
+        if (is_null()) return 0;
         std::string_view s;
         if (!parse_number_raw(s)) return 0;
         int32_t v = 0;
@@ -375,6 +435,7 @@ public:
 
     uint32_t read_uint32() noexcept
     {
+        if (is_null()) return 0;
         std::string_view s;
         if (!parse_number_raw(s)) return 0;
         uint32_t v = 0;
@@ -385,6 +446,7 @@ public:
 
     int64_t read_int64() noexcept
     {
+        if (is_null()) return 0;
         std::string_view s;
         if (!parse_number_raw(s)) return 0;
         int64_t v = 0;
@@ -395,6 +457,7 @@ public:
 
     uint64_t read_uint64() noexcept
     {
+        if (is_null()) return 0;
         std::string_view s;
         if (!parse_number_raw(s)) return 0;
         uint64_t v = 0;
@@ -405,6 +468,7 @@ public:
 
     float read_float() noexcept
     {
+        if (is_null()) return 0.0f;
         std::string_view s;
         if (!parse_number_raw(s)) return 0.0f;
         float v = 0.0f;
@@ -415,6 +479,7 @@ public:
 
     double read_double() noexcept
     {
+        if (is_null()) return 0.0;
         std::string_view s;
         if (!parse_number_raw(s)) return 0.0;
         double v = 0.0;
@@ -482,6 +547,9 @@ public:
                     if (p_ < end_ && *p_ == ',') ++p_;
                 }
             }
+            case 't': return match_keyword("true");
+            case 'f': return match_keyword("false");
+            case 'n': return match_keyword("null");
             default:
             {
                 std::string_view s;
@@ -493,6 +561,5 @@ public:
     [[nodiscard]] token_type peek_next_type() noexcept { return peek_token(); }
 
 private:
-    bool need_comma_consumed_{false};
     std::string key_buf_;  // next_key 转义解码缓冲 (保证返回视图稳定)
 };

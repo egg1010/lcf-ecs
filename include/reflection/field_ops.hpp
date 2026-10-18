@@ -1,15 +1,20 @@
-// type_ops.hpp - 类型操作函数表 (equal/copy/destroy/hash)
-// 无命名空间, 通用化, 不依赖反射概念
-// 复用 type_id 体系, 为每个类型生成类型擦除的操作函数
 #pragma once
+
+// field_ops.hpp - 字段操作表与统一操作表注册器
+// 命名空间: reflect
 
 #include <cstdint>
 #include <cstring>
 #include <type_traits>
 #include <new>
 #include <array>
-#include "type_id.hpp"
-#include "fnv1a.hpp"
+#include "../part/type_id.hpp"
+#include "../part/fnv1a.hpp"
+#include "../config/reflect_config.hpp"
+#include "container_ops.hpp"
+
+namespace reflect {
+namespace detail {
 
 // 类型操作函数表
 struct type_ops_table
@@ -81,11 +86,26 @@ struct type_ops
 
     static uint64_t hash(const void* obj) noexcept
     {
-        if constexpr (std::is_trivially_copyable_v<T>)
+        if constexpr (std::is_same_v<T, float> || std::is_same_v<T, double>)
+        {
+            // float/double 归零 +0/-0, 再按字节 FNV-1a
+            T v = *static_cast<const T*>(obj);
+            if (v == 0)
+            {
+                v = 0;
+            }
+            const uint8_t* p = reinterpret_cast<const uint8_t*>(&v);
+            uint64_t h = FNV_OFFSET_BASIS_64;
+            for (size_t i = 0; i < sizeof(T); ++i)
+            {
+                h ^= p[i];
+                h *= FNV_PRIME_64;
+            }
+            return h;
+        }
+        else if constexpr (std::is_trivially_copyable_v<T>)
         {
             // trivially copyable 类型用字节级 FNV-1a
-            // 注意: float/double 不满足 has_unique_object_representations (+0/-0 同值不同表示)
-            // 但字节级哈希仍可用于区分不同值
             const uint8_t* p = static_cast<const uint8_t*>(obj);
             uint64_t h = FNV_OFFSET_BASIS_64;
             for (size_t i = 0; i < sizeof(T); ++i)
@@ -111,26 +131,27 @@ struct type_ops
     }
 };
 
-// 全局操作表注册器
-class type_ops_registry
+// 统一操作表注册器: 字段操作表与容器操作表按同一 type_id 索引共存
+class ops_registry
 {
 public:
-    std::array<type_ops_table, MAX_TYPE_ID> entries_{};
+    std::array<type_ops_table, MAX_TYPE_ID> field_entries_{};
+    std::array<container_ops_table, MAX_TYPE_ID> container_entries_{};
 
-    type_ops_registry() noexcept
+    ops_registry() noexcept
     {
         // 内建类型预注册
-        register_builtin<int8_t>();
-        register_builtin<int16_t>();
-        register_builtin<int32_t>();
-        register_builtin<int64_t>();
-        register_builtin<uint8_t>();
-        register_builtin<uint16_t>();
-        register_builtin<uint32_t>();
-        register_builtin<uint64_t>();
-        register_builtin<float>();
-        register_builtin<double>();
-        register_builtin<bool>();
+        register_type_ops<int8_t>();
+        register_type_ops<int16_t>();
+        register_type_ops<int32_t>();
+        register_type_ops<int64_t>();
+        register_type_ops<uint8_t>();
+        register_type_ops<uint16_t>();
+        register_type_ops<uint32_t>();
+        register_type_ops<uint64_t>();
+        register_type_ops<float>();
+        register_type_ops<double>();
+        register_type_ops<bool>();
     }
 
     template<typename T>
@@ -139,28 +160,42 @@ public:
         int tid = type_id::get_type_id<T>();
         if (tid >= 0 && tid < static_cast<int>(MAX_TYPE_ID))
         {
-            entries_[tid] = type_ops<T>::make_table();
+            field_entries_[tid] = type_ops<T>::make_table();
+        }
+    }
+
+    template<typename T>
+        requires sequential_container<T>
+    void register_sequential() noexcept
+    {
+        int tid = type_id::get_type_id<T>();
+        if (tid >= 0 && tid < static_cast<int>(MAX_TYPE_ID))
+        {
+            container_entries_[tid] = container_traits_impl<T>::make_table();
         }
     }
 
     [[nodiscard]] const type_ops_table* get(int tid) const noexcept
     {
         if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID)) return nullptr;
-        const auto& ops = entries_[tid];
+        const auto& ops = field_entries_[tid];
         return ops.equal_fn ? &ops : nullptr;
     }
 
-private:
-    template<typename T>
-    void register_builtin() noexcept
+    [[nodiscard]] const container_ops_table* get_container(int tid) const noexcept
     {
-        register_type_ops<T>();
+        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID)) return nullptr;
+        return container_entries_[tid].category != container_category::none
+            ? &container_entries_[tid] : nullptr;
     }
 };
 
 // 全局实例
-inline type_ops_registry& global_type_ops() noexcept
+inline ops_registry& global_ops() noexcept
 {
-    static type_ops_registry inst;
+    static ops_registry inst;
     return inst;
 }
+
+} // namespace detail
+} // namespace reflect

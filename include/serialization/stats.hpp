@@ -1,7 +1,7 @@
 // stats.hpp - 序列化统计信息
 #pragma once
 
-#include "dense.hpp"
+#include "../part/dense.hpp"
 #include <cstdint>
 #include <string>
 

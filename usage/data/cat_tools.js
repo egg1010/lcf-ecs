@@ -1111,11 +1111,11 @@ window.DOCS_DATA['reflection_meta'] = {
 
 | 结构 | 字段 |
 |------|------|
-| \`field_meta\` | \`name\`, \`offset\`, \`type_id\`, \`is_const\`, \`is_private\`, \`array_rank\`, \`reserved\`, \`total_elements\`, \`extents[4]\`, \`element_stride\`, \`attrs\`（\`dense<attr_entry>\`，#4 属性列表） |
+| \`field_meta\` | \`name\`, \`offset\`, \`type_id\`, \`is_const\`, \`is_private\`, \`array_rank\`, \`reserved\`, \`total_elements\`, \`extents[4]\`（\`uint32_t\`）, \`element_stride\`, \`trivially_copyable\`, \`attrs\`（\`dense<attr_entry>\`，#4 属性列表） |
 | \`method_meta\` | \`name\`, \`arg_count\`, \`return_type_id\`, \`invoker\`, \`is_const\`, \`is_static\`, \`arg_type_ids\`（\`const int*\`，#12 参数类型 id 数组，nullptr=未设置）, \`vtable_offset\`（#6 虚函数偏移，-1=非虚） |
-| \`type_meta\` | \`name\`, \`name_hash\`（#10 FNV-1a(name)）, \`registered\`, \`field_count\`, \`method_count\`, \`size\`, \`align\`, \`type_id\`, \`fields\`, \`methods\`, \`default_construct_\`/\`destruct_\`/\`has_default_construct\`（#1）, \`base_offsets\`（#2）, \`derived_type_ids\`（#2）, \`converters\`（#7）, \`container_ops\`（#5） |
+| \`type_meta\` | \`name\`, \`registered\`, \`field_count\`, \`method_count\`, \`size\`/\`align\`（\`size_t\`）, \`type_id\`, \`fields\`, \`methods\`, \`default_construct_\`/\`destruct_\`/\`free_heap_\`/\`has_default_construct\`（#1）, \`base_offsets\`（#2）, \`derived_type_ids\`（#2）, \`converters\`（#7）, \`container_ops\`（#5） |
 | \`attr_entry\` | \`key_hash\`（FNV-1a(key)）, \`value\`（\`void_any\` 类型擦除值） |
-| \`base_offset_entry\` | \`base_type_id\`, \`offset\`（派生类→基类指针调整量） |
+| \`base_offset_entry\` | \`base_type_id\`, \`offset\`（派生类→基类指针调整量）, \`adjust_fn\`（类型化指针调整，优先于 \`offset\`） |
 | \`convert_entry\` | \`target_type_id\`, \`convert_fn\`（\`void(*)(const void* src, void* dst)\`） |
 | \`enum_value_entry\` | \`value\`（\`uint64_t\`，underlying type 存储）, \`name\`, \`name_hash\`（FNV-1a(name)） |
 | \`enum_meta\` | \`name\`, \`underlying_type_id\`, \`type_id\`, \`values\`（\`dense<enum_value_entry>\`）, \`registered\` |
@@ -1126,11 +1126,10 @@ window.DOCS_DATA['reflection_meta'] = {
 \`field_meta\` 数组字段：\`array_rank=1~4\`、\`extents[0..rank-1]\` 为各维元素数、\`total_elements\` 为总元素数、\`element_stride\` 为元素步长（字节）。标量字段 \`array_rank=0\`。
 
 \`type_meta\` 扩展字段说明：
-- \`name_hash\`（#10）：类型名的 FNV-1a 哈希，作为跨编译器/DLL 的稳定标识，配合 \`find_type_by_hash\` 使用。
 - \`default_construct_\`/\`destruct_\`（#1）：默认构造与析构函数指针，\`has_default_construct\` 标记是否可默认构造。注册类型时若 \`is_default_constructible_v<T>\` 自动填充。
 - \`base_offsets\`/\`derived_type_ids\`（#2）：直接基类与派生类列表，通过 \`register_base\` 填充。
 - \`converters\`（#7）：已注册的目标类型转换表，通过 \`register_convert\` 填充。
-- \`container_ops\`（#5）：指向全局 \`container_ops_registry\` 的容器操作表指针，顺序容器类型注册时自动填充。
+- \`container_ops\`（#5）：容器操作表指针，顺序容器类型注册时自动填充。
 
 ### 30.2 storage 接口
 
@@ -1141,17 +1140,16 @@ window.DOCS_DATA['reflection_meta'] = {
 | \`storage::register_private_offsets<T>(descs, count)\` | 手填偏移量注册私有成员 |
 | \`storage::register_field<T, M, Ptr>(name)\` | 成员指针注册字段，需先 \`register_type_only\` |
 | \`storage::register_member_auto<T, M, Ptr>(type_name, field_name)\` | 注册成员（标量/数组统一入口），自动判断字段类别 |
-| \`storage::register_array_field<T, M, Ptr>(name, rank, extents, element_type_id)\` | 注册数组字段（C 数组/std::array） |
+| \`storage::register_array_field<T, M, Ptr>(name, rank, extents, element_type_id)\` | 注册数组字段（C 数组/std::array），\`extents\` 为 \`const uint32_t*\` |
 | \`storage::register_array_field_auto<T, M, Ptr>(name)\` | 注册数组字段，自动推导 rank/extents/element_type |
 | \`storage::register_method<Fn>(name)\` | 注册成员方法 |
 | \`storage::register_static_method<C, Fn>(name)\` | 注册静态方法 |
 | \`storage::get_type(tid)\` | 按类型 id 查询 \`type_meta*\` |
 | \`storage::find_type(name)\` | 按类型名查询 \`type_meta*\` |
-| \`storage::find_type_by_hash(hash)\` | 按 \`name_hash\` 查询 \`type_meta*\`（#10，跨编译器/DLL 稳定标识） |
 | \`storage::register_enum<E>(name, values)\` | 注册枚举类型（#3），\`values\` 为 \`std::initializer_list<std::pair<E, const char*>>\` |
 | \`storage::find_enum(tid)\` | 按类型 id 查询 \`enum_meta*\` |
 | \`storage::find_enum<E>()\` | 按枚举类型查询 \`enum_meta*\` |
-| \`storage::register_base<Derived, Base>(offset)\` | 注册继承关系（#2），\`offset\` 为派生类→基类指针调整量（单继承为 0） |
+| \`storage::register_base<Derived, Base>(offset)\` | 注册继承关系（#2），\`offset\` 为派生类→基类指针调整量；另有 \`register_base_typed<Derived, Base>()\` 由编译期类型转换自动调整 |
 | \`storage::register_field_attr<T, M, Ptr, V>(field_name, attr_key, value)\` | 注册字段属性（#4），\`value\` 任意类型（\`void_any\` 存储） |
 | \`storage::register_convert<T, U>()\` | 注册类型转换（#7），要求 \`is_convertible_v<T, U>\` |
 | \`reflect::global()\` | 全局 storage 对象 |
@@ -1160,269 +1158,6 @@ window.DOCS_DATA['reflection_meta'] = {
 `
 };
 
-window.DOCS_DATA['aggregate_reflect'] = {
-  id: 'aggregate_reflect',
-  title: "aggregate_reflect — 聚合类型字段遍历",
-  category: 'tools',
-  icon: 'G',
-  order: 32,
-  content: `## 31. aggregate_reflect — 聚合类型字段遍历
-
-\`#include "part/aggregate_reflect.hpp"\`，全局命名空间。\`noexcept\`。编译期常量。
-
-编译期探测聚合类型字段数并遍历字段。仅支持聚合类型（无自定义构造、无私有/受保护非静态数据成员、无虚函数、无基类）。非聚合类型字段数为 0。
-
-### 字段上限配置
-
-通过宏 \`REFLECT_MAX_FIELDS\` 配置自动反射字段上限，支持 16/32/64/128/256。默认 64。配置统一在 \`include/config/reflect_config.hpp\`，修改该文件或在 include 前定义对应宏即可调整：
-
-\`\`\`cpp
-// 默认 64 字段
-#include "part/aggregate_reflect.hpp"
-
-// 扩展到 128 字段: 编辑 config/reflect_config.hpp 或在 include 前定义
-#define REFLECT_MAX_FIELDS 128
-#include "part/aggregate_reflect.hpp"
-\`\`\`
-
-字段数超过 \`REFLECT_MAX_FIELDS\` 时触发编译期 \`static_assert\` 错误。
-
-### 接口
-
-| 接口 | 说明 |
-|------|------|
-| \`aggregate_field_count_v<T>\` | 编译期常量，类型 T 的字段数（非聚合为 0，上限由 \`REFLECT_MAX_FIELDS\` 决定） |
-| \`for_each_aggregate_member(obj, f)\` | 遍历对象字段，\`f(member, idx)\` 接收引用和索引 |
-| \`for_each_aggregate_member(obj, f)\` (const) | const 对象版本，\`f\` 接收 const 引用 |
-| \`member_offset(M T::*member)\` | 通过成员指针计算偏移量（需访问权限） |
-
-### 使用
-
-\`\`\`cpp
-#include "part/aggregate_reflect.hpp"
-
-struct Vec3 { float x, y, z; };
-struct Pod4 { int a, b, c, d; };
-struct Empty {};
-
-// 编译期字段计数
-static_assert(aggregate_field_count_v<Vec3> == 3);
-static_assert(aggregate_field_count_v<Pod4> == 4);
-static_assert(aggregate_field_count_v<Empty> == 0);
-
-// 遍历字段
-Vec3 v{1.0f, 2.0f, 3.0f};
-for_each_aggregate_member(v, [&](auto& member, size_t idx) {
-    std::cout << "field " << idx << " = " << member << "\\n";
-});
-
-// 修改字段
-for_each_aggregate_member(v, [&](auto& member, size_t idx) {
-    (void)idx;
-    member = 0.0f;
-});
-
-// const 对象遍历
-const Vec3 cv{5.0f, 6.0f, 7.0f};
-for_each_aggregate_member(cv, [&](const auto& member, size_t idx) {
-    std::cout << idx << ": " << member << "\\n";
-});
-
-// 成员偏移量
-size_t off_y = member_offset(&Vec3::y);  // 4
-\`\`\`
-
-### 注意事项
-
-| 错误做法 | 问题 | 正确做法 |
-|---------|------|---------|
-| 用于非聚合类型 | 字段数为 0，遍历不执行 | 仅用于聚合类型 |
-| 字段含 C 数组 | 数组被识别为多字段聚合 | 避免在含数组字段类型上使用 |
-| 字段数超过 \`REFLECT_MAX_FIELDS\` | 编译期 \`static_assert\` 错误 | include 前增大 \`REFLECT_MAX_FIELDS\` |
-| \`for_each_aggregate_member\` 修改 const 对象 | 编译错误 | 用非 const 对象修改字段 |
-
----
-`
-};
-
-window.DOCS_DATA['type_erasure'] = {
-  id: 'type_erasure',
-  title: "type_erasure — 类型擦除方法调用器",
-  category: 'tools',
-  icon: 'E',
-  order: 33,
-  content: `## 32. type_erasure — 类型擦除方法调用器
-
-\`#include "part/type_erasure.hpp"\`，全局命名空间。\`noexcept\`。
-
-将任意成员函数指针、const 成员函数指针、静态函数指针包装为统一签名的 \`invoker_func\` 函数指针。支持任意参数数量。
-
-### 接口
-
-| 接口 | 说明 |
-|------|------|
-| \`mfn_traits<MFnType>\` | 方法签名 traits，提取 \`class_type\`/\`return_type\`/\`arg_count\`/\`is_const\`/\`is_static\` |
-| \`mfn_invoker_t<Fn, MFnType>::invoke(obj, args, result)\` | 成员方法 invoker（普通/const 统一） |
-| \`sfn_invoker_t<Fn, MFnType>::invoke(obj, args, result)\` | 静态方法 invoker（\`obj\` 忽略） |
-| \`arg_ids_maker<MFnType>::make()\` | 生成参数类型 id 的 \`dense<int>\` |
-| \`return_type_id<R>()\` | 返回类型 id（void 为 -1） |
-| \`invoker_func\` | invoker 函数指针类型 |
-
-### invoker 签名
-
-\`\`\`cpp
-using invoker_func = void(*)(void* obj, const void* const* args, void* result);
-\`\`\`
-
-- \`obj\`：对象指针（静态方法传 \`nullptr\`）
-- \`args\`：参数指针数组，每个元素指向一个参数
-- \`result\`：返回值缓冲区（void 方法不写）
-
-### 使用
-
-\`\`\`cpp
-#include "part/type_erasure.hpp"
-
-class Calculator
-{
-public:
-    int add(int a, int b) { return a + b; }
-    bool is_positive(int x) const { return x > 0; }
-    void no_return(int x) { (void)x; }
-};
-
-int free_multiply(int a, int b) { return a * b; }
-
-// === 普通/const 成员方法 ===
-Calculator calc;
-using FnType = decltype(&Calculator::add);
-constexpr FnType fn = &Calculator::add;
-
-int a = 10, b = 20;
-const void* args[] = { &a, &b };
-alignas(alignof(std::max_align_t)) char result_buf[64];
-
-mfn_invoker_t<fn, FnType>::invoke(&calc, args, result_buf);
-int result = *reinterpret_cast<int*>(result_buf);  // 30
-
-// === 静态方法 ===
-using FnType2 = decltype(&free_multiply);
-constexpr FnType2 fn2 = &free_multiply;
-sfn_invoker_t<fn2, FnType2>::invoke(nullptr, args, result_buf);
-int product = *reinterpret_cast<int*>(result_buf);  // 200
-
-// === 通过 invoker_func 调用 ===
-invoker_func inv = &mfn_invoker_t<fn, FnType>::invoke;
-inv(&calc, args, result_buf);
-
-// === traits 与元数据 ===
-using Traits = mfn_traits<decltype(&Calculator::add)>;
-static_assert(Traits::arg_count == 2);
-static_assert(!Traits::is_const);
-static_assert(!Traits::is_static);
-
-dense<int> arg_ids = arg_ids_maker<decltype(&Calculator::add)>::make();
-// arg_ids.size() == 2, arg_ids[0] == type_id::get_type_id<int>()
-
-int ret_id = return_type_id<int>();      // 返回 int 的 type_id
-int void_id = return_type_id<void>();    // -1
-\`\`\`
-
-### 注意事项
-
-| 错误做法 | 问题 | 正确做法 |
-|---------|------|---------|
-| 返回值缓冲区未对齐 | placement new 未对齐访问崩溃 | \`alignas(alignof(std::max_align_t))\` |
-| 参数数量与签名不符 | 未定义行为 | 调用前确认 \`arg_count\` |
-| 返回 std::string 未析构 | 内存泄漏 | 手动调用 \`~basic_string()\` |
-| 静态方法传非空 \`obj\` | 被忽略 | 静态方法传 \`nullptr\` |
-
----
-`
-};
-
-window.DOCS_DATA['member_offset'] = {
-  id: 'member_offset',
-  title: "member_offset — 成员偏移量访问",
-  category: 'tools',
-  icon: 'O',
-  order: 34,
-  content: `## 33. member_offset — 成员偏移量访问
-
-\`#include "part/member_offset.hpp"\`，全局命名空间。\`noexcept\`。
-
-通过偏移量访问对象成员，支持突破私有访问限制。提供 \`offset_desc\` 结构用于批量描述字段。
-
-### 接口
-
-| 接口 | 说明 |
-|------|------|
-| \`offset_of(M T::*member)\` | 通过成员指针计算偏移量（需访问权限） |
-| \`offset_access<M>(obj, offset)\` | 按偏移量访问成员引用 |
-| \`offset_access<M>(obj, offset)\` (const) | const 对象版本 |
-| \`ub_access<T, M>(obj, offset)\` | UB 反向构造成员指针，突破私有访问 |
-| \`offset_desc\` | 字段描述结构 \`{name, offset, type_id}\` |
-
-### 使用
-
-\`\`\`cpp
-#include "part/member_offset.hpp"
-
-struct Pod3 { float x, y, z; };
-struct Mixed { char c; int i; double d; };
-
-class Account
-{
-    int balance_;
-public:
-    Account(int b) : balance_(b) {}
-    int get_balance() const { return balance_; }
-};
-
-// === offset_of 成员指针偏移 ===
-size_t off_x = offset_of(&Pod3::x);  // 0
-size_t off_y = offset_of(&Pod3::y);  // 4
-size_t off_z = offset_of(&Pod3::z);  // 8
-
-// === offset_access 直接指针访问 ===
-Pod3 v{1.0f, 2.0f, 3.0f};
-float y = offset_access<float>(&v, 4);   // 2.0
-offset_access<float>(&v, 8) = 100.0f;    // 修改 z
-
-// const 对象
-const Pod3 cv{5.0f, 6.0f, 7.0f};
-float cx = offset_access<float>(&cv, 0);  // 5.0
-
-// 混合类型
-Mixed m{'A', 42, 3.14};
-char c = offset_access<char>(&m, 0);      // 'A'
-int i = offset_access<int>(&m, 4);        // 42
-double d = offset_access<double>(&m, 8);  // 3.14
-
-// === ub_access 突破私有访问 ===
-Account acc(100);
-// 假设 balance_ 在偏移 0 (首成员)
-int bal = ub_access<Account, int>(acc, 0);  // 100
-ub_access<Account, int>(acc, 0) = 999;      // 修改私有成员
-acc.get_balance();  // 999
-
-// === offset_desc 批量描述 ===
-offset_desc descs[] = {
-    {"name_",    0,  type_id::get_type_id<std::string>()},
-    {"balance_", 32, type_id::get_type_id<int>()}
-};
-\`\`\`
-
-### 注意事项
-
-| 错误做法 | 问题 | 正确做法 |
-|---------|------|---------|
-| \`ub_access\` 偏移量错误 | 访问错误内存 | 用 \`offsetof\` 或编译期推导确认偏移量 |
-| \`ub_access\` 用于虚函数类 | vptr 干扰偏移布局 | 仅用于无非虚函数的类 |
-| 假设 \`ub_access\` 可移植 | 严格 UB，依赖编译器实现 | 仅在受控环境使用 |
-| 对齐错误的偏移量访问 | 未对齐访问崩溃 | 确保偏移量与类型对齐匹配 |
-`
-};
 
 window.DOCS_DATA['t_fun'] = {
   id: 't_fun',

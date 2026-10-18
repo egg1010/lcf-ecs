@@ -13,12 +13,12 @@
 #include <source_location>
 #include <utility>
 #include "../part/type_id.hpp"
-#include "../part/aggregate_reflect.hpp"
-#include "../part/member_offset.hpp"
-#include "../part/type_erasure.hpp"
+#include "aggregate_traverse.hpp"
+#include "member_offset.hpp"
+#include "invoke.hpp"
 #include "../part/fnv1a.hpp"
-#include "../part/type_ops.hpp"
-#include "../part/container_traits.hpp"
+#include "field_ops.hpp"
+#include "container_ops.hpp"
 #include "meta.hpp"
 
 namespace reflect {
@@ -75,6 +75,10 @@ using std_array_element_t = typename std_array_traits<T>::element_type;
 template<typename T>
 inline constexpr std::size_t std_array_size_v = std_array_traits<T>::size;
 
+template<typename M> struct array_element_of { using type = std::remove_all_extents_t<M>; };
+template<typename T, std::size_t N> struct array_element_of<std::array<T, N>> { using type = T; };
+template<typename M> using array_element_of_t = typename array_element_of<M>::type;
+
 // 数组字段类型约束: C 数组或 std::array
 template<typename M>
 concept array_field_type =
@@ -85,9 +89,14 @@ concept array_field_type =
 template<typename ptr_t>
 concept member_object_pointer = std::is_member_object_pointer_v<ptr_t>;
 
-// 成员函数指针约束
-template<typename ptr_t>
-concept member_function_pointer = std::is_member_function_pointer_v<ptr_t>;
+template<typename T>
+inline void ensure_field_ops() noexcept
+{
+    if constexpr (std::is_trivially_copyable_v<T> || std::is_copy_constructible_v<T>)
+    {
+        global_ops().register_type_ops<std::remove_cv_t<T>>();
+    }
+}
 
 // === 错误诊断 (替代裸 std::abort, 输出位置信息) ===
 [[noreturn]] inline void abort_with_location(
@@ -132,6 +141,10 @@ public:
         type_meta* existing = type_entries_[tid].load(std::memory_order_acquire);
         if (existing != nullptr)
         {
+            if (existing->field_count.load(std::memory_order_acquire) == 0)
+            {
+                traverse_aggregate_fields<T>(existing);
+            }
             return;
         }
 
@@ -140,67 +153,11 @@ public:
         {
             std::abort();
         }
-        m->name = name;
-        m->name_hash = fnv1a_runtime(name);
-        m->size = static_cast<uint16_t>(sizeof(T));
-        m->align = static_cast<uint16_t>(alignof(T));
         m->type_id = tid;
-
-        // #1 构造/销毁注册
-        if constexpr (std::is_default_constructible_v<T>)
+        fill_type_identity<T>(m, name);
+        if constexpr (std::is_aggregate_v<T> && detail::aggregate_field_count_v<T> > 0)
         {
-            m->default_construct_ = +[](void* buf) noexcept -> void*
-            {
-                if (buf)
-                {
-                    return new(buf) T{};
-                }
-                return new (std::nothrow) T{};
-            };
-            m->has_default_construct = true;
-        }
-        if constexpr (!std::is_trivially_destructible_v<T>)
-        {
-            m->destruct_ = +[](void* obj) noexcept
-            {
-                static_cast<T*>(obj)->~T();
-            };
-        }
-
-        // #8/#9 type_ops 注册
-        global_type_ops().register_type_ops<T>();
-
-        // #5 容器特征注册
-        if constexpr (sequential_container<T>)
-        {
-            global_container_ops().register_sequential<T>();
-            m->container_ops = global_container_ops().get(tid);
-        }
-
-        if constexpr (std::is_aggregate_v<T> && aggregate_field_count_v<T> > 0)
-        {
-            T obj{};
-            for_each_aggregate_member(obj, [&](auto& member, size_t idx) {
-                using member_type = std::remove_reference_t<decltype(member)>;
-                uint16_t fidx = m->field_count.load(std::memory_order_relaxed);
-                if (fidx >= MAX_FIELDS_PER_TYPE)
-                {
-                    return;
-                }
-                m->fields[fidx] = field_meta{
-                    make_field_name(idx),
-                    static_cast<uint32_t>(
-                        reinterpret_cast<size_t>(&member) -
-                        reinterpret_cast<size_t>(&obj)),
-                    type_id::get_type_id<member_type>(),
-                    std::is_const_v<member_type>,
-                    false,
-                    0, 0, 0, {0, 0, 0, 0},
-                    static_cast<uint32_t>(sizeof(member_type)),
-                    {}
-                };
-                m->field_count.store(static_cast<uint16_t>(fidx + 1), std::memory_order_release);
-            });
+            traverse_aggregate_fields<T>(m);
         }
         m->registered.store(true, std::memory_order_release);
 
@@ -209,12 +166,6 @@ public:
                 expected, m, std::memory_order_release, std::memory_order_acquire))
         {
             delete m;
-        }
-        else
-        {
-            // 同步维护 hash 索引表
-            detail::spinlock_guard lock(reg_lock_);
-            insert_hash_index(m->name_hash, m);
         }
     }
 
@@ -231,6 +182,10 @@ public:
         type_meta* existing = type_entries_[tid].load(std::memory_order_acquire);
         if (existing != nullptr)
         {
+            if (existing->name == nullptr && name != nullptr)
+            {
+                existing->name = name;
+            }
             return;
         }
 
@@ -239,43 +194,8 @@ public:
         {
             std::abort();
         }
-        m->name = name;
-        m->name_hash = fnv1a_runtime(name);
-        m->size = static_cast<uint16_t>(sizeof(T));
-        m->align = static_cast<uint16_t>(alignof(T));
         m->type_id = tid;
-
-        // #1 构造/销毁注册
-        if constexpr (std::is_default_constructible_v<T>)
-        {
-            m->default_construct_ = +[](void* buf) noexcept -> void*
-            {
-                if (buf)
-                {
-                    return new(buf) T{};
-                }
-                return new (std::nothrow) T{};
-            };
-            m->has_default_construct = true;
-        }
-        if constexpr (!std::is_trivially_destructible_v<T>)
-        {
-            m->destruct_ = +[](void* obj) noexcept
-            {
-                static_cast<T*>(obj)->~T();
-            };
-        }
-
-        // #8/#9 type_ops 注册
-        global_type_ops().register_type_ops<T>();
-
-        // #5 容器特征注册
-        if constexpr (sequential_container<T>)
-        {
-            global_container_ops().register_sequential<T>();
-            m->container_ops = global_container_ops().get(tid);
-        }
-
+        fill_type_identity<T>(m, name);
         m->registered.store(true, std::memory_order_release);
 
         type_meta* expected = nullptr;
@@ -283,12 +203,6 @@ public:
                 expected, m, std::memory_order_release, std::memory_order_acquire))
         {
             delete m;
-        }
-        else
-        {
-            // 同步维护 hash 索引表
-            detail::spinlock_guard lock(reg_lock_);
-            insert_hash_index(m->name_hash, m);
         }
     }
 
@@ -302,31 +216,17 @@ public:
             return;
         }
 
-        type_meta* m = type_entries_[tid].load(std::memory_order_acquire);
-        if (m == nullptr || !m->registered.load(std::memory_order_acquire))
-        {
-            return;
-        }
+        type_meta* m = ensure_type_slot<T>(tid);
 
         detail::spinlock_guard lock(reg_lock_);
         for (size_t i = 0; i < count; ++i)
         {
-            uint16_t fidx = m->field_count.load(std::memory_order_relaxed);
-            if (fidx >= MAX_FIELDS_PER_TYPE)
+            if (!try_append_field(m, descs[i].name, descs[i].offset, descs[i].type_id,
+                                  false, true, 0, 0, {0, 0, 0, 0},
+                                  descs[i].size, descs[i].trivially_copyable))
             {
                 break;
             }
-            m->fields[fidx] = field_meta{
-                descs[i].name,
-                static_cast<uint32_t>(descs[i].offset),
-                descs[i].type_id,
-                false,
-                true,
-                0, 0, 0, {0, 0, 0, 0},
-                descs[i].size,
-                {}
-            };
-            m->field_count.store(static_cast<uint16_t>(fidx + 1), std::memory_order_release);
         }
     }
 
@@ -342,31 +242,18 @@ public:
             return;
         }
 
-        type_meta* m = type_entries_[tid].load(std::memory_order_acquire);
-        if (m == nullptr || !m->registered.load(std::memory_order_acquire))
-        {
-            return;
-        }
+        type_meta* m = ensure_type_slot<T>(tid);
 
         detail::spinlock_guard lock(reg_lock_);
-        uint16_t fidx = m->field_count.load(std::memory_order_relaxed);
-        if (fidx >= MAX_FIELDS_PER_TYPE)
+        size_t offset = detail::offset_of(Ptr);
+        if (!try_append_field(m, name, offset, type_id::get_type_id<M>(),
+                              std::is_const_v<M>, true, 0, 0, {0, 0, 0, 0},
+                              static_cast<uint32_t>(sizeof(M)),
+                              std::is_trivially_copyable_v<M>))
         {
             detail::abort_with_location("field limit exceeded", loc);
         }
-
-        size_t offset = detail_member_offset::offset_of(Ptr);
-        m->fields[fidx] = field_meta{
-            name,
-            static_cast<uint32_t>(offset),
-            type_id::get_type_id<M>(),
-            std::is_const_v<M>,
-            true,
-            0, 0, 0, {0, 0, 0, 0},
-            static_cast<uint32_t>(sizeof(M)),
-            {}
-        };
-        m->field_count.store(static_cast<uint16_t>(fidx + 1), std::memory_order_release);
+        detail::ensure_field_ops<std::remove_cv_t<M>>();
     }
 
     // 注册数组字段 (C 数组 / std::array)
@@ -376,7 +263,7 @@ public:
                   detail::array_field_type<M>)
     void register_array_field(const char* name,
                               uint8_t rank,
-                              const uint16_t* extents,
+                              const uint32_t* extents,
                               int element_type_id,
         const std::source_location& loc = std::source_location::current()) noexcept
     {
@@ -386,52 +273,46 @@ public:
             return;
         }
 
-        type_meta* m = type_entries_[tid].load(std::memory_order_acquire);
-        if (m == nullptr || !m->registered.load(std::memory_order_acquire))
-        {
-            return;
-        }
+        type_meta* m = ensure_type_slot<T>(tid);
         if (rank == 0 || rank > 4)
         {
             return;
         }
 
         detail::spinlock_guard lock(reg_lock_);
-        uint16_t fidx = m->field_count.load(std::memory_order_relaxed);
-        if (fidx >= MAX_FIELDS_PER_TYPE)
-        {
-            detail::abort_with_location("field limit exceeded", loc);
-        }
+        size_t offset = detail::offset_of(Ptr);
 
-        size_t offset = detail_member_offset::offset_of(Ptr);
-
-        uint32_t total = 1;
+        uint64_t total64 = 1;
         for (uint8_t i = 0; i < rank; ++i)
         {
-            total *= static_cast<uint32_t>(extents[i]);
+            total64 *= static_cast<uint64_t>(extents[i]);
         }
 
-        using element_type = std::remove_all_extents_t<std::remove_cvref_t<M>>;
+        using raw_m = std::remove_cvref_t<M>;
+        using element_type = detail::array_element_of_t<raw_m>;
         uint32_t stride = static_cast<uint32_t>(sizeof(element_type));
+        uint64_t span = total64 * stride;
 
-        std::array<uint16_t, 4> ext{0, 0, 0, 0};
+        if (offset > sizeof(T) || stride == 0 || total64 > 0xFFFFFFFFull
+            || span > sizeof(T) - offset)
+        {
+            detail::abort_with_location("array field size mismatch", loc);
+        }
+        uint32_t total = static_cast<uint32_t>(total64);
+
+        std::array<uint32_t, 4> ext{0, 0, 0, 0};
         for (uint8_t i = 0; i < rank; ++i)
         {
             ext[i] = extents[i];
         }
 
-        m->fields[fidx] = field_meta{
-            name,
-            static_cast<uint32_t>(offset),
-            element_type_id,
-            std::is_const_v<M>,
-            true,
-            rank, 0, total,
-            {ext[0], ext[1], ext[2], ext[3]},
-            stride,
-            {}
-        };
-        m->field_count.store(static_cast<uint16_t>(fidx + 1), std::memory_order_release);
+        if (!try_append_field(m, name, offset, element_type_id, std::is_const_v<M>, true,
+                              rank, total, ext, stride,
+                              std::is_trivially_copyable_v<element_type>))
+        {
+            detail::abort_with_location("field limit exceeded", loc);
+        }
+        detail::ensure_field_ops<std::remove_cv_t<element_type>>();
     }
 
     // 注册数组字段 (自动推导 rank/extents/element_type)
@@ -444,7 +325,7 @@ public:
         using raw_m = std::remove_cvref_t<M>;
 
         uint8_t rank = 0;
-        std::array<uint16_t, 4> ext{0, 0, 0, 0};
+        std::array<uint32_t, 4> ext{0, 0, 0, 0};
         int elem_tid = 0;
 
         if constexpr (std::is_bounded_array_v<raw_m>)
@@ -453,19 +334,19 @@ public:
             rank = c_rank;
             if constexpr (c_rank >= 1)
             {
-                ext[0] = static_cast<uint16_t>(std::extent_v<raw_m, 0>);
+                ext[0] = static_cast<uint32_t>(std::extent_v<raw_m, 0>);
             }
             if constexpr (c_rank >= 2)
             {
-                ext[1] = static_cast<uint16_t>(std::extent_v<raw_m, 1>);
+                ext[1] = static_cast<uint32_t>(std::extent_v<raw_m, 1>);
             }
             if constexpr (c_rank >= 3)
             {
-                ext[2] = static_cast<uint16_t>(std::extent_v<raw_m, 2>);
+                ext[2] = static_cast<uint32_t>(std::extent_v<raw_m, 2>);
             }
             if constexpr (c_rank >= 4)
             {
-                ext[3] = static_cast<uint16_t>(std::extent_v<raw_m, 3>);
+                ext[3] = static_cast<uint32_t>(std::extent_v<raw_m, 3>);
             }
             using elem = std::remove_all_extents_t<raw_m>;
             elem_tid = type_id::get_type_id<elem>();
@@ -473,7 +354,7 @@ public:
         else if constexpr (detail::is_std_array_v<raw_m>)
         {
             rank = 1;
-            ext[0] = static_cast<uint16_t>(detail::std_array_size_v<raw_m>);
+            ext[0] = static_cast<uint32_t>(detail::std_array_size_v<raw_m>);
             using elem = detail::std_array_element_t<raw_m>;
             elem_tid = type_id::get_type_id<elem>();
         }
@@ -514,7 +395,7 @@ public:
         const std::source_location& loc = std::source_location::current()) noexcept
     {
         using mfn_type = decltype(Fn);
-        using traits = mfn_traits<mfn_type>;
+        using traits = detail::mfn_traits<mfn_type>;
         using C = typename traits::class_type;
         using R = typename traits::return_type;
 
@@ -524,11 +405,7 @@ public:
             return;
         }
 
-        type_meta* m = type_entries_[tid].load(std::memory_order_acquire);
-        if (m == nullptr || !m->registered.load(std::memory_order_acquire))
-        {
-            return;
-        }
+        type_meta* m = ensure_type_slot<C>(tid);
 
         detail::spinlock_guard lock(reg_lock_);
         uint16_t midx = m->method_count.load(std::memory_order_relaxed);
@@ -540,8 +417,8 @@ public:
         method_meta mm;
         mm.name = name;
         mm.arg_count = static_cast<uint8_t>(traits::arg_count);
-        mm.return_type_id = return_type_id<R>();
-        mm.invoker = &mfn_invoker_t<Fn, mfn_type>::invoke;
+        mm.return_type_id = detail::return_type_id<R>();
+        mm.invoker = &detail::mfn_invoker_t<Fn, mfn_type>::invoke;
         mm.is_const = traits::is_const;
         mm.is_static = false;
         mm.arg_type_ids = detail::make_arg_type_ids<mfn_type>();
@@ -556,7 +433,7 @@ public:
         const std::source_location& loc = std::source_location::current()) noexcept
     {
         using mfn_type = decltype(Fn);
-        using traits = mfn_traits<mfn_type>;
+        using traits = detail::mfn_traits<mfn_type>;
         using R = typename traits::return_type;
         static_assert(traits::is_static, "Fn must be a free/static function pointer");
 
@@ -566,11 +443,7 @@ public:
             return;
         }
 
-        type_meta* m = type_entries_[tid].load(std::memory_order_acquire);
-        if (m == nullptr || !m->registered.load(std::memory_order_acquire))
-        {
-            return;
-        }
+        type_meta* m = ensure_type_slot<C>(tid);
 
         detail::spinlock_guard lock(reg_lock_);
         uint16_t midx = m->method_count.load(std::memory_order_relaxed);
@@ -582,8 +455,8 @@ public:
         method_meta mm;
         mm.name = name;
         mm.arg_count = static_cast<uint8_t>(traits::arg_count);
-        mm.return_type_id = return_type_id<R>();
-        mm.invoker = &sfn_invoker_t<Fn, mfn_type>::invoke;
+        mm.return_type_id = detail::return_type_id<R>();
+        mm.invoker = &detail::sfn_invoker_t<Fn, mfn_type>::invoke;
         mm.is_const = false;
         mm.is_static = true;
         mm.arg_type_ids = detail::make_arg_type_ids<mfn_type>();
@@ -629,32 +502,6 @@ public:
             {
                 return m;
             }
-        }
-        return nullptr;
-    }
-
-    // #10 按 name_hash 查找类型 (稳定标识, 跨 DLL/编译器)
-    // O(1) 开放寻址查找, 无锁读取 (注册阶段完成后查找)
-    [[nodiscard]] const type_meta* find_type_by_hash(uint64_t hash) const noexcept
-    {
-        if (hash == 0)
-        {
-            return nullptr;
-        }
-        size_t mask = HASH_INDEX_SIZE - 1;
-        size_t idx = static_cast<size_t>(hash) & mask;
-        for (size_t i = 0; i < HASH_INDEX_SIZE; ++i)
-        {
-            const auto& slot = hash_index_[idx];
-            if (slot.hash == 0)
-            {
-                return nullptr; // 空槽, 未注册
-            }
-            if (slot.hash == hash)
-            {
-                return slot.meta;
-            }
-            idx = (idx + 1) & mask;
         }
         return nullptr;
     }
@@ -727,19 +574,44 @@ public:
     {
         int did = type_id::get_type_id<Derived>();
         int bid = type_id::get_type_id<Base>();
-        if (did < 0 || bid < 0)
+        if (did < 0 || did >= static_cast<int>(MAX_TYPE_ID)
+            || bid < 0 || bid >= static_cast<int>(MAX_TYPE_ID))
         {
             return;
         }
-        type_meta* dm = type_entries_[did].load(std::memory_order_acquire);
-        type_meta* bm = type_entries_[bid].load(std::memory_order_acquire);
-        if (!dm || !bm)
-        {
-            return;
-        }
+        type_meta* dm = ensure_type_slot<Derived>(did);
+        type_meta* bm = ensure_type_slot<Base>(bid);
 
         detail::spinlock_guard lock(reg_lock_);
-        dm->base_offsets.push_back(base_offset_entry{bid, offset});
+        dm->base_offsets.push_back(base_offset_entry{bid, offset, nullptr});
+        bm->derived_type_ids.push_back(did);
+    }
+
+    // 类型化继承注册 (指针调整由编译期转换承担, 不依赖手填偏移)
+    template<typename Derived, typename Base>
+    void register_base_typed() noexcept
+    {
+        static_assert(std::is_base_of_v<Base, Derived>, "Base must be a base of Derived");
+        int did = type_id::get_type_id<Derived>();
+        int bid = type_id::get_type_id<Base>();
+        if (did < 0 || did >= static_cast<int>(MAX_TYPE_ID)
+            || bid < 0 || bid >= static_cast<int>(MAX_TYPE_ID))
+        {
+            return;
+        }
+        type_meta* dm = ensure_type_slot<Derived>(did);
+        type_meta* bm = ensure_type_slot<Base>(bid);
+
+        base_offset_entry e;
+        e.base_type_id = bid;
+        e.offset = 0;
+        e.adjust_fn = +[](void* p) noexcept -> void*
+        {
+            return static_cast<Base*>(static_cast<Derived*>(p));
+        };
+
+        detail::spinlock_guard lock(reg_lock_);
+        dm->base_offsets.push_back(e);
         bm->derived_type_ids.push_back(did);
     }
 
@@ -749,15 +621,11 @@ public:
         const char* attr_key, V&& value) noexcept
     {
         int tid = type_id::get_type_id<T>();
-        if (tid < 0)
+        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID))
         {
             return;
         }
-        type_meta* m = type_entries_[tid].load(std::memory_order_acquire);
-        if (!m)
-        {
-            return;
-        }
+        type_meta* m = ensure_type_slot<T>(tid);
 
         for (uint16_t i = 0; i < m->field_count.load(std::memory_order_acquire); ++i)
         {
@@ -778,15 +646,11 @@ public:
     {
         static_assert(std::is_convertible_v<T, U>, "T must be convertible to U");
         int tid = type_id::get_type_id<T>();
-        if (tid < 0)
+        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID))
         {
             return;
         }
-        type_meta* m = type_entries_[tid].load(std::memory_order_acquire);
-        if (!m)
-        {
-            return;
-        }
+        type_meta* m = ensure_type_slot<T>(tid);
 
         convert_entry e;
         e.target_type_id = type_id::get_type_id<U>();
@@ -799,45 +663,116 @@ public:
     }
 
 private:
-    std::atomic_flag reg_lock_{};
-    std::array<std::atomic<enum_meta*>, MAX_TYPE_ID> enum_entries_{};
-
-    // #10 name_hash → type_meta* 开放寻址索引表 (线性探测)
-    // 注册阶段加 reg_lock_ 写入, 查找阶段无锁读取 (假设类型注册在初始化阶段完成)
-    // 空间换速度: 2^17 槽位 × 16 字节 = 2MB, BSS 段零初始化无磁盘开销
-    // MAX_TYPE_ID=65536 时负载因子 0.5, 线性探测平均 < 1.5 次比较
-    static constexpr size_t HASH_INDEX_SIZE = 1u << 17;
-    struct hash_index_slot
+    // 单份字段追加 (4 条注册路径共用): 超上限返回 false
+    bool try_append_field(type_meta* m, const char* name, size_t offset, int field_type_id,
+                          bool is_const, bool is_private, uint8_t rank, uint32_t total_elements,
+                          std::array<uint32_t, 4> extents, uint32_t stride, bool trivial) noexcept
     {
-        uint64_t hash = 0;          // 0 表示空槽
-        const type_meta* meta = nullptr;
-    };
-    std::array<hash_index_slot, HASH_INDEX_SIZE> hash_index_{};
-
-    // 插入 hash 索引 (调用方需持有 reg_lock_)
-    void insert_hash_index(uint64_t hash, const type_meta* m) noexcept
-    {
-        if (hash == 0)
+        uint16_t fidx = m->field_count.load(std::memory_order_relaxed);
+        if (fidx >= MAX_FIELDS_PER_TYPE)
         {
-            return;
+            return false;
         }
-        size_t mask = HASH_INDEX_SIZE - 1;
-        size_t idx = static_cast<size_t>(hash) & mask;
-        for (size_t i = 0; i < HASH_INDEX_SIZE; ++i)
+        m->fields[fidx] = field_meta{
+            name,
+            static_cast<uint32_t>(offset),
+            field_type_id,
+            is_const,
+            is_private,
+            rank, 0, total_elements, extents, stride, trivial, {}
+        };
+        m->field_count.store(static_cast<uint16_t>(fidx + 1), std::memory_order_release);
+        return true;
+    }
+
+    template<typename T>
+    void fill_type_identity(type_meta* m, const char* name) noexcept
+    {
+        if (name != nullptr)
         {
-            if (hash_index_[idx].hash == 0)
+            m->name = name;
+        }
+        m->size = sizeof(T);
+        m->align = alignof(T);
+        if constexpr (std::is_default_constructible_v<T>)
+        {
+            m->default_construct_ = +[](void* buf) noexcept -> void*
             {
-                hash_index_[idx].hash = hash;
-                hash_index_[idx].meta = m;
-                return;
-            }
-            if (hash_index_[idx].hash == hash)
+                if (buf)
+                {
+                    return new(buf) T{};
+                }
+                return new (std::nothrow) T{};
+            };
+            m->has_default_construct = true;
+            m->free_heap_ = +[](void* obj) noexcept
             {
-                return; // 已存在, 幂等
-            }
-            idx = (idx + 1) & mask;
+                delete static_cast<T*>(obj);
+            };
+        }
+        if constexpr (!std::is_trivially_destructible_v<T>)
+        {
+            m->destruct_ = +[](void* obj) noexcept
+            {
+                static_cast<T*>(obj)->~T();
+            };
+        }
+        detail::global_ops().register_type_ops<T>();
+        if constexpr (detail::sequential_container<T>)
+        {
+            detail::global_ops().register_sequential<T>();
+            m->container_ops = detail::global_ops().get_container(m->type_id);
         }
     }
+
+    template<typename T>
+    void traverse_aggregate_fields(type_meta* m) noexcept
+    {
+        T obj{};
+        detail::for_each_aggregate_member(obj, [&](auto& member, size_t idx) {
+            using member_type = std::remove_reference_t<decltype(member)>;
+            if (!try_append_field(m, make_field_name(idx),
+                                  reinterpret_cast<size_t>(&member) -
+                                      reinterpret_cast<size_t>(&obj),
+                                  type_id::get_type_id<member_type>(),
+                                  std::is_const_v<member_type>, false, 0, 0, {0, 0, 0, 0},
+                                  static_cast<uint32_t>(sizeof(member_type)),
+                                  std::is_trivially_copyable_v<member_type>))
+            {
+                return;
+            }
+            detail::ensure_field_ops<std::remove_cv_t<member_type>>();
+        });
+    }
+
+    template<typename T>
+    [[nodiscard]] type_meta* ensure_type_slot(int tid) noexcept
+    {
+        type_meta* m = type_entries_[tid].load(std::memory_order_acquire);
+        if (m != nullptr && m->registered.load(std::memory_order_acquire))
+        {
+            return m;
+        }
+        type_meta* fresh = new (std::nothrow) type_meta{};
+        if (fresh == nullptr)
+        {
+            std::abort();
+        }
+        fresh->type_id = tid;
+        fill_type_identity<T>(fresh, nullptr);
+        fresh->registered.store(true, std::memory_order_release);
+        type_meta* expected = nullptr;
+        if (!type_entries_[tid].compare_exchange_strong(
+                expected, fresh, std::memory_order_release, std::memory_order_acquire))
+        {
+            delete fresh;
+            return expected;
+        }
+        return fresh;
+    }
+
+    std::atomic_flag reg_lock_{};
+    std::array<std::atomic<enum_meta*>, MAX_TYPE_ID> enum_entries_{};
 
     static const char* make_field_name(size_t idx) noexcept
     {

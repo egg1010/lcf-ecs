@@ -1,10 +1,10 @@
 // hash.hpp - 字段哈希查询接口 (#9)
 // 命名空间: reflect
-// 基于 part/type_ops.hpp 的 hash_fn 实现逐字段 FNV-1a 哈希组合
+// 复用 meta.hpp 的单份字段遍历骨架, 逐字段/逐元素组合 FNV-1a 哈希
 #pragma once
 
 #include "query.hpp"
-#include "../part/type_ops.hpp"
+#include "field_ops.hpp"
 #include "../part/fnv1a.hpp"
 
 namespace reflect {
@@ -25,60 +25,29 @@ public:
             return 0;
         }
         uint64_t h = FNV_OFFSET_BASIS_64;
-        size_t n = meta_->field_count.load(std::memory_order_acquire);
-        for (size_t i = 0; i < n; ++i)
-        {
-            const field_meta& fm = meta_->fields[i];
-            const char* p = static_cast<const char*>(obj) + fm.offset;
-
-            if (fm.array_rank > 0)
-            {
-                // 数组字段: 逐元素哈希再组合
-                const type_ops_table* ops = global_type_ops().get(fm.type_id);
-                if (ops && ops->hash_fn)
+        detail::visit_field_slots(obj, nullptr, *meta_,
+            [&h](const detail::field_slot& s, const field_meta&) noexcept {
+                for (uint32_t e = 0; e < s.count; ++e)
                 {
-                    for (uint32_t e = 0; e < fm.total_elements; ++e)
+                    const char* p = s.base + e * s.stride;
+                    if (s.ops && s.ops->hash_fn)
                     {
-                        uint64_t fh = ops->hash_fn(p + e * fm.element_stride);
-                        h ^= fh;
+                        h ^= s.ops->hash_fn(p);
                         h *= FNV_PRIME_64;
                     }
-                }
-                else
-                {
-                    // 无 hash_fn: 字节级 FNV-1a
-                    for (uint32_t e = 0; e < fm.total_elements; ++e)
+                    else
                     {
-                        const uint8_t* bytes = reinterpret_cast<const uint8_t*>(p + e * fm.element_stride);
-                        for (size_t b = 0; b < fm.element_stride; ++b)
+                        // 无 hash_fn: 字节级 FNV-1a
+                        const uint8_t* bytes = reinterpret_cast<const uint8_t*>(p);
+                        for (uint32_t b = 0; b < s.stride; ++b)
                         {
                             h ^= bytes[b];
                             h *= FNV_PRIME_64;
                         }
                     }
                 }
-            }
-            else
-            {
-                const type_ops_table* ops = global_type_ops().get(fm.type_id);
-                if (ops && ops->hash_fn)
-                {
-                    uint64_t fh = ops->hash_fn(p);
-                    h ^= fh;
-                    h *= FNV_PRIME_64;
-                }
-                else
-                {
-                    // 无 hash_fn: 字节级 FNV-1a
-                    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(p);
-                    for (size_t b = 0; b < fm.element_stride; ++b)
-                    {
-                        h ^= bytes[b];
-                        h *= FNV_PRIME_64;
-                    }
-                }
-            }
-        }
+                return true;
+            });
         return h;
     }
 };
