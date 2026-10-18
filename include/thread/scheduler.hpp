@@ -4,8 +4,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <new>
-#include <vector>
 
+#include "part/dense.hpp"
 #include "thread/job.hpp"
 #include "thread/work_deque.hpp"
 
@@ -25,10 +25,11 @@ struct priority_stack
             return false;
         }
         levels_ = levels;
-        deques_.resize(levels);
-        for (work_deque& d : deques_)
+        deques_.reserve_exact(levels);
+        for (std::uint8_t i = 0; i < levels; ++i)
         {
-            if (!d.create(capacity_per_level))
+            deques_.emplace_back();
+            if (!deques_.back().create(capacity_per_level))
             {
                 destroy();
                 return false;
@@ -156,7 +157,7 @@ struct priority_stack
     std::uint32_t aging_threshold{scheduler_default_aging_threshold};
 
   private:
-    std::vector<work_deque> deques_{};
+    dense<work_deque> deques_{};
     std::uint8_t levels_{0};
     std::atomic<std::uint8_t> pop_level_{0};
     std::atomic<std::uint32_t> popped_since_lowest_{0};

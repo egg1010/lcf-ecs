@@ -364,7 +364,7 @@ if (!msg && om_try_recover(msg))
 
 | 注意点 | 说明 |
 |--------|------|
-| 全局静态状态 | \`om_dedup_set\`/\`global_om_stats\`/\`om_prefix_stack\`/\`om_indent_level\`/\`om_anomaly_detector\` 为全局静态，非线程安全（项目排除多线程） |
+| 全局静态状态 | \`om_dedup_set\`/\`global_om_stats\`/\`om_prefix_stack\`/\`om_indent_level\`/\`om_anomaly_detector\` 为全局静态，非线程安全 |
 | 历史消息截断 | \`om_history_push\` 单条消息截断到 256B，超长部分丢失 |
 | \`om_logger\` 代理范围 | 包装器代理 \`write\` 函数，记录开关关闭时同样不产生字符串 |
 | \`om_latency_tracker::compute\` 会排序 | 内部调用 \`compute_stats\` 按值传入并排序样本，非 \`const\` |

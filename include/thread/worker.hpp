@@ -6,8 +6,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <thread>
-#include <vector>
 
+#include "part/dense.hpp"
 #include "thread/error.hpp"
 #include "thread/job.hpp"
 #include "thread/lane.hpp"
@@ -84,7 +84,7 @@ struct worker
             FRAMEWORK_REPORT(error_severity::error, errc::invariant_broken);
             return false;
         }
-        steal_scratch_.resize(config.steal_batch == 0 ? 64 : config.steal_batch);
+        steal_scratch_.resize_fill(config.steal_batch == 0 ? 64 : config.steal_batch, nullptr);
         park_state_init(&park_);
         created_ = true;
         return true;
@@ -571,7 +571,7 @@ struct worker
     mpmc_queue* inject_{nullptr};
     std::atomic<bool>* shutdown_{nullptr};
     std::atomic<std::uint64_t>* completed_counter_{nullptr};
-    std::vector<job*> steal_scratch_{};
+    dense<job*> steal_scratch_{};
     lane_table* lane_registry_{nullptr};
     runtime_context* rt_{nullptr};
     worker_stats stats_{};

@@ -6,6 +6,8 @@
 #include <cstdio>
 #include <cstdlib>
 
+#include "part/fnv1a.hpp"
+
 namespace framework
 {
 enum class errc : std::uint32_t
@@ -69,19 +71,8 @@ inline constexpr std::uint32_t make_site(std::uint32_t file_hash, std::uint32_t 
     return (file_hash * 2654435761u) ^ (line * 40503u);
 }
 
-inline constexpr std::uint32_t hash_file_name(const char* name) noexcept
-{
-    std::uint32_t hash = 2166136261u;
-    for (std::size_t i = 0; name[i] != '\0'; ++i)
-    {
-        hash ^= static_cast<std::uint32_t>(static_cast<unsigned char>(name[i]));
-        hash *= 16777619u;
-    }
-    return hash;
-}
-
 #define FRAMEWORK_SITE()                                                                           \
-    ::framework::make_site(::framework::hash_file_name(__FILE__),                                  \
+    ::framework::make_site(static_cast<std::uint32_t>(::fnv1a_consteval(__FILE__)),                 \
                            static_cast<std::uint32_t>(__LINE__))
 
 inline constexpr std::size_t severity_count = 4;

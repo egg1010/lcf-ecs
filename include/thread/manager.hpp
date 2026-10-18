@@ -5,8 +5,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <new>
-#include <vector>
 
+#include "part/dense.hpp"
 #include "thread/error.hpp"
 #include "thread/job.hpp"
 #include "thread/lane.hpp"
@@ -106,7 +106,7 @@ struct manager
         suspended_.init(0);
         const std::size_t count = config.worker_count;
         dispatch_.init(count);
-        workers_.reserve(count);
+        workers_.reserve_exact(count);
         for (std::size_t i = 0; i < count; ++i)
         {
             void* memory =
@@ -796,7 +796,7 @@ struct manager
 
     manager_config config_{};
     mpmc_queue inject_{};
-    std::vector<worker*> workers_{};
+    dense<worker*> workers_{};
     lane_table lane_registry_{};
     dispatch_index dispatch_{};
     std::atomic<bool> shutdown_{false};
