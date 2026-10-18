@@ -67,6 +67,9 @@ namespace void_any_detail {
 
     // SSO 模式 vtable 工厂, 跨实例化共享
     template<typename T>
+    inline const vtable& get_heap_vtable();
+
+    template<typename T>
     inline const vtable& get_sso_vtable()
     {
         static const vtable vt = []{
@@ -523,6 +526,7 @@ private:
     //   1) 任一方为堆: 双方转堆后交换编码与堆指针
     //   2) 双方 SSO, 容量与对齐互够: 交换编码, 借临时区交换 SSO buffer 有效字节
     //   3) 容量或对齐互不满足: 双方转堆后交换指针
+#if defined(VOID_ANY_ENABLE_SSO)
     template<size_t SsoSize2, size_t SsoAlign2>
     FORCE_INLINE void cross_layout_swap_impl(
         define_void_any<SsoSize2, SsoAlign2>& other) noexcept
@@ -679,6 +683,7 @@ private:
         other.storage_.ptr_ = tmp_ptr;
 #endif
     }
+#endif
 
     // 将 SSO 数据迁移到堆分配, 编码切换为 heap vtable / heap 编码
     // 用于跨布局交换时容量或对齐互不满足的场景
@@ -872,10 +877,20 @@ public:
     FORCE_INLINE define_void_any(const define_void_any& other) noexcept
     {
 #if !defined(VOID_ANY_ENABLE_SSO)
+#if INTPTR_MAX == INT64_MAX
+        vtable_sso_type_ = other.vtable_sso_type_;
+        if (!vtable_sso_type_) { return; }
+        const vtable* vt = get_vtable();
+        void* cloned = (vt->clone && other.ptr_) ? vt->clone(other.ptr_) : nullptr;
+        if (cloned) { ptr_ = cloned; }
+        else { vtable_sso_type_ = 0; }
+#else
         vtable_ = other.vtable_;
         if (!vtable_) { return; }
-        ptr_ = (vtable_->clone && other.ptr_) ? vtable_->clone(other.ptr_) : nullptr;
-        if (!ptr_) { vtable_ = nullptr; }
+        void* cloned = (vtable_->clone && other.ptr_) ? vtable_->clone(other.ptr_) : nullptr;
+        if (cloned) { ptr_ = cloned; }
+        else { vtable_ = nullptr; }
+#endif
 #elif INTPTR_MAX == INT64_MAX
         uintptr_t vst = other.vtable_sso_type_;
         vtable_sso_type_ = vst;
@@ -969,10 +984,17 @@ public:
     FORCE_INLINE define_void_any(define_void_any&& other) noexcept
     {
 #if !defined(VOID_ANY_ENABLE_SSO)
+#if INTPTR_MAX == INT64_MAX
+        vtable_sso_type_ = other.vtable_sso_type_;
+        ptr_ = other.ptr_;
+        other.vtable_sso_type_ = 0;
+        other.ptr_ = nullptr;
+#else
         vtable_ = other.vtable_;
         ptr_ = other.ptr_;
         other.vtable_ = nullptr;
         other.ptr_ = nullptr;
+#endif
 #elif INTPTR_MAX == INT64_MAX
         uintptr_t vst = other.vtable_sso_type_;
         vtable_sso_type_ = vst;
@@ -1057,10 +1079,20 @@ public:
         {
             destroy_data();
 #if !defined(VOID_ANY_ENABLE_SSO)
+#if INTPTR_MAX == INT64_MAX
+            vtable_sso_type_ = other.vtable_sso_type_;
+            if (!vtable_sso_type_) { return *this; }
+            const vtable* vt = get_vtable();
+            void* cloned = (vt->clone && other.ptr_) ? vt->clone(other.ptr_) : nullptr;
+            if (cloned) { ptr_ = cloned; }
+            else { vtable_sso_type_ = 0; }
+#else
             vtable_ = other.vtable_;
             if (!vtable_) { return *this; }
-            ptr_ = (vtable_->clone && other.ptr_) ? vtable_->clone(other.ptr_) : nullptr;
-            if (!ptr_) { vtable_ = nullptr; }
+            void* cloned = (vtable_->clone && other.ptr_) ? vtable_->clone(other.ptr_) : nullptr;
+            if (cloned) { ptr_ = cloned; }
+            else { vtable_ = nullptr; }
+#endif
 #elif INTPTR_MAX == INT64_MAX
             uintptr_t vst = other.vtable_sso_type_;
             vtable_sso_type_ = vst;
@@ -1160,10 +1192,17 @@ public:
         {
             destroy_data();
 #if !defined(VOID_ANY_ENABLE_SSO)
+#if INTPTR_MAX == INT64_MAX
+            vtable_sso_type_ = other.vtable_sso_type_;
+            ptr_ = other.ptr_;
+            other.vtable_sso_type_ = 0;
+            other.ptr_ = nullptr;
+#else
             vtable_ = other.vtable_;
             ptr_ = other.ptr_;
             other.vtable_ = nullptr;
             other.ptr_ = nullptr;
+#endif
 #elif INTPTR_MAX == INT64_MAX
             uintptr_t vst = other.vtable_sso_type_;
             vtable_sso_type_ = vst;
@@ -1524,6 +1563,18 @@ public:
             // heap↔heap (含空): 编码与指针已交换, 完成
         }
 #else
+#if INTPTR_MAX == INT64_MAX
+        uintptr_t tmp_enc = vtable_sso_type_;
+        vtable_sso_type_ = other.vtable_sso_type_;
+        other.vtable_sso_type_ = tmp_enc;
+#else
+        const vtable* tmp_vt = vtable_;
+        vtable_ = other.vtable_;
+        other.vtable_ = tmp_vt;
+        bool tmp_sso = is_sso_;
+        is_sso_ = other.is_sso_;
+        other.is_sso_ = tmp_sso;
+#endif
         void* tmp_p = ptr_;
         ptr_ = other.ptr_;
         other.ptr_ = tmp_p;
@@ -1535,6 +1586,17 @@ public:
     FORCE_INLINE void copy_from(const T& object) noexcept
     {
         using DecayedT = std::decay_t<T>;
+        static_assert(std::is_trivially_copyable_v<DecayedT>
+                          || std::is_nothrow_copy_constructible_v<DecayedT>,
+                      "define_void_any::copy_from requires nothrow copy constructible (or trivially copyable)");
+        if (has_value_fast() && get_void_ptr() == static_cast<const void*>(std::addressof(object))) [[unlikely]]
+        {
+            DecayedT tmp{object};
+            destroy_data();
+            clear_metadata();
+            construct_from(std::move(tmp));
+            return;
+        }
         destroy_data();
         [[maybe_unused]] constexpr bool trivial_dtor = std::is_trivially_destructible_v<DecayedT>;
         [[maybe_unused]] constexpr bool trivial_copy = std::is_trivially_copyable_v<DecayedT>;
@@ -1573,7 +1635,7 @@ public:
 #else
         set_encoded(&get_heap_vtable<DecayedT>(), false, trivial_dtor, trivial_copy, 0);
 #endif
-        void* new_ptr = void_any_allocate(sizeof(DecayedT));
+        void* new_ptr = void_any_allocate_aligned(sizeof(DecayedT), alignof(DecayedT));
         if (!new_ptr) [[unlikely]]
         {
 #if INTPTR_MAX == INT64_MAX
@@ -1603,6 +1665,17 @@ public:
     FORCE_INLINE void move_from(T&& object) noexcept
     {
         using DecayedT = std::decay_t<T>;
+        static_assert(std::is_trivially_copyable_v<DecayedT>
+                          || std::is_nothrow_move_constructible_v<DecayedT>,
+                      "define_void_any::move_from requires nothrow move constructible (or trivially copyable)");
+        if (has_value_fast() && get_void_ptr() == static_cast<const void*>(std::addressof(object))) [[unlikely]]
+        {
+            DecayedT tmp{std::forward<T>(object)};
+            destroy_data();
+            clear_metadata();
+            construct_from(std::move(tmp));
+            return;
+        }
         destroy_data();
         [[maybe_unused]] constexpr bool trivial_dtor = std::is_trivially_destructible_v<DecayedT>;
         [[maybe_unused]] constexpr bool trivial_copy = std::is_trivially_copyable_v<DecayedT>;
@@ -1641,7 +1714,7 @@ public:
 #else
         set_encoded(&get_heap_vtable<DecayedT>(), false, trivial_dtor, trivial_copy, 0);
 #endif
-        void* new_ptr = void_any_allocate(sizeof(DecayedT));
+        void* new_ptr = void_any_allocate_aligned(sizeof(DecayedT), alignof(DecayedT));
         if (!new_ptr) [[unlikely]]
         {
 #if INTPTR_MAX == INT64_MAX

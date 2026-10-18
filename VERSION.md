@@ -1,1 +1,1 @@
-1.0.9-thread-beta
+1.0.9-beta
