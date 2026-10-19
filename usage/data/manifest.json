@@ -39,5 +39,14 @@
 {"title":"reorder_group — 多组件重排序遍历","category":"core","id":"reorder","icon":"O","order":43},
 {"title":"signal_queue — 信号与变更日志队列","category":"containers","id":"signal_queue","icon":"Q","order":44},
 {"title":"analyzer — 微架构分析","category":"tools","id":"analysis","icon":"A","order":45},
-{"title":"string_to_code — 字符串数字码","category":"tools","id":"string_to_code","icon":"C","order":46}
+{"title":"string_to_code — 字符串数字码","category":"tools","id":"string_to_code","icon":"C","order":46},
+{"title":"thread::manager — 工作线程池","category":"thread","id":"thread_manager","icon":"M","order":47},
+{"title":"thread::lane — 任务通道","category":"thread","id":"thread_lane","icon":"L","order":48},
+{"title":"thread::job — 任务与优先级","category":"thread","id":"thread_job","icon":"J","order":49},
+{"title":"thread::task — 协程任务","category":"thread","id":"thread_task","icon":"K","order":50},
+{"title":"thread::sync — 同步原语","category":"thread","id":"thread_sync","icon":"Y","order":51},
+{"title":"thread::mpmc_queue — 并发队列","category":"thread","id":"thread_mpmc","icon":"Q","order":52},
+{"title":"thread::error — 错误处理与日志","category":"thread","id":"thread_error","icon":"E","order":53},
+{"title":"thread::metrics — 运行指标","category":"thread","id":"thread_metrics","icon":"N","order":54},
+{"title":"thread::platform — 平台工具","category":"thread","id":"thread_platform","icon":"P","order":55}
 ]

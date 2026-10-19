@@ -16,7 +16,7 @@
 #include "thread/sync.hpp"
 #include "thread/worker.hpp"
 
-namespace framework
+namespace thread
 {
 
 inline constexpr std::size_t coro_frame_tiers[] = {128, 256, 512};
@@ -673,4 +673,4 @@ inline yield_awaitable co_yield_now() noexcept
 {
     return {};
 }
-} // namespace framework
+} // namespace thread

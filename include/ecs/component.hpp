@@ -47,7 +47,6 @@ struct system_context
     uint64_t excluded_mask;
     uint32_t order;
     uint16_t phase;          // 0=pre_update, 1=update, 2=post_update, 3=render
-    uint16_t parallel_group; // 0=sequential, 1+=parallel group
     uint32_t dependency_count;
     uint32_t dependencies[4];
 };
@@ -614,6 +613,14 @@ public:
     {
         single_class_set* set = get_single_class_set<T>();
         return set ? set->get_typed_pool_ptr<T>() : nullptr;
+    }
+
+    // 组件类型是否已在管理器中注册 (存在组件集合); 不关心是否已有实例
+    template <typename T>
+    [[nodiscard]] bool has_component() const noexcept
+    {
+        using DecayedT = std::decay_t<T>;
+        return type_id::get_type_id<DecayedT>() < static_cast<int>(components_c_.size());
     }
 
     [[nodiscard]] uint64_t get_entity_mask(entity entitys) const noexcept

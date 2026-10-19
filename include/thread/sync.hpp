@@ -7,7 +7,7 @@
 #include "thread/error.hpp"
 #include "thread/platform.hpp"
 
-namespace framework
+namespace thread
 {
 
 struct waiter_node
@@ -374,4 +374,4 @@ struct spin_latch
         }
     }
 };
-} // namespace framework
+} // namespace thread

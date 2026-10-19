@@ -10,7 +10,7 @@
 #include "thread/mpmc_queue.hpp"
 #include "thread/runtime.hpp"
 
-namespace framework
+namespace thread
 {
 inline constexpr std::uint32_t lane_no_id = 0xFFFFFFFFu;
 inline constexpr std::size_t lane_default_capacity = mpmc_default_capacity;
@@ -320,4 +320,4 @@ struct lane_table
     std::size_t capacity_{0};
     std::atomic<std::size_t> count_{0};
 };
-} // namespace framework
+} // namespace thread

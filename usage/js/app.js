@@ -11,7 +11,8 @@
     { id: 'allocators', name: '内存分配器',  icon: 'A' },
     { id: 'algorithms', name: '算法',        icon: 'S' },
     { id: 'tools',      name: '工具',        icon: 'T' },
-    { id: 'utf8',       name: 'UTF-8 模块',  icon: 'U' }
+    { id: 'utf8',       name: 'UTF-8 模块',  icon: 'U' },
+    { id: 'thread',     name: '多线程',      icon: 'X' }
   ];
 
   var DOM = {};

@@ -9,7 +9,7 @@
 #include "thread/error.hpp"
 #include "thread/job.hpp"
 
-namespace framework
+namespace thread
 {
 inline constexpr std::size_t work_deque_default_capacity = 1024;
 inline constexpr std::size_t work_deque_max_capacity = 1u << 20;
@@ -376,4 +376,4 @@ struct work_deque
 
     std::atomic<work_deque_buffer*> retired_{nullptr};
 };
-} // namespace framework
+} // namespace thread

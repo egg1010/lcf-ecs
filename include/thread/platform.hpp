@@ -34,7 +34,7 @@
 #endif
 #endif
 
-namespace framework
+namespace thread
 {
 
 enum class platform_kind : std::uint8_t
@@ -489,4 +489,4 @@ struct fast_rand
         return x;
     }
 };
-} // namespace framework
+} // namespace thread

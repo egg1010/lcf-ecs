@@ -10,7 +10,7 @@
 #include "thread/job.hpp"
 #include "thread/sync.hpp"
 
-namespace framework
+namespace thread
 {
 
 // ---------------------------------------------------------------------------
@@ -582,4 +582,4 @@ struct runtime_scope
   private:
     runtime_context* previous_;
 };
-} // namespace framework
+} // namespace thread

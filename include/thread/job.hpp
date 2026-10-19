@@ -10,7 +10,7 @@
 
 #include "thread/error.hpp"
 
-namespace framework
+namespace thread
 {
 inline constexpr std::uint32_t job_unordered_lane = 0xFFFFFFFFu;
 inline constexpr std::uint32_t no_affinity_worker = 0xFFFFFFFFu;
@@ -519,4 +519,4 @@ inline void reset_job_metadata(job* target) noexcept
     target->set_coroutine_resume(false);
     target->set_overflow_capture(false);
 }
-} // namespace framework
+} // namespace thread

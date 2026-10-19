@@ -382,6 +382,7 @@ mgr.preallocate_component_signals(4096);
 | \`get_single_class_set<T>()\` | 获取单组件集合指针 |
 | \`get_single_class_set<T>() const\` | const 版本 |
 | \`get_component_container<T>()\` | 获取类型化组件池指针 |
+| \`has_component<T>()\` | 查询组件类型是否已在管理器中注册（存在组件集合，不关心是否已有实例） |
 | \`add/add_batch/hard_remove/soft_remove\` | 返回 \`operating_message\`（值类型） |
 | \`get_component_meta(int type_id)\` | 获取组件元数据（含组件大小） |
 | \`get_single_class_set_by_id(int type_id)\` | 通过 type_id 获取组件集合（运行时视图用） |
@@ -672,11 +673,11 @@ mgr.flush_change_log([](const ecs::change_record& r) {
 
 ### 系统上下文池
 
-注册系统执行上下文，管理执行顺序和并行分组。
+注册系统执行上下文，管理执行顺序。
 
 | 接口 | 说明 |
 |------|------|
-| \`system_context\` | 系统上下文结构体：\`required_mask\`, \`excluded_mask\`, \`order\`, \`phase\`, \`parallel_group\`, \`dependencies\` |
+| \`system_context\` | 系统上下文结构体：\`required_mask\`, \`excluded_mask\`, \`order\`, \`phase\`, \`dependencies\` |
 | \`register_system(ctx)\` | 注册系统上下文 |
 | \`get_system_contexts()\` | 获取所有系统上下文（\`const class_pool<system_context>&\`） |
 
@@ -685,7 +686,6 @@ mgr.register_system(ecs::system_context{
     .required_mask = 0x3,  // 需要 Position + Velocity
     .phase = 1,            // update 阶段
     .order = 100,          // 执行顺序
-    .parallel_group = 0,   // 串行执行
 });
 \`\`\`
 
@@ -1598,7 +1598,6 @@ rv.for_each([](entity e) {
 | \`runtime_view_create_from_terms(terms)\` | 通过 \`runtime_term\` 创建视图，支持 OR / OPTIONAL / NOT |
 | \`for_each(func)\` | 遍历所有匹配实体，回调接收 \`entity\` 或无参 |
 | \`for_each_typed<Ts...>(func)\` | 遍历并回传组件引用，回调接收 \`entity, Ts&...\` 或 \`Ts&...\` |
-| \`for_each_parallel(worker_id, worker_count, func)\` | 分片并行遍历，外部线程池驱动 |
 | \`for_each_paged(offset, limit, func)\` | 分页遍历 |
 | \`for_each_changed(func)\` | 遍历自上次调用后发生变更的实体 |
 | \`size()\` | 命中实体数 |
@@ -1662,23 +1661,7 @@ rv.for_each_typed<Position>([](Position& p) {
 });
 \`\`\`
 
-### 7.7 for_each_parallel — 并行迭代
-
-按 primary dense 数组分片，由外部线程池驱动。每个 worker 处理 \`[worker_id * per_worker, (worker_id+1) * per_worker)\` 区间。
-
-\`\`\`cpp
-auto rv = mgr.runtime_view_create({type_id::get_type_id<Position>()});
-
-// 2 个 worker
-rv.for_each_parallel(0, 2, [](entity e, size_t worker_id) {
-    // worker 0 处理前半
-});
-rv.for_each_parallel(1, 2, [](entity e) {
-    // worker 1 处理后半
-});
-\`\`\`
-
-### 7.8 for_each_paged — 分页遍历
+### 7.7 for_each_paged — 分页遍历
 
 \`\`\`cpp
 auto rv = mgr.runtime_view_create({type_id::get_type_id<Position>()});
@@ -1689,7 +1672,7 @@ rv.for_each_paged(100, 100, [](entity e) {
 });
 \`\`\`
 
-### 7.9 变更检测
+### 7.8 变更检测
 
 通过组件池版本号检测变更。首次调用 \`reset_change_tracking\` 记录基线，\`changed\` 比较当前版本与基线。
 
@@ -1706,7 +1689,7 @@ if (rv.changed()) {              // 版本变化则 true
 }
 \`\`\`
 
-### 7.10 sort_by_component — 按组件排序
+### 7.9 sort_by_component — 按组件排序
 
 \`\`\`cpp
 auto rv = mgr.runtime_view_create({type_id::get_type_id<Position>()});
@@ -1722,7 +1705,7 @@ for (const auto& e : rv.get_sorted_entities()) {
 }
 \`\`\`
 
-### 7.11 count — 精确命中数
+### 7.10 count — 精确命中数
 
 \`\`\`cpp
 auto rv = mgr.runtime_view_create({
@@ -1733,7 +1716,7 @@ auto rv = mgr.runtime_view_create({
 size_t n = rv.count();  // 精确匹配数，遍历计算
 \`\`\`
 
-### 7.12 iterator — 迭代器
+### 7.11 iterator — 迭代器
 
 \`\`\`cpp
 auto rv = mgr.runtime_view_create({type_id::get_type_id<Position>()});
@@ -1750,7 +1733,7 @@ for (entity e : rv) {
 }
 \`\`\`
 
-### 7.13 runtime_term — OR / OPTIONAL / NOT 查询
+### 7.12 runtime_term — OR / OPTIONAL / NOT 查询
 
 通过 \`runtime_term\` 构造查询条件，支持 OR（并集）、NOT（排除）、OPTIONAL（可选）操作。
 
@@ -1778,7 +1761,7 @@ rv.for_each([](entity e) {
 | 2 | NOT | 必须不拥有 |
 | 3 | OPTIONAL | 可选，不影响命中 |
 
-### 7.14 access_mode — 读写标注
+### 7.13 access_mode — 读写标注
 
 \`runtime_term.access\` 标注组件访问模式，用于意图声明。
 
@@ -1805,7 +1788,6 @@ auto rv = mgr.runtime_view_create_from_terms(std::move(terms));
 | 用 \`get_component_bit<T>() != 0\` 判断组件是否存在 | type_id > 64 的组件 bit 恒为 0 | 用 \`get_ptr<T>(e) != nullptr\` 或视图查询判断 |
 | 组件数量变化后忘记 \`rebuild()\` | 主集选择可能不是最优 | 增删组件类型后调用 \`rebuild()\` |
 | \`for_each_changed\` 依赖增量语义 | 全量遍历匹配实体，非仅变更实体 | 变更检测仅判断"有无变更" |
-| 纯 OR 查询使用 \`for_each_parallel\` | 纯 OR 无 primary_set，不支持分片 | 纯 OR 查询使用 \`for_each\` 或 \`count\` |
 | \`sort_by_component\` 后不重新排序就修改组件 | 排序缓存与实际数据不一致 | 组件变更后重新调用 \`sort_by_component\` |
 
 ---

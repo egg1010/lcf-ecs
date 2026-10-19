@@ -553,34 +553,6 @@ inline void runtime_view::for_each_typed_impl(Func&& func, std::index_sequence<I
 }
 
 template <typename Func>
-inline void runtime_view::for_each_parallel(size_t worker_id, size_t worker_count,
-                                             Func&& func) noexcept
-{
-    ensure_fresh();
-    if (worker_count == 0 || query_.primary_set_ == nullptr) return;
-
-    size_t n = query_.primary_set_->get_entity_indices().size();
-    size_t per_worker = (n + worker_count - 1) / worker_count;
-    size_t start = worker_id * per_worker;
-    size_t end = (start + per_worker < n) ? (start + per_worker) : n;
-
-    for_each_hit_range(start, end, [&](entity e) {
-        if constexpr (std::is_invocable_v<Func, entity, size_t>)
-        {
-            func(e, worker_id);
-        }
-        else if constexpr (std::is_invocable_v<Func, entity>)
-        {
-            func(e);
-        }
-        else
-        {
-            func();
-        }
-    });
-}
-
-template <typename Func>
 inline void runtime_view::for_each_paged(size_t offset, size_t limit, Func&& func) noexcept
 {
     ensure_fresh();

@@ -16,7 +16,7 @@
 #include "thread/scheduler.hpp"
 #include "thread/worker.hpp"
 
-namespace framework
+namespace thread
 {
 
 enum class stop_mode : std::uint8_t
@@ -809,4 +809,4 @@ struct manager
     runtime_context* rt_{nullptr};
     std::atomic<std::uint64_t> route_ticket_{0};
 };
-} // namespace framework
+} // namespace thread

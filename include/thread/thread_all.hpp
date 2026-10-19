@@ -15,3 +15,5 @@
 #include "thread/sync.hpp"
 #include "thread/work_deque.hpp"
 #include "thread/worker.hpp"
+
+namespace td = thread;

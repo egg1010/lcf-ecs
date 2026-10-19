@@ -17,7 +17,7 @@
 #include "thread/scheduler.hpp"
 #include "thread/work_deque.hpp"
 
-namespace framework
+namespace thread
 {
 inline constexpr std::int32_t worker_no_owner = -1;
 inline constexpr std::int32_t worker_no_group = -1;
@@ -578,4 +578,4 @@ struct worker
     park_state park_{};
     bool created_{false};
 };
-} // namespace framework
+} // namespace thread

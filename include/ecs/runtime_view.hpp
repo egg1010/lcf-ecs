@@ -127,10 +127,6 @@ public:
     template <typename... Ts, typename Func, size_t... Is>
     void for_each_typed_impl(Func&& func, std::index_sequence<Is...>) noexcept;
 
-    // 2. 并行迭代(按 primary dense 分片,外部线程池驱动)
-    template <typename Func>
-    void for_each_parallel(size_t worker_id, size_t worker_count, Func&& func) noexcept;
-
     template <typename Func>
     void for_each_paged(size_t offset, size_t limit, Func&& func) noexcept;
 

@@ -9,7 +9,7 @@
 #include "thread/manager.hpp"
 #include "thread/worker.hpp"
 
-namespace framework
+namespace thread
 {
 
 struct worker_metrics
@@ -169,4 +169,4 @@ inline metrics_snapshot collect_metrics(manager& mgr) noexcept
 
     return snapshot;
 }
-} // namespace framework
+} // namespace thread

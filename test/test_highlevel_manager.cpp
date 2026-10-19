@@ -1,4 +1,4 @@
-﻿// test_highlevel_manager.cpp - 高层封装测试: ecs::manager
+// test_highlevel_manager.cpp - 高层封装测试: ecs::manager
 #include "test_common.hpp"
 #include "include/ecs/component.hpp"
 #include "include/ecs/entity.hpp"
@@ -148,6 +148,19 @@ int main()
             }
         }
         t_check("sort_entities_by_component 有序", sorted);
+    }
+
+    t_section(8, "组件类型注册查询");
+    {
+        ecs::manager mgr;
+        t_check("未注册类型 has_component 为假", !mgr.has_component<position>());
+        auto e = mgr.create_entity();
+        mgr.add(e, position{1.0f, 2.0f});
+        t_check("添加后 has_component 为真", mgr.has_component<position>());
+        t_check("其他类型仍为假", !mgr.has_component<velocity>());
+
+        mgr.hard_remove<position>(e);
+        t_check("移除实例后仍视为已注册", mgr.has_component<position>());
     }
 
     return t_end("manager ");

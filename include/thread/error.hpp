@@ -8,7 +8,7 @@
 
 #include "part/fnv1a.hpp"
 
-namespace framework
+namespace thread
 {
 enum class errc : std::uint32_t
 {
@@ -72,7 +72,7 @@ inline constexpr std::uint32_t make_site(std::uint32_t file_hash, std::uint32_t 
 }
 
 #define FRAMEWORK_SITE()                                                                           \
-    ::framework::make_site(static_cast<std::uint32_t>(::fnv1a_consteval(__FILE__)),                 \
+    ::thread::make_site(static_cast<std::uint32_t>(::fnv1a_consteval(__FILE__)),                 \
                            static_cast<std::uint32_t>(__LINE__))
 
 inline constexpr std::size_t severity_count = 4;
@@ -321,7 +321,7 @@ inline void emit_fallback_log(const error_info& info) noexcept
     }
     char buffer[160] = {};
     std::snprintf(buffer, sizeof(buffer),
-                  "[framework:%s] errc=%s site=%08x tag=%u lane=%u thread=%u",
+                  "[thread:%s] errc=%s site=%08x tag=%u lane=%u thread=%u",
                   severity_name(info.severity_), errc_name(info.code_),
                   static_cast<unsigned>(info.site_), static_cast<unsigned>(info.tag_),
                   static_cast<unsigned>(info.lane_id_), static_cast<unsigned>(info.thread_));
@@ -406,10 +406,10 @@ inline error_action report(error_severity severity, errc code, std::uint16_t tag
 }
 
 #define FRAMEWORK_REPORT(severity, code)                                                           \
-    ::framework::report((severity), (code), 0, 0, 0, FRAMEWORK_SITE())
+    ::thread::report((severity), (code), 0, 0, 0, FRAMEWORK_SITE())
 
 #define FRAMEWORK_REPORT_TAGGED(severity, code, tag, lane, flags)                                  \
-    ::framework::report((severity), (code), (tag), (lane), (flags), FRAMEWORK_SITE())
+    ::thread::report((severity), (code), (tag), (lane), (flags), FRAMEWORK_SITE())
 
 inline void invariant_check(bool condition, errc code, std::uint32_t site) noexcept
 {
@@ -421,7 +421,7 @@ inline void invariant_check(bool condition, errc code, std::uint32_t site) noexc
 }
 
 #define FRAMEWORK_INVARIANT(condition, code)                                                       \
-    ::framework::invariant_check((condition), (code), FRAMEWORK_SITE())
+    ::thread::invariant_check((condition), (code), FRAMEWORK_SITE())
 
 inline void reset_error_state() noexcept
 {
@@ -434,4 +434,4 @@ inline void reset_error_state() noexcept
     global_stop_signal().clear();
     global_stop_signal().frame_abort_count_.store(0, std::memory_order_relaxed);
 }
-} // namespace framework
+} // namespace thread

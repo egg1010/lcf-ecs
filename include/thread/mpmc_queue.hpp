@@ -7,7 +7,7 @@
 
 #include "thread/error.hpp"
 
-namespace framework
+namespace thread
 {
 inline constexpr std::size_t mpmc_default_capacity = 4096;
 inline constexpr std::size_t mpmc_max_capacity = 1u << 22;
@@ -213,4 +213,4 @@ struct mpmc_queue
     [[maybe_unused]] std::uint64_t tail_pad_[7]{};
     mpmc_stats stats_{};
 };
-} // namespace framework
+} // namespace thread

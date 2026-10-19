@@ -9,7 +9,7 @@
 #include "thread/job.hpp"
 #include "thread/work_deque.hpp"
 
-namespace framework
+namespace thread
 {
 
 inline constexpr std::uint8_t scheduler_default_levels = default_priority_levels;
@@ -243,4 +243,4 @@ struct dispatch_index
     std::size_t count_{0};
     std::atomic<std::size_t> cursor_{0};
 };
-} // namespace framework
+} // namespace thread

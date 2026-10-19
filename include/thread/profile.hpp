@@ -9,7 +9,7 @@
 #include "thread/platform.hpp"
 #include "thread/sync.hpp"
 
-namespace framework
+namespace thread
 {
 
 namespace profile
@@ -116,4 +116,4 @@ struct frame_scope
     counter counter_{};
     std::uint32_t submitted_{0};
 };
-} // namespace framework
+} // namespace thread

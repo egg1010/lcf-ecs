@@ -7,7 +7,7 @@
 #include "thread/manager.hpp"
 #include "thread/runtime.hpp"
 
-namespace framework
+namespace thread
 {
 
 inline bool spawn(manager& mgr, task<void>&& work,
@@ -47,4 +47,4 @@ inline bool spawn(manager& mgr, task<void>&& work,
     }
     return true;
 }
-} // namespace framework
+} // namespace thread
