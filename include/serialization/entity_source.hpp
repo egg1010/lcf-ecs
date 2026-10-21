@@ -1,7 +1,7 @@
 // entity_source.hpp - 运行期 ECS 枚举 (注册类型 / def 类型 / 集合槽位 / 存活实体)
 #pragma once
 
-#include "../part/type_id.hpp"
+#include "../part/type/type_id.hpp"
 #include "../part/dense.hpp"
 #include "../part/codec/archive_codec.hpp"
 #include "../ecs/component.hpp"
@@ -27,11 +27,8 @@ struct slot_view
 template<typename F>
 inline void for_each_registered_type(F&& fn) noexcept
 {
-    auto& reg = detail::type_factory_registry();
-    for (size_t i = 0; i < reg.size(); ++i)
-    {
-        fn(reg[i]);
-    }
+    detail::type_factory_registry().for_each(
+        [&fn](int, const detail::type_factory_entry& entry) noexcept { fn(entry); });
 }
 
 template<typename F>

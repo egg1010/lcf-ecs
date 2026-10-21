@@ -44,3 +44,20 @@ inline uint64_t fnv1a_runtime(const char* s, size_t len) noexcept
     }
     return h;
 }
+
+// 把一段字节混入既有 FNV-1a 哈希（用于逐字段/逐元素组合）
+inline uint64_t fnv1a_mix(uint64_t hash, const void* data, size_t len) noexcept
+{
+    const auto* bytes = static_cast<const unsigned char*>(data);
+    for (size_t i = 0; i < len; ++i)
+    {
+        hash ^= bytes[i];
+        hash *= FNV_PRIME_64;
+    }
+    return hash;
+}
+
+inline uint64_t fnv1a_mix(uint64_t hash, uint64_t value) noexcept
+{
+    return fnv1a_mix(hash, &value, sizeof(value));
+}

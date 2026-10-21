@@ -1,8 +1,12 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+
+#include "part/bit_ops.hpp"
+#include "part/time/timer.hpp"
 
 #if defined(_WIN32)
 
@@ -36,6 +40,13 @@
 
 namespace thread
 {
+
+using ::count_leading_zeros;
+using ::count_trailing_zeros;
+using ::fast_rand;
+using ::mix_bits;
+using ::monotonic_now_ns;
+using ::popcount;
 
 enum class platform_kind : std::uint8_t
 {
@@ -241,15 +252,9 @@ inline void park_state_init(park_state* state) noexcept
 
 inline void platform_relax_pause() noexcept
 {
-#if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
-    _mm_pause();
-#elif defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))
-    __builtin_ia32_pause();
-#elif defined(__aarch64__) || defined(_M_ARM64)
-    __asm__ __volatile__("yield");
-#else
+    // 只用标准库：编译屏障即可表达“暂停提示”，不依赖编译器内置或内联汇编，
+    // 保证 GCC / Clang / MSVC 及其他 C++20 编译器行为一致。
     std::atomic_signal_fence(std::memory_order_seq_cst);
-#endif
 }
 
 #if defined(_WIN32)
@@ -439,54 +444,4 @@ inline std::uint64_t process_thread_id() noexcept
 #endif
 }
 
-inline std::uint64_t mix_bits(std::uint64_t value) noexcept
-{
-    value += 0x9E3779B97F4A7C15ull;
-    value = (value ^ (value >> 30)) * 0xBF58476D1CE4E5B9ull;
-    value = (value ^ (value >> 27)) * 0x94D049BB133111EBull;
-    return value ^ (value >> 31);
-}
-
-inline std::uint32_t count_trailing_zeros(std::uint64_t value) noexcept
-{
-    if (value == 0)
-    {
-        return 64;
-    }
-#if defined(__GNUC__) || defined(__clang__)
-    return static_cast<std::uint32_t>(__builtin_ctzll(value));
-#elif defined(_MSC_VER)
-    unsigned long index = 0;
-    (void)_BitScanForward64(&index, value);
-    return static_cast<std::uint32_t>(index);
-#else
-    std::uint32_t count = 0;
-    while ((value & 1ull) == 0u)
-    {
-        value >>= 1;
-        ++count;
-    }
-    return count;
-#endif
-}
-
-struct fast_rand
-{
-    std::uint64_t state_{0};
-
-    explicit fast_rand(std::uint64_t seed) noexcept
-        : state_(seed == 0 ? 0x9E3779B97F4A7C15ull : seed)
-    {
-    }
-
-    std::uint64_t next() noexcept
-    {
-        std::uint64_t x = state_;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        state_ = x;
-        return x;
-    }
-};
 } // namespace thread

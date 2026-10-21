@@ -1,6 +1,6 @@
 // test_module_t_fun.cpp - 模块功能测试: t_fun
 #include "test_common.hpp"
-#include "include/part/t_fun.hpp"
+#include "include/part/type/t_fun.hpp"
 
 static int add_ints(int a, int b) { return a + b; }
 static int g_accum = 0;

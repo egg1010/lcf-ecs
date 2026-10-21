@@ -7,7 +7,7 @@
 #include <utility>
 #include <type_traits>
 #include "../part/force_inline.hpp"
-#include "../part/type_id.hpp"
+#include "../part/type/type_id.hpp"
 #include "../part/dense.hpp"
 
 namespace reflect {

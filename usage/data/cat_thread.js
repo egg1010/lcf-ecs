@@ -14,7 +14,7 @@ window.DOCS_DATA['thread_manager'] = {
 
 | 字段 | 默认值 | 说明 |
 |------|--------|------|
-| \`worker_count\` | \`0\` | 工作线程数；\`0\` 为嵌入式（无线程，仅 \`pump\` 驱动） |
+| \`worker_count\` | \`0\` | 线程预算总数（含原生主线程接入的外部角色）；\`0\` 为嵌入式（无线程，仅 \`pump\` 驱动） |
 | \`inject_capacity\` | \`4096\` | 全局注入队列容量 |
 | \`local_capacity\` | \`1024\` | 每线程本地双端队列容量 |
 | \`steal_batch\` | \`64\` | 单次窃取批量上限 |
@@ -25,13 +25,20 @@ window.DOCS_DATA['thread_manager'] = {
 | \`mailbox_capacity\` | \`4096\` | 每线程邮箱队列容量 |
 | \`job_slot_capacity\` | \`8192\` | 任务槽池容量 |
 | \`frame_pool_blocks\` | \`1024\` | 每级协程帧块数 |
+| \`task_capacity\` | \`4096\` | 持久任务图容量；\`0\` 关闭任务图 |
+| \`roles\` / \`role_count\` | \`nullptr\` / \`0\` | 角色划分；未给出时全部线程归入 \`general\` |
+| \`task_local_capacity\` | \`1024\` | 每线程本地任务队列容量 |
+| \`task_command_capacity\` | \`1024\` | 顺序域命令队列容量 |
+| \`task_inject_capacity\` | \`4096\` | 任务注入队列容量 |
+| \`task_dependency_capacity\` | \`8192\` | 任务依赖边上限 |
 
 预设配置（\`thread::profile\`）：
 
 | 接口 | 说明 |
 |------|------|
-| \`profile::server(worker_count = 0)\` | 服务端预设，不绑核 |
-| \`profile::game(worker_count = 0)\` | 游戏预设，绑核，较小窃取批量 |
+| \`profile::thread_budget()\` | 默认线程预算：硬件线程数减一（主线程参与帧循环） |
+| \`profile::server(worker_count = thread_budget())\` | 服务端预设，不绑核 |
+| \`profile::game(worker_count = thread_budget())\` | 游戏预设，绑核，较小窃取批量 |
 | \`profile::embedded()\` | 嵌入式预设，无线程（\`worker_count = 0\`） |
 | \`profile::is_embedded(config)\` | 判断是否为嵌入式配置 |
 
@@ -69,7 +76,8 @@ window.DOCS_DATA['thread_manager'] = {
 |------|------|
 | \`create_lane(lane_config)\` | 创建通道，返回 \`lane*\` |
 | \`lane_at(index)\` / \`lane_count()\` | 查询通道 |
-| \`worker_count()\` / \`worker_at(index)\` | 查询工作线程 |
+| \`worker_count()\` / \`worker_at(index)\` | 查询工作线程（含外部角色） |
+| \`spawned_worker_count()\` | 实际创建的工作线程数（预算扣除外部角色） |
 | \`inject_queue()\` | 全局注入队列 |
 | \`stats()\` | \`manager_stats\`：\`submitted_\` / \`rejected_\` / \`wakes_\` |
 | \`completed_count()\` | 已完成任务数 |
@@ -77,7 +85,6 @@ window.DOCS_DATA['thread_manager'] = {
 ### 47.5 示例
 
 \`\`\`cpp
-#include "thread/thread_all.hpp"
 
 thread::manager mgr;
 if (!mgr.configure(thread::profile::server(4)))
@@ -515,7 +522,7 @@ std::printf("completed=%llu stolen=%llu ratio=%.3f\\n",
 
 | 错误做法 | 问题 | 正确做法 |
 |---------|------|---------|
-| 高频调用 \`collect_metrics\` | 逐线程逐通道读取有开销 | 按采样周期调用 |
+| 高频调用 \`collect_metrics\` | 采集需遍历线程与通道 | 按采样周期调用 |
 | 超上限后按全量读取 worker | 数组被截断 | 关注 \`workers_truncated\` |
 `
 };

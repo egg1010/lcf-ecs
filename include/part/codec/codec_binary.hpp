@@ -4,8 +4,7 @@
 
 #include "archive_codec.hpp"
 #include "../safety.hpp"
-#include "binary_writer.hpp"
-#include "binary_reader.hpp"
+#include "binary_io.hpp"
 #include "../operating_message.hpp"
 #include <cstring>
 #include <string>

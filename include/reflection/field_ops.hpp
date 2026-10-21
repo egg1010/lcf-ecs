@@ -8,7 +8,7 @@
 #include <type_traits>
 #include <new>
 #include <array>
-#include "../part/type_id.hpp"
+#include "../part/type/type_id.hpp"
 #include "../part/fnv1a.hpp"
 #include "../config/reflect_config.hpp"
 #include "container_ops.hpp"

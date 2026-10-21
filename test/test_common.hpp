@@ -8,7 +8,7 @@
 #include <cstdio>
 #include <string>
 #include <utility>
-#include "include/part/time.hpp"
+#include "include/part/time/timer.hpp"
 #include "include/part/analysis.hpp"
 
 // Windows 控制台默认代码页 (GBK/936) 会把 UTF-8 中文输出显示为乱码,

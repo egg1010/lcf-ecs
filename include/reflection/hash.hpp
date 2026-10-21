@@ -32,18 +32,11 @@ public:
                     const char* p = s.base + e * s.stride;
                     if (s.ops && s.ops->hash_fn)
                     {
-                        h ^= s.ops->hash_fn(p);
-                        h *= FNV_PRIME_64;
+                        h = fnv1a_mix(h, s.ops->hash_fn(p));
                     }
                     else
                     {
-                        // 无 hash_fn: 字节级 FNV-1a
-                        const uint8_t* bytes = reinterpret_cast<const uint8_t*>(p);
-                        for (uint32_t b = 0; b < s.stride; ++b)
-                        {
-                            h ^= bytes[b];
-                            h *= FNV_PRIME_64;
-                        }
+                        h = fnv1a_mix(h, p, s.stride);
                     }
                 }
                 return true;

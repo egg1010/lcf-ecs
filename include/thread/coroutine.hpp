@@ -7,6 +7,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <new>
+#include <span>
+#include <type_traits>
 #include <utility>
 
 #include "thread/error.hpp"
@@ -18,6 +20,141 @@
 
 namespace thread
 {
+
+// 类型化结果：持有值或错误码；移动语义，不复制大对象
+template <typename T>
+struct task_result
+{
+    alignas(T) unsigned char storage_[sizeof(T)]{};
+    bool has_value_{false};
+    errc error_{errc::ok};
+
+    task_result() noexcept = default;
+
+    task_result(T&& value) noexcept
+    {
+        set(std::move(value));
+    }
+
+    task_result(errc error) noexcept : error_(error)
+    {
+    }
+
+    task_result(const task_result&) = delete;
+    task_result& operator=(const task_result&) = delete;
+
+    task_result(task_result&& other) noexcept : error_(other.error_)
+    {
+        if (other.has_value_)
+        {
+            set(std::move(other.value()));
+            other.has_value_ = false;
+        }
+    }
+
+    task_result& operator=(task_result&& other) noexcept
+    {
+        if (this != &other)
+        {
+            reset();
+            error_ = other.error_;
+            if (other.has_value_)
+            {
+                set(std::move(other.value()));
+                other.has_value_ = false;
+            }
+        }
+        return *this;
+    }
+
+    ~task_result()
+    {
+        reset();
+    }
+
+    bool ok() const noexcept
+    {
+        return error_ == errc::ok;
+    }
+
+    bool has_value() const noexcept
+    {
+        return has_value_;
+    }
+
+    T& value() noexcept
+    {
+        return *std::launder(reinterpret_cast<T*>(storage_));
+    }
+
+    const T& value() const noexcept
+    {
+        return *std::launder(reinterpret_cast<const T*>(storage_));
+    }
+
+    T&& take() noexcept
+    {
+        has_value_ = false;
+        return std::move(value());
+    }
+
+    void set(T&& value) noexcept
+    {
+        new (storage_) T(std::move(value));
+        has_value_ = true;
+        error_ = errc::ok;
+    }
+
+    void set_error(errc error) noexcept
+    {
+        reset();
+        error_ = error;
+    }
+
+    void reset() noexcept
+    {
+        if (has_value_)
+        {
+            value().~T();
+            has_value_ = false;
+        }
+    }
+};
+
+template <>
+struct task_result<void>
+{
+    errc error_{errc::ok};
+
+    task_result() noexcept = default;
+
+    task_result(errc error) noexcept : error_(error)
+    {
+    }
+
+    bool ok() const noexcept
+    {
+        return error_ == errc::ok;
+    }
+};
+
+// when_all 的错误汇总：返回第一个非 ok 的错误码，不分配
+inline errc first_error(std::span<const errc> errors) noexcept
+{
+    for (errc value : errors)
+    {
+        if (value != errc::ok)
+        {
+            return value;
+        }
+    }
+    return errc::ok;
+}
+
+inline bool all_ok(std::span<const errc> errors) noexcept
+{
+    return first_error(errors) == errc::ok;
+}
 
 inline constexpr std::size_t coro_frame_tiers[] = {128, 256, 512};
 inline constexpr std::size_t coro_frame_tier_count =
@@ -227,6 +364,7 @@ template <typename T> struct task
     {
         T value_{};
         std::coroutine_handle<> continuation_{};
+        errc error_{errc::ok};
 
         static void* operator new(std::size_t size) noexcept
         {
@@ -420,9 +558,17 @@ template <typename T> struct task
             return handle_;
         }
 
-        T await_resume() const noexcept
+        task_result<T> await_resume() const noexcept
         {
-            return handle_.promise().value_;
+            if (handle_ == nullptr)
+            {
+                return task_result<T>{errc::cancelled};
+            }
+            if (handle_.promise().error_ != errc::ok)
+            {
+                return task_result<T>{handle_.promise().error_};
+            }
+            return task_result<T>{T(std::move(handle_.promise().value_))};
         }
     };
 
@@ -440,6 +586,7 @@ template <> struct task<void>
     struct promise_type
     {
         std::coroutine_handle<> continuation_{};
+        errc error_{errc::ok};
 
         static void* operator new(std::size_t size) noexcept
         {
@@ -627,8 +774,13 @@ template <> struct task<void>
             return handle_;
         }
 
-        void await_resume() const noexcept
+        task_result<void> await_resume() const noexcept
         {
+            if (handle_ == nullptr)
+            {
+                return task_result<void>{errc::cancelled};
+            }
+            return task_result<void>{handle_.promise().error_};
         }
     };
 

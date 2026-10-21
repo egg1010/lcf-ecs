@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <thread>
 
 #include "thread/job.hpp"
 #include "thread/lane.hpp"
@@ -15,7 +16,15 @@ namespace thread
 namespace profile
 {
 
-inline manager_config server(std::size_t worker_count = 0) noexcept
+// 原生主线程参与帧循环，因此默认线程预算为硬件线程数减一，避免超订
+inline std::size_t thread_budget() noexcept
+{
+    const unsigned hardware = std::thread::hardware_concurrency();
+    const std::size_t total = hardware == 0 ? 1u : static_cast<std::size_t>(hardware);
+    return total > 1 ? total - 1 : 1;
+}
+
+inline manager_config server(std::size_t worker_count = thread_budget()) noexcept
 {
     manager_config config{};
     config.worker_count = worker_count;
@@ -29,7 +38,7 @@ inline manager_config server(std::size_t worker_count = 0) noexcept
     return config;
 }
 
-inline manager_config game(std::size_t worker_count = 0) noexcept
+inline manager_config game(std::size_t worker_count = thread_budget()) noexcept
 {
     manager_config config{};
     config.worker_count = worker_count;

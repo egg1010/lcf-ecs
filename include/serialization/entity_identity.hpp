@@ -135,6 +135,11 @@ inline bool read_entities(archive_reader& r, size_t max_entity_count,
         }
         saved_entity s{};
         r.next_key(); s.index = r.read_u32();
+        // 索引决定 alive_mark / 实体预分配 / 重映射表的规模, 必须在入口设上界
+        if (s.index >= max_entity_count)
+        {
+            return false;
+        }
         r.next_key(); s.version = r.read_u32();
         r.next_key(); s.flags = r.read_u32();
         r.next_key(); s.tag = r.read_u32();

@@ -2,9 +2,8 @@
 #pragma once
 
 #include "../part/dense.hpp"
-#include "../part/type_id.hpp"
-#include "../part/codec/json_writer.hpp"
-#include "../part/codec/json_reader.hpp"
+#include "../part/type/type_id.hpp"
+#include "../part/codec/json_io.hpp"
 #include <cstdint>
 #include <cstring>
 #include <functional>

@@ -9,7 +9,7 @@
 #include "../part/operating_message.hpp"
 #include "entity.hpp"
 #include "../part/dense.hpp"
-#include "../part/type_id.hpp"
+#include "../part/type/type_id.hpp"
 #include "../part/tiered_sort.hpp"
 #include "../part/memory/memory_pool.hpp"
 // PREFETCH_R 宏: 集中定义于 part/force_inline.hpp
@@ -2378,12 +2378,10 @@ inline operating_message single_class_set::hard_remove(entity e) noexcept
     // 尾部可能是墓碑 (软删除条目): 搬运后不得回写 sparse, 否则幽灵复活
     const bool moved_is_tombstone =
         (sparse_[moved_entity_id].dense == dense_invalid);
-    dense_[index] = dense_.back();
-    if (index < versions_.size() && !versions_.empty())
+    (void)dense_.erase_unordered(index);
+    if (index < versions_.size())
     {
-        if (index < versions_.size() - 1)
-            versions_[index] = versions_.back();
-        versions_.pop_back();
+        (void)versions_.erase_unordered(index);
     }
 
     if (moved_entity_id != e.parts_.index_) [[likely]]
@@ -2401,15 +2399,10 @@ inline operating_message single_class_set::hard_remove(entity e) noexcept
             sparse_[moved_entity_id].dense = static_cast<uint32_t>(index);
         }
     }
-    dense_.pop_back();
 
-    if (index < entity_change_tracking_.size() && entity_change_tracking_.size() > 0)
+    if (index < entity_change_tracking_.size())
     {
-        if (index < entity_change_tracking_.size() - 1)
-        {
-            entity_change_tracking_[index] = entity_change_tracking_.back();
-        }
-        entity_change_tracking_.pop_back();
+        (void)entity_change_tracking_.erase_unordered(index);
     }
 
     if (typed_pool_)

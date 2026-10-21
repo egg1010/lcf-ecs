@@ -4,6 +4,9 @@
 #include "include/ecs/entity.hpp"
 #include <functional>
 
+
+
+
 struct position
 {
     float x;
@@ -24,6 +27,8 @@ struct health
 
 int main()
 {
+
+
     t_begin("test_highlevel_manager — 高层封装测试: ecs::manager");
 
     t_section(1, "实体创建与有效性");

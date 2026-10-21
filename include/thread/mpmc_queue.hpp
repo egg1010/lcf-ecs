@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <new>
 
+#include "part/bit_ops.hpp"
 #include "thread/error.hpp"
 
 namespace thread
@@ -21,15 +22,6 @@ struct mpmc_stats
     std::atomic<std::uint64_t> contended_{0};
 };
 
-inline std::size_t mpmc_round_up(std::size_t value) noexcept
-{
-    std::size_t result = 1;
-    while (result < value && result < mpmc_max_capacity)
-    {
-        result <<= 1;
-    }
-    return result;
-}
 
 struct mpmc_queue
 {
@@ -57,7 +49,7 @@ struct mpmc_queue
             return false;
         }
         const std::size_t capacity =
-            mpmc_round_up(capacity_hint == 0 ? mpmc_default_capacity : capacity_hint);
+            round_up_power_of_two(capacity_hint == 0 ? mpmc_default_capacity : capacity_hint);
         if (capacity < 2)
         {
             return false;
@@ -92,6 +84,11 @@ struct mpmc_queue
         {
             ::operator delete(static_cast<void*>(slots));
         }
+    }
+
+    bool created() const noexcept
+    {
+        return slots_ != nullptr;
     }
 
     std::size_t capacity() const noexcept

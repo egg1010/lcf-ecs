@@ -2,7 +2,7 @@
 #pragma once
 
 #include "../part/codec/archive_codec.hpp"
-#include "../part/type_id.hpp"
+#include "../part/type/type_id.hpp"
 #include "../reflection/query.hpp"
 #include "../reflection/meta.hpp"
 #include "type_registry.hpp"

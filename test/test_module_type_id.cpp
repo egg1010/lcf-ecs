@@ -1,6 +1,6 @@
 // test_module_type_id.cpp - 模块功能测试: type_id
 #include "test_common.hpp"
-#include "include/part/type_id.hpp"
+#include "include/part/type/type_id.hpp"
 #include <string_view>
 
 struct ta

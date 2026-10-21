@@ -11,7 +11,7 @@
 #include "force_inline.hpp"
 #include "dense.hpp"
 #include "tiered_sort.hpp"
-#include "time.hpp"  // rdtscp / rdtsc
+#include "time/timer.hpp"  // rdtscp / rdtsc
 
 // =============================================================================
 // 平台检测

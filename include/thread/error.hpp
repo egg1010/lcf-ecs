@@ -30,6 +30,23 @@ enum class errc : std::uint32_t
     invariant_broken,
     handler_faulted,
     cancelled,
+    // 任务图错误码（追加，保持既有编号不变）
+    task_table_full,
+    task_identity_invalid,
+    task_state_conflict,
+    role_unbound,
+    affinity_violation,
+    invalid_steal_policy,
+    order_policy_unsupported,
+    order_key_exhausted,
+    task_depth_exceeded,
+    queue_full,
+    forward_failed,
+    task_body_faulted,
+    error_sink_faulted,
+    task_timeout,
+    task_hung,
+    task_decl_invalid,
 };
 
 enum class error_severity : std::uint8_t
@@ -85,6 +102,10 @@ struct error_counters
     std::atomic<std::uint64_t> ignored_fatal_{0};
     std::atomic<std::uint64_t> handler_faults_{0};
     std::atomic<std::uint64_t> total_{0};
+    // 任务图上报口径（既有字段语义不变）
+    std::atomic<std::uint64_t> reported_{0};
+    std::atomic<std::uint64_t> suppressed_{0};
+    std::atomic<std::uint64_t> sink_faults_{0};
 
     void bump(error_severity severity, std::uint16_t tag) noexcept
     {
@@ -113,6 +134,9 @@ struct error_counters
         ignored_fatal_.store(0, std::memory_order_relaxed);
         handler_faults_.store(0, std::memory_order_relaxed);
         total_.store(0, std::memory_order_relaxed);
+        reported_.store(0, std::memory_order_relaxed);
+        suppressed_.store(0, std::memory_order_relaxed);
+        sink_faults_.store(0, std::memory_order_relaxed);
     }
 };
 
@@ -206,6 +230,38 @@ inline const char* errc_name(errc code) noexcept
         return "handler_faulted";
     case errc::cancelled:
         return "cancelled";
+    case errc::task_table_full:
+        return "task_table_full";
+    case errc::task_identity_invalid:
+        return "task_identity_invalid";
+    case errc::task_state_conflict:
+        return "task_state_conflict";
+    case errc::role_unbound:
+        return "role_unbound";
+    case errc::affinity_violation:
+        return "affinity_violation";
+    case errc::invalid_steal_policy:
+        return "invalid_steal_policy";
+    case errc::order_policy_unsupported:
+        return "order_policy_unsupported";
+    case errc::order_key_exhausted:
+        return "order_key_exhausted";
+    case errc::task_depth_exceeded:
+        return "task_depth_exceeded";
+    case errc::queue_full:
+        return "queue_full";
+    case errc::forward_failed:
+        return "forward_failed";
+    case errc::task_body_faulted:
+        return "task_body_faulted";
+    case errc::error_sink_faulted:
+        return "error_sink_faulted";
+    case errc::task_timeout:
+        return "task_timeout";
+    case errc::task_hung:
+        return "task_hung";
+    case errc::task_decl_invalid:
+        return "task_decl_invalid";
     }
     return "unknown";
 }

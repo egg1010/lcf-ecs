@@ -8,7 +8,7 @@ window.DOCS_DATA['memory_pool'] = {
   order: 20,
   content: `## 20. memory_pool — 内存池
 
-\`#include "part/memory/memory_pool.hpp"\`，命名空间 \`memory\`。\`noexcept\`。
+命名空间 \`memory\`。\`noexcept\`。
 
 变长内存池，提供分配、释放、统计、扩缩容接口。
 
@@ -75,7 +75,6 @@ window.DOCS_DATA['memory_pool'] = {
 ### 使用
 
 \`\`\`cpp
-#include "part/memory/memory_pool.hpp"
 using namespace memory;
 
 memory_pool pool;
@@ -141,7 +140,7 @@ window.DOCS_DATA['list_memory_pool'] = {
   order: 21,
   content: `## 21. list_memory_pool — 链表内存池
 
-\`#include "part/memory/list_memory_pool.hpp"\`，命名空间 \`memory\`。\`noexcept\`。
+命名空间 \`memory\`。\`noexcept\`。
 
 > 线程契约：单线程使用；多线程请各自持有独立实例，不跨线程共享或释放。
 
@@ -180,16 +179,15 @@ window.DOCS_DATA['list_memory_pool'] = {
 | \`release_all_memory()\` | 释放所有内存归还系统 |
 | \`shrink_to_fit()\` | 归还空闲 wilderness 内存给系统 |
 | \`iterate_free(Fn&& fn)\` | 遍历空闲块，回调签名 \`void(void* ptr, size_t size, const char* category)\` |
-| \`swap(list_memory_pool& other)\` | 交换两个池的内部状态 |
+| \`swap(list_memory_pool& other)\` | 交换两个池的状态 |
 | \`reset_statistics()\` | 重置统计计数 |
-| \`reset()\` | 重置分配状态（保留底层 wilderness 内存） |
+| \`reset()\` | 重置分配状态 |
 
 > 注：禁止拷贝。
 
 ### 使用
 
 \`\`\`cpp
-#include "part/memory/list_memory_pool.hpp"
 using namespace memory;
 
 list_memory_pool pool;
@@ -237,7 +235,7 @@ window.DOCS_DATA['arena_allocator'] = {
   order: 26,
   content: `## 26. arena_allocator — 线性分配器
 
-\`#include "part/memory/arena_allocator.hpp"\`，命名空间 \`memory\`。\`noexcept\`。
+命名空间 \`memory\`。\`noexcept\`。
 
 线性分配器，无单个 \`deallocate\`，仅 \`reset\`/\`restore\` 整体回收。两种模式：自有内存和借用外部 buffer。
 
@@ -292,7 +290,6 @@ window.DOCS_DATA['arena_allocator'] = {
 ### 使用
 
 \`\`\`cpp
-#include "part/memory/arena_allocator.hpp"
 using namespace memory;
 
 // 自有模式
@@ -342,7 +339,7 @@ window.DOCS_DATA['slab_allocator'] = {
   order: 27,
   content: `## 27. slab_allocator — 固定块分配器
 
-\`#include "part/memory/slab_allocator.hpp"\`，命名空间 \`memory\`。\`noexcept\`。
+命名空间 \`memory\`。\`noexcept\`。
 
 > 线程契约：单线程使用；多线程请各自持有独立实例，不跨线程共享或释放。
 
@@ -379,7 +376,6 @@ window.DOCS_DATA['slab_allocator'] = {
 ### 使用
 
 \`\`\`cpp
-#include "part/memory/slab_allocator.hpp"
 using namespace memory;
 
 slab_allocator slab(64);  // 64 字节块
@@ -407,7 +403,7 @@ bool all_free = slab.empty();
 
 | 错误做法 | 问题 | 正确做法 |
 |---------|------|---------|
-| \`deallocate\` 非本 slab 分配的指针 | 损坏内部链表 | 先 \`owns(p)\` 验证 |
+| \`deallocate\` 非本 slab 分配的指针 | 分配状态被破坏 | 先 \`owns(p)\` 验证 |
 | 同一指针 \`deallocate\` 两次 | 双重释放 | 释放后置空 |
 | 跨 \`block_size\` 混用分配器 | 块大小不匹配 | 每种块大小用独立 slab_allocator |
 
@@ -424,7 +420,7 @@ window.DOCS_DATA['layered_allocator'] = {
   order: 28,
   content: `## 28. layered_allocator — 分层分配器
 
-\`#include "part/memory/layered_allocator.hpp"\`，命名空间 \`memory\`。\`noexcept\`。
+命名空间 \`memory\`。\`noexcept\`。
 
 分层分配器，小块走 slab，大块走 list_memory_pool。
 
@@ -464,7 +460,6 @@ window.DOCS_DATA['layered_allocator'] = {
 ### 使用
 
 \`\`\`cpp
-#include "part/memory/layered_allocator.hpp"
 using namespace memory;
 
 layered_allocator alloc;
@@ -519,11 +514,11 @@ window.DOCS_DATA['stl_allocator'] = {
   order: 29,
   content: `## 29. stl_allocator — STL Allocator 适配器
 
-\`#include "part/memory/stl_allocator.hpp"\`，命名空间 \`memory\`。\`noexcept\`。
+命名空间 \`memory\`。\`noexcept\`。
 
 将项目内存池适配为 C++ STL Allocator，可用于 \`std::vector\`/\`std::list\` 等标准容器。
 
-> 线程契约：跟随底层池；底层池为单线程使用，不跨线程共享容器。
+> 线程契约：单线程使用，不跨线程共享容器。
 
 ### 接口
 
@@ -545,9 +540,6 @@ window.DOCS_DATA['stl_allocator'] = {
 ### 使用
 
 \`\`\`cpp
-#include "part/memory/stl_allocator.hpp"
-#include "part/memory/layered_allocator.hpp"
-#include <vector>
 using namespace memory;
 
 layered_allocator pool;
@@ -560,7 +552,6 @@ v.push_back(2);
 v.push_back(3);
 
 // 用于 std::list
-#include <list>
 using list_alloc = stl_allocator<int, layered_allocator>;
 std::list<int, list_alloc> l{list_alloc(pool)};
 l.push_back(10);
@@ -581,7 +572,7 @@ window.DOCS_DATA['oom_handler'] = {
   order: 30,
   content: `## 30. oom_handler — 内存分配失败处理
 
-\`#include "part/memory/oom_handler.hpp"\`，命名空间 \`memory\`。
+命名空间 \`memory\`。
 
 内存分配失败时统一调用 \`handle_oom\` 输出诊断信息后终止程序。
 
@@ -594,7 +585,6 @@ window.DOCS_DATA['oom_handler'] = {
 ### 使用
 
 \`\`\`cpp
-#include "part/memory/oom_handler.hpp"
 using namespace memory;
 
 void* custom_alloc(size_t n) {

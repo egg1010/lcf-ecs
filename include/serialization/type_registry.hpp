@@ -1,8 +1,9 @@
 // type_registry.hpp - 稳定类型名 + 类型工厂表 + 枚举/实体引用字段注册
 #pragma once
 
-#include "../part/type_id.hpp"
+#include "../part/type/type_id.hpp"
 #include "../part/dense.hpp"
+#include "../part/id_table.hpp"
 #include "../part/codec/archive_codec.hpp"
 #include "../reflection/query.hpp"
 #include "../reflection/meta.hpp"
@@ -17,24 +18,14 @@ struct load_context;
 
 namespace detail {
 
-struct enum_entry {
-    int         type_id;
-    int         underlying_type_id;
-};
-
-inline dense<enum_entry>& enum_registry() noexcept {
-    static dense<enum_entry> registry;
-    return registry;
-}
-
 struct entity_field_info {
     int         type_id;
     const char* field_name;
     uint32_t    offset;
 };
 
-inline dense<entity_field_info>& entity_field_registry() noexcept {
-    static dense<entity_field_info> registry;
+inline id_table<dense<entity_field_info>>& entity_field_registry() noexcept {
+    static id_table<dense<entity_field_info>> registry;
     return registry;
 }
 
@@ -49,48 +40,31 @@ struct type_factory_entry {
     bool         is_trivially_copyable;
 };
 
-inline dense<type_factory_entry>& type_factory_registry() noexcept {
-    static dense<type_factory_entry> registry;
+inline id_table<type_factory_entry>& type_factory_registry() noexcept {
+    static id_table<type_factory_entry> registry;
     return registry;
-}
-
-// type_id → registry 索引的稠密映射 (按 type_id 索引, -1 表示未注册)
-inline dense<int32_t>& factory_id_index() noexcept {
-    static dense<int32_t> index;
-    return index;
 }
 
 inline uint32_t ensure_factory_entry(int tid, std::string_view name,
                                       size_t type_size, bool trivial) noexcept {
     auto& reg = type_factory_registry();
-    auto& idx = factory_id_index();
-    if (tid >= 0 && tid < static_cast<int>(idx.size())
-        && idx[tid] >= 0 && static_cast<size_t>(idx[tid]) < reg.size())
+    const int32_t existing = reg.index_of(tid);
+    if (existing >= 0)
     {
-        return static_cast<uint32_t>(idx[tid]);
+        return static_cast<uint32_t>(existing);
     }
     type_factory_entry entry{};
     entry.type_id = tid;
     entry.name = name;
     entry.type_size = type_size;
     entry.is_trivially_copyable = trivial;
-    if (static_cast<int>(idx.size()) <= tid)
-    {
-        idx.resize_fill(static_cast<size_t>(tid) + 1, -1);
-    }
-    const uint32_t new_idx = static_cast<uint32_t>(reg.size());
-    idx[tid] = static_cast<int32_t>(new_idx);
-    reg.push_back(entry);
-    return new_idx;
+    (void)reg.ensure(tid, entry);
+    const int32_t added = reg.index_of(tid);
+    return added >= 0 ? static_cast<uint32_t>(added) : 0u;
 }
 
 [[nodiscard]] inline const type_factory_entry* find_factory_by_id(int tid) noexcept {
-    auto& idx = factory_id_index();
-    if (tid < 0 || tid >= static_cast<int>(idx.size())) return nullptr;
-    const int32_t i = idx[tid];
-    auto& reg = type_factory_registry();
-    if (i < 0 || static_cast<size_t>(i) >= reg.size()) return nullptr;
-    return &reg[i];
+    return type_factory_registry().find(tid);
 }
 
 [[nodiscard]] inline const type_factory_entry* find_factory_by_name(std::string_view name) noexcept {
@@ -137,31 +111,12 @@ void register_type_alias(const char* old_name) noexcept {
 template<typename T>
 void register_enum() noexcept {
     static_assert(std::is_enum_v<T>);
-    int tid = type_id::get_type_id<T>();
-    using underlying = std::underlying_type_t<T>;
-    int utid = type_id::get_type_id<underlying>();
-    auto& reg = detail::enum_registry();
-    for (size_t i = 0; i < reg.size(); ++i)
-    {
-        if (reg[i].type_id == tid)
-        {
-            reg[i].underlying_type_id = utid;
-            return;
-        }
-    }
-    reg.push_back({tid, utid});
+    reflect::global().register_enum_type<T>();
 }
 
 [[nodiscard]] inline int lookup_enum_underlying(int tid) noexcept {
-    auto& reg = detail::enum_registry();
-    for (size_t i = 0; i < reg.size(); ++i)
-    {
-        if (reg[i].type_id == tid)
-        {
-            return reg[i].underlying_type_id;
-        }
-    }
-    return -1;
+    const reflect::enum_meta* em = reflect::global().find_enum(tid);
+    return em != nullptr ? em->underlying_type_id : -1;
 }
 
 template<typename T>
@@ -178,15 +133,25 @@ void register_entity_field(const char* field_name) noexcept {
     }
     int tid = type_id::get_type_id<T>();
     auto& reg = detail::entity_field_registry();
-    for (size_t i = 0; i < reg.size(); ++i)
+    dense<detail::entity_field_info>* fields = reg.find(tid);
+    if (fields == nullptr)
     {
-        if (reg[i].type_id == tid && std::string_view(reg[i].field_name) == field_name)
+        (void)reg.ensure(tid, dense<detail::entity_field_info>{});
+        fields = reg.find(tid);
+    }
+    if (fields == nullptr)
+    {
+        return;
+    }
+    for (size_t i = 0; i < fields->size(); ++i)
+    {
+        if (std::string_view((*fields)[i].field_name) == field_name)
         {
-            reg[i].offset = fm->offset;
+            (*fields)[i].offset = fm->offset;
             return;
         }
     }
-    reg.push_back({tid, field_name, fm->offset});
+    fields->push_back({tid, field_name, fm->offset});
 }
 
 template<typename T>

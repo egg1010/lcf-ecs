@@ -8,7 +8,7 @@ window.DOCS_DATA['config'] = {
   order: 13,
   content: `## 13. 可选宏配置
 
-### 13.1 栈内存控制（\`config/ecs_config.hpp\`）
+### 13.1 栈内存控制
 
 嵌入式 / RTOS 环境通过 \`LCF_MINIMAL_STACK\` 关闭栈分配，将各模块的大栈缓冲切换到堆分配。桌面环境默认 \`0\`，保留栈分配。
 
@@ -35,7 +35,7 @@ cmake -S . -B build -DLCF_STACK_MINIMAL=ON
 | \`single_class_set\` 组件交换缓冲 | 256B×2 | \`swap_pool\` 成员交换 / 堆分配（失败回退 64B 分块） |
 | \`om_history_push\` 消息历史临时对象 | 262B | \`ring_buffer::emplace_get\` 槽位原地填充（默认配置同样生效） |
 
-### 13.2 void_any 存储策略（\`config/void_any_config.hpp\`）
+### 13.2 void_any 存储策略
 
 影响 \`void_any\` 的存储策略与内存分配方式。
 
@@ -46,7 +46,7 @@ cmake -S . -B build -DLCF_STACK_MINIMAL=ON
 | \`VOID_ANY_SSO_NOT_ENABLED\` | 禁用 SSO（与 \`VOID_ANY_ENABLE_SSO\` 互斥） |
 | \`VOID_ANY_LAYERED_ALLOCATOR_NOT_ENABLED\` | 禁用分层分配器，堆路径使用 \`std::malloc\`/\`std::free\` |
 
-### 13.3 反射模块配置（\`config/reflect_config.hpp\`）
+### 13.3 反射模块配置
 
 影响反射模块的类型注册上限与单类型字段/方法数组大小。
 
@@ -58,14 +58,13 @@ cmake -S . -B build -DLCF_STACK_MINIMAL=ON
 | \`MAX_TYPE_ID\` | \`65536\` | storage 类型槽位上限，限制可注册类型总数 |
 
 \`\`\`cpp
-// config/reflect_config.hpp
 #define REFLECT_MAX_FIELDS 128
 #define MAX_FIELDS_PER_TYPE 256
 #define MAX_METHODS_PER_TYPE 256
 #define MAX_TYPE_ID 65536
 \`\`\`
 
-### 13.4 utf8pp 内存分配器配置（\`config/utf8pp_config.hpp\`）
+### 13.4 utf8pp 内存分配器配置
 
 \`utf8pp\` 堆路径可接入项目分层分配器 \`memory::layered_allocator\`。
 
@@ -79,7 +78,6 @@ cmake -S . -B build -DLCF_STACK_MINIMAL=ON
 ### 14.4 配置示例
 
 \`\`\`cpp
-// config/void_any_config.hpp
 
 // 启用分层分配器
 #define VOID_ANY_USE_LAYERED_ALLOCATOR
@@ -92,8 +90,7 @@ cmake -S . -B build -DLCF_STACK_MINIMAL=ON
 
 | 错误做法 | 问题 | 正确做法 |
 |---------|------|---------|
-| \`LCF_MINIMAL_STACK=1\` 后期望排序性能不变 | 堆分配有额外开销 | 嵌入式场景排序非热路径，可接受 |
-| 在 \`config/\` 文件夹外查找配置文件 | \`ecs_config.hpp\` 和 \`void_any_config.hpp\` 均在 \`include/config/\` | include 路径为 \`"config/ecs_config.hpp"\` 和 \`"config/void_any_config.hpp"\` |
+| \`LCF_MINIMAL_STACK=1\` 后排序结果不变 | 大栈缓冲改为堆分配 | 嵌入式场景可用 |
 
 ---
 

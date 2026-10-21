@@ -7,7 +7,7 @@
 #include <type_traits>
 #include <cstring>
 #include "single_class_set.hpp"
-#include "../part/type_id.hpp"
+#include "../part/type/type_id.hpp"
 #include "entity_manager.hpp"
 #include "group.hpp"
 #include "reorder.hpp"

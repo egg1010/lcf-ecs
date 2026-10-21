@@ -1,7 +1,7 @@
 // schema_export.hpp - 跨语言 schema 导出: 由稳定类型名 + 反射元数据生成 .proto / .fbs
 #pragma once
 
-#include "../part/type_id.hpp"
+#include "../part/type/type_id.hpp"
 #include "../part/dense.hpp"
 #include "../reflection/query.hpp"
 #include "../reflection/meta.hpp"

@@ -216,5 +216,15 @@ int main()
         t_check("后注册方法可调用", q.invoke<int>(&o, "m") == 3);
     }
 
+
+    t_section(11, "类型名统一查找");
+    {
+        const int tid = type_id::get_type_id<vec3>();
+        const reflect::type_meta* by_name = reflect::global().find_type("vec3");
+        t_check("find_type 命中", by_name != nullptr && by_name->type_id == tid);
+        t_check("type_id 名字反查一致", type_id::get_def_type_id("vec3") == tid);
+        t_check("未知名返回空", reflect::global().find_type("no_such_type_xyz") == nullptr);
+    }
+
     return t_end("reflection ");
 }

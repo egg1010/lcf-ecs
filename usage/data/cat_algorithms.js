@@ -8,7 +8,7 @@ window.DOCS_DATA['tiered_sort'] = {
   order: 22,
   content: `## 21. tiered_sort / pdqsort / sort_n — 分级排序
 
-\`#include "part/tiered_sort.hpp"\`，全局命名空间。所有函数 \`noexcept\`。
+全局命名空间。所有函数 \`noexcept\`。
 
 ### 接口
 
@@ -35,14 +35,13 @@ window.DOCS_DATA['tiered_sort'] = {
 | n ≥ 5M | 基数排序 2-pass(16-16) + NT store + 8 路子直方图 | 基数排序 2-pass + NT store |
 
 - 排序网络使用 \`constexpr\` 在编译期生成 Batcher 奇偶归并网络，运行时无分支、无循环
-- \`sort_n<N>\` 在 N≤16 时编译期展开为排序网络，无派发开销
+- \`sort_n<N>\` 在 N≤16 时使用排序网络
 - 基数排序分配失败时自动降级为 pdqsort
 - \`pdqsort\` 使用 3-way Dutch National Flag 分区，高效处理重复键
 
 ### 使用
 
 \`\`\`cpp
-#include "part/tiered_sort.hpp"
 
 // 运行时 n: 分级排序
 int data[] = {5, 3, 1, 4, 2};
@@ -87,7 +86,7 @@ window.DOCS_DATA['radix_sort'] = {
   order: 23,
   content: `## 22. radix_sort — 基数排序
 
-\`#include "part/radix_sort_helper.hpp"\`，全局命名空间。所有函数 \`noexcept\`。
+全局命名空间。所有函数 \`noexcept\`。
 
 ### 接口
 
@@ -108,7 +107,6 @@ window.DOCS_DATA['radix_sort'] = {
 ### 使用
 
 \`\`\`cpp
-#include "part/radix_sort_helper.hpp"
 
 // entries 排序: 结构体 { int key; size_t index; }
 struct entry { int key; size_t index; };

@@ -43,6 +43,25 @@ int main()
         operating_message ok;
         ok.write("success");
         t_check("成功 code 为 0", ok.code() == 0);
+
+        const msg::code_tag codes[] = {
+            om_err_type_mismatch, om_err_invalid_entity, om_err_version_mismatch,
+            om_err_out_of_range, om_err_null_pointer, om_err_capacity_exceeded,
+            om_err_not_found, om_err_already_exists, om_err_out_of_memory,
+        };
+        const size_t code_count = sizeof(codes) / sizeof(codes[0]);
+        bool all_positive = true;
+        bool all_distinct = true;
+        for (size_t i = 0; i < code_count; ++i)
+        {
+            all_positive = all_positive && codes[i].code != 0 && codes[i].code <= 0x7FFFFFFFu;
+            for (size_t j = i + 1; j < code_count; ++j)
+            {
+                all_distinct = all_distinct && codes[i].code != codes[j].code;
+            }
+        }
+        t_check("错误码落在正 int32 范围", all_positive);
+        t_check("错误码互不重复", all_distinct);
     }
 
     t_section(4, "check 前置条件");

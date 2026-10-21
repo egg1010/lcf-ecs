@@ -31,20 +31,30 @@ enum class msg_level : uint8_t {
 
 ### 错误码常量
 
+| 常量 | 含义 |
+|------|------|
+| \`om_err_none\` | 无错误（成功） |
+| \`om_err_type_mismatch\` | 类型不匹配 |
+| \`om_err_invalid_entity\` | 实体无效 |
+| \`om_err_version_mismatch\` | 版本不匹配 |
+| \`om_err_out_of_range\` | 索引越界 |
+| \`om_err_null_pointer\` | 空指针 |
+| \`om_err_capacity_exceeded\` | 容量超限 |
+| \`om_err_not_found\` | 未找到 |
+| \`om_err_already_exists\` | 已存在 |
+| \`om_err_out_of_memory\` | 内存分配失败 |
+
 \`\`\`cpp
-constexpr msg::code_tag om_err_none              = 0;
-constexpr msg::code_tag om_err_type_mismatch     = /* fnv1a("type_mismatch") */;
-constexpr msg::code_tag om_err_invalid_entity    = /* fnv1a("invalid_entity") */;
-constexpr msg::code_tag om_err_version_mismatch  = /* fnv1a("version_mismatch") */;
-constexpr msg::code_tag om_err_out_of_range      = /* fnv1a("out_of_range") */;
-constexpr msg::code_tag om_err_null_pointer      = /* fnv1a("null_pointer") */;
-constexpr msg::code_tag om_err_capacity_exceeded = /* fnv1a("capacity_exceeded") */;
-constexpr msg::code_tag om_err_not_found         = /* fnv1a("not_found") */;
-constexpr msg::code_tag om_err_already_exists    = /* fnv1a("already_exists") */;
-constexpr msg::code_tag om_err_out_of_memory     = /* fnv1a("out_of_memory") */;
+operating_message om;
+om.write(false, om_err_not_found);
+
+if (om.is_code(om_err_not_found))
+{
+    // 处理失败
+}
 \`\`\`
 
-错误码基于 \`fnv1a_consteval\` 哈希，跨进程稳定。自定义错误码：\`msg::errc(static_cast<uint32_t>(fnv1a_consteval("my_error")))\`。
+错误码跨进程稳定，取值始终落在正 \`int32\` 范围。自定义错误码用 \`om_error_code("my_error")\` 生成，也可用 \`msg::errc(value)\` 包装已有数值。
 
 ### 接口
 
@@ -53,6 +63,8 @@ constexpr msg::code_tag om_err_out_of_memory     = /* fnv1a("out_of_memory") */;
 | \`message_recording_enabled()\` | 全局开关引用（运行时控制是否写入字符串） |
 | \`msg_level\` | 日志级别枚举（debug/info/warn/error） |
 | \`om_err_*\` | 预定义错误码常量标签 |
+| \`om_error_code(name)\` | 由名字生成自定义错误码（编译期常量，正 \`int32\`） |
+| \`msg::errc(value)\` | 用已有数值包装错误码标签 |
 | \`operating_message()\` | 默认构造，\`switch_=true\`，\`code_=0\`，\`min_level_=info\` |
 | \`operator bool()\` | 是否成功（返回 \`switch_\`） |
 | \`reset()\` | 重置为成功、清空消息和错误码 |
@@ -209,9 +221,9 @@ msg::expect_code(manager.add<Position>(invalid_e, pos), om_err_invalid_entity);
 
 ### 高级功能与调试辅助
 
-基于 \`operating_message\` 现有接口组合的零侵入工具集（全部 \`noexcept\`，无异常，复用 \`dense\`/\`ring_buffer\`/\`time\`/\`fnv1a\`）。
+在 \`operating_message\` 基础上组合出的扩展工具集，全部 \`noexcept\`。
 
-依赖 \`dense\`/\`ring_buffer\`/\`time\`/\`fnv1a\` 的接口（\`om_prefix\`/\`om_write_prefixed\`/\`om_scope_timer\`/\`om_scope_cycles\`/\`om_error_table\`/\`om_once\`/\`om_stats\`/\`om_history\`/\`om_logger\`/\`om_try_recover\` 等）位于 \`part/om_extensions.hpp\`，需额外包含；其余在 \`part/operating_message.hpp\`。
+扩展接口（\`om_prefix\`/\`om_write_prefixed\`/\`om_scope_timer\`/\`om_scope_cycles\`/\`om_error_table\`/\`om_once\`/\`om_stats\`/\`om_history\`/\`om_logger\`/\`om_try_recover\` 等）属于 \`om_extensions\` 扩展；其余属于 \`operating_message\` 本体。
 
 #### RAII 守卫
 
@@ -219,10 +231,10 @@ msg::expect_code(manager.add<Position>(invalid_e, pos), om_err_invalid_entity);
 |------|------|
 | \`message_recording_guard(enable)\` | 作用域内临时开启/关闭 \`message_recording_enabled()\`，析构自动恢复 |
 | \`min_level_guard(om, lv)\` | 作用域内临时调整 \`om\` 的 \`min_level\`，析构自动恢复 |
-| \`om_prefix(prefix)\` | 推入模块前缀到前缀栈，析构弹出（配合 \`om_write_prefixed\`；\`om_extensions.hpp\`） |
+| \`om_prefix(prefix)\` | 推入模块前缀到前缀栈，析构弹出（配合 \`om_write_prefixed\`） |
 | \`om_indent\` | 推入一层缩进，析构弹出（配合 \`om_write_indented\`） |
-| \`om_scope_timer(om, name)\` | RAII 作用域计时器（墙钟 us，析构写入消息；\`om_extensions.hpp\`） |
-| \`om_scope_cycles(om, name)\` | RAII 作用域计时器（CPU 周期，析构写入消息；\`om_extensions.hpp\`） |
+| \`om_scope_timer(om, name)\` | RAII 作用域计时器（墙钟 us，析构写入消息） |
+| \`om_scope_cycles(om, name)\` | RAII 作用域计时器（CPU 周期，析构写入消息） |
 
 \`\`\`cpp
 {
@@ -367,8 +379,8 @@ if (!msg && om_try_recover(msg))
 | 全局静态状态 | \`om_dedup_set\`/\`global_om_stats\`/\`om_prefix_stack\`/\`om_indent_level\`/\`om_anomaly_detector\` 为全局静态，非线程安全 |
 | 历史消息截断 | \`om_history_push\` 单条消息截断到 256B，超长部分丢失 |
 | \`om_logger\` 代理范围 | 包装器代理 \`write\` 函数，记录开关关闭时同样不产生字符串 |
-| \`om_latency_tracker::compute\` 会排序 | 内部调用 \`compute_stats\` 按值传入并排序样本，非 \`const\` |
-| \`om_anomaly_detector\` 单位为纳秒 | 与 \`time.hpp\` 一致，\`om_measure_and_check\` 内部用 \`stopwatch::ns()\` |
+| \`om_latency_tracker::compute\` 会排序 | 按值接收样本并排序，非 \`const\` |
+| \`om_anomaly_detector\` 单位为纳秒 | 与其他计时接口一致 |
 | 记录开关关闭时 \`write\` 不写字符串 | 仅跳过字符串写入；switch 累积与 code 设置不受影响 |
 
 ---
@@ -491,7 +503,6 @@ window.DOCS_DATA['force_inline'] = {
   order: 24,
   content: `## 23. FORCE_INLINE / NOINLINE — 跨平台内联宏
 
-\`#include "part/force_inline.hpp"\`
 
 | 宏 | 说明 |
 |------|------|
@@ -507,14 +518,13 @@ window.DOCS_DATA['force_inline'] = {
 ### 使用
 
 \`\`\`cpp
-#include "part/force_inline.hpp"
 
 FORCE_INLINE int add(int a, int b) noexcept
 {
     return a + b;
 }
 
-// 标记不内联的函数 (例如避免代码膨胀, 或用于隔离性能测量)
+// 标记不内联的函数
 NOINLINE void heavy_function() noexcept
 {
     // ...
@@ -527,7 +537,7 @@ NOINLINE void heavy_function() noexcept
 |---------|------|---------|
 | 递归函数标记 \`FORCE_INLINE\` | 编译器可能忽略或导致代码膨胀 | 递归函数不使用 \`FORCE_INLINE\` |
 | 大函数标记 \`FORCE_INLINE\` | 代码膨胀，icache 压力增大 | 仅对热路径小函数使用 |
-| 对热路径函数标记 \`NOINLINE\` | 性能下降 | \`NOINLINE\` 仅用于调试或隔离测量场景 |
+| 对常规函数标记 \`NOINLINE\` | 调用不再内联 | 仅用于调试或隔离测量场景 |
 
 ---
 `
@@ -541,7 +551,7 @@ window.DOCS_DATA['time'] = {
   order: 28,
   content: `## 28. timer — 计时与定时触发
 
-\`#include "part/time.hpp"\`（计时器本体）与 \`#include "part/timer_scheduler.hpp"\`（调度器与时间字面量），全局命名空间。\`noexcept\`。
+计时器本体与调度器（含时间字面量），全局命名空间。\`noexcept\`。
 
 时间测量与定时触发：墙钟时间（纳秒/微秒/毫秒/秒）与 CPU 周期测量，配对计时，定时调度器。x86/x64 提供 \`rdtsc\`/\`rdtscp\`，其他平台返回 0。
 
@@ -598,7 +608,7 @@ double elapsed_ns = timer::measure_nanoseconds([]() { /* 被测代码 */ });
 uint64_t elapsed_cyc = timer::measure_cycles([]() { /* 被测代码 */ });
 \`\`\`
 
-### 28.4 时间字面量 — 配合 scheduler 使用（timer_scheduler.hpp）
+### 28.4 时间字面量 — 配合 scheduler 使用
 
 | 字面量 | 说明 |
 |------|------|
@@ -613,7 +623,7 @@ double b = 16_ms;    // 16000000.0
 double c = 1_sec;    // 1000000000.0
 \`\`\`
 
-### 28.5 timer::scheduler — 定时触发器（timer_scheduler.hpp）
+### 28.5 timer::scheduler — 定时触发器
 
 | 接口 | 说明 |
 |------|------|
@@ -669,7 +679,7 @@ window.DOCS_DATA['analysis'] = {
   order: 29,
   content: `## 29. analyzer — 微架构分析
 
-\`#include "part/analysis.hpp"\`，全局命名空间。\`noexcept\`。
+全局命名空间。\`noexcept\`。
 
 微架构分析器：内存屏障、缓存控制、序列化周期测量、地址生成、缓存命中测量、自适应层级检测。x86/x64 全套支持，其他平台屏障为编译器屏障，缓存测量回退到周期计数。
 
@@ -680,7 +690,7 @@ window.DOCS_DATA['analysis'] = {
 | \`analyzer::config\` | 缓存层级阈值配置（\`l1_max\`/\`l2_max\`/\`l3_max\`/\`l4_max\`/\`cache_levels\`，默认 3 级） |
 | \`analyzer::cache_report\` | 命中测量报告（各级命中率 + 百分位周期） |
 | \`analyzer::batch_result\` | 批量测量结果（含基线扣除） |
-| \`analyzer::address_view\` | 地址视图 POD（零分配，持有指针 + 数量） |
+| \`analyzer::address_view\` | 地址视图 POD（持有指针 + 数量） |
 
 \`\`\`cpp
 analyzer::config c;            // 默认 3 级阈值
@@ -735,7 +745,7 @@ analyzer::cache_flush_range(&data, sizeof(data));
 |------|------|
 | \`analyzer::now_cycles_fenced()\` | 全屏障周期读取（lfence; rdtsc; lfence） |
 | \`analyzer::measure_cycles_fenced(fn)\` | 全屏障配对计时（短代码段精确测量） |
-| \`analyzer::measure_loop_cycles(fn)\` | 单次 rdtscp 包裹（循环总开销，低开销） |
+| \`analyzer::measure_loop_cycles(fn)\` | 单次 rdtscp 包裹（返回循环总周期） |
 
 \`\`\`cpp
 uint64_t cyc = analyzer::measure_cycles_fenced([]() { /* 短代码 */ });
@@ -749,7 +759,7 @@ uint64_t total = analyzer::measure_loop_cycles([]() {
 
 | 接口 | 说明 |
 |------|------|
-| \`analyzer::make_sequential_addresses(base, count, stride)\` | 顺序地址序列（缓存友好） |
+| \`analyzer::make_sequential_addresses(base, count, stride)\` | 顺序地址序列 |
 | \`analyzer::make_random_addresses(base, count, stride, seed)\` | 随机地址序列（确定性可复现） |
 
 \`\`\`cpp
@@ -768,7 +778,7 @@ for (size_t i = 0; i < av.size(); ++i) {
 
 | 接口 | 说明 |
 |------|------|
-| \`a.measure_hits(base, count, stride)\` | 一站式：内部生成地址 + 测量 + 分类 |
+| \`a.measure_hits(base, count, stride)\` | 一站式：生成地址、测量并分类 |
 | \`a.measure_hits(address_view)\` | 用预生成地址测量，返回 \`cache_report\` |
 | \`a.measure_batch(address_view, repeats=10)\` | 批量取最优 + 扣除基线，返回 \`batch_result\` |
 
@@ -827,7 +837,7 @@ window.DOCS_DATA['multi_block_bitmask'] = {
   order: 30,
   content: `## 29. multi_block_bitmask — 多块位掩码存储
 
-\`include/part/multi_block_bitmask.hpp\`，无命名空间。每槽 1+ 个 64 位块的多块位掩码容器，块 0 内嵌，块 1+ 按需分配。通用位掩码场景（布隆过滤、稀疏集合、组件标签、哈希位图等）均适用。
+无命名空间。多块位掩码容器，适用于布隆过滤、稀疏集合、组件标签、属性位图等场景。
 
 ### 接口
 
@@ -1070,7 +1080,7 @@ for (uint32_t i = 0; i < N; ++i)
 
 | 步骤 | 作用 | 跳过后果 |
 |------|------|----------|
-| \`increase_capacity(N)\` | 预留容量,避免 \`resize_entities\` 内部触发 realloc | 性能回退到逐次扩容路径 |
+| \`increase_capacity(N)\` | 预留容量 | 不预留时按需扩展 |
 | \`resize_entities(N)\` | 把 \`size()\` 撑到 N,使 \`set_bit_no_check\` 访问合法 | \`set_bit_no_check\` 越界写崩 |
 | \`set_bit_no_check(...)\` | 跳过边界检查的写入 | 退回 \`set_bit\` 的带检查路径 |
 
@@ -1103,7 +1113,7 @@ window.DOCS_DATA['reflection_meta'] = {
   order: 31,
   content: `## 30. reflection — 反射元数据与存储
 
-\`#include "reflection/reflection.hpp"\`，命名空间 \`reflect\`。\`noexcept\`。
+命名空间 \`reflect\`。\`noexcept\`。
 
 反射模块元数据结构与存储接口。高层使用接口见 [§ 11. reflection — 反射模块使用](#11-reflection--反射模块使用)。
 
@@ -1167,7 +1177,7 @@ window.DOCS_DATA['t_fun'] = {
   order: 35,
   content: `## 34. t_fun — 函数类型延迟调用器
 
-\`#include "part/t_fun.hpp"\`，全局命名空间。\`noexcept\`。
+全局命名空间。\`noexcept\`。
 
 编译期推导函数类型的延迟调用器，支持函数指针、成员函数指针（const/非 const）。用户无需输入模板参数，通过 CTAD 自动推导。void 返回值特化，\`result_ptr()\` 返回 \`nullptr\`。
 
@@ -1204,8 +1214,6 @@ window.DOCS_DATA['t_fun'] = {
 ### 使用
 
 \`\`\`cpp
-#include "part/t_fun.hpp"
-#include <string>
 
 int  free_add(int a, int b) { return a + b; }
 void free_void(int x) { (void)x; }
@@ -1368,7 +1376,7 @@ window.DOCS_DATA['string_to_code'] = {
   order: 36,
   content: `## 36. string_to_code — 字符串数字码
 
-\`#include "part/string_to_code.hpp"\`，命名空间 \`string_to_code\`。\`noexcept\`。
+命名空间 \`string_to_code\`。\`noexcept\`。
 
 字符串到数字码的可逆无冲突编码。短串（≤8 字节）内联 \`uint64_t\`，长串（>8 字节）用 \`uint64_t\` 数组。统一以 \`utf8_view\` 为输入输出接口 (\`utf8_view\` 可从 \`const char*\`/\`string_view\`/\`string\` 隐式构造)。
 
@@ -1403,7 +1411,6 @@ window.DOCS_DATA['string_to_code'] = {
 ### 使用
 
 \`\`\`cpp
-#include "part/string_to_code.hpp"
 using namespace string_to_code;
 
 // 短串: 内联 uint64_t

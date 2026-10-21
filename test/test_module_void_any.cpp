@@ -1,7 +1,7 @@
 // test_module_void_any.cpp - 模块功能测试: void_any
 #include "test_common.hpp"
-#include "include/part/void_any.hpp"
-#include "include/part/type_id.hpp"
+#include "include/part/type/void_any.hpp"
+#include "include/part/type/type_id.hpp"
 #include <string>
 
 struct widget

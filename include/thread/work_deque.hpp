@@ -6,6 +6,7 @@
 #include <cstring>
 #include <new>
 
+#include "part/bit_ops.hpp"
 #include "thread/error.hpp"
 #include "thread/job.hpp"
 
@@ -32,15 +33,6 @@ struct work_deque_stats
     std::atomic<std::uint64_t> drops_{0};
 };
 
-inline std::size_t work_deque_round_up(std::size_t value) noexcept
-{
-    std::size_t result = 1;
-    while (result < value && result < work_deque_max_capacity)
-    {
-        result <<= 1;
-    }
-    return result;
-}
 
 inline work_deque_buffer* work_deque_make_buffer(std::size_t capacity)
 {
@@ -106,7 +98,7 @@ struct work_deque
             return false;
         }
         const std::size_t capacity =
-            work_deque_round_up(capacity_hint == 0 ? work_deque_default_capacity : capacity_hint);
+            round_up_power_of_two(capacity_hint == 0 ? work_deque_default_capacity : capacity_hint);
         if (capacity < 2)
         {
             return false;

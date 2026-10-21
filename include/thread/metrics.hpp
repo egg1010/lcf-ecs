@@ -7,6 +7,7 @@
 #include "thread/error.hpp"
 #include "thread/lane.hpp"
 #include "thread/manager.hpp"
+#include "thread/profile.hpp"
 #include "thread/worker.hpp"
 
 namespace thread
@@ -45,9 +46,60 @@ struct lane_metrics
 inline constexpr std::size_t metrics_max_workers = 256;
 inline constexpr std::size_t metrics_max_lanes = manager_default_lane_capacity;
 
+struct task_metrics_snapshot
+{
+    std::uint64_t declared{0};
+    std::uint64_t activations{0};
+    std::uint64_t completions{0};
+    std::uint64_t coalesced{0};
+    std::uint64_t stale_tickets{0};
+    std::uint64_t migrations{0};
+    std::uint64_t forwarded{0};
+    std::uint64_t forward_failures{0};
+    std::uint64_t dependency_waits{0};
+    std::uint64_t reorders{0};
+    std::uint64_t reparents{0};
+    std::uint64_t cancellations{0};
+    std::uint64_t faults{0};
+    std::uint64_t overruns{0};
+    std::uint64_t stolen{0};
+    std::uint64_t steal_denied{0};
+};
+
+struct watchdog_metrics_snapshot
+{
+    std::uint64_t scans{0};
+    std::uint64_t deadline_misses{0};
+    std::uint64_t hung_tasks{0};
+    std::uint64_t heartbeat_misses{0};
+    std::uint64_t queue_timeouts{0};
+    std::uint64_t timed_wakes{0};
+    std::uint64_t max_wait_ns{0};
+    std::uint64_t max_run_ns{0};
+};
+
+struct admission_metrics_snapshot
+{
+    std::uint64_t admitted{0};
+    std::uint64_t rejected{0};
+    std::uint64_t degraded{0};
+    std::uint64_t dropped{0};
+    std::uint64_t coalesced{0};
+    std::uint64_t completed{0};
+    std::uint32_t inflight{0};
+};
+
 struct metrics_snapshot
 {
     manager_metrics manager{};
+    task_metrics_snapshot task{};
+    watchdog_metrics_snapshot watchdog{};
+    admission_metrics_snapshot admission{};
+    std::uint64_t blocking_queue_depth{0};
+    std::uint64_t blocking_completed{0};
+    std::uint64_t trace_dropped{0};
+    std::size_t spawned_workers{0};
+    std::size_t thread_budget{0};
     worker_metrics workers[metrics_max_workers] = {};
     std::size_t worker_count{0};
     lane_metrics lanes[metrics_max_lanes] = {};
@@ -86,6 +138,48 @@ struct metrics_snapshot
 inline metrics_snapshot collect_metrics(manager& mgr) noexcept
 {
     metrics_snapshot snapshot{};
+
+    const task_metrics& tm = mgr.task_stats();
+    snapshot.task.declared = tm.declared_.load(std::memory_order_relaxed);
+    snapshot.task.activations = tm.activations_.load(std::memory_order_relaxed);
+    snapshot.task.completions = tm.completions_.load(std::memory_order_relaxed);
+    snapshot.task.coalesced = tm.coalesced_.load(std::memory_order_relaxed);
+    snapshot.task.stale_tickets = tm.stale_.load(std::memory_order_relaxed);
+    snapshot.task.migrations = tm.migrations_.load(std::memory_order_relaxed);
+    snapshot.task.forwarded = tm.forwarded_.load(std::memory_order_relaxed);
+    snapshot.task.forward_failures = tm.forward_failures_.load(std::memory_order_relaxed);
+    snapshot.task.dependency_waits = tm.dependency_waits_.load(std::memory_order_relaxed);
+    snapshot.task.reorders = tm.reorders_.load(std::memory_order_relaxed);
+    snapshot.task.reparents = tm.reparents_.load(std::memory_order_relaxed);
+    snapshot.task.cancellations = tm.cancellations_.load(std::memory_order_relaxed);
+    snapshot.task.faults = tm.faults_.load(std::memory_order_relaxed);
+    snapshot.task.overruns = tm.overruns_.load(std::memory_order_relaxed);
+    snapshot.task.stolen = tm.stolen_.load(std::memory_order_relaxed);
+    snapshot.task.steal_denied = tm.steal_denied_.load(std::memory_order_relaxed);
+
+    const watchdog_metrics& wm = mgr.watchdog_stats();
+    snapshot.watchdog.scans = wm.scans_.load(std::memory_order_relaxed);
+    snapshot.watchdog.deadline_misses = wm.deadline_misses_.load(std::memory_order_relaxed);
+    snapshot.watchdog.hung_tasks = wm.hung_tasks_.load(std::memory_order_relaxed);
+    snapshot.watchdog.heartbeat_misses = wm.heartbeat_misses_.load(std::memory_order_relaxed);
+    snapshot.watchdog.queue_timeouts = wm.queue_timeouts_.load(std::memory_order_relaxed);
+    snapshot.watchdog.timed_wakes = wm.timed_wakes_.load(std::memory_order_relaxed);
+    snapshot.watchdog.max_wait_ns = wm.max_wait_ns_.load(std::memory_order_relaxed);
+    snapshot.watchdog.max_run_ns = wm.max_run_ns_.load(std::memory_order_relaxed);
+
+    const admission_metrics& am = mgr.admission().metrics_;
+    snapshot.admission.admitted = am.admitted_.load(std::memory_order_relaxed);
+    snapshot.admission.rejected = am.rejected_.load(std::memory_order_relaxed);
+    snapshot.admission.degraded = am.degraded_.load(std::memory_order_relaxed);
+    snapshot.admission.dropped = am.dropped_.load(std::memory_order_relaxed);
+    snapshot.admission.coalesced = am.coalesced_.load(std::memory_order_relaxed);
+    snapshot.admission.completed = am.completed_.load(std::memory_order_relaxed);
+    snapshot.admission.inflight = mgr.admission().total_inflight();
+    snapshot.blocking_queue_depth = mgr.blocking().queue_depth();
+    snapshot.blocking_completed = mgr.blocking().completed_.load(std::memory_order_relaxed);
+    snapshot.trace_dropped = mgr.trace().dropped_.load(std::memory_order_relaxed);
+    snapshot.spawned_workers = mgr.spawned_worker_count();
+    snapshot.thread_budget = profile::thread_budget();
 
     const manager_stats& ms = mgr.stats();
     snapshot.manager.submitted = ms.submitted_.load(std::memory_order_relaxed);

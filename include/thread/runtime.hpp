@@ -9,6 +9,7 @@
 #include "thread/error.hpp"
 #include "thread/job.hpp"
 #include "thread/sync.hpp"
+#include "thread/tls.hpp"
 
 namespace thread
 {
@@ -42,7 +43,6 @@ inline std::size_t frame_tier_of(std::size_t size, std::size_t alignment) noexce
 struct frame_arena
 {
     unsigned char* memory_{nullptr};
-    std::atomic<std::uint32_t>* next_free_{nullptr};
     std::size_t block_size_{0};
     std::size_t capacity_{0};
     std::atomic<std::int64_t> in_use_{0};
@@ -63,18 +63,6 @@ struct frame_arena
         {
             return false;
         }
-        next_free_ = new (std::nothrow) std::atomic<std::uint32_t>[capacity];
-        if (next_free_ == nullptr)
-        {
-            ::operator delete(raw, std::align_val_t(frame_arena_alignment));
-            return false;
-        }
-        for (std::size_t i = 0; i < capacity; ++i)
-        {
-            next_free_[i].store((i + 1 < capacity) ? static_cast<std::uint32_t>(i + 1)
-                                                   : slot_index_none,
-                                std::memory_order_relaxed);
-        }
         memory_ = static_cast<unsigned char*>(raw);
         block_size_ = step;
         capacity_ = capacity;
@@ -91,9 +79,7 @@ struct frame_arena
             ::operator delete(static_cast<void*>(memory_),
                               std::align_val_t(frame_arena_alignment));
         }
-        delete[] next_free_;
         memory_ = nullptr;
-        next_free_ = nullptr;
         block_size_ = 0;
         capacity_ = 0;
         owns_ = false;
@@ -151,7 +137,7 @@ inline frame_magazine& frame_magazine_of_thread() noexcept
 struct frame_pool
 {
     frame_arena arenas_[frame_tier_count]{};
-    std::atomic<std::uint64_t> heads_[frame_tier_count]{};
+    index_pool free_[frame_tier_count]{};
     std::atomic<std::uint64_t> hits_{0};
     std::atomic<std::uint64_t> misses_{0};
     std::atomic<std::uint64_t> heap_allocs_{0};
@@ -168,14 +154,12 @@ struct frame_pool
                                                        : blocks_per_tier;
         for (std::size_t i = 0; i < frame_tier_count; ++i)
         {
-            if (!arenas_[i].create(frame_tier_sizes[i], blocks))
+            if (!arenas_[i].create(frame_tier_sizes[i], blocks) ||
+                !free_[i].create(static_cast<std::uint32_t>(blocks)))
             {
                 destroy();
                 return false;
             }
-            // 初始为满栈：next_free_ 链已在 create 中串好，头指向 0 号块。
-            // 全部弹出后头自然变为 pack(slot_index_none, gen) 空哨兵。
-            heads_[i].store(slot_free_link::pack(0, 0), std::memory_order_release);
         }
         return true;
     }
@@ -185,7 +169,7 @@ struct frame_pool
         for (std::size_t i = 0; i < frame_tier_count; ++i)
         {
             arenas_[i].destroy();
-            heads_[i].store(0, std::memory_order_relaxed);
+            free_[i].destroy();
         }
     }
 
@@ -281,48 +265,19 @@ struct frame_pool
   private:
     void* pop_block(std::size_t tier) noexcept
     {
-        frame_arena& arena = arenas_[tier];
-        std::atomic<std::uint64_t>& head = heads_[tier];
-        std::uint64_t observed = head.load(std::memory_order_acquire);
-        for (;;)
+        std::uint32_t index = index_pool::none;
+        if (!free_[tier].allocate(index))
         {
-            const std::uint32_t index = slot_free_link::next_of(observed);
-            if (index == slot_index_none || index >= arena.capacity_)
-            {
-                return nullptr;
-            }
-            const std::uint32_t next = arena.next_free_[index].load(std::memory_order_relaxed);
-            const std::uint64_t wanted = slot_free_link::pack(
-                next, slot_free_link::generation_of(observed) + 1u);
-            if (head.compare_exchange_weak(observed, wanted, std::memory_order_acq_rel,
-                                           std::memory_order_acquire))
-            {
-                arena.note_alloc();
-                return arena.block_at(index);
-            }
+            return nullptr;
         }
+        arenas_[tier].note_alloc();
+        return arenas_[tier].block_at(index);
     }
 
     void push_block(std::size_t tier, void* p) noexcept
     {
-        frame_arena& arena = arenas_[tier];
-        const std::size_t index = arena.index_of(p);
-        std::atomic<std::uint64_t>& head = heads_[tier];
-        std::uint64_t observed = head.load(std::memory_order_acquire);
-        for (;;)
-        {
-            const std::uint32_t generation = slot_free_link::generation_of(observed);
-            const std::uint32_t current = slot_free_link::next_of(observed);
-            arena.next_free_[index].store(current, std::memory_order_relaxed);
-            const std::uint64_t wanted = slot_free_link::pack(
-                static_cast<std::uint32_t>(index), generation + 1u);
-            if (head.compare_exchange_weak(observed, wanted, std::memory_order_acq_rel,
-                                           std::memory_order_acquire))
-            {
-                arena.note_free();
-                return;
-            }
-        }
+        free_[tier].release(static_cast<std::uint32_t>(arenas_[tier].index_of(p)));
+        arenas_[tier].note_free();
     }
 
     void return_block(std::size_t tier, void* p) noexcept
@@ -551,16 +506,20 @@ inline runtime_context* default_runtime() noexcept
 
 inline runtime_context*& current_runtime() noexcept
 {
-    thread_local runtime_context* context = default_runtime();
-    return context;
+    runtime_context*& slot = tls().runtime_;
+    if (slot == nullptr)
+    {
+        slot = default_runtime();
+    }
+    return slot;
 }
 
 // 绑定当前线程的运行时上下文；同时把 job 池覆盖点指向该上下文（供 job.hpp 的自由函数使用）
 inline void bind_runtime(runtime_context* context) noexcept
 {
     runtime_context* const target = context != nullptr ? context : default_runtime();
-    current_runtime() = target;
-    runtime_job_pool() = &target->jobs_;
+    tls().runtime_ = target;
+    tls().job_pool_ = &target->jobs_;
 }
 
 // RAII 作用域绑定：外部线程临时操作某个 manager 的运行时

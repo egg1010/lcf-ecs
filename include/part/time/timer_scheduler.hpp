@@ -1,13 +1,13 @@
 // timer_scheduler.hpp - 定时调度器 (timer::scheduler + 时间字面量)
-// 从 time.hpp 分离: 调度器依赖 dense/t_fun, 计时器本体零容器依赖
+// 从 timer.hpp 分离: 调度器依赖 dense/t_fun, 计时器本体零容器依赖
 #pragma once
 
 #include <chrono>
 #include <cstdint>
 #include <cstddef>
-#include "dense.hpp"
-#include "t_fun.hpp"
-#include "time.hpp"
+#include "../dense.hpp"
+#include "../type/t_fun.hpp"
+#include "timer.hpp"
 
 // =============================================================================
 // 时间字面量 (返回纳秒值, 配合 timer::scheduler 使用)

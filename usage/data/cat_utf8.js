@@ -8,17 +8,17 @@ window.DOCS_DATA['utf8pp'] = {
   order: 36,
   content: `## 35. utf8_codec / utf8pp — UTF-8 编解码与拥有型字符串
 
-\`#include "part/utf8pp/utf8pp.hpp"\`（自动包含 \`utf8_codec.hpp\` 与 \`dense.hpp\`），全局命名空间。核心接口 \`noexcept\`，修改操作（需扩容时失败 \`std::abort\`）亦为 \`noexcept\`。
+全局命名空间。核心接口 \`noexcept\`，修改操作（需扩容时失败 \`std::abort\`）亦为 \`noexcept\`。
 
 模块分三层：
 
-- **\`utf8_codec.hpp\`**：UTF-8 编解码函数。
+- **编解码**：UTF-8 编解码函数。
 - **\`utf8pp\` 类**：拥有内存的 UTF-8 字符串类，码点级访问与字节级访问。
 - **\`utf8pp\` 非成员接口**：\`operator+\` / 流操作符 / \`swap\` / 字面量 / \`std::hash\` 特化。
 
 仅支持 Unicode 编码（UTF-8 / UTF-32 码点），不支持其他编码（GBK / UTF-16 等）。非法序列替换为 U+FFFD 替换字符。支持完整 Unicode 字符处理：码点级 + 字形簇级 + East Asian Width 显示宽度 + NFC/NFKC 规范化（含 Hangul 算法） + Script 脚本判断。
 
-### 35.1 宏配置（utf8pp_config.hpp）
+### 35.1 宏配置
 
 | 宏 | 说明 |
 |------|------|
@@ -27,7 +27,7 @@ window.DOCS_DATA['utf8pp'] = {
 
 > 二选一，默认启用 \`UTF8PP_USE_LAYERED_ALLOCATOR\`。
 
-### 35.2 编解码接口（utf8_codec.hpp）
+### 35.2 编解码接口
 
 | 接口 | 说明 |
 |------|------|
@@ -330,7 +330,6 @@ window.DOCS_DATA['utf8pp'] = {
 ### 使用
 
 \`\`\`cpp
-#include "part/utf8pp/utf8pp.hpp"
 
 // === 编解码函数 ===
 char32_t ch = to_char(0x4E2D);       // '中'
@@ -533,9 +532,9 @@ window.DOCS_DATA['utf8_view'] = {
   order: 37,
   content: `## 36. utf8_view — UTF-8 字符串视图
 
-\`#include "part/utf8pp/utf8_view.hpp"\`（自动包含 \`utf8_codec.hpp\`），全局命名空间。所有接口 \`noexcept\`。
+全局命名空间。所有接口 \`noexcept\`。
 
-非拥有型轻量级 UTF-8 字符串视图，类似 \`std::string_view\`，但提供码点级接口。内部仅存储 \`const char*\` 与字节数两个字段（16 字节），不分配内存。
+非拥有型轻量级 UTF-8 字符串视图，类似 \`std::string_view\`，但提供码点级接口。只持有 \`const char*\` 与字节数，不复制数据。
 
 字节级接口直接操作指针，码点级接口需遍历解码。与 \`utf8pp\` 互转：\`utf8pp\` 可经 \`std::string_view\` 中转构造自 \`utf8_view\`（\`utf8_view\` 隐式转 \`std::string_view\`，\`utf8pp\` 接收 \`std::string_view\`）；\`utf8_view\` 可由 \`utf8pp\` 的 \`data()\` + \`byte_size()\` 显式构造。
 
@@ -620,14 +619,14 @@ window.DOCS_DATA['utf8_view'] = {
 | \`operator==\` / \`!=\` / \`<\` / \`>\` / \`<=\` / \`>=\` | 与 \`utf8_view\` / \`std::string_view\` / \`const char*\` 比较 |
 | \`operator<=>(const utf8_view&)\` / \`operator<=>(std::string_view)\` / \`operator<=>(const char*)\` | 三态比较运算符 |
 
-### 36.8 只读查询（零分配）
+### 36.8 只读查询
 
 | 接口 | 说明 |
 |------|------|
 | \`display_width()\` | 显示宽度（East Asian Width: CJK/全角=2, 零宽=0, 其他=1） |
 | \`to_lower_into(out, cap)\` | 小写转换写入外部缓冲，返回写入字节数（cap 不足返回所需字节数） |
 | \`to_upper_into(out, cap)\` | 大写转换写入外部缓冲，返回写入字节数（同上） |
-| \`trimmed()\` / \`trimmed_left()\` / \`trimmed_right()\` | 返回去除空白后的子视图（仅指针移动，零分配） |
+| \`trimmed()\` / \`trimmed_left()\` / \`trimmed_right()\` | 返回去除空白后的子视图（仅移动指针） |
 | \`is_ascii()\` | 全 ASCII 判断 |
 | \`is_valid()\` | 合法 UTF-8 校验（码点范围 + 最短形式） |
 | \`count(char32_t)\` | 统计码点出现次数 |
@@ -636,7 +635,7 @@ window.DOCS_DATA['utf8_view'] = {
 // 显示宽度 (对齐布局用)
 size_t w = utf8_view("顺序访问").display_width();  // 8 (4 CJK × 2)
 
-// 大小写转换 (零分配, 用户提供缓冲)
+// 大小写转换 (写入用户缓冲)
 char buf[64];
 size_t n = utf8_view("ABC").to_lower_into(buf, sizeof(buf));  // n=3, buf="abc"
 
@@ -700,7 +699,6 @@ while (utf8_next_line(&lp, lend, &line)) {
 ### 使用
 
 \`\`\`cpp
-#include "part/utf8pp/utf8_view.hpp"
 
 // === 构造 ===
 utf8_view v1("Hello你好");          // C 字符串

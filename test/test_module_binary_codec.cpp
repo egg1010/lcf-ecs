@@ -1,7 +1,6 @@
 // test_module_binary_codec.cpp - 模块功能测试: binary_writer / binary_reader
 #include "test_common.hpp"
-#include "include/part/codec/binary_writer.hpp"
-#include "include/part/codec/binary_reader.hpp"
+#include "include/part/codec/binary_io.hpp"
 #include <string>
 #include <string_view>
 

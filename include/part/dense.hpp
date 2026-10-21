@@ -1610,6 +1610,20 @@ public:
 		return emplace(pos, std::move(value));
 	}
 
+	// 无序删除: 末尾元素移到 index 后弹出末尾, 返回被移动元素的原下标
+	// index 越界时不做修改, 返回当前 size
+	DENSE_ALWAYS_INLINE size_t erase_unordered(size_t index) noexcept {
+		if (index >= index_) [[unlikely]] {
+			return index_;
+		}
+		const size_t last = index_ - 1;
+		if (index != last) {
+			data_ptr_[index] = std::move(data_ptr_[last]);
+		}
+		pop_back();
+		return last;
+	}
+
 	// 末尾快路径等价 pop_back, 可批量优化为 index_ -= n
 	DENSE_ALWAYS_INLINE iterator erase(const_iterator pos) noexcept {
 		// 指针比较让编译器可见 pop_back == --index_, 可批量优化为 index_ -= n

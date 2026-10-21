@@ -5,24 +5,17 @@
 #include <new>
 #include <type_traits>
 #include <utility>
+#include "bit_ops.hpp"
 #include "force_inline.hpp"
 #include "memory/oom_handler.hpp"
 
 template <typename T, size_t N>
 class ring_buffer
 {
-    static constexpr size_t ceil_pow2(size_t n) noexcept
-    {
-        size_t p = 1;
-        while (p < n)
-        {
-            p <<= 1;
-        }
-        return p;
-    }
+
 
 public:
-    static constexpr size_t CAP = ceil_pow2(N);
+    static constexpr size_t CAP = round_up_power_of_two(N);
     static constexpr size_t ALIGN = alignof(T) < 16 ? 16 : alignof(T);
 
 private:

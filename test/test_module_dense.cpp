@@ -311,5 +311,20 @@ int main()
         t_check("前向迭代器区间构造", it_d.size() == 3 && it_d[1] == 8);
     }
 
+
+    t_section(13, "无序删除");
+    {
+        dense<int> d;
+        d.push_back(1);
+        d.push_back(2);
+        d.push_back(3);
+        const size_t moved = d.erase_unordered(0);
+        t_check("返回被移动的末下标", moved == 2);
+        t_check("末尾元素搬到删除位", d.size() == 2 && d[0] == 3 && d[1] == 2);
+        const size_t last_moved = d.erase_unordered(1);
+        t_check("删除末位返回自身", last_moved == 1 && d.size() == 1 && d[0] == 3);
+        t_check("越界删除不改动", d.erase_unordered(5) == d.size());
+    }
+
     return t_end("dense ");
 }

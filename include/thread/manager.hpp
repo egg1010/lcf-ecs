@@ -1,12 +1,16 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <coroutine>
 #include <cstddef>
 #include <cstdint>
 #include <new>
+#include <thread>
 
 #include "part/dense.hpp"
+#include "thread/detail/frame_clock.hpp"
+#include "thread/detail/job_router.hpp"
 #include "thread/error.hpp"
 #include "thread/job.hpp"
 #include "thread/lane.hpp"
@@ -14,6 +18,12 @@
 #include "thread/platform.hpp"
 #include "thread/runtime.hpp"
 #include "thread/scheduler.hpp"
+#include "thread/task_builder.hpp"
+#include "thread/task_admission.hpp"
+#include "thread/task_blocking.hpp"
+#include "thread/task_trace.hpp"
+#include "thread/task_watchdog.hpp"
+#include "thread/task_graph.hpp"
 #include "thread/worker.hpp"
 
 namespace thread
@@ -54,6 +64,30 @@ struct manager_config
     std::size_t mailbox_capacity{mpmc_default_capacity};
     std::size_t job_slot_capacity{runtime_default_job_slots};
     std::size_t frame_pool_blocks{frame_default_blocks_per_tier};
+    // 持久任务图：task_capacity == 0 显式关闭
+    std::size_t task_capacity{4096};
+    const role_config* roles{nullptr};
+    std::uint32_t role_count{0};
+    std::size_t task_local_capacity{1024};
+    std::size_t task_command_capacity{task_default_command_capacity};
+    std::size_t task_inject_capacity{task_default_inject_capacity};
+    std::size_t task_dependency_capacity{task_default_dependency_capacity};
+    std::size_t context_capacity{context_default_capacity};
+    std::size_t resource_capacity{256};
+    std::size_t access_capacity{4096};
+    bool watchdog_enabled{true};
+    std::uint32_t watchdog_period_ms{100};
+    std::uint64_t default_deadline_ns{0};
+    std::uint64_t hang_grace_ns{1'000'000'000ull};
+    std::uint64_t heartbeat_timeout_ns{0};
+    std::uint64_t queue_timeout_ns{0};
+    bool trace_enabled{false};
+    std::uint32_t trace_capacity{256};
+    std::uint32_t admission_max_inflight{0};
+    std::uint32_t admission_tenant_slots{1};
+    overload_policy admission_policy{overload_policy::reject};
+    std::uint32_t blocking_threads{0};
+    std::uint32_t blocking_capacity{1024};
 };
 
 struct manager_stats
@@ -102,13 +136,75 @@ struct manager
             return false;
         }
         config_ = config;
+        const std::size_t count = config.worker_count;
+        const unsigned hardware = std::thread::hardware_concurrency();
+        if (hardware != 0 && count > hardware)
+        {
+            FRAMEWORK_REPORT(error_severity::warning, errc::invalid_argument);
+        }
+        if (config.task_capacity != 0)
+        {
+            task_graph_config task_config{};
+            task_config.worker_count = config.worker_count;
+            task_config.task_capacity = config.task_capacity;
+            task_config.roles = config.roles;
+            task_config.role_count = config.role_count;
+            task_config.local_capacity = config.task_local_capacity;
+            task_config.command_capacity = config.task_command_capacity;
+            task_config.inject_capacity = config.task_inject_capacity;
+            task_config.dependency_capacity = config.task_dependency_capacity;
+            task_config.context_capacity = config.context_capacity;
+            task_config.resource_capacity = config.resource_capacity;
+            task_config.access_capacity = config.access_capacity;
+            if (!tasks_.create(task_config))
+            {
+                teardown();
+                return false;
+            }
+            if (config.admission_max_inflight != 0)
+            {
+                admission_config policy{};
+                policy.max_inflight_ = config.admission_max_inflight;
+                policy.tenant_slots_ = config.admission_tenant_slots;
+                policy.policy_ = config.admission_policy;
+                if (!admission_.create(policy))
+                {
+                    FRAMEWORK_REPORT(error_severity::fatal, errc::invariant_broken);
+                    teardown();
+                    return false;
+                }
+                tasks_.set_admission(&admission_);
+            }
+            if (config.trace_enabled && !trace_.create(count == 0 ? 1u : static_cast<std::uint32_t>(count),
+                                                       config.trace_capacity))
+            {
+                teardown();
+                return false;
+            }
+            if (config.trace_enabled)
+            {
+                trace_.set_enabled(true);
+                tasks_.set_trace(&trace_);
+            }
+            task_hooks_.self_ = this;
+            task_hooks_.step_ = &manager::task_step_thunk;
+            task_hooks_.has_work_ = &manager::task_has_work_thunk;
+            tasks_.set_wake_hook(this, &manager::task_wake_thunk);
+            tasks_.set_work_submit(this, &manager::task_submit_work_thunk);
+            clock_.start(count);
+        }
         lane_registry_.init(config.lane_capacity);
         suspended_.init(0);
-        const std::size_t count = config.worker_count;
         dispatch_.init(count);
         workers_.reserve_exact(count);
+        spawned_worker_count_ = 0;
         for (std::size_t i = 0; i < count; ++i)
         {
+            if (tasks_.created() &&
+                !tasks_.role_external(tasks_.worker_role(static_cast<std::uint32_t>(i))))
+            {
+                ++spawned_worker_count_;
+            }
             void* memory =
                 ::operator new(sizeof(worker), std::align_val_t(alignof(worker)), std::nothrow);
             if (memory == nullptr)
@@ -136,12 +232,44 @@ struct manager
             }
             workers_.push_back(w);
         }
+        // 通用工作项只路由到可执行 job 循环的槽位：外部接入槽位无线程，
+        // 顺序且自动帧的槽位不会回落到 job 循环
+        job_workers_.reserve_exact(count);
+        job_capable_.resize_fill(count, 0);
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            bool capable = true;
+            if (tasks_.created())
+            {
+                const thread::role id = tasks_.worker_role(static_cast<std::uint32_t>(i));
+                if (tasks_.role_external(id))
+                {
+                    capable = false;
+                }
+                else if (tasks_.role_mode(id) == order_mode::sequential && tasks_.role_frame_auto(id))
+                {
+                    capable = false;
+                }
+            }
+            if (capable)
+            {
+                job_workers_.push_back(static_cast<std::uint32_t>(i));
+                job_capable_[i] = 1;
+            }
+        }
+        router_.bind(inject_, workers_, job_workers_, job_capable_);
         return true;
     }
 
     std::size_t worker_count() const noexcept
     {
         return workers_.size();
+    }
+
+    // 实际派生的工作线程数：线程预算扣除原生主线程接入的外部角色槽位
+    std::size_t spawned_worker_count() const noexcept
+    {
+        return spawned_worker_count_;
     }
 
     worker* worker_at(std::size_t index) noexcept
@@ -246,6 +374,236 @@ struct manager
     std::size_t lane_count() const noexcept
     {
         return lane_registry_.size();
+    }
+
+    // ------------------------------------------------------------------
+    // 持久任务图接口（语义见 design §9）
+    // ------------------------------------------------------------------
+
+    task_graph& tasks() noexcept
+    {
+        return tasks_;
+    }
+
+    const task_graph& tasks() const noexcept
+    {
+        return tasks_;
+    }
+
+    bool tasks_enabled() const noexcept
+    {
+        return tasks_.created();
+    }
+
+    task_builder declare(const char* name) noexcept
+    {
+        return task_builder{&tasks_, tasks_.declare(name)};
+    }
+
+    task_id declare(const char* name, task_body body) noexcept
+    {
+        return tasks_.declare(name, body);
+    }
+
+    bool declare_all(const task_decl* decls, std::size_t count) noexcept
+    {
+        return thread::declare_all(tasks_, decls, count);
+    }
+
+    bool activate(task_id id) noexcept
+    {
+        return tasks_.activate(id);
+    }
+
+    bool activate(task_id id, activate_options options) noexcept
+    {
+        return tasks_.activate(id, options);
+    }
+
+    bool deactivate(task_id id) noexcept
+    {
+        return tasks_.deactivate(id);
+    }
+
+    bool migrate(task_id id, thread::role target) noexcept
+    {
+        return tasks_.migrate(id, target);
+    }
+
+    bool rebind(task_id id, thread::role target) noexcept
+    {
+        return tasks_.rebind(id, target);
+    }
+
+    bool pin(task_id id, std::uint32_t worker) noexcept
+    {
+        return tasks_.pin(id, worker);
+    }
+
+    bool set_stealable(task_id id, bool value) noexcept
+    {
+        return tasks_.set_stealable(id, value);
+    }
+
+    bool set_order_mode(task_id id, order_mode mode) noexcept
+    {
+        return tasks_.set_order_mode(id, mode);
+    }
+
+    bool set_priority(task_id id, priority value) noexcept
+    {
+        return tasks_.set_priority(id, value);
+    }
+
+    bool reorder(task_id id, order_key key) noexcept
+    {
+        return tasks_.reorder(id, key);
+    }
+
+    bool reparent(task_id id, task_id parent) noexcept
+    {
+        return tasks_.reparent(id, parent);
+    }
+
+    bool disable(task_id id) noexcept
+    {
+        return tasks_.disable(id);
+    }
+
+    bool enable(task_id id) noexcept
+    {
+        return tasks_.enable(id);
+    }
+
+    bool cancel(task_id scope) noexcept
+    {
+        return tasks_.cancel(scope);
+    }
+
+    bool clear_cancel(task_id scope) noexcept
+    {
+        return tasks_.clear_cancel(scope);
+    }
+
+    bool cancelled(task_id id) const noexcept
+    {
+        return tasks_.cancelled(id);
+    }
+
+    bool set_deadline(task_id id, std::uint64_t timeout_ns) noexcept
+    {
+        return tasks_.set_deadline(id, timeout_ns);
+    }
+
+    context_id create_context(std::uint64_t request_id, std::uint64_t trace_id,
+                              std::uint64_t tenant_id) noexcept
+    {
+        return tasks_.create_context(request_id, trace_id, tenant_id);
+    }
+
+    bool set_context(task_id id, context_id ctx) noexcept
+    {
+        return tasks_.set_context(id, ctx);
+    }
+
+    context_id context_of(task_id id) const noexcept
+    {
+        return tasks_.context_of(id);
+    }
+
+    bool add_access(task_id id, resource_id resource, access_mode mode) noexcept
+    {
+        return tasks_.add_access(id, resource, mode);
+    }
+
+    resource_table& resources() noexcept
+    {
+        return tasks_.resources();
+    }
+
+    void release_context(context_id ctx) noexcept
+    {
+        tasks_.release_context(ctx);
+    }
+
+    task_view view(task_id id) noexcept
+    {
+        return tasks_.view(id);
+    }
+
+    task_state state_of(task_id id) const noexcept
+    {
+        return tasks_.state_of(id);
+    }
+
+    void set_error_sink(error_sink sink, void* user) noexcept
+    {
+        tasks_.set_error_sink(sink, user);
+    }
+
+    error_state last_error() const noexcept
+    {
+        return tasks_.last_error();
+    }
+
+    const task_metrics& task_stats() const noexcept
+    {
+        return tasks_.metrics();
+    }
+
+    const watchdog_metrics& watchdog_stats() const noexcept
+    {
+        return watchdog_.metrics_;
+    }
+
+    trace_recorder& trace() noexcept
+    {
+        return trace_;
+    }
+
+    admission_controller& admission() noexcept
+    {
+        return admission_;
+    }
+
+    blocking_domain& blocking() noexcept
+    {
+        return blocking_;
+    }
+
+    std::size_t watchdog_scan(std::uint64_t now_ns) noexcept
+    {
+        return watchdog_.scan(now_ns);
+    }
+
+    bool attach_thread(thread::role target, const char* label = nullptr) noexcept
+    {
+        return tasks_.attach_thread(target, label);
+    }
+
+    void detach_thread(thread::role target) noexcept
+    {
+        tasks_.detach_thread(target);
+    }
+
+    std::size_t pump_role(thread::role target, std::size_t budget) noexcept
+    {
+        return tasks_.pump_role(target, budget);
+    }
+
+    std::uint64_t begin_frame(thread::role target) noexcept
+    {
+        return tasks_.begin_frame(target);
+    }
+
+    void end_frame(thread::role target) noexcept
+    {
+        tasks_.end_frame(target);
+    }
+
+    std::uint64_t frame_of(thread::role target) const noexcept
+    {
+        return tasks_.frame_of(target);
     }
 
     job* take_job(std::uint32_t& slot_index) noexcept
@@ -433,6 +791,10 @@ struct manager
     {
         phase_.store(static_cast<std::uint8_t>(shutdown_phase::running), std::memory_order_release);
         bind_runtime(rt_);
+        if (tasks_.created())
+        {
+            tasks_.set_draining(false);
+        }
         if (workers_.empty())
         {
             return;
@@ -443,10 +805,30 @@ struct manager
         for (std::size_t i = 0; i < workers_.size(); ++i)
         {
             workers_[i]->attach_lanes(&lane_registry_);
+            bool spawn = true;
+            if (tasks_.created())
+            {
+                const thread::role id = tasks_.worker_role(static_cast<std::uint32_t>(i));
+                spawn = !tasks_.role_external(id);
+            }
             workers_[i]->start(workers_.data(), workers_.size(), &inject_, &shutdown_, &completed_,
-                               rt_);
+                               rt_, tasks_.created() ? &task_hooks_ : nullptr, spawn);
         }
         running_.store(true, std::memory_order_release);
+        if (config_.blocking_threads != 0)
+        {
+            (void)blocking_.create(tasks_, config_.blocking_threads, config_.blocking_capacity);
+        }
+        if (tasks_.created() && config_.watchdog_enabled)
+        {
+            watchdog_config wd{};
+            wd.period_ms_ = config_.watchdog_period_ms;
+            wd.default_deadline_ns_ = config_.default_deadline_ns;
+            wd.hang_grace_ns_ = config_.hang_grace_ns;
+            wd.heartbeat_timeout_ns_ = config_.heartbeat_timeout_ns;
+            wd.queue_timeout_ns_ = config_.queue_timeout_ns;
+            (void)watchdog_.start(tasks_, wd);
+        }
     }
 
     void stop() noexcept
@@ -456,6 +838,14 @@ struct manager
 
     void stop(stop_mode mode, destroy_policy policy = destroy_policy::soft) noexcept
     {
+        // 未成功 configure 时队列未创建：直接落 stopped，避免析构路径访问空队列
+        if (!inject_.created())
+        {
+            phase_.store(static_cast<std::uint8_t>(shutdown_phase::stopped),
+                         std::memory_order_release);
+            running_.store(false, std::memory_order_release);
+            return;
+        }
         runtime_scope const scope{rt_};
         if (workers_.empty())
         {
@@ -464,6 +854,10 @@ struct manager
             {
                 phase_.store(static_cast<std::uint8_t>(shutdown_phase::draining),
                              std::memory_order_release);
+                if (tasks_.created())
+                {
+                    tasks_.set_draining(true);
+                }
 
                 for (std::size_t i = 0; i < 1000000 && pump(256) > 0; ++i)
                 {
@@ -480,6 +874,8 @@ struct manager
                     destroy_suspended_frames();
                 }
             }
+            watchdog_.stop();
+            blocking_.destroy();
             phase_.store(static_cast<std::uint8_t>(shutdown_phase::stopped),
                          std::memory_order_release);
             running_.store(false, std::memory_order_release);
@@ -490,6 +886,11 @@ struct manager
         {
             phase_.store(static_cast<std::uint8_t>(shutdown_phase::draining),
                          std::memory_order_release);
+            if (tasks_.created())
+            {
+                // 关闭期间停止周期激活，避免 drain 与帧驱动互相追赶
+                tasks_.set_draining(true);
+            }
 
             drain(2000000);
 
@@ -511,8 +912,14 @@ struct manager
         {
             phase_.store(static_cast<std::uint8_t>(shutdown_phase::aborting),
                          std::memory_order_release);
+            if (tasks_.created())
+            {
+                tasks_.set_draining(true);
+            }
         }
 
+        watchdog_.stop();
+        blocking_.destroy();
         shutdown_.store(true, std::memory_order_release);
         for (worker* w : workers_)
         {
@@ -550,8 +957,16 @@ struct manager
 
     std::size_t pump(std::size_t budget = 64) noexcept
     {
+        if (!inject_.created())
+        {
+            return 0;
+        }
         runtime_scope const scope{rt_};
         std::size_t done = 0;
+        if (workers_.empty() && tasks_.created())
+        {
+            done += tasks_.pump_role(thread::role::general, budget);
+        }
         std::uint32_t index = mpmc_index_none;
         while (done < budget && inject_.try_pop(index))
         {
@@ -575,8 +990,20 @@ struct manager
     {
         const std::uint64_t target = stats_.submitted_.load(std::memory_order_acquire);
         std::size_t spins = 0;
-        while (completed_.load(std::memory_order_acquire) < target)
+        for (;;)
         {
+            const bool jobs_done = completed_.load(std::memory_order_acquire) >= target;
+            const bool tasks_done =
+                !tasks_.created() ||
+                (tasks_.task_statistics_live() == 0 && !tasks_.busy());
+            if (jobs_done && tasks_done)
+            {
+                break;
+            }
+            if (!tasks_done && workers_.empty())
+            {
+                (void)tasks_.pump_role(thread::role::general, 64);
+            }
             platform_yield();
             if (spin_limit != 0 && ++spins > spin_limit)
             {
@@ -586,6 +1013,68 @@ struct manager
     }
 
   private:
+    static bool task_step_thunk(void* self, std::uint32_t worker) noexcept
+    {
+        return static_cast<manager*>(self)->task_step(worker);
+    }
+
+    static void task_wake_thunk(void* self, std::uint32_t worker) noexcept
+    {
+        auto* owner = static_cast<manager*>(self);
+        if (worker < owner->workers_.size())
+        {
+            thread::worker* target = owner->workers_[worker];
+            if (target != nullptr && target->is_parked())
+            {
+                target->unpark();
+            }
+        }
+    }
+
+    static bool task_has_work_thunk(void* self, std::uint32_t worker) noexcept
+    {
+        return static_cast<manager*>(self)->tasks_.has_worker_work(worker);
+    }
+
+    static bool task_submit_work_thunk(void* self, job* target) noexcept
+    {
+        auto* owner = static_cast<manager*>(self);
+        return owner->try_submit(target) != slot_index_none;
+    }
+
+    bool task_step(std::uint32_t worker) noexcept
+    {
+        if (!tasks_.created() || worker >= tasks_.worker_count())
+        {
+            return false;
+        }
+        const thread::role id = tasks_.worker_role(worker);
+        if (tasks_.role_mode(id) == order_mode::sequential)
+        {
+            if (tasks_.role_frame_auto(id))
+            {
+                (void)tasks_.begin_frame(id);
+                (void)tasks_.pump_sequential(id, worker, 256);
+                tasks_.end_frame(id);
+                frame_pace(worker, id);
+                return true;
+            }
+            return tasks_.pump_sequential(id, worker, 256) > 0;
+        }
+        ticket value{};
+        if (tasks_.take_ticket(worker, value))
+        {
+            tasks_.run_ticket(value, worker);
+            return true;
+        }
+        return false;
+    }
+
+    void frame_pace(std::uint32_t worker, thread::role id) noexcept
+    {
+        clock_.pace(worker, tasks_.role_frame_rate(id));
+    }
+
     void teardown() noexcept
     {
         for (worker* w : workers_)
@@ -600,6 +1089,13 @@ struct manager
         workers_.clear();
         inject_.destroy();
         suspended_.release();
+        tasks_.destroy();
+        trace_.destroy();
+        admission_.destroy();
+        clock_.clear();
+        router_.reset();
+        job_workers_.clear();
+        job_capable_.clear();
         const std::size_t lane_count = lane_registry_.size();
         for (std::size_t i = 0; i < lane_count; ++i)
         {
@@ -686,53 +1182,7 @@ struct manager
     bool try_route(std::uint32_t index, std::int32_t preferred_worker,
                    std::size_t& out_target) noexcept
     {
-        if (workers_.empty())
-        {
-            out_target = 0;
-            return inject_.try_push(index);
-        }
-        const std::size_t count = workers_.size();
-        if (preferred_worker >= 0 && static_cast<std::size_t>(preferred_worker) < count)
-        {
-            out_target = static_cast<std::size_t>(preferred_worker);
-            return workers_[out_target]->mailbox().try_push(index);
-        }
-
-        fast_rand rng{mix_bits(route_ticket_.fetch_add(1, std::memory_order_relaxed) + 1u)};
-        const std::size_t a = static_cast<std::size_t>(rng.next() % count);
-        const std::size_t b = static_cast<std::size_t>(rng.next() % count);
-        const std::size_t first =
-            workers_[a]->mailbox().size() <= workers_[b]->mailbox().size() ? a : b;
-        const std::size_t second = (first == a) ? b : a;
-
-        out_target = first;
-        if (workers_[first]->mailbox().try_push(index))
-        {
-            return true;
-        }
-        if (second != first)
-        {
-            out_target = second;
-            if (workers_[second]->mailbox().try_push(index))
-            {
-                return true;
-            }
-        }
-        // 受激退化：罕见路径下的正确性兜底（顺序探测其余 worker）
-        for (std::size_t k = 0; k < count; ++k)
-        {
-            const std::size_t candidate = (first + k + 1u) % count;
-            if (candidate == first || candidate == second)
-            {
-                continue;
-            }
-            out_target = candidate;
-            if (workers_[candidate]->mailbox().try_push(index))
-            {
-                return true;
-            }
-        }
-        return false;
+        return router_.route(index, preferred_worker, out_target);
     }
 
     void wake_worker(std::size_t index) noexcept
@@ -808,5 +1258,16 @@ struct manager
     park_state submit_park_{};
     runtime_context* rt_{nullptr};
     std::atomic<std::uint64_t> route_ticket_{0};
+    task_graph tasks_{};
+    task_watchdog watchdog_{};
+    trace_recorder trace_{};
+    admission_controller admission_{};
+    blocking_domain blocking_{};
+    worker_task_hooks task_hooks_{};
+    dense<std::uint32_t> job_workers_{};
+    dense<std::uint8_t> job_capable_{};
+    job_router router_{};
+    frame_clock clock_{};
+    std::size_t spawned_worker_count_{0};
 };
 } // namespace thread

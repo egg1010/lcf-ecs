@@ -5,7 +5,7 @@
 #pragma once
 
 #include "query.hpp"
-#include "../part/type_id.hpp"
+#include "../part/type/type_id.hpp"
 
 namespace reflect {
 

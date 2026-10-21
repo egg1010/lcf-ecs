@@ -12,7 +12,7 @@
 #include <concepts>
 #include <source_location>
 #include <utility>
-#include "../part/type_id.hpp"
+#include "../part/type/type_id.hpp"
 #include "aggregate_traverse.hpp"
 #include "member_offset.hpp"
 #include "invoke.hpp"
@@ -487,23 +487,12 @@ public:
     // 按名查找类型 (遍历, 适合初始化阶段)
     [[nodiscard]] const type_meta* find_type(const char* name) const noexcept
     {
-        for (size_t i = 0; i < MAX_TYPE_ID; ++i)
+        if (name == nullptr)
         {
-            type_meta* m = type_entries_[i].load(std::memory_order_acquire);
-            if (m == nullptr)
-            {
-                continue;
-            }
-            if (!m->registered.load(std::memory_order_acquire))
-            {
-                continue;
-            }
-            if (m->name != nullptr && std::strcmp(m->name, name) == 0)
-            {
-                return m;
-            }
+            return nullptr;
         }
-        return nullptr;
+        const int id = type_id::get_def_type_id(std::string_view{name});
+        return id > 0 ? get_type(id) : nullptr;
     }
 
     // #3 枚举注册
@@ -531,6 +520,10 @@ public:
         }
         em->name = name;
         em->type_id = tid;
+        if (name != nullptr && tid > 0)
+        {
+            (void)type_id::bind_def_name(name, tid);
+        }
         using UT = std::underlying_type_t<E>;
         em->underlying_type_id = type_id::get_type_id<UT>();
         em->values.reserve_exact(values.size());
@@ -544,6 +537,39 @@ public:
         }
         em->registered = true;
 
+        enum_meta* expected = nullptr;
+        if (!enum_entries_[tid].compare_exchange_strong(
+                expected, em, std::memory_order_release, std::memory_order_acquire))
+        {
+            delete em;
+        }
+    }
+
+    // 只注册枚举的底层类型 (无枚举值表, 供序列化等只需要整型宽度的场景)
+    template<typename E>
+    void register_enum_type() noexcept
+    {
+        static_assert(std::is_enum_v<E>, "register_enum_type requires enum type");
+        int tid = type_id::get_type_id<E>();
+        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID))
+        {
+            return;
+        }
+        enum_meta* existing = enum_entries_[tid].load(std::memory_order_acquire);
+        if (existing != nullptr)
+        {
+            return;
+        }
+        enum_meta* em = new (std::nothrow) enum_meta{};
+        if (em == nullptr)
+        {
+            std::abort();
+        }
+        em->name = nullptr;
+        em->type_id = tid;
+        using UT = std::underlying_type_t<E>;
+        em->underlying_type_id = type_id::get_type_id<UT>();
+        em->registered = true;
         enum_meta* expected = nullptr;
         if (!enum_entries_[tid].compare_exchange_strong(
                 expected, em, std::memory_order_release, std::memory_order_acquire))
@@ -691,6 +717,10 @@ private:
         if (name != nullptr)
         {
             m->name = name;
+            if (m->type_id > 0)
+            {
+                (void)type_id::bind_def_name(name, m->type_id);
+            }
         }
         m->size = sizeof(T);
         m->align = alignof(T);

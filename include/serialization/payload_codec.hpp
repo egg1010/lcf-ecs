@@ -3,7 +3,7 @@
 
 #include "../part/codec/archive_codec.hpp"
 #include "../part/codec/codec_json.hpp"
-#include "../part/type_id.hpp"
+#include "../part/type/type_id.hpp"
 #include "../part/dense.hpp"
 #include "../part/safety.hpp"
 #include "../ecs/component.hpp"
@@ -48,20 +48,16 @@ using field_codec::is_reflected;
 template<typename T>
 void remap_component_refs(T& comp, const detail::entity_remap& remap) noexcept
 {
-    auto& reg = detail::entity_field_registry();
-    if (reg.size() == 0)
+    int tid = type_id::get_type_id<T>();
+    const dense<detail::entity_field_info>* fields = detail::entity_field_registry().find(tid);
+    if (fields == nullptr)
     {
         return;
     }
-    int tid = type_id::get_type_id<T>();
     char* base = reinterpret_cast<char*>(static_cast<void*>(&comp));
-    for (size_t i = 0; i < reg.size(); ++i)
+    for (size_t i = 0; i < fields->size(); ++i)
     {
-        if (reg[i].type_id != tid)
-        {
-            continue;
-        }
-        ecs::entity* ref = reinterpret_cast<ecs::entity*>(base + reg[i].offset);
+        ecs::entity* ref = reinterpret_cast<ecs::entity*>(base + (*fields)[i].offset);
         if (!ref->is_valid())
         {
             continue;
@@ -385,13 +381,16 @@ void register_component() noexcept
     }
     type_id::bind_def_name(name, tid);
 
-    const uint32_t idx = detail::ensure_factory_entry(
-        tid, name, sizeof(T), std::is_trivially_copyable_v<T>);
-    auto& entry = detail::type_factory_registry()[idx];
-    entry.name = name;
-    entry.archive_load_fn = &load_trampoline<T>;
-    entry.has_user_json = has_json_serialize<T>;
-    entry.json_to_fn = &user_json_trampoline<T>;
+    (void)detail::ensure_factory_entry(tid, name, sizeof(T), std::is_trivially_copyable_v<T>);
+    detail::type_factory_entry* entry = detail::type_factory_registry().find(tid);
+    if (entry == nullptr)
+    {
+        return;
+    }
+    entry->name = name;
+    entry->archive_load_fn = &load_trampoline<T>;
+    entry->has_user_json = has_json_serialize<T>;
+    entry->json_to_fn = &user_json_trampoline<T>;
 }
 
 [[nodiscard]] inline bool slot_selected(const entity_source::slot_view& sv, ecs::manager& mgr,

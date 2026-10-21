@@ -126,17 +126,33 @@ template<typename... A> struct is_msg_fmt<msg::fmt_tag<A...>> : std::true_type {
 template<typename... A> struct is_msg_fmt<msg::fmt_rt_tag<A...>> : std::true_type {};
 template<typename T> inline constexpr bool is_msg_fmt_v = is_msg_fmt<T>::value;
 
-// 错误码常量 (fnv1a)
+// 错误码常量 (fnv1a 低 31 位, 正 int32)
+[[nodiscard]] consteval uint32_t om_error_code(const char* name) noexcept
+{
+    return static_cast<uint32_t>(fnv1a_consteval(name)) & 0x7FFFFFFFu;
+}
+
 inline constexpr msg::code_tag om_err_none              = msg::code_tag{0};
-inline constexpr msg::code_tag om_err_type_mismatch     = msg::code_tag{static_cast<uint32_t>(fnv1a_consteval("type_mismatch"))};
-inline constexpr msg::code_tag om_err_invalid_entity    = msg::code_tag{static_cast<uint32_t>(fnv1a_consteval("invalid_entity"))};
-inline constexpr msg::code_tag om_err_version_mismatch  = msg::code_tag{static_cast<uint32_t>(fnv1a_consteval("version_mismatch"))};
-inline constexpr msg::code_tag om_err_out_of_range      = msg::code_tag{static_cast<uint32_t>(fnv1a_consteval("out_of_range"))};
-inline constexpr msg::code_tag om_err_null_pointer      = msg::code_tag{static_cast<uint32_t>(fnv1a_consteval("null_pointer"))};
-inline constexpr msg::code_tag om_err_capacity_exceeded = msg::code_tag{static_cast<uint32_t>(fnv1a_consteval("capacity_exceeded"))};
-inline constexpr msg::code_tag om_err_not_found         = msg::code_tag{static_cast<uint32_t>(fnv1a_consteval("not_found"))};
-inline constexpr msg::code_tag om_err_already_exists    = msg::code_tag{static_cast<uint32_t>(fnv1a_consteval("already_exists"))};
-inline constexpr msg::code_tag om_err_out_of_memory     = msg::code_tag{static_cast<uint32_t>(fnv1a_consteval("out_of_memory"))};
+inline constexpr msg::code_tag om_err_type_mismatch     = msg::code_tag{om_error_code("type_mismatch")};
+inline constexpr msg::code_tag om_err_invalid_entity    = msg::code_tag{om_error_code("invalid_entity")};
+inline constexpr msg::code_tag om_err_version_mismatch  = msg::code_tag{om_error_code("version_mismatch")};
+inline constexpr msg::code_tag om_err_out_of_range      = msg::code_tag{om_error_code("out_of_range")};
+inline constexpr msg::code_tag om_err_null_pointer      = msg::code_tag{om_error_code("null_pointer")};
+inline constexpr msg::code_tag om_err_capacity_exceeded = msg::code_tag{om_error_code("capacity_exceeded")};
+inline constexpr msg::code_tag om_err_not_found         = msg::code_tag{om_error_code("not_found")};
+inline constexpr msg::code_tag om_err_already_exists    = msg::code_tag{om_error_code("already_exists")};
+inline constexpr msg::code_tag om_err_out_of_memory     = msg::code_tag{om_error_code("out_of_memory")};
+
+// 契约: 非零且不超过 INT32_MAX, 新增错误码时由编译期拦下
+static_assert(om_err_type_mismatch.code != 0 && om_err_type_mismatch.code <= 0x7FFFFFFFu);
+static_assert(om_err_invalid_entity.code != 0 && om_err_invalid_entity.code <= 0x7FFFFFFFu);
+static_assert(om_err_version_mismatch.code != 0 && om_err_version_mismatch.code <= 0x7FFFFFFFu);
+static_assert(om_err_out_of_range.code != 0 && om_err_out_of_range.code <= 0x7FFFFFFFu);
+static_assert(om_err_null_pointer.code != 0 && om_err_null_pointer.code <= 0x7FFFFFFFu);
+static_assert(om_err_capacity_exceeded.code != 0 && om_err_capacity_exceeded.code <= 0x7FFFFFFFu);
+static_assert(om_err_not_found.code != 0 && om_err_not_found.code <= 0x7FFFFFFFu);
+static_assert(om_err_already_exists.code != 0 && om_err_already_exists.code <= 0x7FFFFFFFu);
+static_assert(om_err_out_of_memory.code != 0 && om_err_out_of_memory.code <= 0x7FFFFFFFu);
 
 // 运行时格式串校验 (占位符数量 + 语法, 不校验类型)
 [[nodiscard]] inline bool validate_format(std::string_view fmt, size_t expected_count) noexcept

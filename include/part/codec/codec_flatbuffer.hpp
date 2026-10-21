@@ -2,6 +2,7 @@
 #pragma once
 
 #include "archive_codec.hpp"
+#include "../bit_ops.hpp"
 #include "../safety.hpp"
 #include "../operating_message.hpp"
 #include "../dense.hpp"
@@ -37,9 +38,7 @@ class flatbuffer_archive_writer final : public archive_writer
     bool                   root_begin_ = false;
     std::string            out_;
 
-    [[nodiscard]] static uint32_t align_up(uint32_t pos, uint32_t a) noexcept {
-        return (a <= 1) ? pos : ((pos + a - 1) / a) * a;
-    }
+
 
     [[nodiscard]] uint32_t new_node(uint8_t kind, uint8_t atype, uint32_t field_id) noexcept {
         fb_detail::node n{};

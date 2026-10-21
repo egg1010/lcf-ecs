@@ -3,7 +3,7 @@
 
 #include <chrono>
 #include <cstdint>
-#include "force_inline.hpp"
+#include "../force_inline.hpp"
 
 
 #if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
@@ -53,6 +53,8 @@ class timer
     clock::time_point wstart_;   // 后声明: steady_clock 单调, 绝对时间
 
 public:
+    class scheduler;   // 定义见 timer_scheduler.hpp
+
     // 终点快照 (一次性返回墙钟 + 周期, 避免多次 now() 调用引入额外开销)
     struct snapshot
     {
@@ -143,3 +145,13 @@ public:
     #endif
     }
 };
+
+// 单调时钟纳秒：跨模块统一时间基准
+inline uint64_t monotonic_now_ns() noexcept
+{
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+}
+

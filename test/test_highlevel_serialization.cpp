@@ -16,6 +16,12 @@ struct position
     float z;
 };
 
+enum class test_color : std::uint8_t
+{
+    red = 1,
+    green = 2,
+};
+
 struct health
 {
     int hp;
@@ -463,6 +469,46 @@ int main()
         std::string vs;
         auto rv = oa.save_object(vs, archive_format::json, v);
         t_check("不支持字段类型显式报错", !rv && vs.empty());
+    }
+
+
+    t_section(20, "枚举底层类型复用反射");
+    {
+        serialize::register_enum<test_color>();
+        const int tid = type_id::get_type_id<test_color>();
+        t_check("底层类型查询", serialize::lookup_enum_underlying(tid) ==
+                                    type_id::get_type_id<std::uint8_t>());
+        const reflect::enum_meta* em = reflect::global().find_enum(tid);
+        t_check("反射枚举元数据存在",
+                em != nullptr && em->underlying_type_id == type_id::get_type_id<std::uint8_t>());
+    }
+
+    t_section(21, "实体重映射表 (稀疏旧 id)");
+    {
+        serialize::detail::entity_remap remap;
+        t_check("初始为空", remap.empty() && remap.size() == 0);
+
+        const ecs::entity e7 = ecs::entity(7, 1);
+        const ecs::entity e9 = ecs::entity(9, 2);
+        remap.set(3, e7, 11);
+        remap.set(100000, e9, 22);
+        t_check("条目数", remap.size() == 2 && !remap.empty());
+
+        ecs::entity out{};
+        t_check("低 id 命中", remap.find(3, out) && out.parts_.index_ == 7);
+        t_check("高 id 命中", remap.find(100000, out) && out.parts_.index_ == 9);
+        t_check("中间空洞未命中", !remap.find(4, out));
+        t_check("版本一致", remap.version(3) == 11 && remap.version(100000) == 22);
+        t_check("未命中版本为 0", remap.version(4) == 0);
+        t_check("新实体标记", remap.is_new_entity(7) && remap.is_new_entity(9)
+                                  && !remap.is_new_entity(8));
+
+        remap.set(3, ecs::entity(8, 3), 33);
+        t_check("同 id 覆盖", remap.size() == 2 && remap.version(3) == 33
+                                  && remap.find(3, out) && out.parts_.index_ == 8);
+
+        remap.set(0xFFFFFFFFu, e7, 1);
+        t_check("超范围旧 id 丢弃", remap.size() == 2 && !remap.find(0xFFFFFFFFu, out));
     }
 
     return t_end("serialization ");

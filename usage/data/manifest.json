@@ -48,5 +48,8 @@
 {"title":"thread::mpmc_queue — 并发队列","category":"thread","id":"thread_mpmc","icon":"Q","order":52},
 {"title":"thread::error — 错误处理与日志","category":"thread","id":"thread_error","icon":"E","order":53},
 {"title":"thread::metrics — 运行指标","category":"thread","id":"thread_metrics","icon":"N","order":54},
-{"title":"thread::platform — 平台工具","category":"thread","id":"thread_platform","icon":"P","order":55}
+{"title":"thread::platform — 平台工具","category":"thread","id":"thread_platform","icon":"P","order":55},
+{"title":"thread::task_graph — 持久任务图","category":"thread","id":"thread_task_graph","icon":"G","order":56},
+{"title":"thread::app — 开箱即用应用骨架","category":"thread","id":"thread_app","icon":"A","order":57},
+{"title":"part 通用设施 — 索引池 / id 表 / 可调用体 / 限流 / 位运算 / 时钟","category":"tools","id":"part_generic","icon":"U","order":58}
 ]

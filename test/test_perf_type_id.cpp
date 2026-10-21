@@ -1,6 +1,6 @@
 // test_perf_type_id.cpp - 性能测试: type_id
 #include "test_common.hpp"
-#include "include/part/type_id.hpp"
+#include "include/part/type/type_id.hpp"
 
 struct t1 { int a; };
 struct t2 { int a; };

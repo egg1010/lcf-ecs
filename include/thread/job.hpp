@@ -8,7 +8,10 @@
 #include <type_traits>
 #include <utility>
 
+#include "part/index_pool.hpp"
+#include "part/type/inline_callable.hpp"
 #include "thread/error.hpp"
+#include "thread/tls.hpp"
 
 namespace thread
 {
@@ -164,30 +167,13 @@ inline std::atomic<std::uint64_t>& overflow_capture_counter() noexcept
 
 template <typename F> inline bool fill_overflow_job(job* target, F&& callable) noexcept
 {
-    using stored = std::decay_t<F>;
-    auto* mem = static_cast<unsigned char*>(::operator new(sizeof(stored), std::nothrow));
-    if (mem == nullptr)
+    const callable_placement placement =
+        callable_bind_heap<job_storage_size, alignof(std::max_align_t)>(
+            target->storage_, std::forward<F>(callable), target->invoke_, target->destroy_);
+    if (placement == callable_placement::none)
     {
-        target->invoke_ = nullptr;
-        target->destroy_ = nullptr;
         return false;
     }
-    stored* object = new (mem) stored(std::forward<F>(callable));
-
-    target->invoke_ = [](void* ctx) noexcept
-    {
-        void* pointer = nullptr;
-        std::memcpy(&pointer, ctx, sizeof(pointer));
-        (*static_cast<stored*>(pointer))();
-    };
-    target->destroy_ = [](void* ctx) noexcept
-    {
-        void* pointer = nullptr;
-        std::memcpy(&pointer, ctx, sizeof(pointer));
-        static_cast<stored*>(pointer)->~stored();
-        ::operator delete(pointer);
-    };
-    std::memcpy(target->storage_, &object, sizeof(object));
     target->set_overflow_capture(true);
     overflow_capture_counter().fetch_add(1, std::memory_order_relaxed);
     return true;
@@ -195,69 +181,35 @@ template <typename F> inline bool fill_overflow_job(job* target, F&& callable) n
 
 template <typename F> inline bool fill_inline_job(job* target, F&& callable) noexcept
 {
-    using stored = std::decay_t<F>;
-    stored* object = new (target->storage_) stored(std::forward<F>(callable));
-
-    target->invoke_ = [](void* ctx) noexcept { (*static_cast<stored*>(ctx))(); };
-    target->destroy_ = [](void* ctx) noexcept
-    {
-        if constexpr (!std::is_trivially_destructible_v<stored>)
-        {
-            static_cast<stored*>(ctx)->~stored();
-        }
-        else
-        {
-            (void)ctx;
-        }
-    };
+    (void)callable_bind_inline<job_storage_size, alignof(std::max_align_t)>(
+        target->storage_, std::forward<F>(callable), target->invoke_, target->destroy_);
     target->set_overflow_capture(false);
-    (void)object;
     return true;
 }
 
 template <typename F> inline bool fill_job(job* target, F&& callable) noexcept
 {
-    using stored = std::decay_t<F>;
-    if constexpr (fits_inline_capture<stored>)
+    const callable_placement placement =
+        callable_bind<job_storage_size, alignof(std::max_align_t)>(
+            target->storage_, std::forward<F>(callable), target->invoke_, target->destroy_);
+    if (placement == callable_placement::none)
     {
-        return fill_inline_job(target, std::forward<F>(callable));
+        return false;
     }
-    else
+    const bool overflow = placement == callable_placement::heap;
+    target->set_overflow_capture(overflow);
+    if (overflow)
     {
-        return fill_overflow_job(target, std::forward<F>(callable));
+        overflow_capture_counter().fetch_add(1, std::memory_order_relaxed);
     }
+    return true;
 }
 
 inline constexpr std::uint32_t slot_index_none = 0xFFFFFFFFu;
 
-struct slot_free_link
-{
-    static std::uint64_t pack(std::uint32_t next_index, std::uint32_t generation) noexcept
-    {
-        return (static_cast<std::uint64_t>(generation) << 32) |
-               (static_cast<std::uint64_t>(next_index) + 1ull);
-    }
-
-    static std::uint32_t next_of(std::uint64_t head) noexcept
-    {
-        return static_cast<std::uint32_t>(head & 0xFFFFFFFFull) - 1u;
-    }
-
-    static std::uint32_t generation_of(std::uint64_t head) noexcept
-    {
-        return static_cast<std::uint32_t>(head >> 32);
-    }
-
-    static bool empty(std::uint64_t head) noexcept
-    {
-        return next_of(head) == slot_index_none;
-    }
-};
-
 struct job_slot
 {
     job data_{};
-    std::uint32_t next_free_{slot_index_none};
     std::uint32_t reserved_{0};
 };
 
@@ -273,8 +225,7 @@ struct job_pool
 {
     job_slot* slots_{nullptr};
     std::size_t capacity_{0};
-    std::atomic<std::uint64_t> free_head_{0};
-    std::atomic<std::int64_t> free_count_{0};
+    index_pool free_{};
     job_pool_stats stats_{};
     bool owns_memory_{false};
 
@@ -290,17 +241,7 @@ struct job_pool
 
     static std::uint64_t pack(std::uint32_t next_index, std::uint32_t generation) noexcept
     {
-        return slot_free_link::pack(next_index, generation);
-    }
-
-    static std::uint32_t unpack_index(std::uint64_t head) noexcept
-    {
-        return slot_free_link::next_of(head);
-    }
-
-    static std::uint32_t unpack_generation(std::uint64_t head) noexcept
-    {
-        return slot_free_link::generation_of(head);
+        return index_pool::pack(next_index, generation);
     }
 
     bool create(std::size_t capacity) noexcept
@@ -321,19 +262,20 @@ struct job_pool
         }
         owns_memory_ = true;
         capacity_ = capacity;
-        free_head_.store(0, std::memory_order_relaxed);
-        free_count_.store(0, std::memory_order_relaxed);
 
         for (std::size_t i = 0; i < capacity; ++i)
         {
             new (&slots_[i]) job_slot{};
             slots_[i].data_.slot_index_ = static_cast<std::uint32_t>(i);
-            slots_[i].next_free_ =
-                (i + 1 < capacity) ? static_cast<std::uint32_t>(i + 1) : slot_index_none;
         }
-
-        free_count_.store(static_cast<std::int64_t>(capacity), std::memory_order_release);
-        free_head_.store(pack(0, 0), std::memory_order_release);
+        if (!free_.create(static_cast<std::uint32_t>(capacity)))
+        {
+            ::operator delete(static_cast<void*>(slots_), std::align_val_t(job_align));
+            slots_ = nullptr;
+            capacity_ = 0;
+            owns_memory_ = false;
+            return false;
+        }
         return true;
     }
 
@@ -345,8 +287,7 @@ struct job_pool
         }
         slots_ = nullptr;
         capacity_ = 0;
-        free_head_.store(0, std::memory_order_relaxed);
-        free_count_.store(0, std::memory_order_relaxed);
+        free_.destroy();
     }
 
     std::size_t capacity() const noexcept
@@ -356,41 +297,22 @@ struct job_pool
 
     std::int64_t available() const noexcept
     {
-        return free_count_.load(std::memory_order_acquire);
+        return free_.available();
     }
 
     job* allocate(std::uint32_t& slot_index) noexcept
     {
-        std::uint64_t head = free_head_.load(std::memory_order_acquire);
-        for (;;)
+        std::uint32_t index = index_pool::none;
+        if (!free_.allocate(index))
         {
-            const std::uint32_t index = unpack_index(head);
-            if (index == slot_index_none || index >= capacity_)
-            {
-                stats_.exhaustion_.fetch_add(1, std::memory_order_relaxed);
-                return nullptr;
-            }
-            const std::uint32_t generation = unpack_generation(head);
-
-            const std::uint32_t next = slots_[index].next_free_;
-            const std::uint64_t new_head = pack(next, generation + 1u);
-            if (!free_head_.compare_exchange_weak(head, new_head, std::memory_order_acq_rel,
-                                                  std::memory_order_acquire))
-            {
-                continue;
-            }
-
-            slot_index = index;
-            free_count_.fetch_sub(1, std::memory_order_relaxed);
-            stats_.allocs_.fetch_add(1, std::memory_order_relaxed);
-
-            job_slot& slot = slots_[index];
-
-            const std::uint8_t visible =
-                static_cast<std::uint8_t>(((generation + 1u) & 0xFFu) | 0x01u);
-            slot.data_.generation_ = visible;
-            return &slot.data_;
+            stats_.exhaustion_.fetch_add(1, std::memory_order_relaxed);
+            return nullptr;
         }
+        slot_index = index;
+        stats_.allocs_.fetch_add(1, std::memory_order_relaxed);
+        job_slot& slot = slots_[index];
+        slot.data_.generation_ = 0;
+        return &slot.data_;
     }
 
     void release(std::uint32_t slot_index) noexcept
@@ -399,22 +321,8 @@ struct job_pool
         {
             return;
         }
-        std::uint64_t head = free_head_.load(std::memory_order_acquire);
-        for (;;)
-        {
-            const std::uint32_t generation = unpack_generation(head);
-            const std::uint32_t current = unpack_index(head);
-            slots_[slot_index].next_free_ = current;
-
-            const std::uint64_t new_head = pack(slot_index, generation + 1u);
-            if (free_head_.compare_exchange_weak(head, new_head, std::memory_order_acq_rel,
-                                                 std::memory_order_acquire))
-            {
-                free_count_.fetch_add(1, std::memory_order_relaxed);
-                stats_.frees_.fetch_add(1, std::memory_order_relaxed);
-                return;
-            }
-        }
+        free_.release(slot_index);
+        stats_.frees_.fetch_add(1, std::memory_order_relaxed);
     }
 
     std::uint32_t index_of(const job* target) const noexcept
@@ -444,8 +352,7 @@ inline job_pool& global_job_pool() noexcept
 
 inline job_pool*& runtime_job_pool() noexcept
 {
-    thread_local job_pool* pool = nullptr;
-    return pool;
+    return tls().job_pool_;
 }
 
 inline job_pool& current_job_pool() noexcept

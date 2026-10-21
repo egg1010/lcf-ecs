@@ -1,6 +1,6 @@
 // test_module_time.cpp - 模块功能测试: timer
 #include "test_common.hpp"
-#include "include/part/time.hpp"
+#include "include/part/time/timer.hpp"
 
 static volatile uint64_t g_work = 0;
 
@@ -71,6 +71,16 @@ int main()
         timer::snapshot snap = t.take_snapshot();
         t_check("快照纳秒 > 0", snap.nanoseconds > 0.0);
         t_check("静态 now_nanoseconds > 0", timer::now_nanoseconds() > 0.0);
+    }
+
+
+    t_section(6, "单调时钟纳秒");
+    {
+        const uint64_t first = monotonic_now_ns();
+        const uint64_t second = monotonic_now_ns();
+        t_check("纳秒值非零", first > 0);
+        t_check("单调非递减", second >= first);
+        t_check("量级为纳秒", second - first < 1000000000ull);
     }
 
     return t_end("time ");

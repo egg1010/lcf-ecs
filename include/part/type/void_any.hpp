@@ -5,11 +5,11 @@
 #include <cstdint>
 #include <cstring>
 #include "type_id.hpp"
-#include "../config/void_any_config.hpp"
-#include "force_inline.hpp"
+#include "../../config/void_any_config.hpp"
+#include "../force_inline.hpp"
 
 #if defined(VOID_ANY_USE_LAYERED_ALLOCATOR)
-#include "memory/layered_allocator.hpp"
+#include "../memory/layered_allocator.hpp"
 #endif
 
 #if defined(VOID_ANY_USE_LAYERED_ALLOCATOR)

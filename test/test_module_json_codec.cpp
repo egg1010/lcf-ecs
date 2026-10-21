@@ -1,7 +1,6 @@
 // test_module_json_codec.cpp - 模块功能测试: json_writer / json_reader
 #include "test_common.hpp"
-#include "include/part/codec/json_writer.hpp"
-#include "include/part/codec/json_reader.hpp"
+#include "include/part/codec/json_io.hpp"
 #include <string>
 #include <string_view>
 #include <limits>

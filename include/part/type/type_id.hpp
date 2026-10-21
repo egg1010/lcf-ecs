@@ -4,7 +4,7 @@
 #include <cstring>
 #include <new>
 #include <string_view>
-#include "force_inline.hpp"
+#include "../force_inline.hpp"
 
 // 自定义类型 (运行期按名字注册) 的存储语义描述
 struct type_def

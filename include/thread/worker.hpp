@@ -14,7 +14,9 @@
 #include "thread/mpmc_queue.hpp"
 #include "thread/platform.hpp"
 #include "thread/runtime.hpp"
+#include "thread/tls.hpp"
 #include "thread/scheduler.hpp"
+#include "thread/task_identity.hpp"
 #include "thread/work_deque.hpp"
 
 namespace thread
@@ -24,6 +26,16 @@ inline constexpr std::int32_t worker_no_group = -1;
 inline constexpr std::uint32_t worker_default_aging_threshold = 64;
 
 inline constexpr std::size_t worker_mailbox_batch = 16;
+
+struct task_graph;
+
+// 任务域步进钩子：worker 不直接依赖任务图实现，避免头文件循环
+struct worker_task_hooks
+{
+    void* self_{nullptr};
+    bool (*step_)(void* self, std::uint32_t worker) noexcept{nullptr};
+    bool (*has_work_)(void* self, std::uint32_t worker) noexcept{nullptr};
+};
 
 struct worker_stats
 {
@@ -50,8 +62,7 @@ struct worker;
 
 inline worker*& current_worker() noexcept
 {
-    thread_local worker* self = nullptr;
-    return self;
+    return tls().worker_;
 }
 
 struct worker
@@ -123,7 +134,8 @@ struct worker
     void start(worker** peers, std::size_t peer_count, mpmc_queue* inject_queue,
                std::atomic<bool>* shutdown_flag,
                std::atomic<std::uint64_t>* completed_counter,
-               runtime_context* runtime = current_runtime()) noexcept
+               runtime_context* runtime = current_runtime(),
+               const worker_task_hooks* hooks = nullptr, bool spawn = true) noexcept
     {
         if (!created_ || running_.load(std::memory_order_acquire))
         {
@@ -135,8 +147,12 @@ struct worker
         inject_ = inject_queue;
         shutdown_ = shutdown_flag;
         completed_counter_ = completed_counter;
+        hooks_ = hooks;
         running_.store(true, std::memory_order_release);
-        thread_ = std::thread(&worker::run_loop, this);
+        if (spawn)
+        {
+            thread_ = std::thread(&worker::run_loop, this);
+        }
     }
 
     void attach_lanes(lane_table* table) noexcept
@@ -247,6 +263,11 @@ struct worker
 
         while (!shutdown_->load(std::memory_order_acquire))
         {
+            if (hooks_ != nullptr && hooks_->step_ != nullptr &&
+                hooks_->step_(hooks_->self_, static_cast<std::uint32_t>(id_)))
+            {
+                continue;
+            }
             job_source source = job_source::none;
             job* next = stack_.pop();
             if (next != nullptr)
@@ -451,12 +472,17 @@ struct worker
         }
         for (;;)
         {
-            if (has_work() || shutdown_->load(std::memory_order_acquire))
+            if (shutdown_->load(std::memory_order_acquire))
+            {
+                return;
+            }
+            // 先取唤醒字再查谓词：避免“检查之后、装载之前”的唤醒丢失
+            const std::uint32_t expected = park_.word_.load(std::memory_order_acquire);
+            if (has_work())
             {
                 return;
             }
             stats_.parks_.fetch_add(1, std::memory_order_relaxed);
-            const std::uint32_t expected = park_.word_.load(std::memory_order_relaxed);
             (void)park_once(&park_, expected, default_park_ms);
             return;
         }
@@ -464,6 +490,11 @@ struct worker
 
     bool has_work() noexcept
     {
+        if (hooks_ != nullptr && hooks_->has_work_ != nullptr &&
+            hooks_->has_work_(hooks_->self_, static_cast<std::uint32_t>(id_)))
+        {
+            return true;
+        }
         if (stack_.total_size() != 0)
         {
             return true;
@@ -574,6 +605,7 @@ struct worker
     dense<job*> steal_scratch_{};
     lane_table* lane_registry_{nullptr};
     runtime_context* rt_{nullptr};
+    const worker_task_hooks* hooks_{nullptr};
     worker_stats stats_{};
     park_state park_{};
     bool created_{false};

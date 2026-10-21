@@ -151,7 +151,7 @@ window.DOCS_DATA['class_pool'] = {
 
 #### 子范围视图
 
-零分配返回 \`std::span\`，仅切片不改数据。
+返回 \`std::span\` 视图，不复制数据。
 
 | 接口 | 说明 |
 |------|------|
@@ -419,10 +419,10 @@ window.DOCS_DATA['class_pool_views'] = {
   order: 16,
   content: `## 15.5 容器视图
 
-通用视图接口位于 \`include/part/container_views.hpp\`，全局命名空间。基于 \`viewable_container\` 概念约束，\`dense<T>\` 与 \`class_pool<T>\` 共用同一套视图函数。\`class_pool<T>\` 专属视图位于 \`include/part/class_pool_views.hpp\`。
+通用视图接口，全局命名空间。基于 \`viewable_container\` 概念约束，\`dense<T>\` 与 \`class_pool<T>\` 共用同一套视图函数；\`class_pool<T>\` 另有专属视图。
 
 - **不修改原容器**：仅依赖容器公开 API
-- **零分配**：所有视图为 POD 结构或纯函数
+- **不复制数据**：视图只持有指针与长度
 - **全 \`noexcept\`**：与原容器约束一致
 
 ### 通用视图接口
@@ -467,7 +467,7 @@ window.DOCS_DATA['class_pool_views'] = {
 
 ### class_pool 专属视图
 
-位于 \`include/part/class_pool_views.hpp\`，依赖 \`class_pool<T>\` 内部结构。
+\`class_pool<T>\` 的专属视图接口。
 
 | 接口 | 说明 |
 |------|------|
@@ -479,8 +479,6 @@ window.DOCS_DATA['class_pool_views'] = {
 ### 使用示例
 
 \`\`\`cpp
-#include "include/part/container_views.hpp"
-#include "include/part/class_pool_views.hpp"
 // 视图接口位于全局命名空间, 无需 using namespace
 
 class_pool<POD32> pool;
@@ -544,7 +542,7 @@ window.DOCS_DATA['void_any'] = {
   order: 17,
   content: `## 16. void_any — 类型擦除存储
 
-\`#include "part/void_any.hpp"\`，无命名空间。所有接口 \`noexcept\`。类型擦除容器，可存储任意类型对象，运行时通过 \`get_ptr<T>()\` 按类型安全取值。
+无命名空间。所有接口 \`noexcept\`。类型擦除容器，可存储任意类型对象，运行时通过 \`get_ptr<T>()\` 按类型安全取值。
 
 \`void_any\` 是类模板 \`define_void_any<SsoSize, SsoAlign>\` 的预设别名，SSO 缓冲区大小与对齐由模板参数编译期确定。需要更大内联存储时可直接实例化模板。
 
@@ -621,7 +619,6 @@ window.DOCS_DATA['void_any'] = {
 ### 使用
 
 \`\`\`cpp
-#include "part/void_any.hpp"
 
 // 基本构造
 void_any a(42);                     // 存储 int
@@ -693,7 +690,6 @@ if (p) {
 ### 在容器中存储
 
 \`\`\`cpp
-#include "part/dense.hpp"
 
 dense<void_any> bag;
 bag.push_back(42);
@@ -725,7 +721,6 @@ x.type_id() == z.type_id();        // false, int 与 string 不同
 ### 自定义 SSO 配置
 
 \`\`\`cpp
-#include "part/void_any.hpp"
 
 // 默认 void_any: 56B SSO, 可内联存储 ≤56B 的对象
 void_any a(42);
@@ -748,7 +743,6 @@ aligned_any c(3.14);
 ### 跨布局交换
 
 \`\`\`cpp
-#include "part/void_any.hpp"
 
 // 不同 SsoSize 的 void_any 之间交换内容
 void_any a(42);                              // define_void_any<56, 8>
@@ -798,7 +792,7 @@ window.DOCS_DATA['dense'] = {
   order: 21,
   content: `## 20. dense\\<T> — 通用密集容器
 
-\`#include "part/dense.hpp"\`，无命名空间。所有接口 \`noexcept\`。针对密集场景替代 \`std::vector\` 的通用容器，是 \`class_pool\` 密集模式的独立容器形式。
+无命名空间。所有接口 \`noexcept\`。针对密集场景替代 \`std::vector\` 的通用容器，是 \`class_pool\` 密集模式的独立容器形式。
 
 ### 构造与赋值
 
@@ -855,6 +849,7 @@ window.DOCS_DATA['dense'] = {
 | \`emplace(pos, args...)\` / \`insert(pos, value)\` | 任意位置插入 |
 | \`erase(pos)\` / \`erase(first, last)\` | 任意位置删除 |
 | \`pop_back()\` | 尾部删除 |
+| \`erase_unordered(index)\` | 无序删除：末尾元素移到该位置并弹出，返回被移动的末下标 |
 | \`clear()\` | 清空（\`size=0\`，capacity 保留） |
 | \`swap(dense&)\` / 自由函数 \`swap(a, b)\` | 交换 |
 
@@ -888,7 +883,7 @@ window.DOCS_DATA['dense'] = {
 
 ### 子范围视图
 
-零分配返回 \`std::span\`，仅切片不改数据。
+返回 \`std::span\` 视图，不复制数据。
 
 | 接口 | 说明 |
 |------|------|
@@ -903,7 +898,7 @@ window.DOCS_DATA['dense'] = {
 
 ### 步进视图
 
-按固定步长跳跃遍历，零分配 POD 视图。
+按固定步长跳跃遍历的视图。
 
 | 接口 | 说明 |
 |------|------|
@@ -995,7 +990,6 @@ window.DOCS_DATA['dense'] = {
 ### 使用
 
 \`\`\`cpp
-#include "part/dense.hpp"
 
 dense<int> pool;                          // 默认构造
 dense<int> reserved(100);                 // 预留容量 100
@@ -1039,7 +1033,6 @@ src.reduce_capacity(2, dst);              // src: {1, 2}, dst: {3, 4, 5}
 ### 视图使用示例
 
 \`\`\`cpp
-#include "part/dense.hpp"
 
 dense<float> d(1000);
 for (size_t i = 0; i < 1000; ++i) d[i] = static_cast<float>(i);
@@ -1123,7 +1116,7 @@ window.DOCS_DATA['ring_buffer'] = {
   order: 28,
   content: `## 27. ring_buffer — 环形缓冲区
 
-\`#include "part/ring_buffer.hpp"\`，全局命名空间。\`noexcept\`。
+全局命名空间。\`noexcept\`。
 
 模板参数 \`T\`（元素类型）与 \`N\`（容量，向上取整为 2 的幂即真实容量）。固定容量，满时行为由写入接口决定：\`try_*\` 族拒绝，\`*_overwrite\` 族覆盖最旧。不可拷贝，可移动（移动后源为空）。
 
@@ -1153,7 +1146,6 @@ window.DOCS_DATA['ring_buffer'] = {
 ### 使用
 
 \`\`\`cpp
-#include "part/ring_buffer.hpp"
 
 struct event { int type; int data; };
 ring_buffer<event, 1024> buf;
@@ -1218,7 +1210,7 @@ window.DOCS_DATA['signal_queue'] = {
   order: 44,
   content: `## signal_queue — 信号与变更日志队列
 
-\`#include "part/signal_queue.hpp"\`，无命名空间。所有接口 \`noexcept\`。两级队列：固定容量环形缓冲 + 溢出缓冲（主环满时兜底），入队不丢事件。用于实体信号、组件信号与变更日志的统一入队与帧末排空。
+无命名空间。所有接口 \`noexcept\`。两级队列：固定容量环形缓冲 + 溢出缓冲（主环满时兜底），入队不丢事件。用于实体信号、组件信号与变更日志的统一入队与帧末排空。
 
 ### 模板参数
 

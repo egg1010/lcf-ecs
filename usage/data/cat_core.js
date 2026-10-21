@@ -57,7 +57,7 @@ window.DOCS_DATA['view_tags'] = {
   order: 2,
   content: `## 2. view_tags — 视图标签类型
 
-\`#include "view_tags.hpp"\`，位于 \`ecs\` 命名空间。用于构造 View / Group / runtime_view 的标签参数。
+位于 \`ecs\` 命名空间。用于构造 View / Group / runtime_view 的标签参数。
 
 ### 接口
 
@@ -170,7 +170,7 @@ window.DOCS_DATA['single_class_set'] = {
 | \`get_version_unchecked(uint32_t entity_index)\` | 无检查获取版本号 |
 | \`prefetch_ptr_batch(const entity*, size_t)\` | 批量预取 sparse 条目 |
 | \`prefetch_ptr_data<T>(entity)\` | 预取组件数据（按 entity，需先加载 sparse 条目） |
-| \`get_ptr_batch(const entity*, T**, size_t)\` | 批量查询组件指针（管线化预取，大规模 sparse 表自动走排序预取路径） |
+| \`get_ptr_batch(const entity*, T**, size_t)\` | 批量查询组件指针（裸指针 + 长度） |
 
 > 查询接口（\`get_ptr\` / \`get_ptr_fast\` / \`get_ptr_batch\`）查不到时返回 \`nullptr\`：实体句柄无效、实体不含该组件（含软删除与版本号不匹配）、\`T\` 与集合类型不一致。不触发编译期断言，也不产生运行期报错。
 
@@ -300,9 +300,9 @@ mgr.preallocate_component_signals(4096);
 | \`add_batch<T>(span<const entity>, span<const T>)\` | 批量添加（span 版本） |
 | \`add_batch<T>(const class_pool<entity>&, const class_pool<T>&)\` | 批量添加（左值引用） |
 | \`add_batch<T>(class_pool<entity>&&, class_pool<T>&&)\` | 批量添加（右值引用） |
-| \`add_batch<T>(const std::vector<entity>&, const std::vector<T>&)\` | 批量添加（vector 入参，内部转 span） |
+| \`add_batch<T>(const std::vector<entity>&, const std::vector<T>&)\` | 批量添加（vector 入参） |
 | \`add_batch<T>(const std::array<entity, N>&, const std::array<T, N>&)\` | 批量添加（array 入参，编译期固定长度） |
-| \`add_batch<T>(const entity*, const T*, size_t)\` | 批量添加（裸指针 + 长度，内部转 span） |
+| \`add_batch<T>(const entity*, const T*, size_t)\` | 批量添加（裸指针 + 长度） |
 
 ### 运行期 def 组件
 
@@ -311,7 +311,7 @@ mgr.preallocate_component_signals(4096);
 | 接口 | 说明 |
 |------|------|
 | \`add_def(entity, def_id, const void* data)\` | 按 ID 添加 def 组件（data 长度为注册时的 \`type_def::size\`） |
-| \`add_def(entity, name, const void* data)\` | 按名字添加（内部反查 ID） |
+| \`add_def(entity, name, const void* data)\` | 按名字添加（按名字查找） |
 | \`get_def_ptr(entity, def_id)\` | 按 ID 获取 def 组件指针 |
 | \`get_def_ptr(entity, def_id) const\` | const 版本 |
 | \`get_def_ptr(entity, name)\` | 按名字获取 |
@@ -330,7 +330,7 @@ mgr.preallocate_component_signals(4096);
 | \`get_ptr<T>(entity) const\` | const 版本 |
 | \`get_ptr_fast<T>(entity)\` | 快速获取（跳过 type_id 检查） |
 | \`get_ptr_fast<T>(entity) const\` | const 版本 |
-| \`get_ptr_batch<T>(entities, results, count)\` | 批量查询组件指针（裸指针 + 长度，管线化预取） |
+| \`get_ptr_batch<T>(entities, results, count)\` | 批量查询组件指针（裸指针 + 长度） |
 | \`get_ptr_batch<T>(span<const entity>, span<T*>)\` | 批量查询（span 入参，长度需一致） |
 | \`get_ptr_batch<T>(const vector<entity>&, vector<T*>&)\` | 批量查询（vector 入参） |
 | \`get_ptr_batch<T>(const array<entity, N>&, array<T*, N>&)\` | 批量查询（array 入参） |
@@ -346,7 +346,7 @@ mgr.preallocate_component_signals(4096);
 
 > 查询接口（\`get_ptr\` / \`get_ptr_fast\` / \`get_ptr_batch\`）查不到时统一返回 \`nullptr\`：实体句柄无效、实体未挂载该组件、\`T\` 与该组件类型不一致、该组件类型从未注册，四种情形都得到 \`nullptr\`。不触发编译期断言，也不产生运行期报错或提示，需由调用方判空。
 
-> \`get_ptr\` 和 \`get_ptr_fast\` 内部已自动使用 \`get_ptr_fast_inline\`，通过缓存的 \`typed_pool_data_\` 指针直接访问组件数据，无需 \`get_typed_pool\` 间接寻址。无需手动调用。
+> \`get_ptr\` 与 \`get_ptr_fast\` 均可直接使用，无需额外预热或缓存。
 
 ### query_context 查询上下文
 
@@ -467,31 +467,20 @@ set->clear_hot_set();
 
 ### 分级排序
 
-\`#include "part/tiered_sort.hpp"\`，位于 \`detail\` 命名空间。
+位于 \`detail\` 命名空间。
 
 | 接口 | 说明 |
 |------|------|
 | \`tiered_sort<T>(data, n, cmp)\` | 分级排序值数组 |
 | \`tiered_sort_indices<T>(indices, values, n)\` | 索引排序，按 values[indices[i]] 升序排列 indices |
 
-**分级策略**：
-
-| 数据量 n | tiered_sort 算法 | tiered_sort_indices 算法 |
-|----------|-----------------|------------------------|
-| n < 32 | 插入排序 | 插入排序 |
-| 32 ≤ n < 256 | 插入排序（ascending 特化，trivial 类型） | 3-way pdqsort |
-| 256 ≤ n < 4096 | 3-way pdqsort | 3-way pdqsort |
-| 4096 ≤ n < 65536 | 11位基数排序（3趟，trivial 类型） | 11位基数排序（3趟，算术类型） |
-| n ≥ 65536 | 11位基数排序 + 预取距离8 | 11位基数排序 + 预取距离8 |
+**约束**：
 
 - \`tiered_sort\` 要求 \`T\` 满足 \`std::is_trivially_copyable_v\`
-- \`tiered_sort_indices\` 对算术类型在 n≥4096 时使用基数排序，否则 pdqsort
-- 基数排序使用 11-11-10 位配置（3趟完成 32 位），64 位类型 6 趟
-- 3-way pdqsort 使用 Dutch National Flag 分区，高效处理重复键
+- \`tiered_sort_indices\` 用于索引数组，按 \`values[indices[i]]\` 升序排列
 - 两者均为 \`noexcept\`
 
 \`\`\`cpp
-#include "part/tiered_sort.hpp"
 
 // 值排序
 int data[] = {5, 3, 1, 4, 2};
@@ -517,7 +506,7 @@ tiered_sort_indices(indices, values, 5);
 | 接口 | 说明 |
 |------|------|
 | \`runtime_view_create(class_pool<int>, class_pool<int> = {})\` | 运行时视图（class_pool 入参，位掩码匹配） |
-| \`runtime_view_create(span<const int>, span<const int> = {})\` | 运行时视图（span 入参，内部构造 class_pool） |
+| \`runtime_view_create(span<const int>, span<const int> = {})\` | 运行时视图（span 入参） |
 | \`runtime_view_create(const vector<int>&, const vector<int>& = {})\` | 运行时视图（vector 入参） |
 | \`runtime_view_create(const array<int, N>&)\` | 运行时视图（array 入参，仅 required） |
 | \`runtime_view_create(const array<int, N>&, const array<int, M>&)\` | 运行时视图（array 入参，required + excluded） |
@@ -530,7 +519,7 @@ tiered_sort_indices(indices, values, 5);
 | \`get_entity_mask(entity)\` | 获取实体组件位掩码 |
 | \`get_component_bit<T>()\` | 获取类型的位掩码位 |
 
-> 批量入参重载说明:\`add_batch\` / \`get_ptr_batch\` / \`prefetch_ptr_batch\` / \`runtime_view_create\` / \`runtime_view_create_from_terms\` 均支持 \`std::vector\` / \`std::array\` / 裸指针 + 长度 / \`std::span\` 入参。内部统一转 \`std::span\` 委托现有实现,不持久持有外部容器。\`runtime_view_create\` 的非 class_pool 重载内部构造 \`class_pool<int>\` 填充后移动给现有实现。
+> 批量入参重载说明：\`add_batch\` / \`get_ptr_batch\` / \`prefetch_ptr_batch\` / \`runtime_view_create\` / \`runtime_view_create_from_terms\` 均支持 \`std::vector\` / \`std::array\` / 裸指针 + 长度 / \`std::span\` 入参，不持有外部容器。
 
 ### 生命周期信号
 
@@ -592,17 +581,17 @@ mgr.get_ptr_batch<Position>(entities.data(), results.data(), entities.size());
 mgr.prefetch_ptr<Position>(e1);
 mgr.prefetch_ptr_batch<Position>(entities.data(), entities.size());
 
-// 双级预取：先预取 sparse 条目，再预取组件数据
+// 先预取 sparse 条目，再预取组件数据
 mgr.prefetch_ptr<Position>(e1);
 mgr.prefetch_ptr_data<Position>(e1);
 
-// cached 双级预取：缓存 set 指针避免重复查找，适合批量循环查询
+// cached: 复用 set 指针，适合批量循环查询
 auto* set = mgr.get_single_class_set<Position>();
 mgr.prefetch_ptr_cached<Position>(set, e1);
 mgr.prefetch_ptr_data_cached<Position>(set, e1);
 auto* p = mgr.get_ptr_fast_cached<Position>(set, e1);
 
-// query_context: 一次性缓存所有指针，内联查询
+// query_context: 一次获取，后续查询复用
 ecs::query_context<Position> ctx(mgr);
 ctx.prefetch_sparse(e1);
 ctx.prefetch_data(e1);
@@ -734,7 +723,7 @@ if (type_id::mask_block_of(vel_id) == 0)
 mgr.preallocate_mask_blocks(2);
 \`\`\`
 
-> 默认块数为 1（支持 64 种组件）。组件注册时 \`register_component_meta\` 自动扩容掩码块数，无需手动调用 \`preallocate_mask_blocks\`。手动预分配可避免运行中扩容开销。多块掩码查询通过 \`get_entity_block(e, block_idx)\` 或 \`get_entity_block_by_idx(idx, block_idx)\` 访问任意块。详见 [§ 29. multi_block_bitmask](#29-multi_block_bitmask--多块位掩码存储)。
+> 默认块数为 1（支持 64 种组件）。组件注册时 \`register_component_meta\` 自动扩容掩码块数，无需手动调用 \`preallocate_mask_blocks\`。多块掩码查询通过 \`get_entity_block(e, block_idx)\` 或 \`get_entity_block_by_idx(idx, block_idx)\` 访问任意块。详见 [§ 29. multi_block_bitmask](#29-multi_block_bitmask--多块位掩码存储)。
 
 ### 不要做什么
 
@@ -921,7 +910,7 @@ auto v2 = mgr.view<Position>(ecs::with<Health, Name>);
 v2.for_each([](Position& p, Health* h, Name* n) { /* ... */ });
 \`\`\`
 
-### 5.5 or_view\\<A, B> — OR视图（零分配）
+### 5.5 or_view\\<A, B> — OR视图
 
 遍历拥有 A **或** B 的实体，使用 nullable 指针区分。两阶段遍历，零额外内存分配。
 
@@ -1526,7 +1515,7 @@ rg2.share_with(rg1);  // rg2 共享 rg1 的重排状态
 |---------|------|---------|
 | 组件增删后忘记 \`rebuild()\` | Group 缓存过期，可能漏掉新实体或包含已删除实体 | 每次批量增删后调用 \`rebuild()\` |
 | 在 OwningGroup / ReorderGroup 中依赖 dense 顺序 | \`owned\` / \`reorder\` 会重排主集 dense 数组 | 若需保持顺序，使用 Non-OwningGroup |
-| 对频繁增删的组件使用 Group | 每次增删都需 \`rebuild()\`，开销大 | 稳定组件用 Group，频繁变化组件用 View |
+| 对频繁增删的组件使用 Group | 每次增删都需 \`rebuild()\` | 稳定组件用 Group，频繁变化组件用 View |
 
 ---
 `
@@ -1685,7 +1674,7 @@ if (rv.changed()) {              // 版本变化则 true
     rv.for_each_changed([](entity e) {
         // 遍历所有匹配实体（非增量，全量遍历）
     });
-    // for_each_changed 内部调用 reset_change_tracking
+    // for_each_changed 会重置变更追踪
 }
 \`\`\`
 
@@ -1807,7 +1796,6 @@ window.DOCS_DATA['function_storage'] = {
 ### 使用
 
 \`\`\`cpp
-#include "part/t_fun.hpp"
 
 // 回调目标函数
 int  on_add(int a, int b) { return a + b; }
@@ -2177,7 +2165,7 @@ mgr.flush_component_signals([&](uint32_t type, uint32_t, uint32_t) noexcept {
 
 | 错误做法 | 问题 | 正确做法 |
 |---------|------|---------|
-| 在即时信号回调中增删实体/组件 | 可能导致重入 | 使用延迟信号，在 flush 时处理；flush 内部有重入保护与 budget 上限 |
+| 在即时信号回调中增删实体/组件 | 可能导致重入 | 使用延迟信号，在 flush 时处理；flush 具备重入保护与 budget 上限 |
 | 依赖延迟信号缓冲区不丢事件 | 缓冲区满时落入 overflow_chain | 定期 flush；批量场景用 \`preallocate_*_signals\` 预分配 |
 | 忘记 \`flush\` 延迟信号 | 事件堆积在缓冲区与 chain 中未处理 | 每帧开头或结尾调用 \`flush_*_signals\` |
 | 使用有捕获的 lambda 作为即时信号回调 | 无法转换为函数指针 | 使用无捕获 lambda + \`user_data\` 传上下文 |
@@ -2270,7 +2258,7 @@ window.DOCS_DATA['reflection_usage'] = {
   order: 11,
   content: `## 11. reflection — 反射模块使用
 
-\`#include "reflection/reflection.hpp"\`，命名空间 \`reflect\`。\`noexcept\`。
+命名空间 \`reflect\`。\`noexcept\`。
 
 反射模块提供运行期类型元数据查询、字段访问与方法调用。支持聚合类型自动遍历公有字段、手填偏移量注册私有成员、宏注册成员/静态方法。支持运行时动态注册，注册线程安全。库独立，不创建线程，嵌入外部多线程架构。
 
@@ -2365,7 +2353,7 @@ window.DOCS_DATA['reflection_usage'] = {
 
 ### 11.4 construct_view — 对象构造/销毁
 
-\`#include "reflection/construct.hpp"\`。反射式构造与析构，基于 \`type_meta\` 的默认构造/析构函数指针。需类型可默认构造。
+反射式构造与析构，基于 \`type_meta\` 的默认构造/析构函数指针。需类型可默认构造。
 
 | 接口 | 说明 |
 |------|------|
@@ -2380,7 +2368,7 @@ window.DOCS_DATA['reflection_usage'] = {
 
 ### 11.5 inheritance_view — 继承关系
 
-\`#include "reflection/inheritance.hpp"\`。查询直接/间接基类与派生类，支持向上转型。需先 \`REGISTER_BASE\` 注册关系。
+查询直接/间接基类与派生类，支持向上转型。需先 \`REGISTER_BASE\` 注册关系。
 
 | 接口 | 说明 |
 |------|------|
@@ -2401,7 +2389,7 @@ window.DOCS_DATA['reflection_usage'] = {
 
 ### 11.6 enum_view — 枚举反射
 
-\`#include "reflection/enum_view.hpp"\`。枚举值↔名称互转与遍历。需先 \`REGISTER_ENUM\` 注册。
+枚举值↔名称互转与遍历。需先 \`REGISTER_ENUM\` 注册。
 
 | 接口 | 说明 |
 |------|------|
@@ -2420,7 +2408,7 @@ window.DOCS_DATA['reflection_usage'] = {
 
 ### 11.7 attribute_view — 属性/注解
 
-\`#include "reflection/attributes.hpp"\`。查询字段附加的键值对属性。需先 \`REGISTER_FIELD_ATTR\` 注册。
+查询字段附加的键值对属性。需先 \`REGISTER_FIELD_ATTR\` 注册。
 
 | 接口 | 说明 |
 |------|------|
@@ -2436,7 +2424,7 @@ window.DOCS_DATA['reflection_usage'] = {
 
 ### 11.8 container_view — 容器反射
 
-\`#include "reflection/container.hpp"\`。统一访问顺序容器（\`dense<T>\`/\`std::vector\` 等）的元素。类型注册时自动登记容器特征，无需额外调用。
+统一访问顺序容器（\`dense<T>\`/\`std::vector\` 等）的元素。类型注册时自动登记容器特征，无需额外调用。
 
 | 接口 | 说明 |
 |------|------|
@@ -2457,7 +2445,7 @@ window.DOCS_DATA['reflection_usage'] = {
 
 ### 11.9 virtual_dispatch_view — 动态派发
 
-\`#include "reflection/virtual_dispatch.hpp"\`。查询方法是否虚函数及 vtable 偏移。通过 \`register_method\` 注册的虚函数，invoker 已正确处理 vtable，可直接 \`invoke_virtual\` 调用。
+查询方法是否虚函数及 vtable 偏移。通过 \`register_method\` 注册的虚函数，invoker 已正确处理 vtable，可直接 \`invoke_virtual\` 调用。
 
 | 接口 | 说明 |
 |------|------|
@@ -2469,7 +2457,7 @@ window.DOCS_DATA['reflection_usage'] = {
 
 ### 11.10 convert_view — 类型转换
 
-\`#include "reflection/convert.hpp"\`。查询与执行已注册的类型转换。需先 \`REGISTER_CONVERT\` 注册。
+查询与执行已注册的类型转换。需先 \`REGISTER_CONVERT\` 注册。
 
 | 接口 | 说明 |
 |------|------|
@@ -2483,7 +2471,7 @@ window.DOCS_DATA['reflection_usage'] = {
 
 ### 11.11 compare_view — 字段比较/克隆
 
-\`#include "reflection/compare.hpp"\`。逐字段相等比较、克隆、赋值与析构。数组字段逐元素处理；未登记字段操作表的字段回退到 \`memcmp\`/\`memcpy\`。
+逐字段相等比较、克隆、赋值与析构。数组字段逐元素处理；未登记字段操作表的字段回退到 \`memcmp\`/\`memcpy\`。
 
 | 接口 | 说明 |
 |------|------|
@@ -2496,7 +2484,7 @@ window.DOCS_DATA['reflection_usage'] = {
 
 ### 11.12 hash_view — 字段哈希
 
-\`#include "reflection/hash.hpp"\`。逐字段 FNV-1a 哈希组合。已登记字段操作表的字段用其哈希函数计算，否则按字节级 FNV-1a。
+逐字段 FNV-1a 哈希组合。已登记字段操作表的字段用其哈希函数计算，否则按字节级 FNV-1a。
 
 | 接口 | 说明 |
 |------|------|
@@ -2507,7 +2495,6 @@ window.DOCS_DATA['reflection_usage'] = {
 ### 使用
 
 \`\`\`cpp
-#include "reflection/reflection.hpp"
 
 // === 聚合类型 (自动遍历公有字段) ===
 struct Vec3 { float x, y, z; };
@@ -2826,31 +2813,24 @@ window.DOCS_DATA['serialization'] = {
   order: 12,
   content: `## 12. serialization — 序列化/反序列化
 
-\`#include "serialization/serialization.hpp"\`，命名空间 \`ecs\`。\`noexcept\`。
+命名空间 \`ecs\`。\`noexcept\`。
 
 模块分两层。**通用对象序列化**（\`object_archive\`）与 \`part/codec\` 编解码原语不依赖 ECS，可序列化任意数据；**ECS 存档**（\`full_archive\`）在其之上枚举实体与组件。两层共用同一份字段层与编解码原语。
 
-| 文件 | 内容 |
+| 能力 | 说明 |
 |------|------|
-| \`serialization.hpp\` | 统一入口（包含下列全部子文件） |
-| \`object_archive.hpp\` | 通用对象序列化（单对象 / 对象数组，不依赖 ECS） |
-| \`full_archive.hpp\` | 完整 ECS 存档门面 |
-| \`model.hpp\` | 存档模型（header / metadata / entity_remap / limits / 格式与模式枚举） |
-| \`codec_bridge.hpp\` | 格式分派 + 变换链 |
-| \`field_codec.hpp\` | 反射字段 ↔ 编码器 |
-| \`payload_codec.hpp\` | ECS 组件载荷编解码 |
-| \`type_registry.hpp\` | 稳定类型名 + 类型工厂表 + 枚举 / 实体引用字段注册 |
-| \`entity_source.hpp\` | 运行期 ECS 枚举 |
-| \`entity_identity.hpp\` | 实体索引保序重建 |
-| \`archive_filter.hpp\` | 选择性过滤器 |
-| \`migration.hpp\` | 字段级迁移 + 组件版本控制 |
-| \`stats.hpp\` | 统计信息 |
-| \`schema_export.hpp\` | 跨语言 schema 导出（\`.proto\` / \`.fbs\`） |
-| \`part/codec/archive_codec.hpp\` | 编码器抽象接口 |
-| \`part/codec/codec_json.hpp\` / \`codec_binary.hpp\` / \`codec_protobuf.hpp\` / \`codec_flatbuffer.hpp\` | 四种内置编码器 |
-| \`part/codec/codec_registry.hpp\` | 编码器注册表 + 格式自动检测 |
-| \`part/codec/json_writer.hpp\` / \`json_reader.hpp\` / \`binary_writer.hpp\` / \`binary_reader.hpp\` | 读写原语 |
-| \`part/safety.hpp\` / \`part/crc32c.hpp\` | 安全限制 + base64 / RLE / CRC32C 工具 |
+| 统一入口 | 一次引入序列化与全部子能力 |
+| 通用对象序列化 | 单对象 / 对象数组，不依赖 ECS |
+| 完整 ECS 存档 | 实体与组件的保存 / 加载门面 |
+| 存档模型 | header / metadata / 实体重映射 / 安全限制 / 格式与模式枚举 |
+| 字段层 | 反射字段 ↔ 编码器，格式分派与变换链 |
+| 类型登记 | 稳定类型名、类型工厂表、枚举与实体引用字段注册 |
+| 实体枚举与重建 | 运行期枚举实体、索引保序重建 |
+| 选择性过滤 | 按条件筛选存档内容 |
+| 字段迁移 | 字段级迁移 + 组件版本控制 |
+| 统计与导出 | 统计信息、跨语言 schema 导出 |
+| 编码器 | 抽象接口 + JSON / 二进制 / Protobuf / FlatBuffers |
+| 安全工具 | 安全限制、base64 / RLE / CRC32C |
 
 ---
 
@@ -2867,7 +2847,7 @@ window.DOCS_DATA['serialization'] = {
 
 ### 12.2 object_archive 接口
 
-\`#include "serialization/object_archive.hpp"\`，命名空间 \`ecs\`。序列化任意数据类型，不需要 \`register_components\`，不依赖 \`manager\`。
+命名空间 \`ecs\`。序列化任意数据类型，不需要 \`register_components\`，不依赖 \`manager\`。
 
 | 接口 | 说明 |
 |------|------|
@@ -2885,7 +2865,6 @@ window.DOCS_DATA['serialization'] = {
 ### 12.3 使用示例
 
 \`\`\`cpp
-#include "serialization/serialization.hpp"
 
 struct item_record { int id; float weight; std::string name; };
 REGISTER_TYPE_ONLY(item_record);
@@ -2937,7 +2916,7 @@ JSON 格式的根结构：
 
 ### 12.5 编码器抽象接口
 
-\`#include "part/codec/archive_codec.hpp"\`。各编码器实现下列接口，与格式无关。
+各编码器实现下列接口，与格式无关。
 
 \`archive_writer\`：
 
@@ -2980,7 +2959,6 @@ JSON 格式的根结构：
 
 ### 12.6 编码器注册表
 
-\`#include "part/codec/codec_registry.hpp"\`。
 
 | 接口 | 说明 |
 |------|------|
@@ -2995,18 +2973,18 @@ JSON 格式的根结构：
 
 ### 12.7 四种内置编码器
 
-| 编码器 | 格式标识 | 头文件 | 字段标识方式 |
-|--------|---------|--------|------------|
-| \`json_codec\` | 首字符 \`{\` | \`codec_json.hpp\` | 字段名 |
-| \`binary_codec\` | \`LCE1\` | \`codec_binary.hpp\` | 字段名 |
-| \`protobuf_codec\` | 无（按 wire 结构判定） | \`codec_protobuf.hpp\` | 字段编号 = 写入顺序 |
-| \`flatbuffer_codec\` | file_identifier \`LCFB\` | \`codec_flatbuffer.hpp\` | 字段编号 = 写入顺序 |
+| 编码器 | 格式标识 | 字段标识方式 |
+|--------|---------|------------|
+| \`json_codec\` | 首字符 \`{\` | 字段名 |
+| \`binary_codec\` | \`LCE1\` | 字段名 |
+| \`protobuf_codec\` | 无（按 wire 结构判定） | 字段编号 = 写入顺序 |
+| \`flatbuffer_codec\` | file_identifier \`LCFB\` | 字段编号 = 写入顺序 |
 
 JSON / 二进制按字段名读写；Protobuf / FlatBuffers 不依赖键名，按写入顺序分配字段编号，读取按同样顺序推进，因此任意键名（含非 ECS 数据）均可正确往返。
 
 ### 12.8 json_writer 接口
 
-\`#include "part/codec/json_writer.hpp"\`，全局命名空间。
+全局命名空间。
 
 | 接口 | 说明 |
 |------|------|
@@ -3021,7 +2999,7 @@ JSON / 二进制按字段名读写；Protobuf / FlatBuffers 不依赖键名，�
 
 ### 12.9 json_reader 接口
 
-\`#include "part/codec/json_reader.hpp"\`，全局命名空间。
+全局命名空间。
 
 | 接口 | 说明 |
 |------|------|
@@ -3068,7 +3046,6 @@ JSON / 二进制按字段名读写；Protobuf / FlatBuffers 不依赖键名，�
 
 ### 12.12 跨语言 schema 导出
 
-\`#include "serialization/schema_export.hpp"\`。
 
 | 接口 | 说明 |
 |------|------|
@@ -3080,7 +3057,6 @@ JSON / 二进制按字段名读写；Protobuf / FlatBuffers 不依赖键名，�
 ### 12.13 原语使用示例
 
 \`\`\`cpp
-#include "serialization/serialization.hpp"
 
 // 直接使用编码器
 protobuf_codec pc;
@@ -3128,7 +3104,7 @@ codec_registry::instance().register_codec(&my_codec_instance);
 
 ### 12.15 full_archive 接口
 
-\`#include "serialization/full_archive.hpp"\`，命名空间 \`ecs\`。ECS 存档唯一入口，\`register_components\` 一次后保存 / 加载免 \`Ts...\`。
+命名空间 \`ecs\`。ECS 存档唯一入口，\`register_components\` 一次后保存 / 加载免 \`Ts...\`。
 
 | 接口 | 说明 |
 |------|------|
@@ -3152,7 +3128,6 @@ codec_registry::instance().register_codec(&my_codec_instance);
 ### 12.16 使用示例
 
 \`\`\`cpp
-#include "serialization/serialization.hpp"
 
 ecs::manager mgr;
 auto e1 = mgr.create_entity();
@@ -3287,7 +3262,7 @@ JSON 格式的根结构：
 | \`set_compression(compress_fn, decompress_fn)\` | 保存后压缩、加载前解压 |
 | \`on_save(cb)\` / \`on_load(cb)\` | 保存后 / 加载前自定义变换，\`void(*)(std::string&)\` |
 
-\`part/safety.hpp\` 提供 \`rle_compress\` / \`rle_decompress\`。
+安全工具提供 \`rle_compress\` / \`rle_decompress\`。
 
 ### 12.27 进度回调与统计
 
@@ -3326,7 +3301,7 @@ window.DOCS_DATA['reorder'] = {
   order: 43,
   content: `## 13. reorder_group — 多组件重排序遍历
 
-\`#include "reorder.hpp"\`，命名空间 \`ecs\`。对多个组件集合取交集，提供联合遍历。
+命名空间 \`ecs\`。对多个组件集合取交集，提供联合遍历。
 
 ### 接口
 
@@ -3345,7 +3320,6 @@ window.DOCS_DATA['reorder'] = {
 ### 使用
 
 \`\`\`cpp
-#include "reorder.hpp"
 
 ecs::manager mgr;
 auto e1 = mgr.create_entity();

@@ -3,8 +3,7 @@
 
 #include "../part/codec/archive_codec.hpp"
 #include "../part/codec/codec_registry.hpp"
-#include "../part/codec/json_writer.hpp"
-#include "../part/codec/json_reader.hpp"
+#include "../part/codec/json_io.hpp"
 #include "../part/dense.hpp"
 #include "../part/operating_message.hpp"
 #include "../ecs/component.hpp"

@@ -11,7 +11,7 @@
 #include "operating_message.hpp"
 #include "dense.hpp"
 #include "ring_buffer.hpp"
-#include "time.hpp"
+#include "time/timer.hpp"
 #include "fnv1a.hpp"
 
 // === 消息前缀栈 (模块化前缀, RAII 推入/弹出) ===
