@@ -1,7 +1,7 @@
 // test_highlevel_serialization.cpp - 高层封装测试: 序列化
 #include "test_common.hpp"
 #include "include/serialization/serialization.hpp"
-#include "include/reflection/macros.hpp"
+#include "include/reflection/core/macros.hpp"
 #include "include/reflection/reflection.hpp"
 #include <string>
 #include <vector>

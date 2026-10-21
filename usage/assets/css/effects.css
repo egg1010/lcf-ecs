@@ -353,6 +353,10 @@
   margin-top: var(--sp-5);
 }
 
+.cat-grid.api-grid {
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+}
+
 .cat-card {
   padding: var(--sp-5);
   border-radius: var(--r-md);
@@ -404,4 +408,14 @@
 .cat-card .cat-count {
   font-size: 0.78rem;
   color: var(--fg-3);
+}
+
+.cat-card .cat-entry {
+  margin-top: var(--sp-2);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.72rem;
+  color: var(--fg-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

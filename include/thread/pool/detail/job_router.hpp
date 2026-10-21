@@ -5,9 +5,9 @@
 #include <cstdint>
 
 #include "part/dense.hpp"
-#include "thread/mpmc_queue.hpp"
-#include "thread/platform.hpp"
-#include "thread/worker.hpp"
+#include "thread/queue/mpmc_queue.hpp"
+#include "thread/base/platform.hpp"
+#include "thread/execution/worker.hpp"
 
 namespace thread
 {

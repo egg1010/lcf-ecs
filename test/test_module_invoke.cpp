@@ -1,6 +1,6 @@
 // test_module_invoke.cpp - 模块功能测试: invoke
 #include "test_common.hpp"
-#include "include/reflection/invoke.hpp"
+#include "include/reflection/base/invoke.hpp"
 #include <type_traits>
 
 struct calc

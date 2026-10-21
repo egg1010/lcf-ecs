@@ -7,8 +7,8 @@
 #include <new>
 
 #include "part/bit_ops.hpp"
-#include "thread/error.hpp"
-#include "thread/job.hpp"
+#include "thread/base/error.hpp"
+#include "thread/base/job.hpp"
 
 namespace thread
 {
@@ -30,6 +30,7 @@ struct work_deque_stats
     std::atomic<std::uint64_t> steal_attempts_{0};
     std::atomic<std::uint64_t> grow_events_{0};
     std::atomic<std::uint64_t> stolen_from_{0};
+    std::atomic<std::uint64_t> steal_aborts_{0};
     std::atomic<std::uint64_t> drops_{0};
 };
 
@@ -220,7 +221,8 @@ struct work_deque
         }
         std::int64_t bottom = bottom_.load(std::memory_order_relaxed);
         std::int64_t top = top_.load(std::memory_order_acquire);
-        while (static_cast<std::size_t>(bottom - top) >= capacity_)
+        // 至少保留一个空槽：窃取者先拷贝后 CAS，所有者不得在拷贝窗口内绕回被窃取区间
+        while (static_cast<std::size_t>(bottom - top) + 1 >= capacity_)
         {
             if (!grow())
             {
@@ -296,7 +298,7 @@ struct work_deque
             return 0;
         }
 
-        std::int64_t top = top_.load(std::memory_order_relaxed);
+        std::int64_t top = top_.load(std::memory_order_acquire);
         std::atomic_thread_fence(std::memory_order_seq_cst);
         const std::int64_t bottom = bottom_.load(std::memory_order_relaxed);
 
@@ -305,10 +307,18 @@ struct work_deque
             return 0;
         }
 
+        work_deque_buffer* const buffer = buffer_.load(std::memory_order_acquire);
+        if (buffer == nullptr)
+        {
+            return 0;
+        }
+        const std::size_t buffer_mask =
+            static_cast<std::size_t>(buffer->capacity_.load(std::memory_order_relaxed) - 1);
+
         const std::int64_t available = bottom - top;
         std::int64_t wanted = available / 2;
-        const std::int64_t quarter = static_cast<std::int64_t>(capacity_ / 4);
-        if (wanted > quarter && quarter > 0)
+        const std::int64_t quarter = static_cast<std::int64_t>((buffer_mask + 1) / 4);
+        if (quarter > 0 && wanted > quarter)
         {
             wanted = quarter;
         }
@@ -320,31 +330,18 @@ struct work_deque
         {
             wanted = 1;
         }
-        if (wanted > available)
-        {
-            wanted = available;
-        }
 
-        const std::int64_t room = static_cast<std::int64_t>(capacity_) - (bottom - top);
-        if (room > 0 && wanted > room)
-        {
-            wanted = room;
-        }
-
-        work_deque_buffer* const buffer = buffer_.load(std::memory_order_acquire);
-        const std::size_t buffer_mask =
-            static_cast<std::size_t>(buffer->capacity_.load(std::memory_order_relaxed) - 1);
-
-        if (!top_.compare_exchange_strong(top, top + wanted, std::memory_order_seq_cst,
-                                          std::memory_order_relaxed))
-        {
-            return 0;
-        }
-
+        // 先拷贝再竞争所有权：CAS 成功即宣告槽位可复用，拷贝必须在其之前完成
         for (std::int64_t i = 0; i < wanted; ++i)
         {
             const std::size_t index = static_cast<std::size_t>(top + i) & buffer_mask;
             out[i] = buffer->slots_[index].load(std::memory_order_relaxed);
+        }
+        if (!top_.compare_exchange_strong(top, top + wanted, std::memory_order_acq_rel,
+                                          std::memory_order_relaxed))
+        {
+            stats_.steal_aborts_.fetch_add(1, std::memory_order_relaxed);
+            return 0;
         }
         stats_.steals_.fetch_add(static_cast<std::uint64_t>(wanted), std::memory_order_relaxed);
         stats_.stolen_from_.fetch_add(1, std::memory_order_relaxed);

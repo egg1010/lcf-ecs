@@ -6,9 +6,9 @@
 #include <type_traits>
 #include <cstddef>
 #include <utility>
-#include "../part/force_inline.hpp"
-#include "member_offset.hpp"
-#include "../config/reflect_config.hpp"
+#include "part/force_inline.hpp"
+#include "reflection/base/member_offset.hpp"
+#include "config/reflect_config.hpp"
 
 static_assert(REFLECT_MAX_FIELDS == 16 ||
               REFLECT_MAX_FIELDS == 32 ||
@@ -17,7 +17,7 @@ static_assert(REFLECT_MAX_FIELDS == 16 ||
               REFLECT_MAX_FIELDS == 256,
               "REFLECT_MAX_FIELDS must be 16/32/64/128/256");
 
-#include "aggregate_traverse_pp.hpp"
+#include "reflection/base/aggregate_traverse_pp.hpp"
 
 namespace reflect {
 namespace detail {

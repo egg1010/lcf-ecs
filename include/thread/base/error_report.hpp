@@ -8,8 +8,8 @@
 #include <string_view>
 
 #include "part/keyed_throttle.hpp"
-#include "thread/error.hpp"
-#include "thread/task_identity.hpp"
+#include "thread/base/error.hpp"
+#include "thread/base/task_identity.hpp"
 
 namespace thread
 {

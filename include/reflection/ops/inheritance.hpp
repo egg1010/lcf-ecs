@@ -3,7 +3,7 @@
 // 基于 type_meta 的 base_offsets/derived_type_ids 实现向上/向下转型
 #pragma once
 
-#include "query.hpp"
+#include "reflection/core/query.hpp"
 
 namespace reflect {
 

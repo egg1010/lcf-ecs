@@ -1,21 +1,21 @@
 // payload_codec.hpp - 组件载荷编解码 (反射字段 / 用户 JSON / 原始字节) + 类型化加载
 #pragma once
 
-#include "../part/codec/archive_codec.hpp"
-#include "../part/codec/codec_json.hpp"
-#include "../part/type/type_id.hpp"
-#include "../part/dense.hpp"
-#include "../part/safety.hpp"
-#include "../ecs/component.hpp"
-#include "../reflection/query.hpp"
-#include "../reflection/meta.hpp"
-#include "model.hpp"
-#include "stats.hpp"
-#include "type_registry.hpp"
-#include "field_codec.hpp"
-#include "entity_source.hpp"
-#include "archive_filter.hpp"
-#include "migration.hpp"
+#include "part/codec/archive_codec.hpp"
+#include "part/codec/codec_json.hpp"
+#include "part/type/type_id.hpp"
+#include "part/dense.hpp"
+#include "part/safety.hpp"
+#include "ecs/component.hpp"
+#include "reflection/core/query.hpp"
+#include "reflection/base/meta.hpp"
+#include "serialization/base/model.hpp"
+#include "serialization/base/stats.hpp"
+#include "serialization/codec/type_registry.hpp"
+#include "serialization/codec/field_codec.hpp"
+#include "serialization/codec/entity_source.hpp"
+#include "serialization/base/archive_filter.hpp"
+#include "serialization/base/migration.hpp"
 #include <cstdint>
 #include <cstring>
 #include <string>

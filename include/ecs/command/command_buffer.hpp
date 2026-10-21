@@ -1,7 +1,7 @@
 #pragma once
-#include "../part/dense.hpp"
-#include "../part/type/void_any.hpp"
-#include "entity.hpp"
+#include "part/dense.hpp"
+#include "part/type/void_any.hpp"
+#include "ecs/entity/entity.hpp"
 #include <cstdint>
 #include <utility>
 

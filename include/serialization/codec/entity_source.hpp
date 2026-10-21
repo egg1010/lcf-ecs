@@ -1,14 +1,14 @@
 // entity_source.hpp - 运行期 ECS 枚举 (注册类型 / def 类型 / 集合槽位 / 存活实体)
 #pragma once
 
-#include "../part/type/type_id.hpp"
-#include "../part/dense.hpp"
-#include "../part/codec/archive_codec.hpp"
-#include "../ecs/component.hpp"
-#include "../ecs/single_class_set.hpp"
-#include "../ecs/entity_manager.hpp"
-#include "type_registry.hpp"
-#include "archive_filter.hpp"
+#include "part/type/type_id.hpp"
+#include "part/dense.hpp"
+#include "part/codec/archive_codec.hpp"
+#include "ecs/component.hpp"
+#include "ecs/storage/single_class_set.hpp"
+#include "ecs/entity/entity_manager.hpp"
+#include "serialization/codec/type_registry.hpp"
+#include "serialization/base/archive_filter.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <string_view>

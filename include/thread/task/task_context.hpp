@@ -4,8 +4,8 @@
 #include <cstdint>
 #include <new>
 
-#include "thread/task_identity.hpp"
-#include "thread/tls.hpp"
+#include "thread/base/task_identity.hpp"
+#include "thread/base/tls.hpp"
 
 namespace thread
 {

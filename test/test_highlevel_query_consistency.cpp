@@ -2,7 +2,7 @@
 // INV-1 遍历产出句柄必须过点查 / INV-2 跨路径实体集逐句柄相等 / INV-3 点查对失效与墓碑句柄恒 false
 #include "test_common.hpp"
 #include "include/ecs/component.hpp"
-#include "include/ecs/entity.hpp"
+#include "include/ecs/entity/entity.hpp"
 #include <algorithm>
 #include <array>
 #include <vector>

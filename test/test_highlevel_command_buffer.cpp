@@ -1,8 +1,8 @@
 ﻿// test_highlevel_command_buffer.cpp - 高层封装测试: command_buffer
 #include "test_common.hpp"
 #include "include/ecs/component.hpp"
-#include "include/ecs/entity.hpp"
-#include "include/ecs/command_buffer.hpp"
+#include "include/ecs/entity/entity.hpp"
+#include "include/ecs/command/command_buffer.hpp"
 
 struct position
 {

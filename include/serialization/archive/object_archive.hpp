@@ -1,14 +1,14 @@
 // object_archive.hpp - 与 ECS 解耦的通用对象序列化 (单对象 / 对象数组)
 #pragma once
 
-#include "../part/dense.hpp"
-#include "../part/safety.hpp"
-#include "../part/operating_message.hpp"
-#include "../part/codec/archive_codec.hpp"
-#include "../part/codec/codec_registry.hpp"
-#include "model.hpp"
-#include "codec_bridge.hpp"
-#include "field_codec.hpp"
+#include "part/dense.hpp"
+#include "part/safety.hpp"
+#include "part/operating_message.hpp"
+#include "part/codec/archive_codec.hpp"
+#include "part/codec/codec_registry.hpp"
+#include "serialization/base/model.hpp"
+#include "serialization/codec/codec_bridge.hpp"
+#include "serialization/codec/field_codec.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <cstring>

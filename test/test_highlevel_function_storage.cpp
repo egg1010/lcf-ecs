@@ -2,7 +2,7 @@
 #include "test_common.hpp"
 #include "include/ecs/component.hpp"
 #include "include/part/type/t_fun.hpp"
-#include "include/ecs/entity.hpp"
+#include "include/ecs/entity/entity.hpp"
 
 static int add_ints(int a, int b) { return a + b; }
 static int mul_ints(int a, int b) { return a * b; }

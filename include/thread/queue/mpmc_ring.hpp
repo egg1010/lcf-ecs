@@ -6,6 +6,8 @@
 #include <new>
 #include <type_traits>
 
+#include "part/bit_ops.hpp"
+
 namespace thread
 {
 

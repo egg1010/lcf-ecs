@@ -3,8 +3,8 @@
 // 基于 type_meta 的 converters 列表实现类型转换
 #pragma once
 
-#include "query.hpp"
-#include "field_ops.hpp"
+#include "reflection/core/query.hpp"
+#include "reflection/base/field_ops.hpp"
 
 namespace reflect {
 

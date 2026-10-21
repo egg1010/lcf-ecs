@@ -5,8 +5,8 @@
 #include <cstdint>
 #include <thread>
 
-#include "thread/error.hpp"
-#include "thread/task_graph.hpp"
+#include "thread/base/error.hpp"
+#include "thread/task/task_graph.hpp"
 
 namespace thread
 {

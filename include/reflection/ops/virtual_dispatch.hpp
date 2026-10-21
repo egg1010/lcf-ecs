@@ -4,8 +4,8 @@
 // 注意: vtable 布局依赖 ABI (Itanium/MSVC), 单继承下指针无调整
 #pragma once
 
-#include "query.hpp"
-#include "../part/type/type_id.hpp"
+#include "reflection/core/query.hpp"
+#include "part/type/type_id.hpp"
 
 namespace reflect {
 

@@ -1,10 +1,10 @@
 // model.hpp - 存档模型: 安全限制 / 存档头 / 实体重映射 / 元数据
 #pragma once
 
-#include "../part/dense.hpp"
-#include "../part/id_table.hpp"
-#include "../part/safety.hpp"
-#include "../ecs/entity.hpp"
+#include "part/dense.hpp"
+#include "part/id_table.hpp"
+#include "part/safety.hpp"
+#include "ecs/entity/entity.hpp"
 #include <cstdint>
 #include <cstring>
 #include <limits>

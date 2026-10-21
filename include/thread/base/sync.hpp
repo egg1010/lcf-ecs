@@ -4,8 +4,8 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "thread/error.hpp"
-#include "thread/platform.hpp"
+#include "thread/base/error.hpp"
+#include "thread/base/platform.hpp"
 
 namespace thread
 {

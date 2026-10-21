@@ -1,6 +1,6 @@
 // test_module_aggregate_traverse.cpp - 模块功能测试: aggregate_traverse
 #include "test_common.hpp"
-#include "include/reflection/aggregate_traverse.hpp"
+#include "include/reflection/base/aggregate_traverse.hpp"
 
 struct agg3
 {

@@ -1,9 +1,9 @@
 // migration.hpp - 字段级迁移 + 组件版本控制
 #pragma once
 
-#include "../part/dense.hpp"
-#include "../part/type/type_id.hpp"
-#include "../part/codec/json_io.hpp"
+#include "part/dense.hpp"
+#include "part/type/type_id.hpp"
+#include "part/codec/json_io.hpp"
 #include <cstdint>
 #include <cstring>
 #include <functional>

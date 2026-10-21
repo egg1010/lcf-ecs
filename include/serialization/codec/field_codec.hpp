@@ -1,11 +1,11 @@
 // field_codec.hpp - 反射字段 ↔ archive_writer/archive_reader (唯一字段实现)
 #pragma once
 
-#include "../part/codec/archive_codec.hpp"
-#include "../part/type/type_id.hpp"
-#include "../reflection/query.hpp"
-#include "../reflection/meta.hpp"
-#include "type_registry.hpp"
+#include "part/codec/archive_codec.hpp"
+#include "part/type/type_id.hpp"
+#include "reflection/core/query.hpp"
+#include "reflection/base/meta.hpp"
+#include "serialization/codec/type_registry.hpp"
 #include <concepts>
 #include <cstdint>
 #include <string>

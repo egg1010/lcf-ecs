@@ -1,12 +1,12 @@
 // type_registry.hpp - 稳定类型名 + 类型工厂表 + 枚举/实体引用字段注册
 #pragma once
 
-#include "../part/type/type_id.hpp"
-#include "../part/dense.hpp"
-#include "../part/id_table.hpp"
-#include "../part/codec/archive_codec.hpp"
-#include "../reflection/query.hpp"
-#include "../reflection/meta.hpp"
+#include "part/type/type_id.hpp"
+#include "part/dense.hpp"
+#include "part/id_table.hpp"
+#include "part/codec/archive_codec.hpp"
+#include "reflection/core/query.hpp"
+#include "reflection/base/meta.hpp"
 #include <cstdint>
 #include <string>
 #include <string_view>

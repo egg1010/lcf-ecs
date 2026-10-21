@@ -2,7 +2,7 @@
 #include <tuple>
 #include <array>
 #include <limits>
-#include "group.hpp"
+#include "ecs/group/group.hpp"
 
 namespace ecs
 {

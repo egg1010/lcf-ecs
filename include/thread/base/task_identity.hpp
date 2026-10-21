@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "thread/job.hpp"
+#include "thread/base/job.hpp"
 
 namespace thread
 {

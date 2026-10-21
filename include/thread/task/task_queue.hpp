@@ -7,12 +7,12 @@
 #include <type_traits>
 
 #include "part/dense.hpp"
-#include "thread/error.hpp"
-#include "thread/task_identity.hpp"
-#include "thread/task_table.hpp"
-#include "thread/task_node.hpp"
+#include "thread/base/error.hpp"
+#include "thread/base/task_identity.hpp"
+#include "thread/task/task_table.hpp"
+#include "thread/task/task_node.hpp"
 
-#include "thread/mpmc_ring.hpp"
+#include "thread/queue/mpmc_ring.hpp"
 
 namespace thread
 {
@@ -156,7 +156,8 @@ struct ticket_deque
         }
         std::int64_t bottom = bottom_.load(std::memory_order_relaxed);
         std::int64_t top = top_.load(std::memory_order_acquire);
-        while (static_cast<std::size_t>(bottom - top) >= capacity_)
+        // 至少保留一个空槽：窃取者先拷贝后 CAS，所有者不得在拷贝窗口内绕回被窃取区间
+        while (static_cast<std::size_t>(bottom - top) + 1 >= capacity_)
         {
             if (!grow())
             {
@@ -220,7 +221,7 @@ struct ticket_deque
         {
             return 0;
         }
-        std::int64_t top = top_.load(std::memory_order_relaxed);
+        std::int64_t top = top_.load(std::memory_order_acquire);
         std::atomic_thread_fence(std::memory_order_seq_cst);
         const std::int64_t bottom = bottom_.load(std::memory_order_relaxed);
         if (top >= bottom)
@@ -228,9 +229,17 @@ struct ticket_deque
             return 0;
         }
 
+        ticket_deque_buffer* const buffer = buffer_.load(std::memory_order_acquire);
+        if (buffer == nullptr)
+        {
+            return 0;
+        }
+        const std::size_t buffer_mask =
+            static_cast<std::size_t>(buffer->capacity_.load(std::memory_order_relaxed) - 1);
+
         const std::int64_t available = bottom - top;
         std::int64_t wanted = available / 2;
-        const std::int64_t quarter = static_cast<std::int64_t>(capacity_ / 4);
+        const std::int64_t quarter = static_cast<std::int64_t>((buffer_mask + 1) / 4);
         if (quarter > 0 && wanted > quarter)
         {
             wanted = quarter;
@@ -244,24 +253,16 @@ struct ticket_deque
             wanted = 1;
         }
 
-        ticket_deque_buffer* const buffer = buffer_.load(std::memory_order_acquire);
-        if (buffer == nullptr)
-        {
-            return 0;
-        }
-        const std::size_t buffer_mask =
-            static_cast<std::size_t>(buffer->capacity_.load(std::memory_order_relaxed) - 1);
-
-        if (!top_.compare_exchange_strong(top, top + wanted, std::memory_order_seq_cst,
-                                          std::memory_order_relaxed))
-        {
-            return 0;
-        }
-
+        // 先拷贝再竞争所有权，避免 CAS 成功后槽位被所有者复用
         for (std::int64_t i = 0; i < wanted; ++i)
         {
             const std::size_t index = static_cast<std::size_t>(top + i) & buffer_mask;
             out[i] = ticket{buffer->slots_[index].load(std::memory_order_relaxed)};
+        }
+        if (!top_.compare_exchange_strong(top, top + wanted, std::memory_order_acq_rel,
+                                          std::memory_order_relaxed))
+        {
+            return 0;
         }
         return static_cast<std::size_t>(wanted);
     }

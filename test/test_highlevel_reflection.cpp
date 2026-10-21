@@ -1,7 +1,7 @@
 // test_highlevel_reflection.cpp - 高层封装测试: 反射模块
 #include "test_common.hpp"
 #include "include/reflection/reflection.hpp"
-#include "include/reflection/inheritance.hpp"
+#include "include/reflection/ops/inheritance.hpp"
 #include <array>
 #include <cstdint>
 #include <string>

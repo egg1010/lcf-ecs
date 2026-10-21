@@ -3,7 +3,7 @@
 // 通过 type_meta 的 default_construct_/destruct_ 函数指针实现反射构造
 #pragma once
 
-#include "query.hpp"
+#include "reflection/core/query.hpp"
 
 namespace reflect {
 

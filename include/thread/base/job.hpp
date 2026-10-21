@@ -10,8 +10,8 @@
 
 #include "part/index_pool.hpp"
 #include "part/type/inline_callable.hpp"
-#include "thread/error.hpp"
-#include "thread/tls.hpp"
+#include "thread/base/error.hpp"
+#include "thread/base/tls.hpp"
 
 namespace thread
 {

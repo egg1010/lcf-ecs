@@ -1,12 +1,12 @@
 // entity_identity.hpp - 实体索引保序重建 (预分配 + 顺序领取 + 空槽回收)
 #pragma once
 
-#include "../part/dense.hpp"
-#include "../part/codec/archive_codec.hpp"
-#include "../ecs/component.hpp"
-#include "../ecs/entity_manager.hpp"
-#include "../ecs/entity.hpp"
-#include "model.hpp"
+#include "part/dense.hpp"
+#include "part/codec/archive_codec.hpp"
+#include "ecs/component.hpp"
+#include "ecs/entity/entity_manager.hpp"
+#include "ecs/entity/entity.hpp"
+#include "serialization/base/model.hpp"
 #include <cstddef>
 #include <cstdint>
 

@@ -7,7 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <type_traits>
-#include "../part/force_inline.hpp"
+#include "part/force_inline.hpp"
 
 namespace reflect {
 

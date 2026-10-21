@@ -3,8 +3,8 @@
 // 基于 container_ops.hpp 的 container_ops_table 实现容器操作
 #pragma once
 
-#include "query.hpp"
-#include "container_ops.hpp"
+#include "reflection/core/query.hpp"
+#include "reflection/base/container_ops.hpp"
 
 namespace reflect {
 

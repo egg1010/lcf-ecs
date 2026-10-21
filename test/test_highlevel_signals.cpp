@@ -1,7 +1,7 @@
 ﻿// test_highlevel_signals.cpp - 高层封装测试: 生命周期信号
 #include "test_common.hpp"
 #include "include/ecs/component.hpp"
-#include "include/ecs/entity.hpp"
+#include "include/ecs/entity/entity.hpp"
 
 struct position
 {

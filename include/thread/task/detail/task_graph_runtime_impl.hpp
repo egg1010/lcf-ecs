@@ -246,11 +246,13 @@ inline void task_graph::release_task_wait_slot(std::uint32_t index) noexcept
         return;
     }
     const resource_id id{resource};
-    (void)resources_.dequeue_wait(id, index);
+    resources_.lock_resource(resource);
+    (void)resources_.dequeue_wait_locked(id, index);
     if (access_.wait_write_[index] != 0)
     {
-        resources_.note_waiting_writer(id, false);
+        resources_.note_waiting_writer_locked(id, false);
     }
+    resources_.unlock_resource(resource);
     access_.wait_task_[index] = invalid_resource_index;
     access_.wait_write_[index] = 0;
     }
@@ -267,6 +269,20 @@ inline bool task_graph::acquire_all(std::uint32_t index) noexcept
     {
         return true;
     }
+    // 旧的等待位置先摘除，再按新的锁集重试
+    if (access_.wait_task_[index] != invalid_resource_index)
+    {
+        release_task_wait_slot(index);
+    }
+
+    std::uint64_t stripes = 0;
+    for (std::uint32_t edge = head; edge != 0 && edge <= access_.edges_.size();
+         edge = access_.edges_[edge - 1].next_)
+    {
+        stripes |= 1ull << resource_table::stripe_of(access_.edges_[edge - 1].resource_);
+    }
+    resources_.lock_mask(stripes);
+
     std::uint32_t conflict = invalid_resource_index;
     bool conflict_write = false;
     for (std::uint32_t edge = head; edge != 0 && edge <= access_.edges_.size();
@@ -275,7 +291,7 @@ inline bool task_graph::acquire_all(std::uint32_t index) noexcept
         const resource_edge& item = access_.edges_[edge - 1];
         const resource_id resource{item.resource_};
         const access_mode mode = static_cast<access_mode>(item.mode_);
-        if (!resources_.can_acquire(resource, mode))
+        if (!resources_.can_acquire_locked(resource, mode))
         {
             conflict = item.resource_;
             conflict_write = mode == access_mode::write;
@@ -288,10 +304,11 @@ inline bool task_graph::acquire_all(std::uint32_t index) noexcept
              edge = access_.edges_[edge - 1].next_)
         {
             const resource_edge& item = access_.edges_[edge - 1];
-            resources_.acquire(resource_id{item.resource_},
-                               static_cast<access_mode>(item.mode_), index);
+            resources_.acquire_locked(resource_id{item.resource_},
+                                      static_cast<access_mode>(item.mode_), index);
         }
         node->flags_.fetch_or(flag_resources_held, std::memory_order_acq_rel);
+        resources_.unlock_mask(stripes);
         return true;
     }
 
@@ -304,21 +321,20 @@ inline bool task_graph::acquire_all(std::uint32_t index) noexcept
                                                   std::memory_order_acq_rel,
                                                   std::memory_order_acquire))
         {
+            resources_.unlock_mask(stripes);
             return true;
         }
     }
-    if (access_.wait_task_[index] != conflict)
+    // 检查、置等待态与入链在同一临界区完成，避免检查后资源被释放导致丢唤醒
+    access_.wait_task_[index] = conflict;
+    access_.wait_write_[index] = conflict_write ? 1u : 0u;
+    if (conflict_write)
     {
-        release_task_wait_slot(index);
-        access_.wait_task_[index] = conflict;
-        access_.wait_write_[index] = conflict_write ? 1u : 0u;
-        if (conflict_write)
-        {
-            resources_.note_waiting_writer(resource_id{conflict}, true);
-        }
-        resources_.enqueue_wait(resource_id{conflict}, index);
+        resources_.note_waiting_writer_locked(resource_id{conflict}, true);
     }
+    resources_.enqueue_wait_locked(resource_id{conflict}, index);
     waits_.since_[index] = monotonic_now_ns();
+    resources_.unlock_mask(stripes);
     return false;
     }
 
@@ -339,7 +355,9 @@ inline void task_graph::release_all(std::uint32_t index) noexcept
     {
         const resource_edge& item = access_.edges_[head - 1];
         const resource_id resource{item.resource_};
-        resources_.release(resource, static_cast<access_mode>(item.mode_), index);
+        resources_.lock_resource(item.resource_);
+        resources_.release_locked(resource, static_cast<access_mode>(item.mode_), index);
+        resources_.unlock_resource(item.resource_);
         wake_resource_waiters(resource);
         head = item.next_;
     }
@@ -349,24 +367,31 @@ inline void task_graph::wake_resource_waiters(resource_id resource) noexcept
     {
     for (std::uint32_t guard = 0; guard < table_.capacity(); ++guard)
     {
-        const std::uint32_t head = resources_.wait_head(resource);
+        resources_.lock_resource(resource.value_);
+        const std::uint32_t head = resources_.wait_head_locked(resource);
         if (head == invalid_resource_index)
         {
+            resources_.unlock_resource(resource.value_);
             return;
         }
-        if (!resources_.dequeue_wait(resource, head))
+        if (!resources_.dequeue_wait_locked(resource, head))
         {
+            resources_.unlock_resource(resource.value_);
             return;
         }
-        if (head < access_.wait_task_.size() && access_.wait_task_[head] == resource.value_)
+        const bool owned = head < access_.wait_task_.size() &&
+                           access_.wait_task_[head] == resource.value_;
+        if (owned)
         {
             if (access_.wait_write_[head] != 0)
             {
-                resources_.note_waiting_writer(resource, false);
+                resources_.note_waiting_writer_locked(resource, false);
             }
             access_.wait_task_[head] = invalid_resource_index;
             access_.wait_write_[head] = 0;
         }
+        resources_.unlock_resource(resource.value_);
+
         task_node* node = table_.at_index(head);
         if (node == nullptr)
         {
@@ -392,6 +417,8 @@ inline void task_graph::wake_resource_waiters(resource_id resource) noexcept
                                                   std::memory_order_acq_rel,
                                                   std::memory_order_acquire))
         {
+            // 状态已被取消/停用改写，归还本次获取的资源
+            release_all(head);
             continue;
         }
         const std::uint32_t epoch =

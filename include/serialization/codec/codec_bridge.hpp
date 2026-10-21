@@ -1,11 +1,11 @@
 // codec_bridge.hpp - 格式分派 + 变换链 (校验 → 压缩 → 加密)
 #pragma once
 
-#include "../part/codec/archive_codec.hpp"
-#include "../part/codec/codec_registry.hpp"
-#include "../part/crc32c.hpp"
-#include "../part/operating_message.hpp"
-#include "model.hpp"
+#include "part/codec/archive_codec.hpp"
+#include "part/codec/codec_registry.hpp"
+#include "part/crc32c.hpp"
+#include "part/operating_message.hpp"
+#include "serialization/base/model.hpp"
 #include <cstdint>
 #include <cstring>
 #include <string>

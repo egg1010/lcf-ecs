@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <new>
 
-#include "thread/error.hpp"
+#include "thread/base/error.hpp"
 
 namespace thread
 {

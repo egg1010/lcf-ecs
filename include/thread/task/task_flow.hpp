@@ -7,11 +7,11 @@
 #include <span>
 #include <utility>
 
-#include "thread/coroutine.hpp"
-#include "thread/job.hpp"
-#include "thread/platform.hpp"
-#include "thread/sync.hpp"
-#include "thread/task_graph.hpp"
+#include "thread/execution/coroutine.hpp"
+#include "thread/base/job.hpp"
+#include "thread/base/platform.hpp"
+#include "thread/base/sync.hpp"
+#include "thread/task/task_graph.hpp"
 
 namespace thread
 {

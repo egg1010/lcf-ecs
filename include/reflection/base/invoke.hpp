@@ -6,9 +6,9 @@
 #include <cstddef>
 #include <utility>
 #include <type_traits>
-#include "../part/force_inline.hpp"
-#include "../part/type/type_id.hpp"
-#include "../part/dense.hpp"
+#include "part/force_inline.hpp"
+#include "part/type/type_id.hpp"
+#include "part/dense.hpp"
 
 namespace reflect {
 

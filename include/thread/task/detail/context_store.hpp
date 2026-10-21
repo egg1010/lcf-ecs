@@ -3,8 +3,8 @@
 #include <cstdint>
 
 #include "part/dense.hpp"
-#include "thread/task_context.hpp"
-#include "thread/task_identity.hpp"
+#include "thread/task/task_context.hpp"
+#include "thread/base/task_identity.hpp"
 
 namespace thread
 {

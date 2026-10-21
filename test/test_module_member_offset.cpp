@@ -1,6 +1,6 @@
 // test_module_member_offset.cpp - 模块功能测试: member_offset
 #include "test_common.hpp"
-#include "include/reflection/member_offset.hpp"
+#include "include/reflection/base/member_offset.hpp"
 #include <cstddef>
 
 struct sample

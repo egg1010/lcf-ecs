@@ -9,12 +9,12 @@
 #include <cstddef>
 #include <array>
 #include <utility>
-#include "invoke.hpp"
-#include "../part/fnv1a.hpp"
-#include "field_ops.hpp"
-#include "../part/type/void_any.hpp"
-#include "../part/dense.hpp"
-#include "../config/reflect_config.hpp"
+#include "reflection/base/invoke.hpp"
+#include "part/fnv1a.hpp"
+#include "reflection/base/field_ops.hpp"
+#include "part/type/void_any.hpp"
+#include "part/dense.hpp"
+#include "config/reflect_config.hpp"
 
 namespace reflect {
 

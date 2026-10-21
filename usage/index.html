@@ -7,11 +7,11 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
 
   <!-- CSS -->
-  <link rel="stylesheet" href="css/variables.css">
-  <link rel="stylesheet" href="css/base.css">
-  <link rel="stylesheet" href="css/layout.css">
-  <link rel="stylesheet" href="css/components.css">
-  <link rel="stylesheet" href="css/effects.css">
+  <link rel="stylesheet" href="assets/css/variables.css">
+  <link rel="stylesheet" href="assets/css/base.css">
+  <link rel="stylesheet" href="assets/css/layout.css">
+  <link rel="stylesheet" href="assets/css/components.css">
+  <link rel="stylesheet" href="assets/css/effects.css">
 </head>
 <body>
   <!-- 粒子背景 -->
@@ -62,21 +62,27 @@
   <!-- 搜索结果 (独立于 topbar, 避免 backdrop-filter 影响 fixed 定位) -->
   <div class="search-results"></div>
 
-  <!-- 数据文件 (按分类加载) -->
-  <script src="data/cat_core.js"></script>
-  <script src="data/cat_config.js"></script>
-  <script src="data/cat_containers.js"></script>
-  <script src="data/cat_allocators.js"></script>
-  <script src="data/cat_algorithms.js"></script>
-  <script src="data/cat_tools.js"></script>
-  <script src="data/cat_utf8.js"></script>
-  <script src="data/cat_thread.js"></script>
-  <script src="data/cat_thread_task_graph.js"></script>
-  <script src="data/cat_thread_app.js"></script>
-  <script src="data/cat_part_generic.js"></script>
+  <!-- 库接口 -->
+  <script src="content/api/ecs.js"></script>
+  <script src="content/api/reflection.js"></script>
+  <script src="content/api/serialization.js"></script>
+  <script src="content/api/thread.js"></script>
+
+  <!-- 宏配置 -->
+  <script src="content/config/macros.js"></script>
+
+  <!-- 模块接口 -->
+  <script src="content/modules/containers.js"></script>
+  <script src="content/modules/allocators.js"></script>
+  <script src="content/modules/algorithms.js"></script>
+  <script src="content/modules/codec.js"></script>
+  <script src="content/modules/time.js"></script>
+  <script src="content/modules/type.js"></script>
+  <script src="content/modules/tools.js"></script>
+  <script src="content/modules/utf8.js"></script>
 
   <!-- 应用 JS -->
-  <script src="js/md.js"></script>
-  <script src="js/app.js"></script>
+  <script src="assets/js/md.js"></script>
+  <script src="assets/js/app.js"></script>
 </body>
 </html>

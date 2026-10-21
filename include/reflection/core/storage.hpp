@@ -12,14 +12,14 @@
 #include <concepts>
 #include <source_location>
 #include <utility>
-#include "../part/type/type_id.hpp"
-#include "aggregate_traverse.hpp"
-#include "member_offset.hpp"
-#include "invoke.hpp"
-#include "../part/fnv1a.hpp"
-#include "field_ops.hpp"
-#include "container_ops.hpp"
-#include "meta.hpp"
+#include "part/type/type_id.hpp"
+#include "reflection/base/aggregate_traverse.hpp"
+#include "reflection/base/member_offset.hpp"
+#include "reflection/base/invoke.hpp"
+#include "part/fnv1a.hpp"
+#include "reflection/base/field_ops.hpp"
+#include "reflection/base/container_ops.hpp"
+#include "reflection/base/meta.hpp"
 
 namespace reflect {
 

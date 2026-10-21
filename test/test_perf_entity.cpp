@@ -1,6 +1,6 @@
 ﻿// test_perf_entity.cpp - 性能测试: entity_manager (创造/销毁/校验)
 #include "test_common.hpp"
-#include "include/ecs/entity_manager.hpp"
+#include "include/ecs/entity/entity_manager.hpp"
 #include <cstdint>
 
 static volatile uint64_t g_sink_dummy = 0;

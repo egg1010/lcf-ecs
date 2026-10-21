@@ -9,17 +9,17 @@
 #include <thread>
 
 #include "part/dense.hpp"
-#include "thread/coroutine.hpp"
-#include "thread/detail/context_store.hpp"
-#include "thread/error.hpp"
-#include "thread/error_report.hpp"
-#include "thread/task_admission.hpp"
-#include "thread/task_dependency.hpp"
-#include "thread/task_trace.hpp"
-#include "thread/task_identity.hpp"
-#include "thread/task_node.hpp"
-#include "thread/task_queue.hpp"
-#include "thread/task_table.hpp"
+#include "thread/execution/coroutine.hpp"
+#include "thread/task/detail/context_store.hpp"
+#include "thread/base/error.hpp"
+#include "thread/base/error_report.hpp"
+#include "thread/task/task_admission.hpp"
+#include "thread/task/task_dependency.hpp"
+#include "thread/task/task_trace.hpp"
+#include "thread/base/task_identity.hpp"
+#include "thread/task/task_node.hpp"
+#include "thread/task/task_queue.hpp"
+#include "thread/task/task_table.hpp"
 
 namespace thread
 {
@@ -818,6 +818,6 @@ struct task_graph
 };
 } // namespace thread
 
-#include "thread/detail/task_graph_runtime_impl.hpp"
-#include "thread/detail/task_graph_define_impl.hpp"
+#include "thread/task/detail/task_graph_runtime_impl.hpp"
+#include "thread/task/detail/task_graph_define_impl.hpp"
 

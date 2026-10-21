@@ -801,6 +801,24 @@ inline bool task_graph::add_access(task_id id, resource_id resource, access_mode
     {
         return false;
     }
+    // 同一资源去重，写优先：读+写升级为写，其余重复声明直接忽略
+    for (std::uint32_t cursor = access_.head_[id.index_];
+         cursor != 0 && cursor <= access_.edges_.size();
+         cursor = access_.edges_[cursor - 1].next_)
+    {
+        resource_edge& existing = access_.edges_[cursor - 1];
+        if (existing.resource_ != resource.value_)
+        {
+            continue;
+        }
+        if (existing.mode_ == static_cast<std::uint32_t>(access_mode::write) ||
+            mode == access_mode::read)
+        {
+            return true;
+        }
+        existing.mode_ = static_cast<std::uint32_t>(access_mode::write);
+        return true;
+    }
     if (access_.edges_.size() >= access_.edges_.capacity())
     {
         report(error_severity::warning, errc::queue_full, "access table full", id);

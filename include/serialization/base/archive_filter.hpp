@@ -1,8 +1,8 @@
 // filter.hpp - 选择性序列化过滤器
 #pragma once
 
-#include "../part/dense.hpp"
-#include "../ecs/component.hpp"
+#include "part/dense.hpp"
+#include "ecs/component.hpp"
 #include <cstdint>
 
 namespace serialize {

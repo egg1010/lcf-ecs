@@ -8,7 +8,7 @@
 #include <concepts>
 #include <type_traits>
 #include <array>
-#include "../part/type/type_id.hpp"
+#include "part/type/type_id.hpp"
 
 namespace reflect {
 

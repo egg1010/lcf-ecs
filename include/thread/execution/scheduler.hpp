@@ -6,8 +6,8 @@
 #include <new>
 
 #include "part/dense.hpp"
-#include "thread/job.hpp"
-#include "thread/work_deque.hpp"
+#include "thread/base/job.hpp"
+#include "thread/queue/work_deque.hpp"
 
 namespace thread
 {
@@ -35,7 +35,6 @@ struct priority_stack
                 return false;
             }
         }
-        pop_level_.store(static_cast<std::uint8_t>(levels - 1), std::memory_order_relaxed);
         popped_since_lowest_.store(0, std::memory_order_relaxed);
         return true;
     }
@@ -104,10 +103,9 @@ struct priority_stack
             return nullptr;
         }
         const std::uint8_t lowest = 0;
-        std::uint8_t level = clamp_level(pop_level_.load(std::memory_order_relaxed));
 
-        if (level > lowest &&
-            popped_since_lowest_.load(std::memory_order_relaxed) >= aging_threshold)
+        // 老化配额：定期优先取最低优先级，防止其饥饿
+        if (levels_ > 1 && popped_since_lowest_.load(std::memory_order_relaxed) >= aging_threshold)
         {
             popped_since_lowest_.store(0, std::memory_order_relaxed);
             job* aged = deques_[lowest].pop();
@@ -117,28 +115,25 @@ struct priority_stack
             }
         }
 
-        for (;;)
+        // 每轮都从最高优先级开始，不能沿用上次命中的层级
+        for (std::uint8_t level = static_cast<std::uint8_t>(levels_); level > 0; --level)
         {
-            job* taken = deques_[level].pop();
-            if (taken != nullptr)
+            job* taken = deques_[level - 1].pop();
+            if (taken == nullptr)
             {
-                pop_level_.store(level, std::memory_order_relaxed);
-                if (level == lowest)
-                {
-                    popped_since_lowest_.store(0, std::memory_order_relaxed);
-                }
-                else
-                {
-                    popped_since_lowest_.fetch_add(1, std::memory_order_relaxed);
-                }
-                return taken;
+                continue;
             }
-            if (level == lowest)
+            if (level - 1 == lowest)
             {
-                return nullptr;
+                popped_since_lowest_.store(0, std::memory_order_relaxed);
             }
-            --level;
+            else
+            {
+                popped_since_lowest_.fetch_add(1, std::memory_order_relaxed);
+            }
+            return taken;
         }
+        return nullptr;
     }
 
     std::size_t steal(job** out, std::size_t max_count) noexcept
@@ -159,7 +154,6 @@ struct priority_stack
   private:
     dense<work_deque> deques_{};
     std::uint8_t levels_{0};
-    std::atomic<std::uint8_t> pop_level_{0};
     std::atomic<std::uint32_t> popped_since_lowest_{0};
 };
 

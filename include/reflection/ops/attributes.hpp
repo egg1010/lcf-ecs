@@ -3,8 +3,8 @@
 // 基于 field_meta::attrs 的 dense<attr_entry> 实现
 #pragma once
 
-#include "query.hpp"
-#include "../part/fnv1a.hpp"
+#include "reflection/core/query.hpp"
+#include "part/fnv1a.hpp"
 
 namespace reflect {
 

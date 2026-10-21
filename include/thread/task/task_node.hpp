@@ -8,10 +8,10 @@
 #include <cstring>
 #include <new>
 
-#include "thread/error.hpp"
-#include "thread/platform.hpp"
-#include "thread/task_context.hpp"
-#include "thread/task_identity.hpp"
+#include "thread/base/error.hpp"
+#include "thread/base/platform.hpp"
+#include "thread/task/task_context.hpp"
+#include "thread/base/task_identity.hpp"
 
 namespace thread
 {

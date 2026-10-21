@@ -2,10 +2,10 @@
 // 公共状态与掩码构建收敛于 group_base (group.hpp), 此处仅保留差异化逻辑
 // 依赖 manager 完整定义,由 component.hpp 在 manager 类定义之后 include
 #pragma once
-#include "group.hpp"
-#include "reorder.hpp"
-#include "single_class_set.hpp"
-#include "../part/type/type_id.hpp"
+#include "ecs/group/group.hpp"
+#include "ecs/group/reorder.hpp"
+#include "ecs/storage/single_class_set.hpp"
+#include "part/type/type_id.hpp"
 
 namespace ecs
 {

@@ -3,16 +3,27 @@
 (function () {
   'use strict';
 
-  // === 分类元数据 ===
+  // === 三层导航: 库接口 → 宏配置 → 模块接口 ===
+  var BANDS = [
+    { id: 'api',     name: '库接口' },
+    { id: 'config',  name: '宏配置' },
+    { id: 'modules', name: '模块接口' }
+  ];
+
   var CATEGORIES = [
-    { id: 'core',       name: 'ECS 核心',    icon: 'E' },
-    { id: 'config',     name: '宏配置',      icon: '#' },
-    { id: 'containers', name: '容器',        icon: 'C' },
-    { id: 'allocators', name: '内存分配器',  icon: 'A' },
-    { id: 'algorithms', name: '算法',        icon: 'S' },
-    { id: 'tools',      name: '工具',        icon: 'T' },
-    { id: 'utf8',       name: 'UTF-8 模块',  icon: 'U' },
-    { id: 'thread',     name: '多线程',      icon: 'X' }
+    { id: 'ecs',           name: 'ECS 核心',    icon: 'E', band: 'api',     entry: 'ecs/component.hpp' },
+    { id: 'reflection',    name: '反射',        icon: 'R', band: 'api',     entry: 'reflection/reflection.hpp' },
+    { id: 'serialization', name: '序列化',      icon: 'Z', band: 'api',     entry: 'serialization/serialization.hpp' },
+    { id: 'thread',        name: '多线程',      icon: 'X', band: 'api',     entry: 'thread/thread_all.hpp' },
+    { id: 'config',        name: '宏配置',      icon: '#', band: 'config' },
+    { id: 'containers',    name: '容器',        icon: 'C', band: 'modules' },
+    { id: 'allocators',    name: '内存分配器',  icon: 'A', band: 'modules' },
+    { id: 'algorithms',    name: '算法',        icon: 'S', band: 'modules' },
+    { id: 'codec',         name: '编解码',      icon: 'D', band: 'modules' },
+    { id: 'time',          name: '时间',        icon: 'T', band: 'modules' },
+    { id: 'type',          name: '类型',        icon: 'Y', band: 'modules' },
+    { id: 'utf8',          name: 'UTF-8 模块',  icon: 'U', band: 'modules' },
+    { id: 'tools',         name: '通用工具',    icon: 'K', band: 'modules' }
   ];
 
   var DOM = {};
@@ -45,50 +56,71 @@
   // === 构建模块列表 (从 DOCS_DATA) ===
   function buildModuleList() {
     var data = window.DOCS_DATA || {};
-    var keys = Object.keys(data);
-    keys.forEach(function (k) {
+    Object.keys(data).forEach(function (k) {
       allModules.push(data[k]);
     });
     allModules.sort(function (a, b) { return a.order - b.order; });
   }
 
-  // === 渲染侧边栏 ===
+  function modulesOf(catId) {
+    return allModules.filter(function (m) { return m.category === catId; });
+  }
+
+  // === 渲染侧边栏: 库接口 / 宏配置 / 模块接口 ===
   function renderSidebar() {
     var html = '';
-    CATEGORIES.forEach(function (cat) {
-      var mods = allModules.filter(function (m) { return m.category === cat.id; });
-      if (mods.length === 0) return;
+    BANDS.forEach(function (band) {
+      var cats = CATEGORIES.filter(function (c) { return c.band === band.id; });
+      var hasItem = cats.some(function (c) { return modulesOf(c.id).length > 0; });
+      if (!hasItem) return;
 
-      html += '<div class="sidebar-section cat-' + cat.id + '">';
-      html += '<div class="sidebar-cat-label" data-cat="' + cat.id + '">';
-      html += '<span class="dot"></span>';
-      html += '<span>' + cat.name + '</span>';
-      html += '<span class="chevron">▼</span>';
-      html += '</div>';
-      html += '<div class="sidebar-items" data-cat-items="' + cat.id + '">';
-      mods.forEach(function (m) {
-        html += '<div class="sidebar-item" data-module="' + m.id + '">';
-        html += '<span class="item-icon">' + m.icon + '</span>';
-        html += '<span class="item-title">' + escapeText(m.title) + '</span>';
+      html += '<div class="sidebar-band">' + band.name + '</div>';
+
+      // 单分类分组直接平铺条目，避免“宏配置 / 宏配置 / 可选宏配置”三层重复
+      if (cats.length === 1) {
+        modulesOf(cats[0].id).forEach(function (m) {
+          html += '<div class="sidebar-item" data-module="' + m.id + '">';
+          html += '<span class="item-icon">' + m.icon + '</span>';
+          html += '<span class="item-title">' + escapeText(m.title) + '</span>';
+          html += '</div>';
+        });
+        return;
+      }
+
+      cats.forEach(function (cat) {
+        var mods = modulesOf(cat.id);
+        if (mods.length === 0) return;
+
+        html += '<div class="sidebar-section cat-' + cat.id + '">';
+        html += '<div class="sidebar-cat-label collapsed" data-cat="' + cat.id + '">';
+        html += '<span class="dot"></span>';
+        html += '<span>' + cat.name + '</span>';
+        html += '<span class="chevron">▼</span>';
+        html += '</div>';
+        html += '<div class="sidebar-items collapsed" data-cat-items="' + cat.id + '">';
+        mods.forEach(function (m) {
+          html += '<div class="sidebar-item" data-module="' + m.id + '">';
+          html += '<span class="item-icon">' + m.icon + '</span>';
+          html += '<span class="item-title">' + escapeText(m.title) + '</span>';
+          html += '</div>';
+        });
+        html += '</div>';
         html += '</div>';
       });
-      html += '</div>';
-      html += '</div>';
     });
     DOM.sidebar.innerHTML = html;
   }
 
-  // === 渲染首页 ===
+  // === 渲染首页: 上库接口 / 中宏配置 / 下模块接口 ===
   function renderHero() {
     var total = allModules.length;
     var html = '';
 
     html += '<div class="hero page-transition">';
     html += '<h1>LCF-ECS 接口文档</h1>';
-    html += '<p>C++20 · ' + total + ' 个模块</p>';
+    html += '<p>C++20 · ' + total + ' 个模块 · 零外部依赖</p>';
     html += '</div>';
 
-    // 统计卡片
     html += '<div class="stats-grid">';
     html += statCard(total, '模块总数');
     html += statCard(CATEGORIES.length, '分类');
@@ -96,39 +128,54 @@
     html += statCard('0', '外部依赖');
     html += '</div>';
 
-    // 仓库入口
-    html += '<h2>仓库</h2>';
-    html += '<div class="repo-card">';
-    html += '<a class="repo-link" href="https://github.com/egg1010/lcf-ecs" target="_blank" rel="noopener">';
-    html += '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>';
-    html += '<span>github.com/egg1010/lcf-ecs</span>';
-    html += '</a>';
+    // 上部: 库接口
+    html += '<h2>库接口</h2>';
+    html += '<div class="cat-grid api-grid">';
+    CATEGORIES.filter(function (c) { return c.band === 'api'; }).forEach(function (cat) {
+      html += catCard(cat, true);
+    });
     html += '</div>';
 
-    // 分类入口
-    html += '<h2>模块分类</h2>';
+    // 中部: 宏配置
+    html += '<h2>宏配置</h2>';
     html += '<div class="cat-grid">';
-    CATEGORIES.forEach(function (cat) {
-      var count = allModules.filter(function (m) { return m.category === cat.id; }).length;
-      html += '<div class="cat-card cat-' + cat.id + '" data-cat-link="' + cat.id + '">';
-      html += '<div class="cat-icon">' + cat.icon + '</div>';
-      html += '<div class="cat-name">' + cat.name + '</div>';
-      html += '<div class="cat-count">' + count + ' 个模块</div>';
-      html += '</div>';
+    CATEGORIES.filter(function (c) { return c.band === 'config'; }).forEach(function (cat) {
+      html += catCard(cat, false);
+    });
+    html += '</div>';
+
+    // 下部: 模块接口
+    html += '<h2>模块接口</h2>';
+    html += '<div class="cat-grid">';
+    CATEGORIES.filter(function (c) { return c.band === 'modules'; }).forEach(function (cat) {
+      html += catCard(cat, false);
     });
     html += '</div>';
 
     DOM.content.innerHTML = html;
 
-    // 绑定分类卡片点击
     document.querySelectorAll('[data-cat-link]').forEach(function (el) {
       el.addEventListener('click', function () {
         var cat = el.getAttribute('data-cat-link');
-        // 展开对应分类并跳转到第一个模块
         var first = allModules.find(function (m) { return m.category === cat; });
         if (first) location.hash = '#/' + first.id;
       });
     });
+  }
+
+  function catCard(cat, withEntry) {
+    var count = modulesOf(cat.id).length;
+    var unit = cat.band === 'config' ? ' 页' : ' 个模块';
+    var html = '';
+    html += '<div class="cat-card cat-' + cat.id + '" data-cat-link="' + cat.id + '">';
+    html += '<div class="cat-icon">' + cat.icon + '</div>';
+    html += '<div class="cat-name">' + cat.name + '</div>';
+    html += '<div class="cat-count">' + count + unit + '</div>';
+    if (withEntry && cat.entry) {
+      html += '<div class="cat-entry">' + cat.entry + '</div>';
+    }
+    html += '</div>';
+    return html;
   }
 
   function statCard(num, label) {
@@ -158,7 +205,6 @@
     DOM.content.innerHTML = html;
     DOM.main.scrollTop = 0;
 
-    // 返回首页按钮
     var homeBtn = DOM.content.querySelector('.home-btn');
     if (homeBtn) {
       homeBtn.addEventListener('click', function () {
@@ -166,7 +212,6 @@
       });
     }
 
-    // 更新侧边栏高亮
     updateSidebarActive();
   }
 
@@ -174,7 +219,6 @@
     document.querySelectorAll('.sidebar-item').forEach(function (el) {
       el.classList.toggle('active', el.getAttribute('data-module') === (currentModule ? currentModule.id : ''));
     });
-    // 展开当前模块所在分类
     if (currentModule) {
       var items = document.querySelector('[data-cat-items="' + currentModule.category + '"]');
       var label = document.querySelector('[data-cat="' + currentModule.category + '"]');
@@ -185,7 +229,7 @@
 
   // === 路由 ===
   function route() {
-    var hash = location.hash.slice(2); // 去掉 #/
+    var hash = location.hash.slice(2);
     if (!hash) {
       renderHero();
       currentModule = null;
@@ -234,7 +278,6 @@
         }
       });
 
-      // 标题匹配优先
       results.sort(function (a, b) {
         if (a.titleMatch >= 0 && b.titleMatch < 0) return -1;
         if (a.titleMatch < 0 && b.titleMatch >= 0) return 1;
@@ -284,13 +327,11 @@
 
   // === 事件绑定 ===
   function bindEvents() {
-    // 侧边栏点击
     DOM.sidebar.addEventListener('click', function (e) {
       var item = e.target.closest('.sidebar-item');
       if (item) {
         var id = item.getAttribute('data-module');
         location.hash = '#/' + id;
-        // 移动端关闭侧边栏
         DOM.sidebar.classList.remove('open');
         return;
       }
@@ -303,7 +344,6 @@
       }
     });
 
-    // 搜索
     DOM.searchInput.addEventListener('input', onSearch);
     DOM.searchInput.addEventListener('focus', onSearch);
     document.addEventListener('click', function (e) {
@@ -312,7 +352,6 @@
       }
     });
 
-    // 滚动/缩放时隐藏搜索结果（fixed 定位会错位）
     window.addEventListener('scroll', function () {
       if (DOM.searchResults.classList.contains('show')) {
         DOM.searchResults.classList.remove('show');
@@ -324,7 +363,6 @@
       }
     });
 
-    // 回到顶部
     DOM.main.addEventListener('scroll', function () {
       DOM.backToTop.classList.toggle('show', DOM.main.scrollTop > 300);
       if (DOM.searchResults.classList.contains('show')) {
@@ -335,7 +373,6 @@
       DOM.main.scrollTo({ top: 0, behavior: 'smooth' });
     });
 
-    // 主题切换
     if (DOM.themeToggle) {
       DOM.themeToggle.addEventListener('click', function () {
         var cur = document.body.getAttribute('data-theme');
@@ -344,14 +381,12 @@
       });
     }
 
-    // 移动端菜单
     if (DOM.mobileMenuBtn) {
       DOM.mobileMenuBtn.addEventListener('click', function () {
         DOM.sidebar.classList.toggle('open');
       });
     }
 
-    // 键盘快捷键: / 聚焦搜索
     document.addEventListener('keydown', function (e) {
       if (e.key === '/' && document.activeElement !== DOM.searchInput) {
         e.preventDefault();
@@ -389,7 +424,6 @@
     return div.innerHTML;
   }
 
-  // 启动
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);
   } else {

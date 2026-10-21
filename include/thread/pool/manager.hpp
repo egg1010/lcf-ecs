@@ -9,22 +9,22 @@
 #include <thread>
 
 #include "part/dense.hpp"
-#include "thread/detail/frame_clock.hpp"
-#include "thread/detail/job_router.hpp"
-#include "thread/error.hpp"
-#include "thread/job.hpp"
-#include "thread/lane.hpp"
-#include "thread/mpmc_queue.hpp"
-#include "thread/platform.hpp"
-#include "thread/runtime.hpp"
-#include "thread/scheduler.hpp"
-#include "thread/task_builder.hpp"
-#include "thread/task_admission.hpp"
-#include "thread/task_blocking.hpp"
-#include "thread/task_trace.hpp"
-#include "thread/task_watchdog.hpp"
-#include "thread/task_graph.hpp"
-#include "thread/worker.hpp"
+#include "thread/pool/detail/frame_clock.hpp"
+#include "thread/pool/detail/job_router.hpp"
+#include "thread/base/error.hpp"
+#include "thread/base/job.hpp"
+#include "thread/execution/lane.hpp"
+#include "thread/queue/mpmc_queue.hpp"
+#include "thread/base/platform.hpp"
+#include "thread/execution/runtime.hpp"
+#include "thread/execution/scheduler.hpp"
+#include "thread/task/task_builder.hpp"
+#include "thread/task/task_admission.hpp"
+#include "thread/task/task_blocking.hpp"
+#include "thread/task/task_trace.hpp"
+#include "thread/task/task_watchdog.hpp"
+#include "thread/task/task_graph.hpp"
+#include "thread/execution/worker.hpp"
 
 namespace thread
 {
@@ -47,6 +47,12 @@ enum class shutdown_phase : std::uint8_t
     draining = 1,
     aborting = 2,
     stopped = 3,
+};
+
+enum class drain_status : std::uint8_t
+{
+    complete = 0,
+    timeout = 1,
 };
 
 inline constexpr std::size_t manager_default_suspended_capacity = 4096;
@@ -95,10 +101,93 @@ struct manager_stats
     std::atomic<std::uint64_t> submitted_{0};
     std::atomic<std::uint64_t> rejected_{0};
     std::atomic<std::uint64_t> wakes_{0};
+    std::atomic<std::uint64_t> drain_timeouts_{0};
+    std::atomic<std::uint64_t> submit_waits_{0};
+};
+
+// 提交闸门：最高位关闭标志，低 63 位在途提交计数
+// enter 与 close 通过整字 CAS 线性化，关闭后不再放行新提交
+struct submission_gate
+{
+    static constexpr std::uint64_t closing_bit = 1ull << 63;
+
+    std::atomic<std::uint64_t> word_{0};
+
+    bool enter() noexcept
+    {
+        std::uint64_t value = word_.load(std::memory_order_acquire);
+        for (;;)
+        {
+            if ((value & closing_bit) != 0)
+            {
+                return false;
+            }
+            if (word_.compare_exchange_weak(value, value + 1, std::memory_order_acq_rel,
+                                            std::memory_order_acquire))
+            {
+                return true;
+            }
+        }
+    }
+
+    void leave() noexcept
+    {
+        word_.fetch_sub(1, std::memory_order_acq_rel);
+    }
+
+    void close() noexcept
+    {
+        word_.fetch_or(closing_bit, std::memory_order_acq_rel);
+    }
+
+    void open() noexcept
+    {
+        word_.store(0, std::memory_order_release);
+    }
+
+    std::uint64_t pending() const noexcept
+    {
+        return word_.load(std::memory_order_acquire) & ~closing_bit;
+    }
+
+    bool wait_empty(std::size_t max_spin = 1000000) noexcept
+    {
+        std::size_t spins = 0;
+        while (pending() != 0)
+        {
+            if (++spins > max_spin)
+            {
+                return false;
+            }
+            if ((spins & 63u) == 0)
+            {
+                platform_yield();
+            }
+        }
+        return true;
+    }
 };
 
 struct manager
 {
+    // 在途提交计数守卫：覆盖所有 return 路径
+    struct submit_scope
+    {
+        explicit submit_scope(submission_gate& gate) noexcept : gate_(gate)
+        {
+        }
+
+        ~submit_scope()
+        {
+            gate_.leave();
+        }
+
+        submit_scope(const submit_scope&) = delete;
+        submit_scope& operator=(const submit_scope&) = delete;
+
+        submission_gate& gate_;
+    };
+
     manager() noexcept = default;
 
     manager(const manager&) = delete;
@@ -643,6 +732,11 @@ struct manager
         {
             return slot_index_none;
         }
+        if (!gate_.enter())
+        {
+            return slot_index_none;
+        }
+        submit_scope guard{gate_};
         const std::uint32_t index = rt_->jobs_.index_of(target);
         if (index == slot_index_none)
         {
@@ -734,6 +828,11 @@ struct manager
         {
             return slot_index_none;
         }
+        if (!gate_.enter())
+        {
+            return slot_index_none;
+        }
+        submit_scope guard{gate_};
         const std::uint32_t index = rt_->jobs_.index_of(target);
         if (index == slot_index_none)
         {
@@ -756,6 +855,11 @@ struct manager
         {
             return slot_index_none;
         }
+        if (!gate_.enter())
+        {
+            return slot_index_none;
+        }
+        submit_scope guard{gate_};
         const std::uint32_t index = rt_->jobs_.index_of(target);
         if (index == slot_index_none)
         {
@@ -790,6 +894,7 @@ struct manager
     void start() noexcept
     {
         phase_.store(static_cast<std::uint8_t>(shutdown_phase::running), std::memory_order_release);
+        gate_.open();
         bind_runtime(rt_);
         if (tasks_.created())
         {
@@ -854,13 +959,24 @@ struct manager
             {
                 phase_.store(static_cast<std::uint8_t>(shutdown_phase::draining),
                              std::memory_order_release);
+                gate_.close();
                 if (tasks_.created())
                 {
                     tasks_.set_draining(true);
                 }
-
-                for (std::size_t i = 0; i < 1000000 && pump(256) > 0; ++i)
+                if (!gate_.wait_empty())
                 {
+                    stats_.submit_waits_.fetch_add(1, std::memory_order_relaxed);
+                }
+
+                std::size_t rounds = 0;
+                while (rounds < 1000000 && pump(256) > 0)
+                {
+                    ++rounds;
+                }
+                if (rounds >= 1000000)
+                {
+                    stats_.drain_timeouts_.fetch_add(1, std::memory_order_relaxed);
                 }
                 (void)suspended_.resume_all();
             }
@@ -868,6 +984,7 @@ struct manager
             {
                 phase_.store(static_cast<std::uint8_t>(shutdown_phase::aborting),
                              std::memory_order_release);
+                gate_.close();
                 discard_pending_jobs(policy);
                 if (policy == destroy_policy::hard)
                 {
@@ -886,13 +1003,19 @@ struct manager
         {
             phase_.store(static_cast<std::uint8_t>(shutdown_phase::draining),
                          std::memory_order_release);
+            gate_.close();
             if (tasks_.created())
             {
                 // 关闭期间停止周期激活，避免 drain 与帧驱动互相追赶
                 tasks_.set_draining(true);
             }
+            // 先等在途提交落地，再取完成目标快照
+            if (!gate_.wait_empty())
+            {
+                stats_.submit_waits_.fetch_add(1, std::memory_order_relaxed);
+            }
 
-            drain(2000000);
+            (void)drain(2000000);
 
             for (std::size_t i = 0; i < 64; ++i)
             {
@@ -912,6 +1035,7 @@ struct manager
         {
             phase_.store(static_cast<std::uint8_t>(shutdown_phase::aborting),
                          std::memory_order_release);
+            gate_.close();
             if (tasks_.created())
             {
                 tasks_.set_draining(true);
@@ -986,28 +1110,36 @@ struct manager
         return done;
     }
 
-    void drain(std::size_t spin_limit = 0) noexcept
+    drain_status drain(std::size_t spin_limit = 0, bool include_new_submissions = false) noexcept
     {
-        const std::uint64_t target = stats_.submitted_.load(std::memory_order_acquire);
+        std::uint64_t target = include_new_submissions
+                                   ? 0
+                                   : stats_.submitted_.load(std::memory_order_acquire);
         std::size_t spins = 0;
         for (;;)
         {
+            if (include_new_submissions)
+            {
+                target = stats_.submitted_.load(std::memory_order_acquire);
+            }
             const bool jobs_done = completed_.load(std::memory_order_acquire) >= target;
             const bool tasks_done =
                 !tasks_.created() ||
                 (tasks_.task_statistics_live() == 0 && !tasks_.busy());
             if (jobs_done && tasks_done)
             {
-                break;
+                return drain_status::complete;
             }
-            if (!tasks_done && workers_.empty())
+            // 无工作线程时主动消费注入队列与通道，避免空转
+            const std::size_t progressed = workers_.empty() ? pump(64) : 0;
+            if (progressed == 0)
             {
-                (void)tasks_.pump_role(thread::role::general, 64);
+                platform_yield();
             }
-            platform_yield();
             if (spin_limit != 0 && ++spins > spin_limit)
             {
-                break;
+                stats_.drain_timeouts_.fetch_add(1, std::memory_order_relaxed);
+                return drain_status::timeout;
             }
         }
     }
@@ -1252,6 +1384,7 @@ struct manager
     std::atomic<bool> shutdown_{false};
     std::atomic<bool> running_{false};
     std::atomic<std::uint64_t> completed_{0};
+    submission_gate gate_{};
     std::atomic<std::uint8_t> phase_{static_cast<std::uint8_t>(shutdown_phase::running)};
     suspended_registry suspended_{};
     manager_stats stats_{};

@@ -5,8 +5,8 @@
 #include <cstdint>
 #include <new>
 
-#include "thread/manager.hpp"
-#include "thread/task_queue.hpp"
+#include "thread/pool/manager.hpp"
+#include "thread/task/task_queue.hpp"
 
 namespace thread
 {

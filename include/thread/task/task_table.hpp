@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <new>
 
-#include "thread/task_node.hpp"
+#include "thread/task/task_node.hpp"
 
 namespace thread
 {

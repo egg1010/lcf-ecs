@@ -3,9 +3,9 @@
 // 复用 meta.hpp 的单份字段遍历骨架, 逐字段/逐元素组合 FNV-1a 哈希
 #pragma once
 
-#include "query.hpp"
-#include "field_ops.hpp"
-#include "../part/fnv1a.hpp"
+#include "reflection/core/query.hpp"
+#include "reflection/base/field_ops.hpp"
+#include "part/fnv1a.hpp"
 
 namespace reflect {
 

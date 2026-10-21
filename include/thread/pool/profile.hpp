@@ -4,11 +4,11 @@
 #include <cstdint>
 #include <thread>
 
-#include "thread/job.hpp"
-#include "thread/lane.hpp"
-#include "thread/manager.hpp"
-#include "thread/platform.hpp"
-#include "thread/sync.hpp"
+#include "thread/base/job.hpp"
+#include "thread/execution/lane.hpp"
+#include "thread/pool/manager.hpp"
+#include "thread/base/platform.hpp"
+#include "thread/base/sync.hpp"
 
 namespace thread
 {

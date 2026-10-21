@@ -8,16 +8,16 @@
 #include <thread>
 
 #include "part/dense.hpp"
-#include "thread/error.hpp"
-#include "thread/job.hpp"
-#include "thread/lane.hpp"
-#include "thread/mpmc_queue.hpp"
-#include "thread/platform.hpp"
-#include "thread/runtime.hpp"
-#include "thread/tls.hpp"
-#include "thread/scheduler.hpp"
-#include "thread/task_identity.hpp"
-#include "thread/work_deque.hpp"
+#include "thread/base/error.hpp"
+#include "thread/base/job.hpp"
+#include "thread/execution/lane.hpp"
+#include "thread/queue/mpmc_queue.hpp"
+#include "thread/base/platform.hpp"
+#include "thread/execution/runtime.hpp"
+#include "thread/base/tls.hpp"
+#include "thread/execution/scheduler.hpp"
+#include "thread/base/task_identity.hpp"
+#include "thread/queue/work_deque.hpp"
 
 namespace thread
 {

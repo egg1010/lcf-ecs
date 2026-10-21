@@ -8,10 +8,10 @@
 #include <type_traits>
 #include <new>
 #include <array>
-#include "../part/type/type_id.hpp"
-#include "../part/fnv1a.hpp"
-#include "../config/reflect_config.hpp"
-#include "container_ops.hpp"
+#include "part/type/type_id.hpp"
+#include "part/fnv1a.hpp"
+#include "config/reflect_config.hpp"
+#include "reflection/base/container_ops.hpp"
 
 namespace reflect {
 namespace detail {

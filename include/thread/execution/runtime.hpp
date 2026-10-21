@@ -6,10 +6,10 @@
 #include <cstdint>
 #include <new>
 
-#include "thread/error.hpp"
-#include "thread/job.hpp"
-#include "thread/sync.hpp"
-#include "thread/tls.hpp"
+#include "thread/base/error.hpp"
+#include "thread/base/job.hpp"
+#include "thread/base/sync.hpp"
+#include "thread/base/tls.hpp"
 
 namespace thread
 {
@@ -448,7 +448,8 @@ inline void lane_clear_ready(std::atomic<std::uint64_t>& summary, std::uint32_t 
     {
         return;
     }
-    summary.fetch_and(~(1ull << lane_id), std::memory_order_release);
+    // acq_rel：读入生产者的置位以建立同步，供清位后的队列复查使用
+    summary.fetch_and(~(1ull << lane_id), std::memory_order_acq_rel);
 }
 
 // ---------------------------------------------------------------------------

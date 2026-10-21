@@ -1,8 +1,8 @@
 // runtime_view_impl.hpp —— runtime_query / runtime_view / filter_view 的 out-of-line 定义
 // 依赖 manager 完整定义,由 component.hpp 在 manager 类定义之后 include
 #pragma once
-#include "runtime_view.hpp"
-#include "single_class_set.hpp"
+#include "ecs/view/runtime_view.hpp"
+#include "ecs/storage/single_class_set.hpp"
 
 #include <algorithm>
 #include <limits>

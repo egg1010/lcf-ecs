@@ -4,9 +4,9 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "thread/mpmc_ring.hpp"
-#include "thread/task_identity.hpp"
-#include "thread/task_node.hpp"
+#include "thread/queue/mpmc_ring.hpp"
+#include "thread/base/task_identity.hpp"
+#include "thread/task/task_node.hpp"
 
 namespace thread
 {

@@ -2,8 +2,8 @@
 #include <limits>
 #include <type_traits>
 #include <cstdint>
-#include "../part/dense.hpp"
-#include "single_class_set.hpp"
+#include "part/dense.hpp"
+#include "ecs/storage/single_class_set.hpp"
 
 namespace ecs
 {

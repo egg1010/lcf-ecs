@@ -6,7 +6,7 @@
 #include <new>
 
 #include "part/bit_ops.hpp"
-#include "thread/error.hpp"
+#include "thread/base/error.hpp"
 
 namespace thread
 {

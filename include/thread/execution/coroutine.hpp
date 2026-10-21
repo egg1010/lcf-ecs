@@ -11,12 +11,12 @@
 #include <type_traits>
 #include <utility>
 
-#include "thread/error.hpp"
-#include "thread/job.hpp"
-#include "thread/platform.hpp"
-#include "thread/runtime.hpp"
-#include "thread/sync.hpp"
-#include "thread/worker.hpp"
+#include "thread/base/error.hpp"
+#include "thread/base/job.hpp"
+#include "thread/base/platform.hpp"
+#include "thread/execution/runtime.hpp"
+#include "thread/base/sync.hpp"
+#include "thread/execution/worker.hpp"
 
 namespace thread
 {

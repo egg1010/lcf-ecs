@@ -2,9 +2,9 @@
 #include <tuple>
 #include <array>
 #include <limits>
-#include "single_class_set.hpp"
-#include "../part/dense.hpp"
-#include "entity.hpp"
+#include "ecs/storage/single_class_set.hpp"
+#include "part/dense.hpp"
+#include "ecs/entity/entity.hpp"
 // PREFETCH_R 宏: 集中定义于 part/force_inline.hpp
 
 namespace ecs

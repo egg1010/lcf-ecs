@@ -81,13 +81,19 @@
 }
 
 /* 分类颜色映射 */
-.cat-core       { --cat-c: #00e5ff; --cat-g: var(--glow-cyan); }
-.cat-config     { --cat-c: #f59e0b; }
-.cat-containers { --cat-c: #4d7cff; --cat-g: var(--glow-blue); }
-.cat-allocators { --cat-c: #a855f7; --cat-g: var(--glow-purple); }
-.cat-algorithms { --cat-c: #22c55e; }
-.cat-tools      { --cat-c: #ec4899; }
-.cat-utf8       { --cat-c: #00e5ff; }
+.cat-ecs           { --cat-c: #00e5ff; --cat-g: var(--glow-cyan); }
+.cat-reflection    { --cat-c: #a855f7; --cat-g: var(--glow-purple); }
+.cat-serialization { --cat-c: #22c55e; }
+.cat-thread        { --cat-c: #f97316; }
+.cat-config        { --cat-c: #f59e0b; }
+.cat-containers    { --cat-c: #4d7cff; --cat-g: var(--glow-blue); }
+.cat-allocators    { --cat-c: #a855f7; --cat-g: var(--glow-purple); }
+.cat-algorithms    { --cat-c: #22c55e; }
+.cat-codec         { --cat-c: #06b6d4; }
+.cat-time          { --cat-c: #eab308; }
+.cat-type          { --cat-c: #8b5cf6; }
+.cat-tools         { --cat-c: #ec4899; }
+.cat-utf8          { --cat-c: #00e5ff; }
 
 /* 亮色主题 */
 [data-theme="light"] {

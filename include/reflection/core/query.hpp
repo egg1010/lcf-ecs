@@ -10,8 +10,8 @@
 #include <optional>
 #include <source_location>
 #include <array>
-#include "../part/type/type_id.hpp"
-#include "storage.hpp"
+#include "part/type/type_id.hpp"
+#include "reflection/core/storage.hpp"
 
 namespace reflect {
 

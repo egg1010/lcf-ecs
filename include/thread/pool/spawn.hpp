@@ -2,10 +2,10 @@
 
 #include <cstdint>
 
-#include "thread/coroutine.hpp"
-#include "thread/job.hpp"
-#include "thread/manager.hpp"
-#include "thread/runtime.hpp"
+#include "thread/execution/coroutine.hpp"
+#include "thread/base/job.hpp"
+#include "thread/pool/manager.hpp"
+#include "thread/execution/runtime.hpp"
 
 namespace thread
 {

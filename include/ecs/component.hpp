@@ -1,4 +1,6 @@
 #pragma once
+
+// component.hpp - ECS 模块统一入口：manager / 实体 / 组件存储 / 视图 / 分组 / 命令缓冲
 #include <concepts>
 #include <tuple>
 #include <array>
@@ -6,16 +8,16 @@
 #include <limits>
 #include <type_traits>
 #include <cstring>
-#include "single_class_set.hpp"
-#include "../part/type/type_id.hpp"
-#include "entity_manager.hpp"
-#include "group.hpp"
-#include "reorder.hpp"
-#include "runtime_view.hpp"
-#include "../part/radix_sort_helper.hpp"
-#include "../part/tiered_sort.hpp"
-#include "../part/signal_queue.hpp"
-#include "view_tags.hpp"
+#include "ecs/storage/single_class_set.hpp"
+#include "part/type/type_id.hpp"
+#include "ecs/entity/entity_manager.hpp"
+#include "ecs/group/group.hpp"
+#include "ecs/group/reorder.hpp"
+#include "ecs/view/runtime_view.hpp"
+#include "part/radix_sort_helper.hpp"
+#include "part/tiered_sort.hpp"
+#include "part/signal_queue.hpp"
+#include "ecs/view/view_tags.hpp"
 
 // MinGW x64 ABI 仅保证 16 字节栈对齐, GCC 在工厂方法栈上构造 group 参数时
 // 用 vmovdqa (需 32 字节对齐) 会触发 #GP; no-avx 属性强制走 SSE2 路径规避.
@@ -847,9 +849,9 @@ public:
         sort_entities_by_component<T>(std::forward<Compare>(cmp));
     }
 
-#include "single_view.hpp"
-#include "multi_view.hpp"
-#include "composite_views.hpp"
+#include "ecs/view/single_view.hpp"
+#include "ecs/view/multi_view.hpp"
+#include "ecs/view/composite_views.hpp"
 
     template <typename T>
     [[nodiscard]] single_view<T> view() noexcept
@@ -1308,9 +1310,9 @@ public:
 
 } // namespace ecs
 
-#include "group_impl.hpp"
-#include "runtime_view_impl.hpp"
-#include "command_buffer.hpp"
+#include "ecs/group/group_impl.hpp"
+#include "ecs/view/runtime_view_impl.hpp"
+#include "ecs/command/command_buffer.hpp"
 
 namespace ecs
 {

@@ -3,8 +3,8 @@
 // 复用 meta.hpp 的单份字段遍历骨架, 逐字段/逐元素比较与拷贝
 #pragma once
 
-#include "query.hpp"
-#include "field_ops.hpp"
+#include "reflection/core/query.hpp"
+#include "reflection/base/field_ops.hpp"
 
 namespace reflect {
 

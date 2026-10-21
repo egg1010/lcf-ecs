@@ -8,10 +8,10 @@
 #include <type_traits>
 #include <utility>
 
-#include "thread/manager.hpp"
-#include "thread/profile.hpp"
-#include "thread/spawn.hpp"
-#include "thread/task_builder.hpp"
+#include "thread/pool/manager.hpp"
+#include "thread/pool/profile.hpp"
+#include "thread/pool/spawn.hpp"
+#include "thread/task/task_builder.hpp"
 
 namespace thread
 {

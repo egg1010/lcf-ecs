@@ -5,10 +5,10 @@
 #include <cstdint>
 #include <new>
 
-#include "thread/error.hpp"
-#include "thread/job.hpp"
-#include "thread/mpmc_queue.hpp"
-#include "thread/runtime.hpp"
+#include "thread/base/error.hpp"
+#include "thread/base/job.hpp"
+#include "thread/queue/mpmc_queue.hpp"
+#include "thread/execution/runtime.hpp"
 
 namespace thread
 {
@@ -170,10 +170,14 @@ struct lane
         {
             return false;
         }
-        // 抽空即清位。残留位最坏引发一次空探测，正确性不依赖位图精确性。
+        // 清位后复查：提交可能落在判空与清位之间，非空则补回就绪位
         if (rt_ != nullptr && queue_.size() == 0)
         {
             lane_clear_ready(rt_->lane_ready_, id_);
+            if (queue_.size() != 0)
+            {
+                lane_mark_ready(rt_->lane_ready_, id_);
+            }
         }
         note_executed(out);
         return true;

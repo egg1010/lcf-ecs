@@ -4,9 +4,9 @@
 // 用户通过宏注册类型, 字段, 方法
 // 宏在命名空间作用域使用 (通过 inline 变量初始化)
 
-#include "storage.hpp"
-#include "member_offset.hpp"
-#include "aggregate_traverse_pp.hpp"
+#include "reflection/core/storage.hpp"
+#include "reflection/base/member_offset.hpp"
+#include "reflection/base/aggregate_traverse_pp.hpp"
 
 namespace reflect {
 
