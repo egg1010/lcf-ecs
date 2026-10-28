@@ -911,7 +911,7 @@ struct task_graph
         {
             trace_->record(trace_kind::start, task_id{index}, worker, current, 0);
         }
-        waits_.since_[index] = 0;
+        std::atomic_ref<std::uint64_t>(waits_.since_[index]).store(0, std::memory_order_relaxed);
 
         task_context* const previous_context = current_task_slot();
         current_task_slot() = &ctx;

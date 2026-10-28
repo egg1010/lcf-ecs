@@ -193,7 +193,12 @@ inline std::uint64_t task_graph::start_ns_of(task_id id) const noexcept
 
 inline std::uint64_t task_graph::wait_since_of(task_id id) const noexcept
     {
-    return id.valid() && id.index_ < waits_.since_.size() ? waits_.since_[id.index_] : 0;
+    if (!id.valid() || id.index_ >= waits_.since_.size())
+    {
+        return 0;
+    }
+    // 守护线程读取, 与 activate 的写入并发: relaxed 原子访问消除数据竞争
+    return std::atomic_ref<const std::uint64_t>(waits_.since_[id.index_]).load(std::memory_order_relaxed);
     }
 
 inline std::size_t task_graph::wake_timed(std::uint64_t now_ns) noexcept
@@ -757,7 +762,8 @@ inline bool task_graph::activate_impl(task_id id, activate_options options, oper
         }
         if (id.index_ < waits_.since_.size())
         {
-            waits_.since_[id.index_] = monotonic_now_ns();
+            std::atomic_ref<std::uint64_t>(waits_.since_[id.index_])
+                .store(monotonic_now_ns(), std::memory_order_relaxed);
         }
         if ((node->flags_.load(std::memory_order_acquire) & flag_auto_start_children) != 0)
         {
