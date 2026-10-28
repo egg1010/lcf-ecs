@@ -100,5 +100,33 @@ int main()
         t_check("排除 health 后 count == 1", rv.count() == 1);
     }
 
+    t_section(4, "缓存随非主集合刷新");
+    {
+        ecs::manager mgr;
+        auto a = mgr.create_entity();
+        mgr.add(a, position{1.0f, 0.0f});
+
+        const int pos_id = type_id::get_type_id<position>();
+        const int vel_id = type_id::get_type_id<velocity>();
+        auto rv = mgr.runtime_view_create(std::array<int, 2>{pos_id, vel_id});
+        t_check("初始 count == 0", rv.count() == 0);
+
+        mgr.add(a, velocity{1.0f, 1.0f});
+        t_check("补非主组件后 count 刷新", rv.count() == 1);
+        t_check("补非主组件后 size 刷新", rv.size() == 1);
+        t_check("补非主组件后 !empty", !rv.empty());
+
+        (void)mgr.soft_remove<velocity>(a);
+        t_check("删非主组件后 count 刷新", rv.count() == 0);
+        t_check("删非主组件后 empty", rv.empty());
+
+        size_t cnt = 0;
+        rv.for_each([&](ecs::entity e) {
+            (void)e;
+            ++cnt;
+        });
+        t_check("删非主组件后 for_each 一致", cnt == 0);
+    }
+
     return t_end("runtime_view ");
 }

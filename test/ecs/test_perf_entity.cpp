@@ -27,13 +27,19 @@ int main()
         }, 5);
         t_perf("get_entity (create)", N, ms);
 
-        ms = t_bench_best_ms([&]() {
-            for (uint64_t i = 0; i < N; ++i)
-            {
-                ecs::entity e = ents[i];
-                em.destroy_entity(e);
-            }
-        }, 5);
+        ms = t_bench_best_ms(
+            [&]() {
+                for (uint64_t i = 0; i < N; ++i)
+                {
+                    ents[i] = em.get_entity();
+                }
+            },
+            [&]() {
+                for (uint64_t i = 0; i < N; ++i)
+                {
+                    em.destroy_entity(ents[i]);
+                }
+            }, 5);
         t_perf("destroy_entity", N, ms);
     }
 

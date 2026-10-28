@@ -203,6 +203,12 @@ private:
         if (!set.on_add_) [[unlikely]] push_comp_signal(0, entitys.parts_.index_, static_cast<uint32_t>(tid));
     }
 
+    // 覆盖既有组件: 操作类型记 modify, 索引为实体实际 dense 位置 (掩码已置位, 不发信号)
+    void commit_modify(entity entitys, int tid, uint32_t dense_index) noexcept
+    {
+        push_change_record(2, entitys.parts_.index_, static_cast<uint32_t>(tid), dense_index);
+    }
+
     // 掩码清位 + 变更日志 + 延迟信号
     void commit_remove(entity entitys, int tid, const single_class_set& set) noexcept
     {
@@ -223,6 +229,7 @@ private:
         using DecayedT = std::decay_t<T>;
         int type_id = type_id::get_type_id<DecayedT>();
         register_component_meta<DecayedT>();
+        add_result added{};
         if (!entity_manager_.is_entity_alive(entitys)) [[unlikely]]
         {
             operating_message fail;
@@ -230,13 +237,21 @@ private:
             error = fail;
             return false;
         }
-        if (!components_c_[type_id].add_impl(entitys, std::forward<T>(component), error))
+        if (!components_c_[type_id].add_impl(entitys, std::forward<T>(component), error, &added))
         {
             return false;
         }
-        commit_add(entitys, type_id,
-                   static_cast<uint32_t>(components_c_[type_id].size() - 1),
-                   components_c_[type_id]);
+        if (added.dense_index != single_class_set::dense_invalid)
+        {
+            if (added.overwrote)
+            {
+                commit_modify(entitys, type_id, added.dense_index);
+            }
+            else
+            {
+                commit_add(entitys, type_id, added.dense_index, components_c_[type_id]);
+            }
+        }
         return true;
     }
 
@@ -292,13 +307,22 @@ public:
             error = fail;
             return false;
         }
-        if (!components_c_[type_id].add_impl(entitys, std::forward<T>(component), error))
+        add_result added{};
+        if (!components_c_[type_id].add_impl(entitys, std::forward<T>(component), error, &added))
         {
             return false;
         }
-        commit_add(entitys, type_id,
-                   static_cast<uint32_t>(components_c_[type_id].size() - 1),
-                   components_c_[type_id]);
+        if (added.dense_index != single_class_set::dense_invalid)
+        {
+            if (added.overwrote)
+            {
+                commit_modify(entitys, type_id, added.dense_index);
+            }
+            else
+            {
+                commit_add(entitys, type_id, added.dense_index, components_c_[type_id]);
+            }
+        }
         return true;
     }
 
@@ -564,7 +588,8 @@ public:
     manager& hard_removec(EEs... entities) noexcept
     {
         auto remove_one = [&](auto&& e) {
-            (hard_remove_impl<TT>(e), ...);
+            operating_message error;
+            (void)std::initializer_list<int>{(hard_remove_impl<TT>(e, error), 0)...};
         };
         (remove_one(entities), ...);
         return *this;
@@ -577,7 +602,8 @@ public:
     manager& soft_removec(EEs... entities) noexcept
     {
         auto remove_one = [&](auto&& e) {
-            (soft_remove_impl<TT>(e), ...);
+            operating_message error;
+            (void)std::initializer_list<int>{(soft_remove_impl<TT>(e, error), 0)...};
         };
         (remove_one(entities), ...);
         return *this;
@@ -767,7 +793,7 @@ public:
     FORCE_INLINE operating_message add(T&& component, EE entitys) noexcept
     {
         operating_message error;
-        (void)add_impl(std::forward<T>(component), entitys, error);
+        (void)add_impl(entitys, std::forward<T>(component), error);
         return error;
     }
 
@@ -1145,11 +1171,23 @@ public:
         }
         register_def_component_meta(def_id);
         single_class_set& set = components_c_[def_id];
+        const bool had_component = set.sparse_version_at(entitys.parts_.index_) == entitys.parts_.version_;
         if (!set.add_def_impl(entitys, def_id, *d, data, error))
         {
             return false;
         }
-        commit_add(entitys, def_id, static_cast<uint32_t>(set.size() - 1), set);
+        const uint32_t dense_idx = set.sparse_dense_at(entitys.parts_.index_);
+        if (dense_idx != single_class_set::dense_invalid)
+        {
+            if (had_component)
+            {
+                commit_modify(entitys, def_id, dense_idx);
+            }
+            else
+            {
+                commit_add(entitys, def_id, dense_idx, set);
+            }
+        }
         return true;
     }
 

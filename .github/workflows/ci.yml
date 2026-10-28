@@ -1,0 +1,77 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            toolchain: gcc
+            cxx: g++
+          - os: ubuntu-latest
+            toolchain: clang
+            cxx: clang++
+          - os: macos-latest
+            toolchain: clang
+            cxx: clang++
+          - os: windows-latest
+            toolchain: msvc
+            cxx: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: configure (gcc / clang)
+        if: matrix.toolchain != 'msvc'
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+
+      - name: configure (msvc)
+        if: matrix.toolchain == 'msvc'
+        run: cmake -B build -A x64
+
+      - name: build
+        run: cmake --build build --parallel --config Release
+
+      - name: test
+        run: ctest --test-dir build -C Release --output-on-failure --timeout 600
+
+  sanitize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: configure
+        run: >
+          cmake -B build-asan -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_COMPILER=clang++
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+
+      - name: build
+        run: cmake --build build-asan --parallel
+
+      - name: test
+        run: ctest --test-dir build-asan --output-on-failure --timeout 900
+
+  thread-sanitize:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: configure
+        run: >
+          cmake -B build-tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_CXX_COMPILER=clang++
+          -DCMAKE_CXX_FLAGS="-fsanitize=thread"
+
+      - name: build
+        run: cmake --build build-tsan --parallel
+
+      - name: test
+        run: ctest --test-dir build-tsan --output-on-failure --timeout 900

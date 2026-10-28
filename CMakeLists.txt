@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(lcf-ecs LANGUAGES CXX VERSION 1.0.0)
+project(lcf-ecs LANGUAGES CXX VERSION 1.0.9)
 
 # 编译器检测: LCF_IS_GCC / LCF_IS_CLANG / LCF_IS_MSVC / LCF_IS_MINGW
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
@@ -218,6 +218,7 @@ function(lcf_add_test_sources pattern out_var)
     foreach(_src ${_srcs})
         get_filename_component(_name ${_src} NAME_WE)
         lcf_add_executable(${_name} ${_src})
+        add_test(NAME ${_name} COMMAND ${_name})
         list(APPEND _targets ${_name})
     endforeach()
     set(${out_var} ${_targets} PARENT_SCOPE)
@@ -226,6 +227,8 @@ endfunction()
 set(LCF_MODULE_TARGETS)
 set(LCF_HIGHLEVEL_TARGETS)
 set(LCF_PERF_TARGETS)
+
+enable_testing()
 
 if(BUILD_MODULE_TESTS)
     lcf_add_test_sources("${CMAKE_SOURCE_DIR}/test/*/test_module_*.cpp" LCF_MODULE_TARGETS)

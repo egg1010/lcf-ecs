@@ -11,6 +11,7 @@
 #include "part/dense.hpp"
 #include "part/type/type_id.hpp"
 #include "part/tiered_sort.hpp"
+#include "part/radix_sort_helper.hpp"
 #include "part/memory/memory_pool.hpp"
 // PREFETCH_R 宏: 集中定义于 part/force_inline.hpp
 
@@ -30,6 +31,13 @@ struct sparse_entry
 
 // 迭代期安全迭代器前置声明
 class safe_iterator;
+
+// add 结果: 覆盖既有组件还是新增, 以及实际 dense 索引
+struct add_result
+{
+    bool overwrote{false};
+    uint32_t dense_index{0xFFFFFFFFu};
+};
 
 // Global hot memory pool
 [[nodiscard]] inline memory::memory_pool& global_hot_memory_pool() noexcept
@@ -95,24 +103,70 @@ private:
     // 热集存储: Global hot memory pool 分配, 容量 = mask + 1 (2 的幂)
     struct hot_set_storage_
     {
-        size_t mask;
-        hot_entry_* entries;
+        size_t mask{0};
+        std::atomic<hot_entry_*> entries{nullptr};
+
+        hot_set_storage_() noexcept = default;
+        hot_set_storage_(const hot_set_storage_&) = delete;
+        hot_set_storage_& operator=(const hot_set_storage_&) = delete;
+
+        // 转移所有权, 源置空 (供 single_class_set 的移动语义使用)
+        hot_set_storage_(hot_set_storage_&& other) noexcept
+            : mask(other.mask)
+            , entries(other.entries.exchange(nullptr, std::memory_order_acq_rel))
+        {
+        }
+
+        hot_set_storage_& operator=(hot_set_storage_&& other) noexcept
+        {
+            if (this != &other)
+            {
+                mask = other.mask;
+                entries.store(other.entries.exchange(nullptr, std::memory_order_acq_rel),
+                              std::memory_order_relaxed);
+            }
+            return *this;
+        }
+
+        void reset() noexcept
+        {
+            mask = 0;
+            entries.store(nullptr, std::memory_order_relaxed);
+        }
     };
     hot_set_storage_ hot_{};
 
+    // 批内去重检测缓冲: 仅在输入非单调递增时使用, 容量跨批复用
+    dense<uint32_t> batch_keys_;
+    dense<size_t> batch_order_;
+    dense<size_t> batch_order_tmp_;
+
     void hot_set_allocate_(size_t entries) noexcept
     {
-        hot_.entries = static_cast<hot_entry_*>(
+        // 并发首次写入时只允许一个线程落地: CAS 失败方释放自己那份
+        hot_entry_* fresh = static_cast<hot_entry_*>(
             global_hot_memory_pool().acquire_zeroed(entries * sizeof(hot_entry_)));
+        if (fresh == nullptr) [[unlikely]]
+        {
+            return;
+        }
+        hot_entry_* expected = nullptr;
+        if (!hot_.entries.compare_exchange_strong(expected, fresh,
+                                                  std::memory_order_acq_rel,
+                                                  std::memory_order_acquire))
+        {
+            global_hot_memory_pool().soft_delete(fresh);
+            return;
+        }
         hot_.mask = entries - 1;
     }
 
     void hot_set_release_() noexcept
     {
-        if (hot_.entries)
+        hot_entry_* old = hot_.entries.exchange(nullptr, std::memory_order_acq_rel);
+        if (old != nullptr)
         {
-            global_hot_memory_pool().soft_delete(hot_.entries);
-            hot_.entries = nullptr;
+            global_hot_memory_pool().soft_delete(old);
             hot_.mask = 0;
         }
     }
@@ -529,27 +583,39 @@ private:
 
     void hot_set_update_(uint32_t entity_index, uint32_t dense_index, uint32_t version) noexcept
     {
-        if (!hot_.entries) [[unlikely]] { return; }
+        hot_entry_* entries = hot_.entries.load(std::memory_order_acquire);
+        if (entries == nullptr) [[unlikely]]
+        {
+            // 懒分配: 空集合不占 Hot Set, 首次写入时才申请
+            hot_set_allocate_(default_hot_set_capacity_);
+            entries = hot_.entries.load(std::memory_order_acquire);
+            if (entries == nullptr)
+            {
+                return;
+            }
+        }
         const size_t slot = entity_index & hot_.mask;
-        hot_.entries[slot] = {make_entity_key_(entity{entity_index, version}), dense_index, position_epoch_};
+        entries[slot] = {make_entity_key_(entity{entity_index, version}), dense_index, position_epoch_};
     }
 
     void hot_set_invalidate_(uint32_t entity_index) noexcept
     {
-        if (!hot_.entries) [[unlikely]] { return; }
+        hot_entry_* entries = hot_.entries.load(std::memory_order_acquire);
+        if (entries == nullptr) [[unlikely]] { return; }
         const size_t slot = entity_index & hot_.mask;
         // 仅当 entity_index 匹配时清空 (检查 entity_key 低 32 位)
-        if (static_cast<uint32_t>(hot_.entries[slot].entity_key) == entity_index)
+        if (static_cast<uint32_t>(entries[slot].entity_key) == entity_index)
         {
-            hot_.entries[slot] = {0, 0, 0};
+            entries[slot] = {0, 0, 0};
         }
     }
 
     void hot_set_clear_() noexcept
     {
-        if (hot_.entries)
+        hot_entry_* entries = hot_.entries.load(std::memory_order_acquire);
+        if (entries != nullptr)
         {
-            std::memset(hot_.entries, 0, (hot_.mask + 1) * sizeof(hot_entry_));
+            std::memset(entries, 0, (hot_.mask + 1) * sizeof(hot_entry_));
         }
     }
 
@@ -569,9 +635,10 @@ private:
     //   (query_context 传构造期缓存值, 其余传 position_epoch_)
     [[nodiscard]] uint32_t hot_lookup_(entity e, uint32_t epoch_lo) const noexcept
     {
-        if (!hot_.entries) [[unlikely]] { return sparse_valid_dense_(e); }
+        const hot_entry_* entries = hot_.entries.load(std::memory_order_acquire);
+        if (entries == nullptr) [[unlikely]] { return sparse_valid_dense_(e); }
         const size_t slot = e.parts_.index_ & hot_.mask;
-        const auto& entry = hot_.entries[slot];
+        const auto& entry = entries[slot];
         const uint64_t key = make_entity_key_(e);
         // entity_key 与 epoch_lo 两次比较无数据依赖, 可并行发射
         if (entry.entity_key == key && entry.epoch_lo == epoch_lo) [[likely]]
@@ -584,10 +651,11 @@ private:
     // hot set 查找 + 回填 (非 const 专用): 未命中走 sparse 校验后写入热集
     [[nodiscard]] uint32_t hot_lookup_fill_(entity e, uint32_t epoch_lo) noexcept
     {
-        if (!hot_.entries) [[unlikely]] { return sparse_valid_dense_(e); }
+        hot_entry_* entries = hot_.entries.load(std::memory_order_acquire);
+        if (entries == nullptr) [[unlikely]] { return sparse_valid_dense_(e); }
         const size_t slot = e.parts_.index_ & hot_.mask;
         const uint64_t key = make_entity_key_(e);
-        const auto& entry = hot_.entries[slot];
+        const auto& entry = entries[slot];
         if (entry.entity_key == key && entry.epoch_lo == epoch_lo) [[likely]]
         {
             return entry.dense_index;
@@ -595,7 +663,7 @@ private:
         const uint32_t d = sparse_valid_dense_(e);
         if (d != dense_invalid)
         {
-            hot_.entries[slot] = {key, d, epoch_lo};
+            entries[slot] = {key, d, epoch_lo};
         }
         return d;
     }
@@ -879,6 +947,7 @@ private:
 
         size_t max_index = 0;
         bool all_new = true;
+        bool monotonic = true;
         for (size_t i = 0; i < count; ++i)
         {
             const entity& e = entities[i];
@@ -893,8 +962,67 @@ private:
                 return true;
             }
             if (e.parts_.index_ > max_index) max_index = e.parts_.index_;
+            if (i > 0 && e.parts_.index_ <= entities[i - 1].parts_.index_) monotonic = false;
             if (all_new && e.parts_.index_ < sparse_size_ && sparse_version_at(e.parts_.index_) == e.parts_.version_)
                 all_new = false;
+        }
+
+        if (!monotonic && count > 1)
+        {
+            bool has_dup = false;
+            if (count <= 64)
+            {
+                for (size_t i = 0; i < count && !has_dup; ++i)
+                {
+                    for (size_t j = i + 1; j < count; ++j)
+                    {
+                        if (entities[i].parts_.index_ == entities[j].parts_.index_ &&
+                            entities[i].parts_.version_ == entities[j].parts_.version_)
+                        {
+                            has_dup = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            else
+            {
+                batch_keys_.clear();
+                batch_order_.clear();
+                batch_order_tmp_.clear();
+                batch_keys_.increase_capacity(count);
+                batch_order_.increase_capacity(count);
+                batch_order_tmp_.increase_capacity(count);
+                for (size_t i = 0; i < count; ++i)
+                {
+                    batch_keys_.emplace_back_unchecked(entities[i].parts_.index_);
+                    batch_order_.emplace_back_unchecked(i);
+                    batch_order_tmp_.emplace_back_unchecked(0);
+                }
+                radix_sort_indices(batch_order_.data(), batch_keys_.data(), count, batch_order_tmp_.data());
+                for (size_t i = 1; i < count; ++i)
+                {
+                    const size_t a = batch_order_[i - 1];
+                    const size_t b = batch_order_[i];
+                    if (entities[a].parts_.index_ == entities[b].parts_.index_ &&
+                        entities[a].parts_.version_ == entities[b].parts_.version_)
+                    {
+                        has_dup = true;
+                        break;
+                    }
+                }
+            }
+            if (has_dup)
+            {
+                for (size_t i = 0; i < count; ++i)
+                {
+                    if (!add_impl(entities[i], get_component(i), error))
+                    {
+                        return false;
+                    }
+                }
+                return true;
+            }
         }
 
         sparse_reserve_(max_index + 1);
@@ -1092,10 +1220,7 @@ public:
     [[nodiscard]] size_t get_component_size() const noexcept { return component_size_; }
     [[nodiscard]] int get_type_id_value() const noexcept { return type_id_; }
 
-    single_class_set() noexcept
-    {
-        hot_set_allocate_(default_hot_set_capacity_);
-    }
+    single_class_set() noexcept = default;
 
     explicit single_class_set(size_t capacity) noexcept
         : single_class_set()
@@ -1107,7 +1232,7 @@ public:
     single_class_set(entity e, T&& object, size_t r_size = 1024) noexcept;
 
     template <typename T>
-    bool add_impl(entity e, T&& object, operating_message& error) noexcept
+    bool add_impl(entity e, T&& object, operating_message& error, add_result* out = nullptr) noexcept
 {
         operating_message result;
         using DT = std::decay_t<T>;
@@ -1175,6 +1300,10 @@ public:
                 error = result;
                 return false;
             }
+            if (out != nullptr)
+            {
+                *out = add_result{false, dense_idx};
+            }
             return true;
         }
 
@@ -1241,6 +1370,10 @@ public:
                     error = result;
                     return false;
                 }
+                if (out != nullptr)
+                {
+                    *out = add_result{false, dense_idx};
+                }
                 return true;
             }
             dense_.emplace_back(e.parts_.index_);
@@ -1288,6 +1421,10 @@ public:
         {
             error = result;
             return false;
+        }
+        if (out != nullptr)
+        {
+            *out = add_result{!is_new_add, dense_idx};
         }
         return true;
     }
@@ -1939,7 +2076,7 @@ public:
     : sparse_(other.sparse_)
     , sparse_cap_(other.sparse_cap_)
     , sparse_size_(other.sparse_size_)
-    , hot_(other.hot_)
+    , hot_(std::move(other.hot_))
     , dense_(std::move(other.dense_))
     , type_id_(other.type_id_)
     , typed_pool_(other.typed_pool_)
@@ -1964,7 +2101,7 @@ public:
         other.sparse_ = nullptr;
         other.sparse_cap_ = 0;
         other.sparse_size_ = 0;
-        other.hot_ = {};
+        other.hot_.reset();
         other.typed_pool_ = nullptr;
         other.typed_pool_data_ = nullptr;
         other.ops_ = {};
@@ -1996,7 +2133,7 @@ public:
             sparse_cap_ = other.sparse_cap_;
             sparse_size_ = other.sparse_size_;
             hot_set_release_();
-            hot_ = other.hot_;
+            hot_ = std::move(other.hot_);
             position_epoch_ = other.position_epoch_;
             dense_ = std::move(other.dense_);
             typed_pool_ = other.typed_pool_;
@@ -2021,7 +2158,7 @@ public:
             other.sparse_ = nullptr;
             other.sparse_cap_ = 0;
             other.sparse_size_ = 0;
-            other.hot_ = {};
+            other.hot_.reset();
             other.typed_pool_ = nullptr;
             other.typed_pool_data_ = nullptr;
             other.ops_ = {};
@@ -2277,7 +2414,7 @@ public:
 
     [[nodiscard]] size_t hot_set_capacity() const noexcept
     {
-        return hot_.entries ? hot_.mask + 1 : 0;
+        return hot_.entries.load(std::memory_order_relaxed) != nullptr ? hot_.mask + 1 : 0;
     }
 
     void bump_pool_version() noexcept

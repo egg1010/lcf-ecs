@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![C++ Standard](https://img.shields.io/badge/C%2B%2B-20-00599C.svg)](https://isocpp.org/)
-[![Version](https://img.shields.io/badge/version-1.0.8-brightgreen.svg)](VERSION.md)
+[![Version](https://img.shields.io/badge/version-1.0.9--beta-brightgreen.svg)](VERSION.md)
 
 一个 C++20 的 header-only 库，包含 ECS、反射、序列化与线程池四个模块，以及它们共用的基础组件。代码以头文件形式提供，不依赖第三方库。
 
@@ -20,7 +20,7 @@ A C++20 header-only library offering four modules — ECS, reflection, serializa
 ## 使用 / Usage
 
 ```cpp
-#include "include/ecs/manager.hpp"
+#include "ecs/manager.hpp"
 
 struct position { float x, y, z; };
 struct velocity { float x, y, z; };

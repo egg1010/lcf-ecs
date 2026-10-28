@@ -70,7 +70,17 @@ class runtime_view
 private:
     manager* mgr_;
     runtime_query query_;
-    uint64_t cached_primary_version_{0};
+
+    // 依赖集合的版本快照: 任一集合变化即刷新缓存
+    //   primary 放在首位, 实体增删时首次比较即命中, 省掉后续比较
+    static constexpr size_t max_tracked_sets = 8;
+    const single_class_set* tracked_sets_[max_tracked_sets]{};
+    uint64_t tracked_versions_[max_tracked_sets]{};
+    uint8_t tracked_count_{0};
+    // 建立查询时尚不存在的集合: 记下 type id, 一旦被创建即需刷新
+    int missing_ids_[max_tracked_sets]{};
+    uint8_t missing_count_{0};
+    bool track_overflow_{false};
 
     dense<uint64_t> baseline_versions_;
     bool tracking_changes_{false};
@@ -85,9 +95,15 @@ private:
 
     [[nodiscard]] bool all_sets_valid() const noexcept;
 
+    // 依赖集合版本是否变化 (含 NOT / OR / OPTIONAL 集合)
+    [[nodiscard]] bool versions_changed() const noexcept;
+
+    // rebuild 末尾记录所有依赖集合的当前版本
+    void snapshot_versions() noexcept;
+
     void ensure_fresh() noexcept
     {
-        if (query_.primary_set_ && query_.primary_set_->get_pool_version() != cached_primary_version_)
+        if (versions_changed())
         {
             rebuild();
         }
@@ -109,7 +125,10 @@ private:
 
 public:
     runtime_view(manager* mgr, runtime_query query) noexcept
-        : mgr_(mgr), query_(std::move(query)) {}
+        : mgr_(mgr), query_(std::move(query))
+    {
+        snapshot_versions();
+    }
 
     [[nodiscard]] size_t size() noexcept;
     [[nodiscard]] bool empty() noexcept;

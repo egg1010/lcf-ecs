@@ -257,12 +257,100 @@ inline void runtime_view::rebuild() noexcept
     }
     query_.primary_set_ = single_class_set::select_primary_set(query_.req_sets_.data(),
                                                               query_.req_sets_.size());
-    if (query_.primary_set_)
-    {
-        cached_primary_version_ = query_.primary_set_->get_pool_version();
-    }
+    snapshot_versions();
     sorted_valid_ = false;
     cached_hits_valid_ = false;
+}
+
+inline bool runtime_view::versions_changed() const noexcept
+{
+    if (track_overflow_) [[unlikely]]
+    {
+        return true;
+    }
+    for (uint8_t i = 0; i < missing_count_; ++i)
+    {
+        if (mgr_->get_single_class_set_by_id(missing_ids_[i]) != nullptr)
+        {
+            return true;
+        }
+    }
+    for (uint8_t i = 0; i < tracked_count_; ++i)
+    {
+        if (tracked_sets_[i]->get_pool_version() != tracked_versions_[i])
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+inline void runtime_view::snapshot_versions() noexcept
+{
+    tracked_count_ = 0;
+    missing_count_ = 0;
+    track_overflow_ = false;
+
+    const auto push = [&](const single_class_set* set, int tid) {
+        if (set == query_.primary_set_)
+        {
+            return;
+        }
+        if (set == nullptr)
+        {
+            if (missing_count_ < max_tracked_sets) [[likely]]
+            {
+                missing_ids_[missing_count_] = tid;
+                ++missing_count_;
+            }
+            else
+            {
+                track_overflow_ = true;
+            }
+            return;
+        }
+        if (tracked_count_ >= max_tracked_sets) [[unlikely]]
+        {
+            track_overflow_ = true;
+            return;
+        }
+        tracked_sets_[tracked_count_] = set;
+        tracked_versions_[tracked_count_] = set->get_pool_version();
+        ++tracked_count_;
+    };
+
+    if (query_.primary_set_ != nullptr)
+    {
+        tracked_sets_[0] = query_.primary_set_;
+        tracked_versions_[0] = query_.primary_set_->get_pool_version();
+        tracked_count_ = 1;
+    }
+    for (size_t i = 0; i < query_.req_sets_.size(); ++i)
+    {
+        const int tid = i < query_.required_ids_.size() ? query_.required_ids_[i] : 0;
+        push(query_.req_sets_[i], tid);
+    }
+    for (size_t i = 0; i < query_.exc_sets_.size(); ++i)
+    {
+        if (query_.exc_sets_[i] != nullptr)
+        {
+            push(query_.exc_sets_[i], 0);
+        }
+    }
+    if (query_.has_or_)
+    {
+        for (size_t i = 0; i < query_.or_sets_.size(); ++i)
+        {
+            if (query_.or_sets_[i] != nullptr) push(query_.or_sets_[i], 0);
+        }
+    }
+    if (query_.has_optional_)
+    {
+        for (size_t i = 0; i < query_.opt_sets_.size(); ++i)
+        {
+            if (query_.opt_sets_[i] != nullptr) push(query_.opt_sets_[i], 0);
+        }
+    }
 }
 
 // 构建命中实体缓存 (rebuild 时构建, for_each/count 复用)

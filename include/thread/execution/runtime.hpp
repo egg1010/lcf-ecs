@@ -121,17 +121,22 @@ struct frame_arena
     }
 };
 
-// 每线程弹夹（magazine）：热点分配路径零原子操作
-struct frame_magazine
+// 每线程弹夹按池分槽：槽内块只来自同一 arena，避免跨实例混用
+//   槽以 (池实例, 构造代数) 双条件匹配：池析构重建后地址可能复用，代数不同即不匹配
+inline constexpr std::size_t frame_magazine_slot_count = 4;
+
+struct frame_magazine_slot
 {
+    const void* owner{nullptr};
+    std::uint64_t generation{0};
     void* items_[frame_tier_count][frame_magazine_capacity]{};
     std::uint32_t count_[frame_tier_count]{};
 };
 
-inline frame_magazine& frame_magazine_of_thread() noexcept
+inline std::uint64_t next_frame_pool_generation() noexcept
 {
-    thread_local frame_magazine magazine{};
-    return magazine;
+    static std::atomic<std::uint64_t> counter{0};
+    return counter.fetch_add(1, std::memory_order_relaxed) + 1;
 }
 
 struct frame_pool
@@ -142,6 +147,9 @@ struct frame_pool
     std::atomic<std::uint64_t> misses_{0};
     std::atomic<std::uint64_t> heap_allocs_{0};
     std::atomic<std::uint64_t> returns_{0};
+
+    // 构造代数：区分同一地址上的不同池实例
+    const std::uint64_t generation_{next_frame_pool_generation()};
 
     frame_pool() noexcept = default;
 
@@ -196,7 +204,7 @@ struct frame_pool
             }
             return ::operator new(size, std::nothrow);
         }
-        frame_magazine& magazine = frame_magazine_of_thread();
+        frame_magazine_slot& magazine = slot_of(this);
         if (magazine.count_[tier] > 0)
         {
             hits_.fetch_add(1, std::memory_order_relaxed);
@@ -263,6 +271,49 @@ struct frame_pool
     }
 
   private:
+    // 取得本池在当前线程的弹夹槽: 优先匹配 (owner, generation), 空槽次之, 否则淘汰最久未用
+    //   淘汰时槽内块直接丢弃: 原池可能已析构, 无法安全归还
+    static frame_magazine_slot& slot_of(const frame_pool* self) noexcept
+    {
+        thread_local frame_magazine_slot slots[frame_magazine_slot_count]{};
+        thread_local std::uint32_t stamps[frame_magazine_slot_count]{};
+        thread_local std::uint32_t tick = 0;
+        ++tick;
+
+        for (std::size_t i = 0; i < frame_magazine_slot_count; ++i)
+        {
+            if (slots[i].owner == self && slots[i].generation == self->generation_)
+            {
+                stamps[i] = tick;
+                return slots[i];
+            }
+        }
+        for (std::size_t i = 0; i < frame_magazine_slot_count; ++i)
+        {
+            if (slots[i].owner == nullptr)
+            {
+                slots[i] = frame_magazine_slot{};
+                slots[i].owner = self;
+                slots[i].generation = self->generation_;
+                stamps[i] = tick;
+                return slots[i];
+            }
+        }
+        std::size_t lru = 0;
+        for (std::size_t i = 1; i < frame_magazine_slot_count; ++i)
+        {
+            if (stamps[i] < stamps[lru])
+            {
+                lru = i;
+            }
+        }
+        slots[lru] = frame_magazine_slot{};
+        slots[lru].owner = self;
+        slots[lru].generation = self->generation_;
+        stamps[lru] = tick;
+        return slots[lru];
+    }
+
     void* pop_block(std::size_t tier) noexcept
     {
         std::uint32_t index = index_pool::none;
@@ -283,7 +334,7 @@ struct frame_pool
     void return_block(std::size_t tier, void* p) noexcept
     {
         returns_.fetch_add(1, std::memory_order_relaxed);
-        frame_magazine& magazine = frame_magazine_of_thread();
+        frame_magazine_slot& magazine = slot_of(this);
         if (magazine.count_[tier] < frame_magazine_capacity)
         {
             magazine.items_[tier][magazine.count_[tier]++] = p;

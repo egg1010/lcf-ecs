@@ -135,14 +135,15 @@ public:
         for (size_t probe = 0; probe < def_table_size_; ++probe)
         {
             const def_slot& s = def_table_[slot];
-            const uint32_t len = s.length;
-            if (len == 0)
+            const uint64_t k = s.key.load(std::memory_order_acquire);
+            if (k == 0)
             {
                 found = false;
                 out_id = -1;
                 return slot;
             }
-            if (s.key.load(std::memory_order_relaxed) == key && len == n)
+            const uint32_t len = s.length;
+            if (k == key && len == n)
             {
                 if (n <= 8)
                 {
@@ -318,7 +319,11 @@ public:
         for (size_t probe = 0; probe < def_table_size_; ++probe)
         {
             const def_slot& s = def_table_[slot];
-            const uint64_t k = s.key.load(std::memory_order_acquire);  // 先 key, 序依赖
+            const uint64_t k = s.key.load(std::memory_order_acquire);
+            if (k == 0) [[unlikely]]
+            {
+                return -1;
+            }
             const uint32_t len = s.length;
             if (len == 0) [[unlikely]]
             {

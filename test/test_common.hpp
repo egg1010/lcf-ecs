@@ -168,6 +168,26 @@ inline double t_bench_best_ms(F&& fn, size_t repeats = 5) noexcept
     return best;
 }
 
+// 每轮前执行 prep 重建初始状态, 计时只覆盖 run
+template <typename Prep, typename Run>
+    requires std::invocable<Prep&> && std::invocable<Run&>
+inline double t_bench_best_ms(Prep&& prep, Run&& run, size_t repeats = 5) noexcept
+{
+    double best = 1e18;
+    for (size_t i = 0; i < repeats; ++i)
+    {
+        prep();
+        timer t;
+        run();
+        double ms = t.elapsed_milliseconds();
+        if (ms < best)
+        {
+            best = ms;
+        }
+    }
+    return best;
+}
+
 // 性能项: ops 为操作次数, ms 为耗时毫秒 (百万次/秒 + 单次纳秒)
 inline void t_perf(const char* name, uint64_t ops, double ms) noexcept
 {

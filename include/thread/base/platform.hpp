@@ -145,7 +145,8 @@ inline void platform_wake_all(volatile void* address) noexcept
 inline int futex_syscall(volatile std::uint32_t* address, int operation,
                          std::uint32_t value) noexcept
 {
-    return static_cast<int>(::syscall(SYS_futex, reinterpret_cast<std::uint32_t*>(address),
+    auto* p = const_cast<std::uint32_t*>(address);
+    return static_cast<int>(::syscall(SYS_futex, p,
                                       operation, value, nullptr, nullptr, 0));
 }
 
