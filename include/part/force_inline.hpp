@@ -104,6 +104,13 @@
 #define DENSE_RESTRICT LCF_RESTRICT
 #endif
 
+// x86/x64 架构判定: SIMD intrinsic 只在 x86 族可用, arm64 上整段不参与编译
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+#define LCF_HAS_X86_SIMD 1
+#else
+#define LCF_HAS_X86_SIMD 0
+#endif
+
 // 编译器假设: 告知优化器条件恒真, 用于边界检查之后消去冗余分支
 #if defined(_MSC_VER) && !defined(__clang__)
 #define LCF_ASSUME(cond) __assume(cond)

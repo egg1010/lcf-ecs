@@ -16,7 +16,7 @@
 #include <functional>
 // immintrin 守卫与下方 gnu::target("avx2") 函数的激活条件对齐:
 // GCC/Clang x86-64: __AVX2__ 未定义时 target 定向函数仍激活, 需要 __m256i 类型
-#if defined(__AVX2__) || defined(__BMI__) || (defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))) \
+#if LCF_HAS_X86_SIMD && defined(__AVX2__) || defined(__BMI__) || (defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))) \
 	|| ((defined(__GNUC__) || defined(__clang__)) && defined(__x86_64__))
 #include <immintrin.h>
 #endif
@@ -167,7 +167,8 @@ private:
 	// 但 vmovdqu (非对齐) 安全, 通过 target 属性仅在此函数内启用 AVX2.
 	// 仅用于 erase 等大块重叠移动场景 (libc memmove 的 4x 展开收益有限).
 #if defined(__GNUC__) && defined(__x86_64__) && !defined(__AVX2__) && !defined(__clang__)
-	LCF_TARGET_AVX2
+	#if LCF_HAS_X86_SIMD
+LCF_TARGET_AVX2
 	static void copy_trivial_data_avx2(char* dst, const char* src, size_t bytes) noexcept {
 		const __m256i* s = static_cast<const __m256i*>(static_cast<const void*>(src));
 		__m256i* d = static_cast<__m256i*>(static_cast<void*>(dst));
@@ -192,12 +193,15 @@ private:
 	}
 #endif
 
+#endif
+
 	// 广播填充用 AVX2: 比 GCC SSE2 自动向量化快 ~2x
-#if (defined(__GNUC__) || defined(__clang__)) && defined(__x86_64__)
+#if LCF_HAS_X86_SIMD && (defined(__GNUC__) || defined(__clang__)) && defined(__x86_64__)
 	template <typename U>
 		requires (sizeof(U) <= 8 && std::is_trivially_copyable_v<U>)
 #if !defined(__AVX2__) && (defined(__GNUC__) || defined(__clang__))
-	LCF_TARGET_AVX2
+	#if LCF_HAS_X86_SIMD
+LCF_TARGET_AVX2
 #endif
 	static void fill_small_trivial_avx2(U* dst, const U& value, size_t count) noexcept
 	{
@@ -246,11 +250,14 @@ private:
 			dst[chunks * elem_per_ymm + j] = value;
 		}
 	}
+#endif
+
 
 	// 广播填充用 AVX2: 仅写 DRAM, 倍增法需读+写 = 2x DRAM 流量
 	// 无 -mavx2 时 (GCC/Clang) 以 target 属性定向启用; clang 也需要, 否则 intrinsics 报错
 #if !defined(__AVX2__) && (defined(__GNUC__) || defined(__clang__))
-	LCF_TARGET_AVX2
+	#if LCF_HAS_X86_SIMD
+LCF_TARGET_AVX2
 #endif
 	static void fill_medium_trivial_avx2(char* dst, const char& value,
 	                                      size_t bytes, size_t elem_size) noexcept
@@ -332,8 +339,10 @@ private:
 	}
 #endif
 
+#endif
+
 	// 大块填充 ERMS 比 AVX2 store 快; AVX2 广播对小~中块 (64-8K) 更优 (无 memmove 启动开销)
-#if (defined(__GNUC__) || defined(__clang__)) && defined(__x86_64__)
+#if LCF_HAS_X86_SIMD && (defined(__GNUC__) || defined(__clang__)) && defined(__x86_64__)
 	template <typename U>
 		requires (sizeof(U) <= 8 && std::is_trivially_copyable_v<U>)
 	static void fill_small_trivial(U* dst, const U& value, size_t count) noexcept
@@ -343,13 +352,13 @@ private:
 			for (size_t i = 0; i < count; ++i) { dst[i] = value; }
 			return;
 		}
-#if !defined(__AVX2__) && (defined(__GNUC__) || defined(__clang__))
+#if LCF_HAS_X86_SIMD && !defined(__AVX2__) && (defined(__GNUC__) || defined(__clang__))
 	if (count < 8192 && LCF_CPU_HAS_AVX2())
 	{
 		fill_small_trivial_avx2(dst, value, count);
 		return;
 	}
-#elif defined(__AVX2__)
+#elif LCF_HAS_X86_SIMD && defined(__AVX2__)
 		if (count < 8192)
 		{
 			fill_small_trivial_avx2(dst, value, count);
@@ -381,7 +390,7 @@ private:
 #endif
 
 	// 非临时存储 NTS 绕过 cache 直写 DRAM: 1x vs 2x DRAM 流量
-#if (defined(__GNUC__) || defined(__clang__)) && defined(__x86_64__)
+#if LCF_HAS_X86_SIMD && (defined(__GNUC__) || defined(__clang__)) && defined(__x86_64__)
 	template <typename U>
 		requires (sizeof(U) >= 16 && sizeof(U) % 16 == 0 && std::is_trivially_copyable_v<U>)
 	static void fill_large_trivial_nts(U* dst, const U& value, size_t count) noexcept
@@ -435,11 +444,11 @@ private:
 			fill_large_trivial_nts(dst, value, count);
 			return;
 		}
-#if defined(__AVX2__)
+#if LCF_HAS_X86_SIMD && defined(__AVX2__)
 		fill_medium_trivial_avx2(reinterpret_cast<char*>(dst),
 		                         reinterpret_cast<const char&>(value),
 		                         count * sizeof(U), sizeof(U));
-#elif defined(__GNUC__) && !defined(__clang__)
+#elif LCF_HAS_X86_SIMD && defined(__GNUC__) && !defined(__clang__)
 		if (LCF_CPU_HAS_AVX2())
 		{
 			fill_medium_trivial_avx2(reinterpret_cast<char*>(dst),
@@ -558,7 +567,8 @@ private:
 
 	// 前向移动 (dst < src, 从前向后扫描): 用于 erase
 #if defined(__GNUC__) && defined(__x86_64__) && !defined(__AVX2__) && !defined(__clang__)
-	LCF_TARGET_AVX2
+	#if LCF_HAS_X86_SIMD
+LCF_TARGET_AVX2
 #endif
 	static void move_trivial_forward(T* dst, const T* src, size_t count) noexcept {
 		if (count == 0) { return; }
@@ -601,9 +611,12 @@ private:
 		std::memmove(std::assume_aligned<alignof(T)>(dst),
 		             std::assume_aligned<alignof(T)>(src), bytes);
 	}
+#endif
+
 
 #if defined(__GNUC__) && defined(__x86_64__) && !defined(__AVX2__) && !defined(__clang__)
-	LCF_TARGET_AVX2
+	#if LCF_HAS_X86_SIMD
+LCF_TARGET_AVX2
 	static void move_trivial_forward_avx2_helper(T* dst, const T* src, size_t bytes) noexcept {
 		const __m256i* s256 = static_cast<const __m256i*>(static_cast<const void*>(src));
 		__m256i* d256 = static_cast<__m256i*>(static_cast<void*>(dst));
@@ -629,10 +642,13 @@ private:
 	}
 #endif
 
+#endif
+
 	// 后向不展开 - store-to-load forwarding stall
 	// 阈值: sizeof(T) <= 8: 64KB; <= 16: 32KB; > 16: 2KB
 #if defined(__GNUC__) && defined(__x86_64__) && !defined(__AVX2__) && !defined(__clang__)
-	LCF_TARGET_AVX2
+	#if LCF_HAS_X86_SIMD
+LCF_TARGET_AVX2
 #endif
 	static void move_trivial_backward(T* dst, const T* src, size_t count) noexcept {
 		if (count == 0) { return; }
@@ -672,9 +688,12 @@ private:
 		std::memmove(std::assume_aligned<alignof(T)>(dst),
 		             std::assume_aligned<alignof(T)>(src), bytes);
 	}
+#endif
+
 
 #if defined(__GNUC__) && defined(__x86_64__) && !defined(__AVX2__) && !defined(__clang__)
-	LCF_TARGET_AVX2
+	#if LCF_HAS_X86_SIMD
+LCF_TARGET_AVX2
 	static void move_trivial_backward_avx2_helper(T* dst, const T* src, size_t bytes) noexcept {
 		const __m256i* s256 = static_cast<const __m256i*>(static_cast<const void*>(src));
 		__m256i* d256 = static_cast<__m256i*>(static_cast<void*>(dst));
@@ -691,6 +710,8 @@ private:
 			_mm256_storeu_si256(d256 + i - 1, _mm256_loadu_si256(s256 + i - 1));
 		}
 	}
+#endif
+
 #endif
 
 	void grow_data(size_t new_capacity) noexcept {
