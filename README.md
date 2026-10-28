@@ -43,8 +43,14 @@ int main()
 
 ## 环境 / Requirements
 
-- C++20 编译器：GCC 11+、Clang 14+（libstdc++）或 16+（libc++）、MSVC 19.30+
-- A C++20 compiler: GCC 11+, Clang 14+ (libstdc++), Clang 16+ (libc++), MSVC 19.30+
+最低支持版本 / Minimum supported versions:
+
+| 编译器 / Compiler | 最低版本 / Minimum |
+|---|---|
+| GCC | 11 |
+| Clang（libstdc++ / with libstdc++） | 14 |
+| Clang（libc++ / with libc++） | 16 |
+| MSVC | 19.30（VS 2022 17.0） |
 
 ## 范围 / Scope
 
