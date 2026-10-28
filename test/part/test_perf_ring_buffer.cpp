@@ -2,9 +2,12 @@
 #include "test_common.hpp"
 #include "include/part/ring_buffer.hpp"
 
+#include <atomic>
+
 static volatile uint64_t g_sink = 0;
 
-#define BENCH_FENCE(acc) asm volatile("" : "+r"(acc) : : "memory")
+// 编译器屏障: GCC 用内联汇编, MSVC 不支持该语法, 统一走标准原子栅栏
+#define BENCH_FENCE(acc) std::atomic_signal_fence(std::memory_order_seq_cst)
 
 int main()
 {

@@ -635,8 +635,7 @@ void tiered_sort(T* data, size_t n, Compare&& cmp) noexcept
                 data[i] = entries[i].key;
             }
 
-            ::operator delete(entries, n * sizeof(sort_entry),
-                              std::align_val_t{alignof(sort_entry)});
+            ::operator delete(entries, std::align_val_t{alignof(sort_entry)});
         }
         else
         {
@@ -677,8 +676,7 @@ void tiered_sort_indices(size_t* indices, const T* values, size_t n) noexcept
                 return;
             }
             radix_sort_indices<T>(indices, values, n, temp_buf);
-            ::operator delete(temp_buf, n * sizeof(size_t),
-                              std::align_val_t{alignof(size_t)});
+            ::operator delete(temp_buf, std::align_val_t{alignof(size_t)});
         }
         else
         {

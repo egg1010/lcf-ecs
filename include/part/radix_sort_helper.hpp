@@ -184,7 +184,7 @@ inline void radix_count_pass(size_t* count, const U* keys, size_t n,
             count[b] = h0[b] + h1[b] + h2[b] + h3[b];
         }
 #if LCF_MINIMAL_STACK
-        ::operator delete(h, 4 * bc * sizeof(size_t), std::align_val_t{alignof(size_t)});
+        ::operator delete(h, std::align_val_t{alignof(size_t)});
 #endif
     }
     else if (bc <= 1024)
@@ -227,7 +227,7 @@ inline void radix_count_pass(size_t* count, const U* keys, size_t n,
             count[b] = h0[b] + h1[b];
         }
 #if LCF_MINIMAL_STACK
-        ::operator delete(h, 2 * bc * sizeof(size_t), std::align_val_t{alignof(size_t)});
+        ::operator delete(h, std::align_val_t{alignof(size_t)});
 #endif
     }
     else
@@ -378,7 +378,7 @@ void radix_sort_entries_with_cfg(void* entries_data, size_t n,
         ::operator new(keys_alloc * sizeof(U), std::align_val_t{alignof(U)}, std::nothrow));
     if (!keys_combined) [[unlikely]]
     {
-        ::operator delete(temp, n * sizeof(entry_t), std::align_val_t{alignof(entry_t)});
+        ::operator delete(temp, std::align_val_t{alignof(entry_t)});
         detail::fallback_heap_sort(entries, n);
         return;
     }
@@ -394,8 +394,8 @@ void radix_sort_entries_with_cfg(void* entries_data, size_t n,
             ::operator new(hist_size * sizeof(size_t), std::align_val_t{alignof(size_t)}, std::nothrow));
         if (!hist_buf) [[unlikely]]
         {
-            ::operator delete(keys_combined, keys_alloc * sizeof(U), std::align_val_t{alignof(U)});
-            ::operator delete(temp, n * sizeof(entry_t), std::align_val_t{alignof(entry_t)});
+            ::operator delete(keys_combined, std::align_val_t{alignof(U)});
+            ::operator delete(temp, std::align_val_t{alignof(entry_t)});
             detail::fallback_heap_sort(entries, n);
             return;
         }
@@ -462,7 +462,7 @@ void radix_sort_entries_with_cfg(void* entries_data, size_t n,
 #if LCF_MINIMAL_STACK
     if (!large_pass)
     {
-        ::operator delete(count, max_buckets * sizeof(size_t), std::align_val_t{alignof(size_t)});
+        ::operator delete(count, std::align_val_t{alignof(size_t)});
     }
 #endif
 
@@ -477,10 +477,10 @@ void radix_sort_entries_with_cfg(void* entries_data, size_t n,
     if (hist_buf)
     {
         const size_t hist_size = (1 + large_sub_count) * max_buckets_large;
-        ::operator delete(hist_buf, hist_size * sizeof(size_t), std::align_val_t{alignof(size_t)});
+        ::operator delete(hist_buf, std::align_val_t{alignof(size_t)});
     }
-    ::operator delete(keys_combined, keys_alloc * sizeof(U), std::align_val_t{alignof(U)});
-    ::operator delete(temp, n * sizeof(entry_t), std::align_val_t{alignof(entry_t)});
+    ::operator delete(keys_combined, std::align_val_t{alignof(U)});
+    ::operator delete(temp, std::align_val_t{alignof(entry_t)});
 }
 
 template <typename KeyType>
@@ -526,7 +526,7 @@ void radix_sort_indices_with_cfg(size_t* indices, const KeyType* keys, size_t n,
             ::operator new(hist_size * sizeof(size_t), std::align_val_t{alignof(size_t)}, std::nothrow));
         if (!hist_buf) [[unlikely]]
         {
-            ::operator delete(keys_combined, keys_alloc * sizeof(U), std::align_val_t{alignof(U)});
+            ::operator delete(keys_combined, std::align_val_t{alignof(U)});
             return;
         }
     }
@@ -624,7 +624,7 @@ void radix_sort_indices_with_cfg(size_t* indices, const KeyType* keys, size_t n,
 #if LCF_MINIMAL_STACK
     if (!large_pass)
     {
-        ::operator delete(count, max_buckets * sizeof(size_t), std::align_val_t{alignof(size_t)});
+        ::operator delete(count, std::align_val_t{alignof(size_t)});
     }
 #endif
 
@@ -639,9 +639,9 @@ void radix_sort_indices_with_cfg(size_t* indices, const KeyType* keys, size_t n,
     if (hist_buf)
     {
         const size_t hist_size = (1 + large_sub_count) * max_buckets_large;
-        ::operator delete(hist_buf, hist_size * sizeof(size_t), std::align_val_t{alignof(size_t)});
+        ::operator delete(hist_buf, std::align_val_t{alignof(size_t)});
     }
-    ::operator delete(keys_combined, keys_alloc * sizeof(U), std::align_val_t{alignof(U)});
+    ::operator delete(keys_combined, std::align_val_t{alignof(U)});
 }
 
 template <typename KeyType>
