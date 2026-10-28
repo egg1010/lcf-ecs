@@ -41,6 +41,11 @@ jobs:
       - name: build
         run: cmake --build build --parallel --config Release
 
+      - name: smoke (msvc crash context)
+        if: matrix.toolchain == 'msvc'
+        continue-on-error: true
+        run: build/Release/test_module_analysis.exe
+
       - name: test
         run: ctest --test-dir build -C Release --output-on-failure --timeout 600
 
