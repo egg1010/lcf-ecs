@@ -6,23 +6,23 @@
 // 支持: GCC / Clang / MSVC (x86/x64/ARM64)
 
 // 内联控制
-#ifndef FORCE_INLINE
+#ifndef LCF_FORCE_INLINE
 #if defined(_MSC_VER)
-#define FORCE_INLINE __forceinline
+#define LCF_FORCE_INLINE __forceinline
 #elif defined(__GNUC__) || defined(__clang__)
-#define FORCE_INLINE inline __attribute__((always_inline))
+#define LCF_FORCE_INLINE inline __attribute__((always_inline))
 #else
-#define FORCE_INLINE inline
+#define LCF_FORCE_INLINE inline
 #endif
 #endif
 
-#ifndef NOINLINE
+#ifndef LCF_NOINLINE
 #if defined(_MSC_VER)
-#define NOINLINE __declspec(noinline)
+#define LCF_NOINLINE __declspec(noinline)
 #elif defined(__GNUC__) || defined(__clang__)
-#define NOINLINE __attribute__((noinline))
+#define LCF_NOINLINE __attribute__((noinline))
 #else
-#define NOINLINE
+#define LCF_NOINLINE
 #endif
 #endif
 

@@ -915,7 +915,7 @@ inline constexpr size_t field_count_v =
     }
 
 template<typename T, typename F>
-FORCE_INLINE void for_each_member(T& obj, F&& f)
+LCF_FORCE_INLINE void for_each_member(T& obj, F&& f)
 {
     using type = std::remove_cv_t<T>;
     constexpr size_t N = field_count_v<type>;

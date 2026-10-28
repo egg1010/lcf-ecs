@@ -20,9 +20,9 @@
         explicit const_iterator(const char* p) noexcept
             : p_(reinterpret_cast<const char32_t*>(p)) {}
 
-        FORCE_INLINE const_iterator& operator++() noexcept { ++p_; return *this; }
+        LCF_FORCE_INLINE const_iterator& operator++() noexcept { ++p_; return *this; }
         const_iterator operator++(int) noexcept { auto t = *this; ++p_; return t; }
-        FORCE_INLINE const_iterator& operator--() noexcept { --p_; return *this; }
+        LCF_FORCE_INLINE const_iterator& operator--() noexcept { --p_; return *this; }
         const_iterator operator--(int) noexcept { auto t = *this; --p_; return t; }
         const_iterator& operator+=(difference_type n) noexcept { p_ += n; return *this; }
         const_iterator& operator-=(difference_type n) noexcept { p_ -= n; return *this; }
@@ -32,11 +32,11 @@
         [[nodiscard]] const_iterator operator-(difference_type n) const noexcept { return const_iterator(p_ - n); }
         [[nodiscard]] difference_type operator-(const const_iterator& o) const noexcept { return p_ - o.p_; }
 
-        [[nodiscard]] FORCE_INLINE char32_t operator*() const noexcept { return *p_; }
+        [[nodiscard]] LCF_FORCE_INLINE char32_t operator*() const noexcept { return *p_; }
         [[nodiscard]] char32_t operator[](difference_type n) const noexcept { return p_[n]; }
 
-        [[nodiscard]] FORCE_INLINE bool operator==(const const_iterator& o) const noexcept { return p_ == o.p_; }
-        [[nodiscard]] FORCE_INLINE bool operator!=(const const_iterator& o) const noexcept { return p_ != o.p_; }
+        [[nodiscard]] LCF_FORCE_INLINE bool operator==(const const_iterator& o) const noexcept { return p_ == o.p_; }
+        [[nodiscard]] LCF_FORCE_INLINE bool operator!=(const const_iterator& o) const noexcept { return p_ != o.p_; }
         [[nodiscard]] bool operator<(const const_iterator& o) const noexcept { return p_ < o.p_; }
         [[nodiscard]] bool operator>(const const_iterator& o) const noexcept { return p_ > o.p_; }
         [[nodiscard]] bool operator<=(const const_iterator& o) const noexcept { return p_ <= o.p_; }
@@ -64,7 +64,7 @@
         const_reverse_iterator(const char* p, const char* begin, const char* end, uint8_t uniform_len) noexcept
             : p_(p), begin_(begin), end_(end), uniform_len_(uniform_len) {}
 
-        FORCE_INLINE const_reverse_iterator& operator++() noexcept
+        LCF_FORCE_INLINE const_reverse_iterator& operator++() noexcept
         {
             // 均匀码点: 直接 p_ -= uniform_len_
             if (uniform_len_ != 0 && p_ > begin_)
@@ -90,7 +90,7 @@
             return tmp;
         }
 
-        FORCE_INLINE const_reverse_iterator& operator--() noexcept
+        LCF_FORCE_INLINE const_reverse_iterator& operator--() noexcept
         {
             if (p_ < end_)
             {
@@ -157,7 +157,7 @@
             }
         }
 
-        [[nodiscard]] FORCE_INLINE char32_t operator*() const noexcept
+        [[nodiscard]] LCF_FORCE_INLINE char32_t operator*() const noexcept
         {
             // 均匀码点: 已知码点长度, 直接定位起始
             if (uniform_len_ != 0)
@@ -217,8 +217,8 @@
             return *(*this + n);
         }
 
-        [[nodiscard]] FORCE_INLINE bool operator==(const const_reverse_iterator& o) const noexcept { return p_ == o.p_; }
-        [[nodiscard]] FORCE_INLINE bool operator!=(const const_reverse_iterator& o) const noexcept { return p_ != o.p_; }
+        [[nodiscard]] LCF_FORCE_INLINE bool operator==(const const_reverse_iterator& o) const noexcept { return p_ == o.p_; }
+        [[nodiscard]] LCF_FORCE_INLINE bool operator!=(const const_reverse_iterator& o) const noexcept { return p_ != o.p_; }
         [[nodiscard]] bool operator<(const const_reverse_iterator& o) const noexcept { return p_ > o.p_; }
         [[nodiscard]] bool operator>(const const_reverse_iterator& o) const noexcept { return p_ < o.p_; }
         [[nodiscard]] bool operator<=(const const_reverse_iterator& o) const noexcept { return p_ >= o.p_; }

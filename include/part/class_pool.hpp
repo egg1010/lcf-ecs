@@ -21,7 +21,7 @@
 #include "force_inline.hpp"
 #include "container_views.hpp"
 
-// 跨平台预取/属性宏: 集中定义于 force_inline.hpp (PREFETCH_R/PREFETCH_NTA/NOINLINE/FORCE_INLINE 等)
+// 跨平台预取/属性宏: 集中定义于 force_inline.hpp (PREFETCH_R/PREFETCH_NTA/LCF_NOINLINE/LCF_FORCE_INLINE 等)
 
 // 清除最低设置位 (BMI1 BLSR 指令, 不可用时回退到标量)
 // clang (MSVC ABI) 定义 _MSC_VER 但无 -mbmi 时 intrinsic 需 target 特性, 排除
@@ -287,7 +287,7 @@ public:
 		Ptr operator->() const noexcept { return ptr_; }
 
 		// 从 word_idx 起整字扫描, 返回下一设置位位置, 没有则返回 total
-		LCF_PURE static NOINLINE size_t scan_set_bit_words(
+		LCF_PURE static LCF_NOINLINE size_t scan_set_bit_words(
 			const uint64_t* bits, size_t word_idx, size_t total) noexcept
 		{
 			const size_t total_words = (total + BITS_PER_WORD - 1) / BITS_PER_WORD;
@@ -320,8 +320,8 @@ public:
 		}
 
 		// 返回 >= start 的下一个设置位位置, 没有则返回 total
-		// 属性 pure/noinline 由 LCF_PURE/NOINLINE 宏跨平台处理 (见 force_inline.hpp)
-		LCF_PURE static NOINLINE size_t find_next_set_bit(
+		// 属性 pure/noinline 由 LCF_PURE/LCF_NOINLINE 宏跨平台处理 (见 force_inline.hpp)
+		LCF_PURE static LCF_NOINLINE size_t find_next_set_bit(
 			const uint64_t* bits, size_t start, size_t total) noexcept
 		{
 			if (start >= total) { return total; }
@@ -343,8 +343,8 @@ public:
 			ptr_ = origin_ + find_next_set_bit(bits_, idx, total);
 		}
 
-		// 强制内联: 由 FORCE_INLINE 宏跨平台处理 (见 force_inline.hpp)
-		FORCE_INLINE basic_iterator& operator++() noexcept {
+		// 强制内联: 由 LCF_FORCE_INLINE 宏跨平台处理 (见 force_inline.hpp)
+		LCF_FORCE_INLINE basic_iterator& operator++() noexcept {
 			const uint64_t* const bits = bits_;
 			if (bits == nullptr) [[likely]]
 			{

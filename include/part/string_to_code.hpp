@@ -24,7 +24,7 @@ namespace string_to_code {
 class code_value
 {
 public:
-    FORCE_INLINE code_value() noexcept
+    LCF_FORCE_INLINE code_value() noexcept
         : inline_value_(0)
         , heap_array_(nullptr)
         , string_length_(0)
@@ -32,7 +32,7 @@ public:
     }
 
     // 接受 utf8_view (可从 const char*/string_view/string 隐式构造)
-    FORCE_INLINE explicit code_value(const utf8_view& s) noexcept
+    LCF_FORCE_INLINE explicit code_value(const utf8_view& s) noexcept
         : inline_value_(0)
         , heap_array_(nullptr)
         , string_length_(s.byte_size())
@@ -69,7 +69,7 @@ public:
         }
     }
 
-    FORCE_INLINE code_value(code_value&& other) noexcept
+    LCF_FORCE_INLINE code_value(code_value&& other) noexcept
         : inline_value_(other.inline_value_)
         , heap_array_(other.heap_array_)
         , string_length_(other.string_length_)
@@ -79,7 +79,7 @@ public:
         other.string_length_ = 0;
     }
 
-    FORCE_INLINE code_value& operator=(code_value&& other) noexcept
+    LCF_FORCE_INLINE code_value& operator=(code_value&& other) noexcept
     {
         if (this != &other)
         {
@@ -100,7 +100,7 @@ public:
     code_value(const code_value&) = delete;
     code_value& operator=(const code_value&) = delete;
 
-    FORCE_INLINE ~code_value() noexcept
+    LCF_FORCE_INLINE ~code_value() noexcept
     {
         if (heap_array_)
         {
@@ -109,7 +109,7 @@ public:
     }
 
     // 返回的 utf8_view 不持有内存, 调用方需保证 code_value 生命周期
-    [[nodiscard]] FORCE_INLINE utf8_view decode() const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE utf8_view decode() const noexcept
     {
         if (string_length_ == 0)
         {
@@ -121,23 +121,23 @@ public:
         return utf8_view(data, string_length_);
     }
 
-    [[nodiscard]] FORCE_INLINE bool is_inline() const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE bool is_inline() const noexcept
     {
         return heap_array_ == nullptr;
     }
 
     // 仅 is_inline()=true 时有效, 用于 map key 直接比较
-    [[nodiscard]] FORCE_INLINE uint64_t inline_value() const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE uint64_t inline_value() const noexcept
     {
         return inline_value_;
     }
 
-    [[nodiscard]] FORCE_INLINE size_t string_size() const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE size_t string_size() const noexcept
     {
         return string_length_;
     }
 
-    [[nodiscard]] FORCE_INLINE bool empty() const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE bool empty() const noexcept
     {
         return string_length_ == 0;
     }
@@ -146,7 +146,7 @@ public:
     // 陷阱: N 非2的幂(如6)时 GCC 用栈拼接(store-to-load forwarding stall);
     //   N>=5 时拆分 lo(4B) + hi(N-4 B) 两次定长 memcpy, 寄存器拼接无栈操作
     template <size_t N>
-    [[nodiscard]] FORCE_INLINE static uint64_t encode_inline_n(const char* data) noexcept
+    [[nodiscard]] LCF_FORCE_INLINE static uint64_t encode_inline_n(const char* data) noexcept
     {
         static_assert(N <= 8, "encode_inline_n 仅用于短串(<=8B)");
         if constexpr (N == 0)
@@ -172,7 +172,7 @@ public:
 
     // 轻量编码 (短串专用): 返回 inline 值, 不构造对象
     // n 必须 <= 8
-    [[nodiscard]] FORCE_INLINE static uint64_t encode_inline(const char* data, size_t n) noexcept
+    [[nodiscard]] LCF_FORCE_INLINE static uint64_t encode_inline(const char* data, size_t n) noexcept
     {
         switch (n)
         {
@@ -192,7 +192,7 @@ public:
     }
 
     // 编码并比较: 避免构造中间 code_value, 直接比较字符串与 this
-    [[nodiscard]] FORCE_INLINE bool encode_equals(const char* data, size_t n) const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE bool encode_equals(const char* data, size_t n) const noexcept
     {
         if (n != string_length_)
         {
@@ -220,7 +220,7 @@ public:
     }
 
     // 无冲突比较: 短串比较 inline_value_, 长串先比较前8字节再 memcmp 余下
-    [[nodiscard]] FORCE_INLINE bool equals(const code_value& other) const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE bool equals(const code_value& other) const noexcept
     {
         if (string_length_ != other.string_length_)
         {
@@ -245,14 +245,14 @@ public:
     }
 
     // 严格比较: 与 equals 语义相同 (均已无碰撞), 保留供语义明确场景使用
-    [[nodiscard]] FORCE_INLINE bool equals_strict(const code_value& other) const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE bool equals_strict(const code_value& other) const noexcept
     {
         return equals(other);
     }
 
 private:
     // 计算 heap_array_ 占用的字节数 (用于 deallocate 大小提示)
-    [[nodiscard]] FORCE_INLINE size_t allocator_byte_size_() const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE size_t allocator_byte_size_() const noexcept
     {
         return (string_length_ + 7) & ~static_cast<size_t>(7);
     }
@@ -263,12 +263,12 @@ private:
 };
 
 // 统一入口: 接受 utf8_view (可从 const char*/string_view/string 隐式构造)
-[[nodiscard]] FORCE_INLINE code_value encode(const utf8_view& s) noexcept
+[[nodiscard]] LCF_FORCE_INLINE code_value encode(const utf8_view& s) noexcept
 {
     return code_value(s);
 }
 
-[[nodiscard]] FORCE_INLINE bool equals(const code_value& a, const code_value& b) noexcept
+[[nodiscard]] LCF_FORCE_INLINE bool equals(const code_value& a, const code_value& b) noexcept
 {
     return a.equals(b);
 }

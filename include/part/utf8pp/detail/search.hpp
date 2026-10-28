@@ -140,7 +140,7 @@
     }
 
     // 热路径: 单基本块 (uniform=3 + pos=0), 冷路径委派 find_slow
-    [[nodiscard]] FORCE_INLINE size_t find(const utf8pp& str, size_t pos = 0) const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE size_t find(const utf8pp& str, size_t pos = 0) const noexcept
     {
         // 热路径: uniform=3 + pos=0
         if (pos == 0 && uniform_byte_len_ == 3) [[likely]]
@@ -172,7 +172,7 @@
         return find_slow(str, pos);
     }
 
-    [[nodiscard]] FORCE_INLINE size_t find(const char* s, size_t pos = 0) const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE size_t find(const char* s, size_t pos = 0) const noexcept
     {
         if (!s) return npos;
         // 纯 ASCII 快速路径

@@ -18,7 +18,7 @@ namespace unicode_data {
 // 范围: [start, end], 表项按 start 升序排列
 // 返回: 找到返回 true, 否则 false
 // ============================================================================
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 bool range_lookup(const uint32_t* table, size_t count, uint32_t cp) noexcept
 {
     // 表布局: {start1,end1, start2,end2, ...}, count 为表项数 (pair 数)
@@ -48,7 +48,7 @@ struct case_map_entry
 };
 
 // 二分查找单点映射
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 const case_map_entry* case_map_lookup(const case_map_entry* table, size_t count, uint32_t cp) noexcept
 {
     size_t lo = 0, hi = count;
@@ -82,7 +82,7 @@ struct case_range_map
     uint32_t pair_dist;    // 0 = 单一范围; >0 = 交替配对 (距离)
 };
 
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 const case_range_map* case_range_lookup(const case_range_map* table, size_t count, uint32_t cp) noexcept
 {
     size_t lo = 0, hi = count;
@@ -1018,7 +1018,7 @@ constexpr size_t k_case_special_count = sizeof(k_case_special) / sizeof(case_map
 // ============================================================================
 // 空白字符 Unicode (White_Space = Yes)
 // ============================================================================
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 bool is_unicode_space(uint32_t cp) noexcept
 {
     // 空白 ASCII whitespace
@@ -1080,14 +1080,14 @@ inline constexpr uint32_t k_wide_ranges[] = {
 constexpr size_t k_wide_range_count = sizeof(k_wide_ranges) / (sizeof(uint32_t) * 2);
 
 // 全角字符 (Wide) → 显示宽度 2
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 bool is_wide(uint32_t cp) noexcept
 {
     return range_lookup(k_wide_ranges, k_wide_range_count, cp);
 }
 
 // 零宽字符 (Zero Width) → 显示宽度 0
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 bool is_zero_width(uint32_t cp) noexcept
 {
     // 组合标记 (Mn/Me) 零宽
@@ -1131,7 +1131,7 @@ bool is_zero_width(uint32_t cp) noexcept
 }
 
 // 计算码点的显示宽度 (0/1/2)
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 int cp_display_width(uint32_t cp) noexcept
 {
     if (is_zero_width(cp)) return 0;
@@ -1143,7 +1143,7 @@ int cp_display_width(uint32_t cp) noexcept
 // 组合标记判断 (用于字形簇 UAX #29)
 // 标记 Mn (Nonspacing Mark) / Me (Enclosing Mark) 范围
 // ============================================================================
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 bool is_combining_mark(uint32_t cp) noexcept
 {
     // 简化范围 (覆盖主要 Mn/Me 范围)
@@ -1176,7 +1176,7 @@ bool is_combining_mark(uint32_t cp) noexcept
 }
 
 // 扩展图像 Extended_Pictographic (用于 ZWJ 序列判断)
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 bool is_extended_pictographic(uint32_t cp) noexcept
 {
     // 表情 Emoji 主要范围
@@ -1193,7 +1193,7 @@ bool is_extended_pictographic(uint32_t cp) noexcept
 // ============================================================================
 // 字符分类查询入口
 // ============================================================================
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 bool is_alpha_cp(uint32_t cp) noexcept
 {
     // 纯 ASCII 快速路径
@@ -1204,7 +1204,7 @@ bool is_alpha_cp(uint32_t cp) noexcept
     return range_lookup(k_alpha_ranges, k_alpha_range_count, cp);
 }
 
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 bool is_digit_cp(uint32_t cp) noexcept
 {
     // 纯 ASCII 快速路径
@@ -1212,7 +1212,7 @@ bool is_digit_cp(uint32_t cp) noexcept
     return range_lookup(k_digit_ranges, k_digit_range_count, cp);
 }
 
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 bool is_lower_cp(uint32_t cp) noexcept
 {
     // 纯 ASCII 快速路径
@@ -1220,7 +1220,7 @@ bool is_lower_cp(uint32_t cp) noexcept
     return range_lookup(k_lower_ranges, k_lower_range_count, cp);
 }
 
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 bool is_upper_cp(uint32_t cp) noexcept
 {
     // 纯 ASCII 快速路径
@@ -1228,7 +1228,7 @@ bool is_upper_cp(uint32_t cp) noexcept
     return range_lookup(k_upper_ranges, k_upper_range_count, cp);
 }
 
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 bool is_alnum_cp(uint32_t cp) noexcept
 {
     // 纯 ASCII 快速路径
@@ -1244,7 +1244,7 @@ bool is_alnum_cp(uint32_t cp) noexcept
 // ============================================================================
 // 大小写转换查询入口
 // ============================================================================
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 uint32_t to_lower_cp(uint32_t cp) noexcept
 {
     // 纯 ASCII 快速路径: A-Z → a-z
@@ -1270,7 +1270,7 @@ uint32_t to_lower_cp(uint32_t cp) noexcept
     return cp;
 }
 
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 uint32_t to_upper_cp(uint32_t cp) noexcept
 {
     // 纯 ASCII 快速路径: a-z → A-Z
@@ -1294,7 +1294,7 @@ uint32_t to_upper_cp(uint32_t cp) noexcept
     return cp;
 }
 
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 uint32_t to_title_cp(uint32_t cp) noexcept
 {
     if (const auto* e = case_map_lookup(k_case_special, k_case_special_count, cp))
@@ -3424,7 +3424,7 @@ constexpr size_t k_nfc_decompose_count = sizeof(k_nfc_decompose) / sizeof(nfc_co
 
 // 查询: 给定 base 和 combining, 返回预组合码点 (不存在返回 0)
 // 表已按 base 升序 (同 base 内 combining 升序), 两次二分: 先定位 base 区间, 再在区间内查 combining
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 uint32_t nfc_compose_lookup(uint32_t base, uint32_t combining) noexcept
 {
     // 二分查找 base 的下界 (首个 >= base 的项)
@@ -3448,7 +3448,7 @@ uint32_t nfc_compose_lookup(uint32_t base, uint32_t combining) noexcept
 // 查询: 给定预组合码点, 返回其 (base, combining) 分解 (不存在返回 false)
 // 表 k_nfc_decompose 已按 composed 升序, 直接二分
 // (全量 UCD 表中, 同 base 条目在 composed 排序下不连续, 故独立一份按 composed 排序的表)
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 bool nfc_decompose_lookup(uint32_t composed, uint32_t& base, uint32_t& combining) noexcept
 {
     size_t lo = 0, hi = k_nfc_decompose_count;
@@ -3874,7 +3874,7 @@ inline constexpr ccc_range k_ccc_ranges[] = {
 constexpr size_t k_ccc_range_count = sizeof(k_ccc_ranges) / sizeof(ccc_range);
 
 // 查询: 给定码点, 返回其 CCC (0 表示基础字符或不在表中, 默认 0)
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 uint8_t canonical_combining_class(uint32_t cp) noexcept
 {
     size_t lo = 0, hi = k_ccc_range_count;
@@ -4859,7 +4859,7 @@ constexpr size_t k_script_range_count = sizeof(k_script_ranges) / sizeof(script_
 // 注意: 表项可能重叠 (inherited/common 与具体脚本范围), 故按"先具体后通用"顺序遍历匹配
 // 表已按"具体脚本在前, common/inherited 在后"排列, 故线性返回首个命中即可
 // 优化: ASCII fast-path (覆盖最常见的 Latin/数字/标点), 非 ASCII 才查表
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 script script_of(uint32_t cp) noexcept
 {
     // 纯 ASCII fast-path: A-Z/a-z → latin, 数字/标点 → common, 控制字符 → unknown
@@ -4879,7 +4879,7 @@ script script_of(uint32_t cp) noexcept
 }
 
 // 查询: 给定码点是否属于指定脚本
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 bool is_script(uint32_t cp, script sc) noexcept
 {
     return script_of(cp) == sc;
@@ -4901,7 +4901,7 @@ inline constexpr uint32_t HANGUL_N_COUNT = HANGUL_V_COUNT * HANGUL_T_COUNT; // 5
 inline constexpr uint32_t HANGUL_S_COUNT = HANGUL_L_COUNT * HANGUL_N_COUNT; // 11172
 
 // 判断是否为预组合 Hangul 音节
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 bool is_hangul_syllable(uint32_t cp) noexcept
 {
     return cp >= HANGUL_S_BASE && cp < HANGUL_S_BASE + HANGUL_S_COUNT;
@@ -4909,7 +4909,7 @@ bool is_hangul_syllable(uint32_t cp) noexcept
 
 // 分解 Hangul 音节 → L + V [+ T]
 // 返回: 分解后码点数 (0=非音节; 2=LV; 3=LVT)
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 uint32_t hangul_decompose(uint32_t cp, uint32_t out[3]) noexcept
 {
     if (cp < HANGUL_S_BASE || cp >= HANGUL_S_BASE + HANGUL_S_COUNT) return 0;
@@ -4927,7 +4927,7 @@ uint32_t hangul_decompose(uint32_t cp, uint32_t out[3]) noexcept
 
 // 组合两个码点为 Hangul 音节 (L+V → LV, 或 LV+T → LVT)
 // 返回: 组合后码点 (0 = 不可组合)
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 uint32_t hangul_compose(uint32_t a, uint32_t b) noexcept
 {
     // 组合 L + V → LV
@@ -7339,7 +7339,7 @@ constexpr size_t k_nfkd_table_count = sizeof(k_nfkd_table) / sizeof(nfkd_entry);
 
 // 查表 NFKD (不含全角 ASCII 算法处理部分)
 // 返回: 找到返回 true, out_len/out[4] 输出分解; 否则 false
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 bool nfkd_lookup(uint32_t cp, uint32_t out[4], uint8_t& out_len) noexcept
 {
     size_t lo = 0, hi = k_nfkd_table_count;
@@ -7363,7 +7363,7 @@ bool nfkd_lookup(uint32_t cp, uint32_t out[4], uint8_t& out_len) noexcept
 
 // 全角 ASCII / 全角空格算法分解 NFKD (FF01..FF5E, 3000)
 // 返回: true 表示是全角 ASCII 并已分解
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 bool nfkd_fullwidth_decompose(uint32_t cp, uint32_t& out) noexcept
 {
     if (cp >= 0xFF01 && cp <= 0xFF5E)
@@ -7380,7 +7380,7 @@ bool nfkd_fullwidth_decompose(uint32_t cp, uint32_t& out) noexcept
 }
 
 // 判断码点是否需要 NFKD 分解 (用于快速跳过)
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 bool needs_nfkd_decompose(uint32_t cp) noexcept
 {
     if (cp >= 0xFF01 && cp <= 0xFF9F) return true;

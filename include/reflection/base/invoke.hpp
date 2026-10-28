@@ -297,7 +297,7 @@ struct sfn_ptr_invoker<R(*)(Args...) noexcept> {
 
 // 返回类型 id
 template<typename R>
-FORCE_INLINE int return_type_id() noexcept {
+LCF_FORCE_INLINE int return_type_id() noexcept {
     if constexpr (std::is_void_v<R>) { return -1; }
     else { return type_id::get_type_id<std::decay_t<R>>(); }
 }

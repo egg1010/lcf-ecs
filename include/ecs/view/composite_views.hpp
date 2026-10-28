@@ -12,7 +12,7 @@
         bool use_mask_path_{false};
 
 
-        [[nodiscard]] NOINLINE bool is_excluded(uint32_t idx) const noexcept
+        [[nodiscard]] LCF_NOINLINE bool is_excluded(uint32_t idx) const noexcept
         {
             if (use_mask_path_) [[likely]]
             {

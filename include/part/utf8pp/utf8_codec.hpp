@@ -49,7 +49,7 @@ inline constexpr uint8_t k_utf8_seq_len[256] = {
 }
 
 // 单码点解码
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 bool utf8_decode_one(const uint8_t* p, const uint8_t* end,
                      uint32_t* out_cp, size_t* out_len) noexcept
 {
@@ -109,7 +109,7 @@ bool utf8_decode_one(const uint8_t* p, const uint8_t* end,
 
 // 无校验快速解码: 仅查表+位移, 不校验 continuation/codepoint/shortest_form
 // 用于已确认合法 UTF-8 的遍历路径
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 char32_t utf8_decode_unchecked(const uint8_t* p) noexcept
 {
     uint8_t lead = *p;
@@ -139,7 +139,7 @@ char32_t utf8_decode_unchecked(const uint8_t* p) noexcept
 }
 
 // 单码点编码
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 bool utf8_encode_one(uint32_t cp, uint8_t* buf, size_t* out_len) noexcept
 {
     if (cp >= 0x80) [[unlikely]]
@@ -176,7 +176,7 @@ bool utf8_encode_one(uint32_t cp, uint8_t* buf, size_t* out_len) noexcept
 
 // 指令集 SSE2 码点计数: 统计非 continuation 字节 (= 码点数)
 #if LCF_UTF8_HAS_SSE2
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 size_t count_codepoints(const uint8_t* p, const uint8_t* end) noexcept
 {
     size_t count = 0;
@@ -230,7 +230,7 @@ size_t count_codepoints(const uint8_t* p, const uint8_t* end) noexcept
 }
 #else
 // 算法 SWAR 码点计数 (ARM64 标量回退): 统计非 continuation 字节
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 size_t count_codepoints(const uint8_t* p, const uint8_t* end) noexcept
 {
     size_t count = 0;
@@ -275,7 +275,7 @@ size_t count_codepoints(const uint8_t* p, const uint8_t* end) noexcept
 
 // 指令集 SSE2 码点计数 + ASCII 检测
 #if LCF_UTF8_HAS_SSE2
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 size_t count_codepoints_and_ascii(const uint8_t* p, const uint8_t* end, bool& all_ascii) noexcept
 {
     size_t count = 0;
@@ -349,7 +349,7 @@ size_t count_codepoints_and_ascii(const uint8_t* p, const uint8_t* end, bool& al
 
 // 融合扫描+拷贝: 单次遍历完成码点计数 + ASCII 检测 + 拷贝
 #if LCF_UTF8_HAS_SSE2
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 size_t fused_count_copy_and_ascii(const uint8_t* src, uint8_t* dst, size_t len, bool& all_ascii) noexcept
 {
     size_t count = 0;
@@ -437,7 +437,7 @@ size_t fused_count_copy_and_ascii(const uint8_t* src, uint8_t* dst, size_t len, 
     return count;
 }
 #else
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 size_t fused_count_copy_and_ascii(const uint8_t* src, uint8_t* dst, size_t len, bool& all_ascii) noexcept
 {
     size_t count = 0;
@@ -509,7 +509,7 @@ size_t fused_count_copy_and_ascii(const uint8_t* src, uint8_t* dst, size_t len, 
 }
 #endif
 #else
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 size_t count_codepoints_and_ascii(const uint8_t* p, const uint8_t* end, bool& all_ascii) noexcept
 {
     size_t count = 0;
@@ -572,7 +572,7 @@ size_t count_codepoints_and_ascii(const uint8_t* p, const uint8_t* end, bool& al
 }
 #endif
 
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 const uint8_t* advance_codepoint(const uint8_t* p, const uint8_t* end) noexcept
 {
     if (p >= end) return end;
@@ -584,7 +584,7 @@ const uint8_t* advance_codepoint(const uint8_t* p, const uint8_t* end) noexcept
 }
 
 // 批量前进 n 个码点
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 const uint8_t* advance_codepoints(const uint8_t* p, const uint8_t* end, size_t n) noexcept
 {
     while (n > 0 && p < end)
@@ -628,7 +628,7 @@ const uint8_t* advance_codepoints(const uint8_t* p, const uint8_t* end, size_t n
     return p;
 }
 
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 const uint8_t* retreat_codepoint(const uint8_t* begin, const uint8_t* p) noexcept
 {
     if (p <= begin) return begin;
@@ -642,20 +642,20 @@ const uint8_t* retreat_codepoint(const uint8_t* begin, const uint8_t* p) noexcep
 
 // === 编解码函数 (对外导出) ===
 
-[[nodiscard]] constexpr FORCE_INLINE
+[[nodiscard]] constexpr LCF_FORCE_INLINE
 char32_t to_char(uint32_t cp) noexcept
 {
     return static_cast<char32_t>(cp);
 }
 
-[[nodiscard]] constexpr FORCE_INLINE
+[[nodiscard]] constexpr LCF_FORCE_INLINE
 uint32_t to_int(char32_t ch) noexcept
 {
     return static_cast<uint32_t>(ch);
 }
 
 // 解码 UTF-8 → 码点数组
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 size_t utf8_to_codepoints(const char* __restrict src, size_t src_len,
                            uint32_t* __restrict out, size_t out_cap,
                            bool* out_has_err = nullptr) noexcept
@@ -707,7 +707,7 @@ size_t utf8_to_codepoints(const char* __restrict src, size_t src_len,
     return count;
 }
 
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 size_t codepoints_to_char32(const uint32_t* cps, size_t cp_count,
                              char32_t* __restrict out, size_t out_cap,
                              bool* out_has_err = nullptr) noexcept
@@ -728,7 +728,7 @@ size_t codepoints_to_char32(const uint32_t* cps, size_t cp_count,
 }
 
 // 码点数组 → UTF-8 (批量编码)
-[[nodiscard]] FORCE_INLINE
+[[nodiscard]] LCF_FORCE_INLINE
 size_t char32_to_utf8(const char32_t* src, size_t src_len,
                        char* __restrict out, size_t out_cap,
                        bool* out_has_err = nullptr) noexcept

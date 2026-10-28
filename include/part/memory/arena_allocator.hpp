@@ -123,12 +123,12 @@ public:
     }
 
     // === 分配 ===
-    [[nodiscard]] FORCE_INLINE void* acquire(size_t bytes) noexcept
+    [[nodiscard]] LCF_FORCE_INLINE void* acquire(size_t bytes) noexcept
     {
         return acquire_aligned(bytes, base_alignment);
     }
 
-    [[nodiscard]] FORCE_INLINE void* acquire(
+    [[nodiscard]] LCF_FORCE_INLINE void* acquire(
         size_t bytes, operating_message& error,
         std::source_location site = std::source_location::current()) noexcept
     {
@@ -140,7 +140,7 @@ public:
         return p;
     }
 
-    [[nodiscard]] FORCE_INLINE void* acquire_zeroed(size_t bytes) noexcept
+    [[nodiscard]] LCF_FORCE_INLINE void* acquire_zeroed(size_t bytes) noexcept
     {
         void* p = acquire(bytes);
         if (p) [[likely]]
@@ -192,7 +192,7 @@ public:
     }
 
     template <typename T, typename... Args>
-    [[nodiscard]] FORCE_INLINE T* create(Args&&... args) noexcept
+    [[nodiscard]] LCF_FORCE_INLINE T* create(Args&&... args) noexcept
     {
         void* ptr = acquire_aligned(sizeof(T), alignof(T));
         if (!ptr) [[unlikely]]
@@ -223,7 +223,7 @@ public:
     }
 
     template <typename T>
-    FORCE_INLINE void dispose(T* ptr) noexcept
+    LCF_FORCE_INLINE void dispose(T* ptr) noexcept
     {
         if (ptr) [[likely]]
         {
@@ -232,7 +232,7 @@ public:
     }
 
     template <typename T>
-    FORCE_INLINE void dispose_array(T* ptr, size_t count) noexcept
+    LCF_FORCE_INLINE void dispose_array(T* ptr, size_t count) noexcept
     {
         if (ptr)
         {
@@ -282,13 +282,13 @@ public:
         peak_live_bytes_ = live_bytes_;
     }
 
-    [[nodiscard]] FORCE_INLINE size_t save_point() const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE size_t save_point() const noexcept
     {
         return cursor_ ? static_cast<size_t>(cursor_ - base_) : 0;
     }
 
     // 恢复到保存的分配点 (子作用域回收)
-    FORCE_INLINE void restore(size_t point) noexcept
+    LCF_FORCE_INLINE void restore(size_t point) noexcept
     {
         if (!cursor_) [[unlikely]]
         {
@@ -322,7 +322,7 @@ public:
     }
 
     // 整体回收, 不调用析构, 不归还底层内存
-    FORCE_INLINE void reset() noexcept
+    LCF_FORCE_INLINE void reset() noexcept
     {
         cursor_ = base_;
         allocations_.clear();
@@ -396,13 +396,13 @@ public:
         arenas_[current_].reset();
     }
 
-    [[nodiscard]] FORCE_INLINE arena_allocator& current() noexcept
+    [[nodiscard]] LCF_FORCE_INLINE arena_allocator& current() noexcept
     {
         return arenas_[current_];
     }
 
     // 上一帧 (读取侧, 渲染线程仍在用)
-    [[nodiscard]] FORCE_INLINE arena_allocator& previous() noexcept
+    [[nodiscard]] LCF_FORCE_INLINE arena_allocator& previous() noexcept
     {
         return arenas_[current_ ^ 1];
     }

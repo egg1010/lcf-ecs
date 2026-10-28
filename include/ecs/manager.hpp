@@ -295,7 +295,7 @@ public:
     manager& operator=(manager const&) = delete;
 
     template <typename T>
-    FORCE_INLINE bool add_impl(entity entitys, T&& component, operating_message& error) noexcept
+    LCF_FORCE_INLINE bool add_impl(entity entitys, T&& component, operating_message& error) noexcept
     {
         using DecayedT = std::decay_t<T>;
         int type_id = type_id::get_type_id<DecayedT>();
@@ -383,7 +383,7 @@ public:
     }
 
     template <IsEntity EE, typename T>
-    FORCE_INLINE bool add_impl(T&& component, EE entitys, operating_message& error) noexcept
+    LCF_FORCE_INLINE bool add_impl(T&& component, EE entitys, operating_message& error) noexcept
     {
         return add(entitys, std::forward<T>(component), error);
     }
@@ -547,7 +547,7 @@ public:
     }
 
     template <typename T>
-    FORCE_INLINE bool soft_remove_impl(entity entitys, operating_message& error) noexcept
+    LCF_FORCE_INLINE bool soft_remove_impl(entity entitys, operating_message& error) noexcept
     {
         single_class_set* set = get_single_class_set<T>();
         if (!set)
@@ -774,7 +774,7 @@ public:
     // === 错误对象返回值形态 ===
 
     template <typename T>
-    FORCE_INLINE operating_message add_component_without_message(entity entitys, T&& component) noexcept
+    LCF_FORCE_INLINE operating_message add_component_without_message(entity entitys, T&& component) noexcept
     {
         operating_message error;
         (void)add_component_without_message_impl(entitys, std::forward<T>(component), error);
@@ -782,7 +782,7 @@ public:
     }
 
     template <typename T>
-    FORCE_INLINE operating_message add(entity entitys, T&& component) noexcept
+    LCF_FORCE_INLINE operating_message add(entity entitys, T&& component) noexcept
     {
         operating_message error;
         (void)add_impl(entitys, std::forward<T>(component), error);
@@ -790,7 +790,7 @@ public:
     }
 
     template <IsEntity EE, typename T>
-    FORCE_INLINE operating_message add(T&& component, EE entitys) noexcept
+    LCF_FORCE_INLINE operating_message add(T&& component, EE entitys) noexcept
     {
         operating_message error;
         (void)add_impl(entitys, std::forward<T>(component), error);
@@ -798,7 +798,7 @@ public:
     }
 
     template <typename T>
-    FORCE_INLINE operating_message add_batch(std::span<const entity> entities,
+    LCF_FORCE_INLINE operating_message add_batch(std::span<const entity> entities,
                                 std::span<const T> components) noexcept
     {
         operating_message error;
@@ -807,7 +807,7 @@ public:
     }
 
     template <typename T>
-    FORCE_INLINE operating_message add_batch(const dense<entity>& entities, const dense<T>& components) noexcept
+    LCF_FORCE_INLINE operating_message add_batch(const dense<entity>& entities, const dense<T>& components) noexcept
     {
         operating_message error;
         (void)add_batch_impl(entities, components, error);
@@ -815,7 +815,7 @@ public:
     }
 
     template <typename T>
-    FORCE_INLINE operating_message add_batch(const entity* entities, const T* components, size_t count) noexcept
+    LCF_FORCE_INLINE operating_message add_batch(const entity* entities, const T* components, size_t count) noexcept
     {
         operating_message error;
         (void)add_batch_impl(entities, components, count, error);
@@ -823,7 +823,7 @@ public:
     }
 
     template <typename T>
-    FORCE_INLINE operating_message soft_remove(entity entitys) noexcept
+    LCF_FORCE_INLINE operating_message soft_remove(entity entitys) noexcept
     {
         operating_message error;
         (void)this->template soft_remove_impl<T>(entitys, error);
@@ -831,49 +831,49 @@ public:
     }
 
     template <typename T>
-    FORCE_INLINE operating_message hard_remove(entity entitys) noexcept
+    LCF_FORCE_INLINE operating_message hard_remove(entity entitys) noexcept
     {
         operating_message error;
         (void)this->template hard_remove_impl<T>(entitys, error);
         return error;
     }
 
-    FORCE_INLINE operating_message add_def(entity entitys, int def_id, const void* data) noexcept
+    LCF_FORCE_INLINE operating_message add_def(entity entitys, int def_id, const void* data) noexcept
     {
         operating_message error;
         (void)add_def_impl(entitys, def_id, data, error);
         return error;
     }
 
-    FORCE_INLINE operating_message add_def(entity entitys, std::string_view name, const void* data) noexcept
+    LCF_FORCE_INLINE operating_message add_def(entity entitys, std::string_view name, const void* data) noexcept
     {
         operating_message error;
         (void)add_def_impl(entitys, name, data, error);
         return error;
     }
 
-    FORCE_INLINE operating_message hard_remove_def(entity entitys, int def_id) noexcept
+    LCF_FORCE_INLINE operating_message hard_remove_def(entity entitys, int def_id) noexcept
     {
         operating_message error;
         (void)hard_remove_def_impl(entitys, def_id, error);
         return error;
     }
 
-    FORCE_INLINE operating_message hard_remove_def(entity entitys, std::string_view name) noexcept
+    LCF_FORCE_INLINE operating_message hard_remove_def(entity entitys, std::string_view name) noexcept
     {
         operating_message error;
         (void)hard_remove_def_impl(entitys, name, error);
         return error;
     }
 
-    FORCE_INLINE operating_message soft_remove_def(entity entitys, int def_id) noexcept
+    LCF_FORCE_INLINE operating_message soft_remove_def(entity entitys, int def_id) noexcept
     {
         operating_message error;
         (void)soft_remove_def_impl(entitys, def_id, error);
         return error;
     }
 
-    FORCE_INLINE operating_message soft_remove_def(entity entitys, std::string_view name) noexcept
+    LCF_FORCE_INLINE operating_message soft_remove_def(entity entitys, std::string_view name) noexcept
     {
         operating_message error;
         (void)soft_remove_def_impl(entitys, name, error);

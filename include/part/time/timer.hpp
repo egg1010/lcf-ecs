@@ -10,23 +10,23 @@
     #define TIME_HAS_RDTSC 1
     #if defined(_MSC_VER)
         #include <intrin.h>
-        FORCE_INLINE uint64_t rdtsc() noexcept
+        LCF_FORCE_INLINE uint64_t rdtsc() noexcept
         {
             return __rdtsc();
         }
-        FORCE_INLINE uint64_t rdtscp() noexcept
+        LCF_FORCE_INLINE uint64_t rdtscp() noexcept
         {
             unsigned aux;
             return __rdtscp(&aux);
         }
     #elif defined(__GNUC__) || defined(__clang__)
-        FORCE_INLINE uint64_t rdtsc() noexcept
+        LCF_FORCE_INLINE uint64_t rdtsc() noexcept
         {
             uint32_t lo, hi;
             __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
             return (static_cast<uint64_t>(hi) << 32) | lo;
         }
-        FORCE_INLINE uint64_t rdtscp() noexcept
+        LCF_FORCE_INLINE uint64_t rdtscp() noexcept
         {
             uint32_t lo, hi, aux;
             __asm__ __volatile__("rdtscp" : "=a"(lo), "=d"(hi), "=c"(aux));
@@ -35,8 +35,8 @@
     #endif
 #else
     #define TIME_HAS_RDTSC 0
-    FORCE_INLINE uint64_t rdtsc() noexcept { return 0; }
-    FORCE_INLINE uint64_t rdtscp() noexcept { return 0; }
+    LCF_FORCE_INLINE uint64_t rdtsc() noexcept { return 0; }
+    LCF_FORCE_INLINE uint64_t rdtscp() noexcept { return 0; }
 #endif
 
 // =============================================================================

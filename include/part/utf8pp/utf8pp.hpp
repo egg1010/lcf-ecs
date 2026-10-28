@@ -32,15 +32,15 @@
 
 inline memory::layered_allocator utf8pp_pool_{};
 
-[[nodiscard]] FORCE_INLINE void* utf8pp_alloc(size_t n) noexcept { return utf8pp_pool_.acquire(n); }
+[[nodiscard]] LCF_FORCE_INLINE void* utf8pp_alloc(size_t n) noexcept { return utf8pp_pool_.acquire(n); }
 
-FORCE_INLINE void utf8pp_free(void* p, size_t /*n*/) noexcept { (void)utf8pp_pool_.soft_delete(p); }
+LCF_FORCE_INLINE void utf8pp_free(void* p, size_t /*n*/) noexcept { (void)utf8pp_pool_.soft_delete(p); }
 
-FORCE_INLINE void utf8pp_free(void* p) noexcept { (void)utf8pp_pool_.soft_delete(p); }
+LCF_FORCE_INLINE void utf8pp_free(void* p) noexcept { (void)utf8pp_pool_.soft_delete(p); }
 #else
-[[nodiscard]] FORCE_INLINE void* utf8pp_alloc(size_t n) noexcept { return std::malloc(n); }
-FORCE_INLINE void utf8pp_free(void* p) noexcept { return std::free(p); }
-FORCE_INLINE void utf8pp_free(void* p, size_t /*n*/) noexcept { return std::free(p); }
+[[nodiscard]] LCF_FORCE_INLINE void* utf8pp_alloc(size_t n) noexcept { return std::malloc(n); }
+LCF_FORCE_INLINE void utf8pp_free(void* p) noexcept { return std::free(p); }
+LCF_FORCE_INLINE void utf8pp_free(void* p, size_t /*n*/) noexcept { return std::free(p); }
 #endif
 
 class utf8pp

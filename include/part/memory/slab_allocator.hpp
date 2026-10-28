@@ -344,7 +344,7 @@ public:
     }
 
     // === 分配 ===
-    [[nodiscard]] FORCE_INLINE void* acquire(
+    [[nodiscard]] LCF_FORCE_INLINE void* acquire(
         operating_message& error,
         std::source_location site = std::source_location::current()) noexcept
     {
@@ -356,7 +356,7 @@ public:
         return p;
     }
 
-    [[nodiscard]] FORCE_INLINE void* acquire() noexcept
+    [[nodiscard]] LCF_FORCE_INLINE void* acquire() noexcept
     {
         if (!free_list_head_) [[unlikely]]
         {
@@ -384,7 +384,7 @@ public:
     }
 
     template <size_t Size>
-    [[nodiscard]] FORCE_INLINE void* acquire_sized() noexcept
+    [[nodiscard]] LCF_FORCE_INLINE void* acquire_sized() noexcept
     {
         static_assert(Size > 0, "acquire_sized<Size> requires Size > 0");
         if (Size > block_size_) [[unlikely]]
@@ -394,7 +394,7 @@ public:
         return acquire();
     }
 
-    [[nodiscard]] FORCE_INLINE void* acquire_zeroed() noexcept
+    [[nodiscard]] LCF_FORCE_INLINE void* acquire_zeroed() noexcept
     {
         void* p = acquire();
         if (p) [[likely]]
@@ -405,7 +405,7 @@ public:
     }
 
     template <typename T, typename... Args>
-    [[nodiscard]] FORCE_INLINE T* create(Args&&... args) noexcept
+    [[nodiscard]] LCF_FORCE_INLINE T* create(Args&&... args) noexcept
     {
         if (sizeof(T) > block_size_ || alignof(T) > block_alignment(block_size_)) [[unlikely]]
         {
@@ -420,18 +420,18 @@ public:
     }
 
     // === 释放: 软删除与硬删除等价 ===
-    FORCE_INLINE bool soft_delete(void* ptr) noexcept
+    LCF_FORCE_INLINE bool soft_delete(void* ptr) noexcept
     {
         return release_impl(ptr, false);
     }
 
-    FORCE_INLINE bool hard_delete(void* ptr) noexcept
+    LCF_FORCE_INLINE bool hard_delete(void* ptr) noexcept
     {
         return release_impl(ptr, true);
     }
 
     template <size_t Size>
-    FORCE_INLINE bool soft_delete_sized(void* ptr) noexcept
+    LCF_FORCE_INLINE bool soft_delete_sized(void* ptr) noexcept
     {
         static_assert(Size > 0, "soft_delete_sized<Size> requires Size > 0");
         if (Size > block_size_) [[unlikely]]
@@ -442,7 +442,7 @@ public:
     }
 
     template <size_t Size>
-    FORCE_INLINE bool hard_delete_sized(void* ptr) noexcept
+    LCF_FORCE_INLINE bool hard_delete_sized(void* ptr) noexcept
     {
         static_assert(Size > 0, "hard_delete_sized<Size> requires Size > 0");
         if (Size > block_size_) [[unlikely]]
@@ -477,7 +477,7 @@ public:
     }
 
     template <typename T>
-    FORCE_INLINE void dispose(T* ptr) noexcept
+    LCF_FORCE_INLINE void dispose(T* ptr) noexcept
     {
         if (ptr) [[likely]]
         {

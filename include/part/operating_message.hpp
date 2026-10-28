@@ -274,7 +274,7 @@ public:
     }
 
     template <typename... Args>
-    FORCE_INLINE operating_message& write(bool success, Args&&... args) noexcept
+    LCF_FORCE_INLINE operating_message& write(bool success, Args&&... args) noexcept
     {
         if (success || !ok())
         {
@@ -291,7 +291,7 @@ public:
     }
 
     template <typename... Args>
-    FORCE_INLINE operating_message& write(Args&&... args) noexcept
+    LCF_FORCE_INLINE operating_message& write(Args&&... args) noexcept
     {
         uint32_t parsed_code = 0u;
         msg_level parsed_level = msg_level::error;
@@ -305,7 +305,7 @@ public:
     }
 
     template <typename... Args>
-    [[nodiscard]] FORCE_INLINE bool check(bool cond, Args&&... args) noexcept
+    [[nodiscard]] LCF_FORCE_INLINE bool check(bool cond, Args&&... args) noexcept
     {
         if (!cond)
         {
@@ -340,20 +340,20 @@ private:
     static constexpr uint32_t code_mask = 0x3FFFu;
     static constexpr uint32_t level_shift = 14u;
 
-    FORCE_INLINE static void scan_one_(const msg::code_tag& tag, uint32_t& code,
+    LCF_FORCE_INLINE static void scan_one_(const msg::code_tag& tag, uint32_t& code,
                                        msg_level&) noexcept
     {
         code = tag.code;
     }
 
-    FORCE_INLINE static void scan_one_(const msg::level_tag& tag, uint32_t&,
+    LCF_FORCE_INLINE static void scan_one_(const msg::level_tag& tag, uint32_t&,
                                        msg_level& level) noexcept
     {
         level = tag.lv;
     }
 
     template <typename T>
-    FORCE_INLINE static void scan_one_(const T&, uint32_t&, msg_level&) noexcept
+    LCF_FORCE_INLINE static void scan_one_(const T&, uint32_t&, msg_level&) noexcept
     {
     }
 
@@ -402,7 +402,7 @@ namespace msg
         }
     }
 
-    [[noreturn]] FORCE_INLINE void debug_break() noexcept
+    [[noreturn]] LCF_FORCE_INLINE void debug_break() noexcept
     {
 #if defined(_MSC_VER)
         __debugbreak();

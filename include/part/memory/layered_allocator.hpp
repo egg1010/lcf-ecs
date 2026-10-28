@@ -209,7 +209,7 @@ public:
     }
 
     // === 分配 ===
-    [[nodiscard]] FORCE_INLINE void* acquire(size_t bytes) noexcept
+    [[nodiscard]] LCF_FORCE_INLINE void* acquire(size_t bytes) noexcept
     {
         if (bytes == 0) [[unlikely]]
         {
@@ -234,7 +234,7 @@ public:
         return p;
     }
 
-    [[nodiscard]] FORCE_INLINE void* acquire(
+    [[nodiscard]] LCF_FORCE_INLINE void* acquire(
         size_t bytes, operating_message& error,
         std::source_location site = std::source_location::current()) noexcept
     {
@@ -247,7 +247,7 @@ public:
     }
 
     template <size_t Size>
-    [[nodiscard]] FORCE_INLINE void* acquire_sized() noexcept
+    [[nodiscard]] LCF_FORCE_INLINE void* acquire_sized() noexcept
     {
         static_assert(Size > 0, "acquire_sized<Size> requires Size > 0");
         if constexpr (Size <= SLAB_MAX)
@@ -270,7 +270,7 @@ public:
     }
 
     template <size_t Size>
-    [[nodiscard]] FORCE_INLINE void* acquire_sized(
+    [[nodiscard]] LCF_FORCE_INLINE void* acquire_sized(
         operating_message& error,
         std::source_location site = std::source_location::current()) noexcept
     {
@@ -282,7 +282,7 @@ public:
         return p;
     }
 
-    [[nodiscard]] FORCE_INLINE void* acquire_zeroed(size_t bytes) noexcept
+    [[nodiscard]] LCF_FORCE_INLINE void* acquire_zeroed(size_t bytes) noexcept
     {
         void* p = acquire(bytes);
         if (p) [[likely]]
@@ -322,7 +322,7 @@ public:
     }
 
     template <typename T, typename... Args>
-    [[nodiscard]] FORCE_INLINE T* create(Args&&... args) noexcept
+    [[nodiscard]] LCF_FORCE_INLINE T* create(Args&&... args) noexcept
     {
         void* ptr;
         if constexpr (alignof(T) > base_alignment)
@@ -418,7 +418,7 @@ public:
     }
 
     template <typename T>
-    FORCE_INLINE void dispose(T* ptr) noexcept
+    LCF_FORCE_INLINE void dispose(T* ptr) noexcept
     {
         if (ptr) [[likely]]
         {
@@ -427,7 +427,7 @@ public:
     }
 
     template <typename T>
-    FORCE_INLINE void dispose_array(T* ptr, size_t count) noexcept
+    LCF_FORCE_INLINE void dispose_array(T* ptr, size_t count) noexcept
     {
         if (ptr)
         {

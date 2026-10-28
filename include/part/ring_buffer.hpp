@@ -28,12 +28,12 @@ private:
     size_t count_{0};
     uint64_t dropped_{0};
 
-    [[nodiscard]] FORCE_INLINE size_t next_index(size_t i) const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE size_t next_index(size_t i) const noexcept
     {
         return (i + 1) & (CAP - 1);
     }
 
-    FORCE_INLINE void destroy_at(size_t i) noexcept
+    LCF_FORCE_INLINE void destroy_at(size_t i) noexcept
     {
         if constexpr (!std::is_trivially_destructible_v<T>)
         {
@@ -42,7 +42,7 @@ private:
     }
 
     // trivially_copyable 直接赋值避免 placement new 的副作用屏障 (否则热路径寄存器失效)
-    FORCE_INLINE void store_at(size_t i, const T& v) noexcept
+    LCF_FORCE_INLINE void store_at(size_t i, const T& v) noexcept
     {
         if constexpr (std::is_trivially_copyable_v<T>)
         {
@@ -54,7 +54,7 @@ private:
         }
     }
 
-    FORCE_INLINE void store_at(size_t i, T&& v) noexcept
+    LCF_FORCE_INLINE void store_at(size_t i, T&& v) noexcept
     {
         if constexpr (std::is_trivially_copyable_v<T>)
         {
@@ -129,7 +129,7 @@ public:
         }
     }
 
-    [[nodiscard]] FORCE_INLINE bool try_push(const T& v) noexcept
+    [[nodiscard]] LCF_FORCE_INLINE bool try_push(const T& v) noexcept
     {
         if (count_ == CAP) [[unlikely]]
         {
@@ -141,7 +141,7 @@ public:
         return true;
     }
 
-    [[nodiscard]] FORCE_INLINE bool try_push(T&& v) noexcept
+    [[nodiscard]] LCF_FORCE_INLINE bool try_push(T&& v) noexcept
     {
         if (count_ == CAP) [[unlikely]]
         {
@@ -154,7 +154,7 @@ public:
     }
 
     template <typename... Args>
-    [[nodiscard]] FORCE_INLINE T* try_emplace(Args&&... args) noexcept
+    [[nodiscard]] LCF_FORCE_INLINE T* try_emplace(Args&&... args) noexcept
     {
         if (count_ == CAP) [[unlikely]]
         {
@@ -168,7 +168,7 @@ public:
     }
 
     // 满则覆盖最旧, 返回本次覆盖条数 (0 或 1)
-    [[nodiscard]] FORCE_INLINE size_t push_overwrite(const T& v) noexcept
+    [[nodiscard]] LCF_FORCE_INLINE size_t push_overwrite(const T& v) noexcept
     {
         size_t overwritten = overwrite_oldest_if_full();
         store_at(tail_, v);
@@ -177,7 +177,7 @@ public:
         return overwritten;
     }
 
-    [[nodiscard]] FORCE_INLINE size_t push_overwrite(T&& v) noexcept
+    [[nodiscard]] LCF_FORCE_INLINE size_t push_overwrite(T&& v) noexcept
     {
         size_t overwritten = overwrite_oldest_if_full();
         store_at(tail_, std::move(v));
@@ -187,7 +187,7 @@ public:
     }
 
     template <typename... Args>
-    [[nodiscard]] FORCE_INLINE T* emplace_overwrite(Args&&... args) noexcept
+    [[nodiscard]] LCF_FORCE_INLINE T* emplace_overwrite(Args&&... args) noexcept
     {
         overwrite_oldest_if_full();
         T* slot = &slots_[tail_];
@@ -197,17 +197,17 @@ public:
         return slot;
     }
 
-    [[nodiscard]] FORCE_INLINE T* front() noexcept
+    [[nodiscard]] LCF_FORCE_INLINE T* front() noexcept
     {
         return count_ ? &slots_[head_] : nullptr;
     }
 
-    [[nodiscard]] FORCE_INLINE const T* front() const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE const T* front() const noexcept
     {
         return count_ ? &slots_[head_] : nullptr;
     }
 
-    [[nodiscard]] FORCE_INLINE bool pop() noexcept
+    [[nodiscard]] LCF_FORCE_INLINE bool pop() noexcept
     {
         if (!count_) [[unlikely]]
         {
@@ -219,7 +219,7 @@ public:
         return true;
     }
 
-    [[nodiscard]] FORCE_INLINE bool try_pop(T& out) noexcept
+    [[nodiscard]] LCF_FORCE_INLINE bool try_pop(T& out) noexcept
     {
         if (!count_) [[unlikely]]
         {
@@ -277,7 +277,7 @@ public:
         return visited;
     }
 
-    [[nodiscard]] FORCE_INLINE size_t front_run(T*& out_ptr, size_t& out_len) noexcept
+    [[nodiscard]] LCF_FORCE_INLINE size_t front_run(T*& out_ptr, size_t& out_len) noexcept
     {
         if (!count_) [[unlikely]]
         {
@@ -289,7 +289,7 @@ public:
         return out_len;
     }
 
-    FORCE_INLINE size_t pop_run(size_t n) noexcept
+    LCF_FORCE_INLINE size_t pop_run(size_t n) noexcept
     {
         if (n > count_) [[unlikely]]
         {
@@ -304,10 +304,10 @@ public:
         return n;
     }
 
-    [[nodiscard]] FORCE_INLINE size_t size() const noexcept { return count_; }
-    [[nodiscard]] FORCE_INLINE bool empty() const noexcept { return count_ == 0; }
+    [[nodiscard]] LCF_FORCE_INLINE size_t size() const noexcept { return count_; }
+    [[nodiscard]] LCF_FORCE_INLINE bool empty() const noexcept { return count_ == 0; }
     [[nodiscard]] static constexpr size_t capacity() noexcept { return CAP; }
-    [[nodiscard]] FORCE_INLINE uint64_t dropped_count() const noexcept { return dropped_; }
+    [[nodiscard]] LCF_FORCE_INLINE uint64_t dropped_count() const noexcept { return dropped_; }
 
     void clear() noexcept
     {
@@ -315,7 +315,7 @@ public:
     }
 
 private:
-    FORCE_INLINE size_t overwrite_oldest_if_full() noexcept
+    LCF_FORCE_INLINE size_t overwrite_oldest_if_full() noexcept
     {
         if (count_ == CAP) [[unlikely]]
         {

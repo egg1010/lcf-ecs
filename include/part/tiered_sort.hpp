@@ -466,7 +466,7 @@ template <size_t N>
 constexpr auto batcher_network_v = batcher_network_generate<N>();
 
 template <typename T, typename Compare>
-FORCE_INLINE void net_cmp_swap(T* data, size_t i, size_t j, Compare& cmp) noexcept
+LCF_FORCE_INLINE void net_cmp_swap(T* data, size_t i, size_t j, Compare& cmp) noexcept
 {
     if (cmp(data[j], data[i]))
     {
@@ -477,7 +477,7 @@ FORCE_INLINE void net_cmp_swap(T* data, size_t i, size_t j, Compare& cmp) noexce
 }
 
 template <size_t N, typename T, typename Compare>
-FORCE_INLINE void sorting_network(T* data, Compare& cmp) noexcept
+LCF_FORCE_INLINE void sorting_network(T* data, Compare& cmp) noexcept
 {
     if constexpr (N <= 1)
     {
@@ -494,7 +494,7 @@ FORCE_INLINE void sorting_network(T* data, Compare& cmp) noexcept
 }
 
 template <typename T>
-FORCE_INLINE void net_cmp_swap_indices(size_t* indices, const T* values,
+LCF_FORCE_INLINE void net_cmp_swap_indices(size_t* indices, const T* values,
                                        size_t i, size_t j) noexcept
 {
     if (values[indices[j]] < values[indices[i]])
@@ -506,7 +506,7 @@ FORCE_INLINE void net_cmp_swap_indices(size_t* indices, const T* values,
 }
 
 template <size_t N, typename T>
-FORCE_INLINE void sorting_network_indices(size_t* indices, const T* values) noexcept
+LCF_FORCE_INLINE void sorting_network_indices(size_t* indices, const T* values) noexcept
 {
     if constexpr (N <= 1)
     {

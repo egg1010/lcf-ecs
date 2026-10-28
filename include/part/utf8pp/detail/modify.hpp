@@ -60,7 +60,7 @@
         append(p, p ? std::strlen(p) : 0);
     }
 
-    FORCE_INLINE void append(const char* s, size_t byte_len)
+    LCF_FORCE_INLINE void append(const char* s, size_t byte_len)
     {
         if (byte_len == 0) return;
         invalidate_cp_cache();

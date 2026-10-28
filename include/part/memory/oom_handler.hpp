@@ -10,7 +10,7 @@
 
 namespace memory {
 
-[[noreturn]] FORCE_INLINE void handle_oom(
+[[noreturn]] LCF_FORCE_INLINE void handle_oom(
     size_t requested_bytes,
     const char* allocator_name,
     std::source_location loc = std::source_location::current()) noexcept
@@ -28,7 +28,7 @@ namespace memory {
     std::abort();
 }
 
-[[noreturn]] FORCE_INLINE void handle_oom(
+[[noreturn]] LCF_FORCE_INLINE void handle_oom(
     size_t requested_bytes,
     const char* allocator_name,
     operating_message& error,

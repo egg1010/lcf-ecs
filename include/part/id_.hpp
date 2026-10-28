@@ -20,7 +20,7 @@ public:
     id_allocation(id_allocation const&) = delete;
     id_allocation& operator=(id_allocation const&) = delete;
 
-    [[nodiscard]] FORCE_INLINE
+    [[nodiscard]] LCF_FORCE_INLINE
     T get_id() noexcept
     {
         if (!recycled_ids_.empty()) [[likely]]
@@ -32,19 +32,19 @@ public:
         return next_id_++ + T{1};
     }
 
-    FORCE_INLINE
+    LCF_FORCE_INLINE
     void free_id(T id) noexcept
     {
         recycled_ids_.emplace_back(id);
     }
 
-    [[nodiscard]] FORCE_INLINE
+    [[nodiscard]] LCF_FORCE_INLINE
     T total_number_of_ids() const noexcept
     {
         return static_cast<T>(recycled_ids_.size());
     }
 
-    [[nodiscard]] FORCE_INLINE
+    [[nodiscard]] LCF_FORCE_INLINE
     T maximum_id() const noexcept
     {
         return next_id_;

@@ -186,14 +186,14 @@ namespace detail {
 
 // 通过成员指针计算偏移量 (需访问权限)
 template<typename T, typename M>
-FORCE_INLINE size_t offset_of(M T::*member) noexcept
+LCF_FORCE_INLINE size_t offset_of(M T::*member) noexcept
 {
     return reinterpret_cast<size_t>(&(reinterpret_cast<T*>(0)->*member));
 }
 
 // UB 反向构造成员指针, 突破私有访问限制
 template<typename T, typename M>
-FORCE_INLINE M& ub_access(T& obj, size_t offset) noexcept
+LCF_FORCE_INLINE M& ub_access(T& obj, size_t offset) noexcept
 {
     M T::*mptr = nullptr;
     size_t raw = offset;
@@ -203,13 +203,13 @@ FORCE_INLINE M& ub_access(T& obj, size_t offset) noexcept
 
 // 直接指针运算访问
 template<typename M>
-FORCE_INLINE M& offset_access(void* obj, size_t offset) noexcept
+LCF_FORCE_INLINE M& offset_access(void* obj, size_t offset) noexcept
 {
     return *reinterpret_cast<M*>(static_cast<char*>(obj) + offset);
 }
 
 template<typename M>
-FORCE_INLINE const M& offset_access(const void* obj, size_t offset) noexcept
+LCF_FORCE_INLINE const M& offset_access(const void* obj, size_t offset) noexcept
 {
     return *reinterpret_cast<const M*>(static_cast<const char*>(obj) + offset);
 }

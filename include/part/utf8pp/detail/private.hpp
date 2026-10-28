@@ -43,13 +43,13 @@ private:
     }
 
     // 仅需 cp_count_ (size() 用): 不分配 cp_offsets_ 数组
-    FORCE_INLINE void ensure_cp_count() const noexcept
+    LCF_FORCE_INLINE void ensure_cp_count() const noexcept
     {
         if (cp_info_state_ != 0) return;
         ensure_cp_count_slow();
     }
     // SSE2 全量扫描, 仅首次访问执行
-    NOINLINE void ensure_cp_count_slow() const noexcept
+    LCF_NOINLINE void ensure_cp_count_slow() const noexcept
     {
         if (byte_size_ == 0)
         {
@@ -78,7 +78,7 @@ private:
     }
 
     // 需要完整 cp_offsets_ (at/substr/insert 用)
-    FORCE_INLINE void ensure_cp_info() const noexcept
+    LCF_FORCE_INLINE void ensure_cp_info() const noexcept
     {
         ensure_cp_count();
         if (cp_info_state_ == 3)
@@ -89,7 +89,7 @@ private:
     }
 
     // 预解码缓存: 全码点批量解码为 char32_t 数组
-    NOINLINE void build_cp_cache() const noexcept
+    LCF_NOINLINE void build_cp_cache() const noexcept
     {
         if (cp_cache_) return;
         ensure_cp_count();
@@ -235,7 +235,7 @@ private:
 
     // 下界定位: 返回首个满足 offs[i] >= byte_idx 的索引
     // 调用前需已 ensure_cp_info 且非纯 ASCII 非均匀
-    [[nodiscard]] FORCE_INLINE size_t offsets_lower_bound(size_t byte_idx) const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE size_t offsets_lower_bound(size_t byte_idx) const noexcept
     {
         const uint32_t* offs = cp_offsets_;
         size_t lo = 0;
@@ -259,7 +259,7 @@ private:
     }
 
     // 获取码点 i 的字节偏移
-    [[nodiscard]] FORCE_INLINE uint32_t cp_byte_offset(size_t i) const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE uint32_t cp_byte_offset(size_t i) const noexcept
     {
         if (cp_info_state_ == 1) return static_cast<uint32_t>(i);
         if (uniform_byte_len_ != 0) return static_cast<uint32_t>(i * uniform_byte_len_);
@@ -292,7 +292,7 @@ private:
     }
 
     // 字节偏移 → 码点索引 (向上取整: 返回首个 offset >= byte_idx 的码点索引; 越界返回 cp_count_)
-    [[nodiscard]] FORCE_INLINE size_t byte_idx_to_cp_idx_ceil(size_t byte_idx) const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE size_t byte_idx_to_cp_idx_ceil(size_t byte_idx) const noexcept
     {
         ensure_cp_info();
         if (byte_idx >= byte_size_) return cp_count_;
@@ -850,14 +850,14 @@ private:
     }
 
     // 无校验解码: utf8pp 内部数据保证合法
-    [[nodiscard]] FORCE_INLINE uint32_t cp_at_byte_unchecked(size_t byte_idx) const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE uint32_t cp_at_byte_unchecked(size_t byte_idx) const noexcept
     {
         return static_cast<uint32_t>(detail_utf8::utf8_decode_unchecked(
             reinterpret_cast<const uint8_t*>(data_) + byte_idx));
     }
 
     // 字节偏移 → 码点索引 (非码点起点返回 npos)
-    [[nodiscard]] FORCE_INLINE size_t byte_idx_to_cp_idx(size_t byte_idx) const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE size_t byte_idx_to_cp_idx(size_t byte_idx) const noexcept
     {
         if (byte_idx >= byte_size_) return npos;
         ensure_cp_count();

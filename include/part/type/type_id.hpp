@@ -54,7 +54,7 @@ private:
 
     // 槽位散布: 尾部块折入 + 乘法混位, 仅决定分布, 不参与身份判定
     // 长名若只按前 8 字节散布, 同前缀家族会挤入同一槽形成长链
-    [[nodiscard]] static FORCE_INLINE
+    [[nodiscard]] static LCF_FORCE_INLINE
     size_t def_slot_index_(const char* p, size_t n, uint64_t key) noexcept
     {
         uint64_t fold = key;
@@ -70,7 +70,7 @@ private:
     }
 
     // 名字编码: 短名全串 (<=8B), 长名取前 8 字节
-    [[nodiscard]] static FORCE_INLINE
+    [[nodiscard]] static LCF_FORCE_INLINE
     uint64_t def_key_of_(const char* p, size_t n) noexcept
     {
         if (n > 8)
@@ -94,14 +94,14 @@ public:
     type_id() noexcept = default;
 
     template<typename T>
-    [[nodiscard]] static FORCE_INLINE
+    [[nodiscard]] static LCF_FORCE_INLINE
     int get_type_id() noexcept
     {
         static int id = type_id_counter_.fetch_add(1, std::memory_order_relaxed) + 1;
         return id;
     }
 
-    [[nodiscard]] static FORCE_INLINE
+    [[nodiscard]] static LCF_FORCE_INLINE
     int current_max_id() noexcept
     {
         return type_id_counter_.load(std::memory_order_relaxed);

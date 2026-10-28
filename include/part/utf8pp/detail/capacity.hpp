@@ -2,8 +2,8 @@
 
     // === 容量 ===
     // 码点计数在所有构造/修改后始终有效
-    [[nodiscard]] FORCE_INLINE size_t size() const noexcept { return cp_count_; }
-    [[nodiscard]] FORCE_INLINE size_t length() const noexcept { return cp_count_; }
+    [[nodiscard]] LCF_FORCE_INLINE size_t size() const noexcept { return cp_count_; }
+    [[nodiscard]] LCF_FORCE_INLINE size_t length() const noexcept { return cp_count_; }
     [[nodiscard]] size_t byte_size() const noexcept { return byte_size_; }
     [[nodiscard]] size_t capacity() const noexcept { return byte_capacity_; }
     [[nodiscard]] bool empty() const noexcept { return byte_size_ == 0; }
@@ -121,7 +121,7 @@
 
     // === 码点访问 ===
     // 越界返回 U+FFFD
-    [[nodiscard]] FORCE_INLINE char32_t get(size_t cp_idx) const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE char32_t get(size_t cp_idx) const noexcept
     {
         if (cp_cache_) [[likely]]
         {
@@ -143,7 +143,7 @@
     }
 
     // 无边界检查 (越界 UB, 与 std::string::operator[] 语义一致)
-    [[nodiscard]] FORCE_INLINE char32_t operator[](size_t cp_idx) const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE char32_t operator[](size_t cp_idx) const noexcept
     {
         if (cp_cache_) [[likely]] return cp_cache_[cp_idx];
         if (cp_info_state_ != 0) [[likely]]
@@ -191,7 +191,7 @@
     [[nodiscard]] std::u8string_view u8view() const noexcept { return std::u8string_view(reinterpret_cast<const char8_t*>(data_ ? data_ : ""), byte_size_); }
 
     // === 迭代器 ===
-    [[nodiscard]] FORCE_INLINE const_iterator begin() const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE const_iterator begin() const noexcept
     {
         if (cp_cache_) [[likely]] return const_iterator(cp_cache_);
         ensure_cp_count();
@@ -199,7 +199,7 @@
         if (cp_cache_) return const_iterator(cp_cache_);
         return const_iterator(static_cast<const char32_t*>(nullptr));
     }
-    [[nodiscard]] FORCE_INLINE const_iterator end() const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE const_iterator end() const noexcept
     {
         if (cp_cache_) [[likely]] return const_iterator(cp_cache_ + cp_count_);
         ensure_cp_count();

@@ -249,32 +249,32 @@ private:
     static constexpr size_t ALIGNED_RAW_FLAG = 4;
     static constexpr size_t FLAGS_MASK = IN_USE_FLAG | CACHED_FLAG | ALIGNED_RAW_FLAG;
 
-    [[nodiscard]] FORCE_INLINE static bool is_in_use(const block_header* h) noexcept
+    [[nodiscard]] LCF_FORCE_INLINE static bool is_in_use(const block_header* h) noexcept
     {
         return (h->size_ & IN_USE_FLAG) != 0;
     }
 
-    [[nodiscard]] FORCE_INLINE static bool is_cached(const block_header* h) noexcept
+    [[nodiscard]] LCF_FORCE_INLINE static bool is_cached(const block_header* h) noexcept
     {
         return (h->size_ & CACHED_FLAG) != 0;
     }
 
-    [[nodiscard]] FORCE_INLINE static bool is_aligned_raw(const block_header* h) noexcept
+    [[nodiscard]] LCF_FORCE_INLINE static bool is_aligned_raw(const block_header* h) noexcept
     {
         return (h->size_ & ALIGNED_RAW_FLAG) != 0;
     }
 
-    [[nodiscard]] FORCE_INLINE static bool is_mergeable(const block_header* h) noexcept
+    [[nodiscard]] LCF_FORCE_INLINE static bool is_mergeable(const block_header* h) noexcept
     {
         return !is_in_use(h) && !is_cached(h);
     }
 
-    [[nodiscard]] FORCE_INLINE static size_t block_size(const block_header* h) noexcept
+    [[nodiscard]] LCF_FORCE_INLINE static size_t block_size(const block_header* h) noexcept
     {
         return h->size_ & ~FLAGS_MASK;
     }
 
-    FORCE_INLINE static void set_in_use(block_header* h, bool v) noexcept
+    LCF_FORCE_INLINE static void set_in_use(block_header* h, bool v) noexcept
     {
         if (v)
         {
@@ -286,7 +286,7 @@ private:
         }
     }
 
-    FORCE_INLINE static void set_cached(block_header* h, bool v) noexcept
+    LCF_FORCE_INLINE static void set_cached(block_header* h, bool v) noexcept
     {
         if (v)
         {
@@ -298,7 +298,7 @@ private:
         }
     }
 
-    FORCE_INLINE static void set_aligned_raw(block_header* h, bool v) noexcept
+    LCF_FORCE_INLINE static void set_aligned_raw(block_header* h, bool v) noexcept
     {
         if (v)
         {
@@ -310,12 +310,12 @@ private:
         }
     }
 
-    FORCE_INLINE static void set_block_size(block_header* h, size_t s) noexcept
+    LCF_FORCE_INLINE static void set_block_size(block_header* h, size_t s) noexcept
     {
         h->size_ = (h->size_ & FLAGS_MASK) | (s & ~FLAGS_MASK);
     }
 
-    FORCE_INLINE static void size_to_index(size_t size, size_t& fl, size_t& sl) noexcept
+    LCF_FORCE_INLINE static void size_to_index(size_t size, size_t& fl, size_t& sl) noexcept
     {
         fl = static_cast<size_t>(std::bit_width(size)) - 1;
         if (fl >= FL_MAX) [[unlikely]]
@@ -327,7 +327,7 @@ private:
         sl = (size >> (fl - SL_BITS)) - SL_COUNT;
     }
 
-    FORCE_INLINE static void size_to_search_index(size_t size, size_t& fl, size_t& sl) noexcept
+    LCF_FORCE_INLINE static void size_to_search_index(size_t size, size_t& fl, size_t& sl) noexcept
     {
         if (size >= (size_t{ 1 } << SL_BITS)) [[likely]]
         {
@@ -344,12 +344,12 @@ private:
         size_to_index(size, fl, sl);
     }
 
-    [[nodiscard]] FORCE_INLINE static free_node* get_free_node(block_header* h) noexcept
+    [[nodiscard]] LCF_FORCE_INLINE static free_node* get_free_node(block_header* h) noexcept
     {
         return reinterpret_cast<free_node*>(h + 1);
     }
 
-    [[nodiscard]] FORCE_INLINE static const free_node* get_free_node(const block_header* h) noexcept
+    [[nodiscard]] LCF_FORCE_INLINE static const free_node* get_free_node(const block_header* h) noexcept
     {
         return reinterpret_cast<const free_node*>(h + 1);
     }
@@ -447,7 +447,7 @@ private:
         small_counts_.fill(0);
     }
 
-    FORCE_INLINE
+    LCF_FORCE_INLINE
     void remove_from_free_list(block_header* block, size_t fl, size_t sl) noexcept
     {
         size_t index = fl * SL_COUNT + sl;
@@ -478,7 +478,7 @@ private:
         --free_block_count_;
     }
 
-    FORCE_INLINE
+    LCF_FORCE_INLINE
     void add_to_free_list(block_header* block, size_t fl, size_t sl) noexcept
     {
         size_t index = fl * SL_COUNT + sl;
@@ -498,7 +498,7 @@ private:
         ++free_block_count_;
     }
 
-    NOINLINE void merge_adjacent_blocks(block_header* block) noexcept
+    LCF_NOINLINE void merge_adjacent_blocks(block_header* block) noexcept
     {
         uint8_t* next_block_ptr = reinterpret_cast<uint8_t*>(block) + HEADER_SIZE + block_size(block);
         block_header* next_block = reinterpret_cast<block_header*>(next_block_ptr);
@@ -611,7 +611,7 @@ private:
         active_reserved_ += new_chunk_size;
     }
 
-    FORCE_INLINE
+    LCF_FORCE_INLINE
     void split_block(block_header* block, size_t needed_size) noexcept
     {
         size_t bsize = block_size(block);
@@ -638,7 +638,7 @@ private:
         block->size_ = (block->size_ & FLAGS_MASK) | needed_size;
     }
 
-    [[nodiscard]] FORCE_INLINE
+    [[nodiscard]] LCF_FORCE_INLINE
     void* acquire_block(size_t size) noexcept
     {
         if (size <= SMALL_MAX_SIZE) [[likely]]
@@ -749,7 +749,7 @@ private:
         return reinterpret_cast<uint8_t*>(block) + HEADER_SIZE;
     }
 
-    FORCE_INLINE void account_acquire(size_t used_bytes) noexcept
+    LCF_FORCE_INLINE void account_acquire(size_t used_bytes) noexcept
     {
         live_bytes_ += used_bytes;
         if (live_bytes_ > peak_live_bytes_) [[unlikely]]
@@ -987,7 +987,7 @@ private:
     }
 
     template <size_t MinSize>
-    FORCE_INLINE bool release_validated(void* ptr, bool hard) noexcept
+    LCF_FORCE_INLINE bool release_validated(void* ptr, bool hard) noexcept
     {
         if (!ptr) [[unlikely]]
         {
@@ -1124,7 +1124,7 @@ public:
     }
 
     // 分配
-    [[nodiscard]] FORCE_INLINE
+    [[nodiscard]] LCF_FORCE_INLINE
     void* acquire(size_t bytes) noexcept
     {
         if (bytes == 0) [[unlikely]]
@@ -1151,7 +1151,7 @@ public:
         return p;
     }
 
-    [[nodiscard]] FORCE_INLINE
+    [[nodiscard]] LCF_FORCE_INLINE
     void* acquire(size_t bytes, operating_message& error,
                   std::source_location site = std::source_location::current()) noexcept
     {
@@ -1164,7 +1164,7 @@ public:
     }
 
     template <size_t Size>
-    [[nodiscard]] FORCE_INLINE
+    [[nodiscard]] LCF_FORCE_INLINE
     void* acquire_sized() noexcept
     {
         static_assert(Size > 0, "acquire_sized<Size> requires Size > 0");
@@ -1198,7 +1198,7 @@ public:
     }
 
     template <size_t Size>
-    [[nodiscard]] FORCE_INLINE
+    [[nodiscard]] LCF_FORCE_INLINE
     void* acquire_sized(operating_message& error,
                         std::source_location site = std::source_location::current()) noexcept
     {
@@ -1210,7 +1210,7 @@ public:
         return p;
     }
 
-    [[nodiscard]] FORCE_INLINE
+    [[nodiscard]] LCF_FORCE_INLINE
     void* acquire_zeroed(size_t bytes) noexcept
     {
         void* p = acquire(bytes);
@@ -1267,7 +1267,7 @@ public:
     }
 
     template <typename T, typename... Args>
-    [[nodiscard]] FORCE_INLINE
+    [[nodiscard]] LCF_FORCE_INLINE
     T* create(Args&&... args) noexcept
     {
         void* ptr;
@@ -1287,17 +1287,17 @@ public:
     }
 
     // 释放：只处理内存，不析构
-    FORCE_INLINE bool soft_delete(void* ptr) noexcept
+    LCF_FORCE_INLINE bool soft_delete(void* ptr) noexcept
     {
         return release_validated<0>(ptr, false);
     }
 
-    FORCE_INLINE bool hard_delete(void* ptr) noexcept
+    LCF_FORCE_INLINE bool hard_delete(void* ptr) noexcept
     {
         return release_validated<0>(ptr, true);
     }
 
-    FORCE_INLINE bool soft_delete(void* ptr, operating_message& error,
+    LCF_FORCE_INLINE bool soft_delete(void* ptr, operating_message& error,
                                   std::source_location site = std::source_location::current()) noexcept
     {
         if (release_validated<0>(ptr, false))
@@ -1309,7 +1309,7 @@ public:
         return false;
     }
 
-    FORCE_INLINE bool hard_delete(void* ptr, operating_message& error,
+    LCF_FORCE_INLINE bool hard_delete(void* ptr, operating_message& error,
                                   std::source_location site = std::source_location::current()) noexcept
     {
         if (release_validated<0>(ptr, true))
@@ -1322,21 +1322,21 @@ public:
     }
 
     template <size_t Size>
-    FORCE_INLINE bool soft_delete_sized(void* ptr) noexcept
+    LCF_FORCE_INLINE bool soft_delete_sized(void* ptr) noexcept
     {
         static_assert(Size > 0, "soft_delete_sized<Size> requires Size > 0");
         return release_validated<Size>(ptr, false);
     }
 
     template <size_t Size>
-    FORCE_INLINE bool hard_delete_sized(void* ptr) noexcept
+    LCF_FORCE_INLINE bool hard_delete_sized(void* ptr) noexcept
     {
         static_assert(Size > 0, "hard_delete_sized<Size> requires Size > 0");
         return release_validated<Size>(ptr, true);
     }
 
     template <typename T>
-    FORCE_INLINE void dispose(T* ptr) noexcept
+    LCF_FORCE_INLINE void dispose(T* ptr) noexcept
     {
         if (ptr) [[likely]]
         {
@@ -1533,7 +1533,7 @@ public:
     }
 
     // 重分配：原位成功返回同一指针；目标为 0 时释放并返回 nullptr
-    [[nodiscard]] FORCE_INLINE
+    [[nodiscard]] LCF_FORCE_INLINE
     bool resize_inplace(void* ptr, size_t old_bytes, size_t new_bytes) noexcept
     {
         if (!ptr || new_bytes == 0) [[unlikely]]
@@ -1600,7 +1600,7 @@ public:
         return true;
     }
 
-    [[nodiscard]] FORCE_INLINE
+    [[nodiscard]] LCF_FORCE_INLINE
     void* resize(void* ptr, size_t old_bytes, size_t new_bytes) noexcept
     {
         if (new_bytes == 0) [[unlikely]]

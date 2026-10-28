@@ -242,47 +242,47 @@ private:
 #if INTPTR_MAX == INT64_MAX
     uintptr_t vtable_sso_type_{0};
 
-    [[nodiscard]] FORCE_INLINE const vtable* get_vtable() const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE const vtable* get_vtable() const noexcept
     {
         return reinterpret_cast<const vtable*>(vtable_sso_type_ & vtable_ptr_mask);
     }
 
-    [[nodiscard]] FORCE_INLINE bool is_sso() const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE bool is_sso() const noexcept
     {
         return (vtable_sso_type_ & sso_bit) != 0;
     }
 
-    [[nodiscard]] FORCE_INLINE bool is_inline_type_id() const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE bool is_inline_type_id() const noexcept
     {
         return (vtable_sso_type_ & inline_type_id_bit) != 0;
     }
 
-    [[nodiscard]] FORCE_INLINE bool is_trivially_destructible() const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE bool is_trivially_destructible() const noexcept
     {
         return (vtable_sso_type_ & trivial_dtor_bit) != 0;
     }
 
-    [[nodiscard]] FORCE_INLINE bool is_trivially_copyable() const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE bool is_trivially_copyable() const noexcept
     {
         return (vtable_sso_type_ & trivial_copy_bit) != 0;
     }
 
-    [[nodiscard]] FORCE_INLINE int get_inline_type_id() const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE int get_inline_type_id() const noexcept
     {
         return static_cast<int>((vtable_sso_type_ & vtable_ptr_mask) >> 1);
     }
 
-    [[nodiscard]] FORCE_INLINE uint8_t get_encoded_size() const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE uint8_t get_encoded_size() const noexcept
     {
         return static_cast<uint8_t>((vtable_sso_type_ & size_mask) >> size_shift);
     }
 
-    [[nodiscard]] FORCE_INLINE bool has_value_fast() const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE bool has_value_fast() const noexcept
     {
         return vtable_sso_type_ != 0;
     }
 
-    FORCE_INLINE void set_encoded(const vtable* vt, bool sso, bool trivial_dtor,
+    LCF_FORCE_INLINE void set_encoded(const vtable* vt, bool sso, bool trivial_dtor,
                                    bool trivial_copy, uint8_t size) noexcept
     {
         vtable_sso_type_ = reinterpret_cast<uintptr_t>(vt)
@@ -295,29 +295,29 @@ private:
     const vtable* vtable_{nullptr};
     bool is_sso_{false};
 
-    [[nodiscard]] FORCE_INLINE const vtable* get_vtable() const noexcept { return vtable_; }
-    [[nodiscard]] FORCE_INLINE bool is_sso() const noexcept { return is_sso_; }
-    [[nodiscard]] FORCE_INLINE bool is_trivially_destructible() const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE const vtable* get_vtable() const noexcept { return vtable_; }
+    [[nodiscard]] LCF_FORCE_INLINE bool is_sso() const noexcept { return is_sso_; }
+    [[nodiscard]] LCF_FORCE_INLINE bool is_trivially_destructible() const noexcept
     {
         return vtable_ && vtable_->destroy == nullptr && is_sso_;
     }
-    [[nodiscard]] FORCE_INLINE bool is_trivially_copyable() const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE bool is_trivially_copyable() const noexcept
     {
         return vtable_ && vtable_->copy_to == nullptr && is_sso_;
     }
-    [[nodiscard]] FORCE_INLINE uint8_t get_encoded_size() const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE uint8_t get_encoded_size() const noexcept
     {
         return vtable_ ? static_cast<uint8_t>(vtable_->element_size) : 0;
     }
-    [[nodiscard]] FORCE_INLINE bool has_value_fast() const noexcept { return vtable_ != nullptr; }
-    FORCE_INLINE void set_encoded(const vtable* vt, bool sso, bool, bool, uint8_t) noexcept
+    [[nodiscard]] LCF_FORCE_INLINE bool has_value_fast() const noexcept { return vtable_ != nullptr; }
+    LCF_FORCE_INLINE void set_encoded(const vtable* vt, bool sso, bool, bool, uint8_t) noexcept
     {
         vtable_ = vt;
         is_sso_ = sso;
     }
 #endif
 
-    [[nodiscard]] FORCE_INLINE void* get_void_ptr() noexcept
+    [[nodiscard]] LCF_FORCE_INLINE void* get_void_ptr() noexcept
     {
 #if defined(VOID_ANY_ENABLE_SSO)
         if (is_sso()) [[likely]]
@@ -330,7 +330,7 @@ private:
 #endif
     }
 
-    [[nodiscard]] FORCE_INLINE const void* get_void_ptr() const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE const void* get_void_ptr() const noexcept
     {
 #if defined(VOID_ANY_ENABLE_SSO)
         if (is_sso()) [[likely]]
@@ -344,7 +344,7 @@ private:
     }
 
     // 全量复制 SSO buffer (struct copy, GCC 内联为 mov 指令序列)
-    static FORCE_INLINE void sso_buffer_copy(void* dst, const void* src) noexcept
+    static LCF_FORCE_INLINE void sso_buffer_copy(void* dst, const void* src) noexcept
     {
         struct sso_copy_t { uint64_t q[SsoSize / 8]; };
         *static_cast<sso_copy_t*>(dst) = *static_cast<const sso_copy_t*>(src);
@@ -352,7 +352,7 @@ private:
 
     // 按 element_size 分级复制 SSO buffer, 减少小对象的内存访问次数
     // SSO buffer 为 56 字节, 按对齐宽度向上取整复制是安全的
-    static FORCE_INLINE void sso_buffer_copy_sized(void* dst, const void* src, uint8_t sz) noexcept
+    static LCF_FORCE_INLINE void sso_buffer_copy_sized(void* dst, const void* src, uint8_t sz) noexcept
     {
         if (sz <= 8) [[likely]]
         {
@@ -383,7 +383,7 @@ private:
     // 内联模式: SSO + trivially_copyable + trivially_destructible, 无需 vtable
     // 全局 type id 编码到 [53:1], 与 vtable 路径共用同一 ID 域
     template<typename T>
-    static FORCE_INLINE uintptr_t get_inline_encoded() noexcept
+    static LCF_FORCE_INLINE uintptr_t get_inline_encoded() noexcept
     {
         const int tid = type_id::get_type_id<T>();
         return inline_type_id_bit | sso_bit
@@ -432,7 +432,7 @@ private:
         return void_any_detail::get_heap_vtable<T>();
     }
 
-    FORCE_INLINE void destroy_data() noexcept
+    LCF_FORCE_INLINE void destroy_data() noexcept
     {
         if (!has_value_fast()) { return; }
 
@@ -483,7 +483,7 @@ private:
 #endif
     }
 
-    FORCE_INLINE void clear_metadata() noexcept
+    LCF_FORCE_INLINE void clear_metadata() noexcept
     {
 #if INTPTR_MAX == INT64_MAX
         vtable_sso_type_ = 0;
@@ -495,7 +495,7 @@ private:
 
     // 非 SSO 构建下的跨布局交换: 仅堆指针
     template<size_t SsoSize2, size_t SsoAlign2>
-    FORCE_INLINE void cross_layout_swap_heap_only(
+    LCF_FORCE_INLINE void cross_layout_swap_heap_only(
         define_void_any<SsoSize2, SsoAlign2>& other) noexcept
     {
 #if INTPTR_MAX == INT64_MAX
@@ -528,7 +528,7 @@ private:
     //   3) 容量或对齐互不满足: 双方转堆后交换指针
 #if defined(VOID_ANY_ENABLE_SSO)
     template<size_t SsoSize2, size_t SsoAlign2>
-    FORCE_INLINE void cross_layout_swap_impl(
+    LCF_FORCE_INLINE void cross_layout_swap_impl(
         define_void_any<SsoSize2, SsoAlign2>& other) noexcept
     {
         using other_t = define_void_any<SsoSize2, SsoAlign2>;
@@ -688,7 +688,7 @@ private:
     // 将 SSO 数据迁移到堆分配, 编码切换为 heap vtable / heap 编码
     // 用于跨布局交换时容量或对齐互不满足的场景
 #if defined(VOID_ANY_ENABLE_SSO)
-    FORCE_INLINE void move_sso_to_heap() noexcept
+    LCF_FORCE_INLINE void move_sso_to_heap() noexcept
     {
         if (!is_sso()) { return; }
 #if INTPTR_MAX == INT64_MAX
@@ -749,7 +749,7 @@ private:
 #endif
 
     template<typename T>
-    FORCE_INLINE void construct_from(T&& object) noexcept
+    LCF_FORCE_INLINE void construct_from(T&& object) noexcept
     {
         using DecayedT = std::decay_t<T>;
         static_assert(std::is_trivially_copyable_v<DecayedT>
@@ -813,19 +813,19 @@ public:
 
     template<typename T>
         requires (!std::is_same_v<std::decay_t<T>, define_void_any>)
-    FORCE_INLINE define_void_any(T&& object) noexcept
+    LCF_FORCE_INLINE define_void_any(T&& object) noexcept
     {
         construct_from(std::forward<T>(object));
     }
 
-    FORCE_INLINE ~define_void_any() noexcept
+    LCF_FORCE_INLINE ~define_void_any() noexcept
     {
         destroy_data();
     }
 
     template<typename T>
         requires (!std::is_same_v<std::decay_t<T>, define_void_any>)
-    FORCE_INLINE void set(T&& object) noexcept
+    LCF_FORCE_INLINE void set(T&& object) noexcept
     {
         using DecayedT = std::decay_t<T>;
 
@@ -874,7 +874,7 @@ public:
         construct_from(std::forward<T>(object));
     }
 
-    FORCE_INLINE define_void_any(const define_void_any& other) noexcept
+    LCF_FORCE_INLINE define_void_any(const define_void_any& other) noexcept
     {
 #if !defined(VOID_ANY_ENABLE_SSO)
 #if INTPTR_MAX == INT64_MAX
@@ -981,7 +981,7 @@ public:
 #endif
     }
 
-    FORCE_INLINE define_void_any(define_void_any&& other) noexcept
+    LCF_FORCE_INLINE define_void_any(define_void_any&& other) noexcept
     {
 #if !defined(VOID_ANY_ENABLE_SSO)
 #if INTPTR_MAX == INT64_MAX
@@ -1073,7 +1073,7 @@ public:
 #endif
     }
 
-    FORCE_INLINE define_void_any& operator=(const define_void_any& other) noexcept
+    LCF_FORCE_INLINE define_void_any& operator=(const define_void_any& other) noexcept
     {
         if (this != &other) [[likely]]
         {
@@ -1186,7 +1186,7 @@ public:
         return *this;
     }
 
-    FORCE_INLINE define_void_any& operator=(define_void_any&& other) noexcept
+    LCF_FORCE_INLINE define_void_any& operator=(define_void_any&& other) noexcept
     {
         if (this != &other) [[likely]]
         {
@@ -1283,7 +1283,7 @@ public:
         return *this;
     }
 
-    [[nodiscard]] FORCE_INLINE int type_id() const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE int type_id() const noexcept
     {
         if (!has_value_fast()) [[unlikely]] { return -1; }
 #if INTPTR_MAX == INT64_MAX
@@ -1296,7 +1296,7 @@ public:
     }
 
     template<typename T>
-    [[nodiscard]] FORCE_INLINE T* get_ptr() noexcept
+    [[nodiscard]] LCF_FORCE_INLINE T* get_ptr() noexcept
     {
         if (!has_value_fast()) [[unlikely]] { return nullptr; }
 #if INTPTR_MAX == INT64_MAX
@@ -1311,7 +1311,7 @@ public:
     }
 
     template<typename T>
-    [[nodiscard]] FORCE_INLINE const T* get_ptr() const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE const T* get_ptr() const noexcept
     {
         if (!has_value_fast()) [[unlikely]] { return nullptr; }
 #if INTPTR_MAX == INT64_MAX
@@ -1326,43 +1326,43 @@ public:
     }
 
     template<typename T>
-    [[nodiscard]] FORCE_INLINE T* fast_get_ptr() noexcept
+    [[nodiscard]] LCF_FORCE_INLINE T* fast_get_ptr() noexcept
     {
         return static_cast<T*>(get_void_ptr());
     }
 
     template<typename T>
-    [[nodiscard]] FORCE_INLINE const T* fast_get_ptr() const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE const T* fast_get_ptr() const noexcept
     {
         return static_cast<const T*>(get_void_ptr());
     }
 
     template<typename T>
-    [[nodiscard]] FORCE_INLINE T* get_ptr_unchecked() noexcept
+    [[nodiscard]] LCF_FORCE_INLINE T* get_ptr_unchecked() noexcept
     {
         return static_cast<T*>(get_void_ptr());
     }
 
     template<typename T>
-    [[nodiscard]] FORCE_INLINE const T* get_ptr_unchecked() const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE const T* get_ptr_unchecked() const noexcept
     {
         return static_cast<const T*>(get_void_ptr());
     }
 
     template<typename T>
-    [[nodiscard]] FORCE_INLINE T get() noexcept
+    [[nodiscard]] LCF_FORCE_INLINE T get() noexcept
     {
         T* p = get_ptr<T>();
         if (!p) [[unlikely]] { return T{}; }
         return *p;
     }
 
-    [[nodiscard]] FORCE_INLINE bool has_value() const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE bool has_value() const noexcept
     {
         return has_value_fast();
     }
 
-    FORCE_INLINE void reset() noexcept
+    LCF_FORCE_INLINE void reset() noexcept
     {
         destroy_data();
 #if INTPTR_MAX == INT64_MAX
@@ -1375,7 +1375,7 @@ public:
     // 跨布局交换: 与不同 SsoSize/SsoAlign 实例化的 void_any 交换内容
     // 双方任一为空时, 空方接管对方的值
     template<size_t SsoSize2, size_t SsoAlign2>
-    FORCE_INLINE void cross_layout_swap(define_void_any<SsoSize2, SsoAlign2>& other) noexcept
+    LCF_FORCE_INLINE void cross_layout_swap(define_void_any<SsoSize2, SsoAlign2>& other) noexcept
     {
 #if defined(VOID_ANY_ENABLE_SSO)
         cross_layout_swap_impl(other);
@@ -1387,7 +1387,7 @@ public:
     // 同布局交换: 与同类型 void_any 交换
     // 四态组合 (empty/sso/heap x empty/sso/heap) 受控转移:
     //   sso↔sso 借临时区三方交换; sso↔heap 经临时区搬运对象; 其余交换编码与指针
-    FORCE_INLINE void swap(define_void_any& other) noexcept
+    LCF_FORCE_INLINE void swap(define_void_any& other) noexcept
     {
 #if defined(VOID_ANY_ENABLE_SSO)
         const bool this_sso = is_sso();
@@ -1583,7 +1583,7 @@ public:
 
     template<typename T>
         requires (!std::is_same_v<std::decay_t<T>, define_void_any>)
-    FORCE_INLINE void copy_from(const T& object) noexcept
+    LCF_FORCE_INLINE void copy_from(const T& object) noexcept
     {
         using DecayedT = std::decay_t<T>;
         static_assert(std::is_trivially_copyable_v<DecayedT>
@@ -1662,7 +1662,7 @@ public:
 
     template<typename T>
         requires (!std::is_same_v<std::decay_t<T>, define_void_any>)
-    FORCE_INLINE void move_from(T&& object) noexcept
+    LCF_FORCE_INLINE void move_from(T&& object) noexcept
     {
         using DecayedT = std::decay_t<T>;
         static_assert(std::is_trivially_copyable_v<DecayedT>
@@ -1732,12 +1732,12 @@ public:
 #endif
     }
 
-    [[nodiscard]] FORCE_INLINE void* get_void() noexcept
+    [[nodiscard]] LCF_FORCE_INLINE void* get_void() noexcept
     {
         return has_value_fast() ? get_void_ptr() : nullptr;
     }
 
-    [[nodiscard]] FORCE_INLINE const void* get_void() const noexcept
+    [[nodiscard]] LCF_FORCE_INLINE const void* get_void() const noexcept
     {
         return has_value_fast() ? get_void_ptr() : nullptr;
     }

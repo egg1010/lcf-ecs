@@ -94,7 +94,7 @@ public:
 
     // ===== L1: 内存屏障原语 (x86/x64 全套; 其他平台编译器屏障) =====
 
-    static FORCE_INLINE void mfence() noexcept
+    static LCF_FORCE_INLINE void mfence() noexcept
     {
 #if ANALYSIS_HAS_X86
     #if defined(_MSC_VER)
@@ -107,7 +107,7 @@ public:
 #endif
     }
 
-    static FORCE_INLINE void lfence() noexcept
+    static LCF_FORCE_INLINE void lfence() noexcept
     {
 #if ANALYSIS_HAS_X86
     #if defined(_MSC_VER)
@@ -120,7 +120,7 @@ public:
 #endif
     }
 
-    static FORCE_INLINE void sfence() noexcept
+    static LCF_FORCE_INLINE void sfence() noexcept
     {
 #if ANALYSIS_HAS_X86
     #if defined(_MSC_VER)
@@ -135,7 +135,7 @@ public:
 
     // ===== L2: 缓存控制 (x86/x64 clflush; 其他平台空操作) =====
 
-    static FORCE_INLINE void cache_flush(const void* p) noexcept
+    static LCF_FORCE_INLINE void cache_flush(const void* p) noexcept
     {
 #if ANALYSIS_HAS_X86
     #if defined(_MSC_VER)
@@ -172,7 +172,7 @@ public:
     // ===== L3: 序列化周期测量 (lfence; rdtsc; lfence, Intel 推荐顺序) =====
 
     // 全屏障周期测量 (适合精确测量短代码段)
-    [[nodiscard]] static FORCE_INLINE uint64_t now_cycles_fenced() noexcept
+    [[nodiscard]] static LCF_FORCE_INLINE uint64_t now_cycles_fenced() noexcept
     {
 #if ANALYSIS_HAS_X86
     #if defined(_MSC_VER)
@@ -553,7 +553,7 @@ private:
     config config_;
 
     // 单次访问延迟测量 (rdtscp 配对, lfence 序列化)
-    [[nodiscard]] static FORCE_INLINE uint64_t measure_one_access_(const void* p) noexcept
+    [[nodiscard]] static LCF_FORCE_INLINE uint64_t measure_one_access_(const void* p) noexcept
     {
 #if ANALYSIS_HAS_X86
         uint64_t c0, c1;
@@ -583,7 +583,7 @@ private:
     }
 
     // 基线测量 (空指针访问, 测量计时开销本身)
-    [[nodiscard]] static FORCE_INLINE uint64_t measure_baseline_() noexcept
+    [[nodiscard]] static LCF_FORCE_INLINE uint64_t measure_baseline_() noexcept
     {
 #if ANALYSIS_HAS_X86
         uint64_t c0, c1;

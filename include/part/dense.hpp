@@ -22,7 +22,7 @@
 #endif
 
 #include "force_inline.hpp"
-// 跨平台宏 (LCF_PREFETCH_R / FORCE_INLINE / LCF_FLATTEN / LCF_RESTRICT):
+// 跨平台宏 (LCF_PREFETCH_R / LCF_FORCE_INLINE / LCF_FLATTEN / LCF_RESTRICT):
 // 集中定义于 force_inline.hpp, 此处通过别名宏直接可用
 #include "container_views.hpp"
 
@@ -89,7 +89,7 @@ private:
 
 	// 内存分配用 throwing new: 成功路径无 EH 开销, 比 malloc 快
 	// 用 assume_aligned 使 GCC 生成对齐 SIMD 指令 (vmovdqa 而非 vmovdqu)
-	[[nodiscard]] FORCE_INLINE static T* allocate_data(size_t count) noexcept {
+	[[nodiscard]] LCF_FORCE_INLINE static T* allocate_data(size_t count) noexcept {
 		if (count == 0) { return nullptr; }
 		if (count > static_cast<size_t>(-1) / sizeof(T)) [[unlikely]] {
 			LCF_TRAP();   // 字节数溢出: 终止而非静默小分配
@@ -878,24 +878,24 @@ public:
 		deallocate_data(data_ptr_, maximum_quantity_);
 	}
 
-	[[nodiscard]] FORCE_INLINE constexpr T& operator[](size_t index) noexcept {
+	[[nodiscard]] LCF_FORCE_INLINE constexpr T& operator[](size_t index) noexcept {
 		return std::assume_aligned<alloc_align>(data_ptr_)[index];
 	}
 
-	[[nodiscard]] FORCE_INLINE constexpr const T& operator[](size_t index) const noexcept {
+	[[nodiscard]] LCF_FORCE_INLINE constexpr const T& operator[](size_t index) const noexcept {
 		return std::assume_aligned<alloc_align>(data_ptr_)[index];
 	}
 
-	[[nodiscard]] FORCE_INLINE constexpr T* get(size_t index) noexcept {
+	[[nodiscard]] LCF_FORCE_INLINE constexpr T* get(size_t index) noexcept {
 		return index < index_ ? std::assume_aligned<alloc_align>(data_ptr_) + index : nullptr;
 	}
 
-	[[nodiscard]] FORCE_INLINE constexpr const T* get(size_t index) const noexcept {
+	[[nodiscard]] LCF_FORCE_INLINE constexpr const T* get(size_t index) const noexcept {
 		return index < index_ ? std::assume_aligned<alloc_align>(data_ptr_) + index : nullptr;
 	}
 
 	// 越界保护访问: index 越界时改访问 error_index, error_index 也越界时回落到 0
-	[[nodiscard]] FORCE_INLINE constexpr T& get(size_t index, size_t error_index) noexcept {
+	[[nodiscard]] LCF_FORCE_INLINE constexpr T& get(size_t index, size_t error_index) noexcept {
 		if (index_ == 0) [[unlikely]] {
 			LCF_TRAP();   // 空容器无合法元素
 		}
@@ -903,7 +903,7 @@ public:
 		return data_ptr_[i];
 	}
 
-	[[nodiscard]] FORCE_INLINE constexpr const T& get(size_t index, size_t error_index) const noexcept {
+	[[nodiscard]] LCF_FORCE_INLINE constexpr const T& get(size_t index, size_t error_index) const noexcept {
 		if (index_ == 0) [[unlikely]] {
 			LCF_TRAP();
 		}
@@ -911,21 +911,21 @@ public:
 		return data_ptr_[i];
 	}
 
-	[[nodiscard]] FORCE_INLINE constexpr T& front() noexcept { return std::assume_aligned<alloc_align>(data_ptr_)[0]; }
-	[[nodiscard]] FORCE_INLINE constexpr const T& front() const noexcept { return std::assume_aligned<alloc_align>(data_ptr_)[0]; }
-	[[nodiscard]] FORCE_INLINE constexpr T& back() noexcept { return std::assume_aligned<alloc_align>(data_ptr_)[index_ - 1]; }
-	[[nodiscard]] FORCE_INLINE constexpr const T& back() const noexcept { return std::assume_aligned<alloc_align>(data_ptr_)[index_ - 1]; }
+	[[nodiscard]] LCF_FORCE_INLINE constexpr T& front() noexcept { return std::assume_aligned<alloc_align>(data_ptr_)[0]; }
+	[[nodiscard]] LCF_FORCE_INLINE constexpr const T& front() const noexcept { return std::assume_aligned<alloc_align>(data_ptr_)[0]; }
+	[[nodiscard]] LCF_FORCE_INLINE constexpr T& back() noexcept { return std::assume_aligned<alloc_align>(data_ptr_)[index_ - 1]; }
+	[[nodiscard]] LCF_FORCE_INLINE constexpr const T& back() const noexcept { return std::assume_aligned<alloc_align>(data_ptr_)[index_ - 1]; }
 
-	[[nodiscard]] FORCE_INLINE constexpr pointer data() noexcept { return std::assume_aligned<alloc_align>(data_ptr_); }
-	[[nodiscard]] FORCE_INLINE constexpr const_pointer data() const noexcept { return std::assume_aligned<alloc_align>(data_ptr_); }
+	[[nodiscard]] LCF_FORCE_INLINE constexpr pointer data() noexcept { return std::assume_aligned<alloc_align>(data_ptr_); }
+	[[nodiscard]] LCF_FORCE_INLINE constexpr const_pointer data() const noexcept { return std::assume_aligned<alloc_align>(data_ptr_); }
 
-	[[nodiscard]] FORCE_INLINE constexpr iterator begin() noexcept { return std::assume_aligned<alloc_align>(data_ptr_); }
-	[[nodiscard]] FORCE_INLINE constexpr const_iterator begin() const noexcept { return std::assume_aligned<alloc_align>(data_ptr_); }
-	[[nodiscard]] FORCE_INLINE constexpr const_iterator cbegin() const noexcept { return std::assume_aligned<alloc_align>(data_ptr_); }
+	[[nodiscard]] LCF_FORCE_INLINE constexpr iterator begin() noexcept { return std::assume_aligned<alloc_align>(data_ptr_); }
+	[[nodiscard]] LCF_FORCE_INLINE constexpr const_iterator begin() const noexcept { return std::assume_aligned<alloc_align>(data_ptr_); }
+	[[nodiscard]] LCF_FORCE_INLINE constexpr const_iterator cbegin() const noexcept { return std::assume_aligned<alloc_align>(data_ptr_); }
 	// 不用 assume_aligned: 使编译器可见 end()-data_ptr_==index_, 否则 erase(end-1) 无法向量化
-	[[nodiscard]] FORCE_INLINE constexpr iterator end() noexcept { return data_ptr_ + index_; }
-	[[nodiscard]] FORCE_INLINE constexpr const_iterator end() const noexcept { return data_ptr_ + index_; }
-	[[nodiscard]] FORCE_INLINE constexpr const_iterator cend() const noexcept { return data_ptr_ + index_; }
+	[[nodiscard]] LCF_FORCE_INLINE constexpr iterator end() noexcept { return data_ptr_ + index_; }
+	[[nodiscard]] LCF_FORCE_INLINE constexpr const_iterator end() const noexcept { return data_ptr_ + index_; }
+	[[nodiscard]] LCF_FORCE_INLINE constexpr const_iterator cend() const noexcept { return data_ptr_ + index_; }
 
 	[[nodiscard]] constexpr size_type capacity() const noexcept { return maximum_quantity_; }
 	[[nodiscard]] constexpr size_type size() const noexcept { return index_; }
@@ -943,7 +943,7 @@ public:
 		index_ = 0;
 	}
 
-	FORCE_INLINE void increase_capacity(size_t new_capacity) noexcept {
+	LCF_FORCE_INLINE void increase_capacity(size_t new_capacity) noexcept {
 		if (new_capacity > maximum_quantity_) [[unlikely]] {
 			size_t new_cap = calculate_new_capacity(maximum_quantity_);
 			if (new_cap < new_capacity) { new_cap = new_capacity; }
@@ -1049,7 +1049,7 @@ public:
 	}
 
 	template <typename... Args>
-	FORCE_INLINE void emplace_back(Args&&... args) noexcept {
+	LCF_FORCE_INLINE void emplace_back(Args&&... args) noexcept {
 		if (index_ >= maximum_quantity_) [[unlikely]] {
 			grow_data(calculate_new_capacity(maximum_quantity_));
 		}
@@ -1059,7 +1059,7 @@ public:
 
 	// 无容量检查的追加 (unchecked), 调用方需确保 capacity 足够
 	template <typename... Args>
-	FORCE_INLINE void emplace_back_unchecked(Args&&... args) noexcept {
+	LCF_FORCE_INLINE void emplace_back_unchecked(Args&&... args) noexcept {
 		if constexpr (sizeof(T) > 128) {
 			if (index_ >= maximum_quantity_) { LCF_UNREACHABLE(); }
 		}
@@ -1067,11 +1067,11 @@ public:
 		++index_;
 	}
 
-	FORCE_INLINE void append_bulk(const T* src, size_t count) noexcept {
+	LCF_FORCE_INLINE void append_bulk(const T* src, size_t count) noexcept {
 		append_bulk_impl<false>(src, count);
 	}
 
-	FORCE_INLINE void append_bulk_move(T* src, size_t count) noexcept {
+	LCF_FORCE_INLINE void append_bulk_move(T* src, size_t count) noexcept {
 		append_bulk_impl<true>(src, count);
 	}
 
@@ -1147,7 +1147,7 @@ public:
 	}
 
 	// 强制 always_inline: 非 inline 时 GCC 不内联, POD32 比 vector 慢 7%
-	FORCE_INLINE void pop_back() noexcept {
+	LCF_FORCE_INLINE void pop_back() noexcept {
 		if constexpr (!std::is_trivially_destructible_v<T>) {
 			data_ptr_[--index_].~T();
 		}
@@ -1234,7 +1234,7 @@ public:
 
 	// 无序删除: 末尾元素移到 index 后弹出末尾, 返回被移动元素的原下标
 	// index 越界时不做修改, 返回当前 size
-	FORCE_INLINE size_t erase_unordered(size_t index) noexcept {
+	LCF_FORCE_INLINE size_t erase_unordered(size_t index) noexcept {
 		if (index >= index_) [[unlikely]] {
 			return index_;
 		}
@@ -1677,7 +1677,7 @@ public:
 
 private:
 	template <bool Move>
-	FORCE_INLINE void append_bulk_impl(const T* src, size_t count) noexcept
+	LCF_FORCE_INLINE void append_bulk_impl(const T* src, size_t count) noexcept
 	{
 		if (count == 0) { return; }
 		if (count > static_cast<size_t>(-1) - index_) [[unlikely]] {
@@ -1705,7 +1705,7 @@ private:
 	}
 
 	// 中间删除 noinline 避免污染快路径, 内部实现不外露
-	NOINLINE iterator erase_middle(size_t index, size_t move_count) noexcept
+	LCF_NOINLINE iterator erase_middle(size_t index, size_t move_count) noexcept
 	{
 		if constexpr (std::is_trivially_copyable_v<T>) {
 			if (move_count <= 8) {

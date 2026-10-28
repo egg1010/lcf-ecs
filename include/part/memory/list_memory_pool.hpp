@@ -931,7 +931,7 @@ public:
     }
 
     template <size_t Size>
-    [[nodiscard]] FORCE_INLINE void* acquire_sized() noexcept
+    [[nodiscard]] LCF_FORCE_INLINE void* acquire_sized() noexcept
     {
         static_assert(Size > 0, "acquire_sized<Size> requires Size > 0");
         if constexpr (Size > SMALL_BLOCK_THRESHOLD)
@@ -952,7 +952,7 @@ public:
     }
 
     template <size_t Size>
-    [[nodiscard]] FORCE_INLINE void* acquire_sized(
+    [[nodiscard]] LCF_FORCE_INLINE void* acquire_sized(
         operating_message& error,
         std::source_location site = std::source_location::current()) noexcept
     {
@@ -1013,7 +1013,7 @@ public:
     }
 
     template <typename T, typename... Args>
-    [[nodiscard]] FORCE_INLINE T* create(Args&&... args) noexcept
+    [[nodiscard]] LCF_FORCE_INLINE T* create(Args&&... args) noexcept
     {
         void* ptr;
         if constexpr (alignof(T) > ALIGNMENT)
@@ -1067,21 +1067,21 @@ public:
     }
 
     template <size_t Size>
-    FORCE_INLINE bool soft_delete_sized(void* ptr) noexcept
+    LCF_FORCE_INLINE bool soft_delete_sized(void* ptr) noexcept
     {
         static_assert(Size > 0, "soft_delete_sized<Size> requires Size > 0");
         return release_validated<Size>(ptr, false);
     }
 
     template <size_t Size>
-    FORCE_INLINE bool hard_delete_sized(void* ptr) noexcept
+    LCF_FORCE_INLINE bool hard_delete_sized(void* ptr) noexcept
     {
         static_assert(Size > 0, "hard_delete_sized<Size> requires Size > 0");
         return release_validated<Size>(ptr, true);
     }
 
     template <typename T>
-    FORCE_INLINE void dispose(T* ptr) noexcept
+    LCF_FORCE_INLINE void dispose(T* ptr) noexcept
     {
         if (ptr) [[likely]]
         {
