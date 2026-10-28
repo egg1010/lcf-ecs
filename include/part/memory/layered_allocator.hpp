@@ -1,29 +1,42 @@
 #pragma once
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <algorithm>
+#include <bit>
 #include "slab_allocator.hpp"
 #include "list_memory_pool.hpp"
+#include "../dense.hpp"
 #include "../force_inline.hpp"
+#include "memory_common.hpp"
 
 namespace memory {
 
-// 分层分配器: 小块走 slab, 大块走 list_memory_pool
+// 分层分配器: 小块走 slab, 大块走 list_memory_pool; 删除入口按归属层透传
 class layered_allocator
 {
 private:
-    // 4 档 slab (2 的幂)
     static constexpr size_t SLAB_COUNT = 4;
-    static constexpr size_t SLAB_SIZES[SLAB_COUNT] = {16, 32, 64, 128};
+    static constexpr size_t SLAB_SIZES[SLAB_COUNT] = { 16, 32, 64, 128 };
     static constexpr size_t SLAB_MAX = 128;
+
+    struct slab_range
+    {
+        uintptr_t begin;
+        uintptr_t end;
+        slab_allocator::chunk_view view;
+        size_t layer;
+    };
 
     std::array<slab_allocator, SLAB_COUNT> slabs_;
     list_memory_pool big_pool_;
+    dense<slab_range> slab_ranges_;
+    std::array<size_t, SLAB_COUNT> indexed_chunk_counts_{};
+    size_t live_bytes_{ 0 };
+    size_t peak_live_bytes_{ 0 };
 
-    // 无分支定位: 16→0, 17-32→1, 33-64→2, 65-128→3
-    //   n<=16 显式返回 0, 避免 bit_width(n-1)-4 对 n=1..8 无符号下溢 (M10)
+    // 16→0, 17-32→1, 33-64→2, 65-128→3
     [[nodiscard]] static constexpr size_t slab_index(size_t n) noexcept
     {
         if (n <= SLAB_SIZES[0])
@@ -32,23 +45,124 @@ private:
         }
         if (n <= SLAB_MAX)
         {
-            return std::bit_width(n - 1) - 4;
+            return static_cast<size_t>(std::bit_width(n - 1)) - 4;
         }
         return SLAB_COUNT;
     }
 
-    // M03: 逐 slab 精确 owns 判定, 各 slab chunk 地址可交错, 不能用整体跨度二分
-    //   owns 内部先 min/max 快速拒绝, 多数情况 O(1); 命中范围才二分 chunk
-    [[nodiscard]] FORCE_INLINE size_t find_slab(const void* p) const noexcept
+    void account_live_delta(size_t before, size_t after) noexcept
     {
-        for (size_t i = 0; i < SLAB_COUNT; ++i)
+        if (after > before) [[likely]]
         {
-            if (slabs_[i].owns(p))
+            const size_t added = after - before;
+            if (live_bytes_ > SIZE_MAX - added) [[unlikely]]
             {
-                return i;
+                LCF_TRAP();
+            }
+            live_bytes_ += added;
+            if (live_bytes_ > peak_live_bytes_) [[unlikely]]
+            {
+                peak_live_bytes_ = live_bytes_;
             }
         }
-        return SLAB_COUNT;
+        else if (after < before)
+        {
+            const size_t removed = before - after;
+            if (removed > live_bytes_) [[unlikely]]
+            {
+                LCF_TRAP();
+            }
+            live_bytes_ -= removed;
+        }
+    }
+
+    void refresh_slab_ranges() noexcept
+    {
+        slab_ranges_.clear();
+        for (size_t layer = 0; layer < SLAB_COUNT; ++layer)
+        {
+            const slab_allocator& slab = slabs_[layer];
+            indexed_chunk_counts_[layer] = slab.chunks_.size();
+            for (size_t i = 0; i < slab.chunks_.size(); ++i)
+            {
+                const slab_allocator::chunk_view view = slab_allocator::view_of(slab.chunks_[i]);
+                slab_ranges_.emplace_back(slab_range{
+                    reinterpret_cast<uintptr_t>(view.data),
+                    reinterpret_cast<uintptr_t>(view.end),
+                    view,
+                    layer,
+                });
+            }
+        }
+        std::sort(slab_ranges_.begin(), slab_ranges_.end(),
+                  [](const slab_range& a, const slab_range& b)
+                  {
+                      return a.begin < b.begin;
+                  });
+    }
+
+    void sync_slab_ranges(size_t layer) noexcept
+    {
+        if (indexed_chunk_counts_[layer] != slabs_[layer].chunks_.size()) [[unlikely]]
+        {
+            refresh_slab_ranges();
+        }
+    }
+
+    [[nodiscard]] const slab_range* find_slab_range(const void* p) const noexcept
+    {
+        const uintptr_t addr = reinterpret_cast<uintptr_t>(p);
+        size_t lo = 0;
+        size_t hi = slab_ranges_.size();
+        while (lo < hi)
+        {
+            const size_t mid = lo + (hi - lo) / 2;
+            if (slab_ranges_[mid].begin <= addr)
+            {
+                lo = mid + 1;
+            }
+            else
+            {
+                hi = mid;
+            }
+        }
+        if (lo == 0) [[unlikely]]
+        {
+            return nullptr;
+        }
+        const slab_range& range = slab_ranges_[lo - 1];
+        return addr < range.end ? &range : nullptr;
+    }
+
+    template <size_t MinSize>
+    bool release_routed(void* ptr, bool hard) noexcept
+    {
+        if (!ptr) [[unlikely]]
+        {
+            return false;
+        }
+        if (const slab_range* range = find_slab_range(ptr))
+        {
+            slab_allocator& slab = slabs_[range->layer];
+            const size_t before = slab.live_bytes_;
+            const bool released = slab.release_in_chunk(range->view, ptr, MinSize, hard);
+            account_live_delta(before, slab.live_bytes_);
+            return released;
+        }
+        const size_t before = big_pool_.live_bytes_;
+        bool released = false;
+        if constexpr (MinSize > 0)
+        {
+            released = hard ? big_pool_.hard_delete_sized<MinSize>(ptr)
+                            : big_pool_.soft_delete_sized<MinSize>(ptr);
+        }
+        else
+        {
+            released = hard ? big_pool_.hard_delete(ptr)
+                            : big_pool_.soft_delete(ptr);
+        }
+        account_live_delta(before, big_pool_.live_bytes_);
+        return released;
     }
 
 public:
@@ -66,113 +180,158 @@ public:
 
     layered_allocator(const layered_allocator&) = delete;
     layered_allocator& operator=(const layered_allocator&) = delete;
-    layered_allocator(layered_allocator&&) noexcept = default;
-    layered_allocator& operator=(layered_allocator&&) noexcept = default;
 
-    // slab 失败自动降级到 big_pool
-    [[nodiscard]] FORCE_INLINE void* allocate(size_t n) noexcept
+    layered_allocator(layered_allocator&& other) noexcept
+        : layered_allocator()
     {
-        if (n == 0) [[unlikely]]
+        slabs_.swap(other.slabs_);
+        big_pool_.swap(other.big_pool_);
+        slab_ranges_.swap(other.slab_ranges_);
+        std::swap(indexed_chunk_counts_, other.indexed_chunk_counts_);
+        std::swap(live_bytes_, other.live_bytes_);
+        std::swap(peak_live_bytes_, other.peak_live_bytes_);
+    }
+
+    layered_allocator& operator=(layered_allocator&& other) noexcept
+    {
+        if (this != &other) [[likely]]
+        {
+            release_all();
+            reset_stats();
+            slabs_.swap(other.slabs_);
+            big_pool_.swap(other.big_pool_);
+            slab_ranges_.swap(other.slab_ranges_);
+            std::swap(indexed_chunk_counts_, other.indexed_chunk_counts_);
+            std::swap(live_bytes_, other.live_bytes_);
+            std::swap(peak_live_bytes_, other.peak_live_bytes_);
+        }
+        return *this;
+    }
+
+    // === 分配 ===
+    [[nodiscard]] FORCE_INLINE void* acquire(size_t bytes) noexcept
+    {
+        if (bytes == 0) [[unlikely]]
         {
             return nullptr;
         }
-        size_t idx = slab_index(n);
+        const size_t idx = slab_index(bytes);
         if (idx < SLAB_COUNT) [[likely]]
         {
-            void* p = slabs_[idx].allocate();
+            slab_allocator& slab = slabs_[idx];
+            const size_t before = slab.live_bytes_;
+            void* p = slab.acquire();
+            account_live_delta(before, slab.live_bytes_);
             if (p) [[likely]]
             {
-                return p;
-            }
-            return big_pool_.allocate(n);   // M09: 回退块, 释放时经 owns 判定回大池
-        }
-        return big_pool_.allocate(n);
-    }
-
-    // 无大小提示时用 find_slab 定位
-    FORCE_INLINE void deallocate(void* p) noexcept
-    {
-        if (!p) [[unlikely]]
-        {
-            return;
-        }
-        size_t idx = find_slab(p);
-        if (idx < SLAB_COUNT) [[likely]]
-        {
-            slabs_[idx].deallocate(p);
-            return;
-        }
-        big_pool_.soft_deallocate(p);
-    }
-
-    // 带大小提示: 按档位直查候选 slab, 经 owns 确认后释放
-    //   slab 分配失败回退到大池的块不属 slab, owns 拦截后正确回大池 (M09)
-    FORCE_INLINE void deallocate(void* p, size_t n) noexcept
-    {
-        if (!p) [[unlikely]]
-        {
-            return;
-        }
-        size_t idx = slab_index(n);
-        if (idx < SLAB_COUNT) [[likely]]
-        {
-            if (slabs_[idx].owns(p)) [[likely]]
-            {
-                slabs_[idx].deallocate(p);
-                return;
-            }
-        }
-        big_pool_.soft_deallocate(p);
-    }
-
-    // 同档原位 / 跨层迁移
-    [[nodiscard]] void* reallocate(void* p, size_t old_n, size_t new_n) noexcept
-    {
-        if (new_n == 0)
-        {
-            deallocate(p, old_n);
-            return nullptr;
-        }
-        if (!p)
-        {
-            return allocate(new_n);
-        }
-        size_t old_idx = slab_index(old_n);
-        size_t new_idx = slab_index(new_n);
-        if (old_idx == new_idx && old_idx < SLAB_COUNT)
-        {
-            return p;
-        }
-        if (old_idx >= SLAB_COUNT && new_idx >= SLAB_COUNT)
-        {
-            if (big_pool_.reallocate_inplace(p, old_n, new_n))
-            {
+                sync_slab_ranges(idx);
                 return p;
             }
         }
-        void* new_p = allocate(new_n);
-        if (!new_p) [[unlikely]]
+        const size_t before = big_pool_.live_bytes_;
+        void* p = big_pool_.acquire(bytes);
+        account_live_delta(before, big_pool_.live_bytes_);
+        return p;
+    }
+
+    [[nodiscard]] FORCE_INLINE void* acquire(
+        size_t bytes, operating_message& error,
+        std::source_location site = std::source_location::current()) noexcept
+    {
+        void* p = acquire(bytes);
+        if (!p) [[unlikely]]
+        {
+            error.write_failure(om_err_out_of_memory.code, msg_level::error, site);
+        }
+        return p;
+    }
+
+    template <size_t Size>
+    [[nodiscard]] FORCE_INLINE void* acquire_sized() noexcept
+    {
+        static_assert(Size > 0, "acquire_sized<Size> requires Size > 0");
+        if constexpr (Size <= SLAB_MAX)
+        {
+            constexpr size_t idx = slab_index(Size);
+            slab_allocator& slab = slabs_[idx];
+            const size_t before = slab.live_bytes_;
+            void* p = slab.acquire_sized<Size>();
+            account_live_delta(before, slab.live_bytes_);
+            if (p) [[likely]]
+            {
+                sync_slab_ranges(idx);
+                return p;
+            }
+        }
+        const size_t before = big_pool_.live_bytes_;
+        void* p = big_pool_.acquire_sized<Size>();
+        account_live_delta(before, big_pool_.live_bytes_);
+        return p;
+    }
+
+    template <size_t Size>
+    [[nodiscard]] FORCE_INLINE void* acquire_sized(
+        operating_message& error,
+        std::source_location site = std::source_location::current()) noexcept
+    {
+        void* p = acquire_sized<Size>();
+        if (!p) [[unlikely]]
+        {
+            error.write_failure(om_err_out_of_memory.code, msg_level::error, site);
+        }
+        return p;
+    }
+
+    [[nodiscard]] FORCE_INLINE void* acquire_zeroed(size_t bytes) noexcept
+    {
+        void* p = acquire(bytes);
+        if (p) [[likely]]
+        {
+            std::memset(p, 0, bytes);
+        }
+        return p;
+    }
+
+    [[nodiscard]] void* acquire_aligned(size_t bytes, size_t alignment) noexcept
+    {
+        if (bytes == 0 || alignment == 0) [[unlikely]]
         {
             return nullptr;
         }
-        size_t copy_size = old_n < new_n ? old_n : new_n;
-        std::memcpy(new_p, p, copy_size);
-        deallocate(p, old_n);
-        return new_p;
+        if ((alignment & (alignment - 1)) != 0) [[unlikely]]
+        {
+            return nullptr;
+        }
+        const size_t idx = slab_index(bytes);
+        if (idx < SLAB_COUNT && alignment <= SLAB_SIZES[idx]) [[likely]]
+        {
+            slab_allocator& slab = slabs_[idx];
+            const size_t before = slab.live_bytes_;
+            void* p = slab.acquire();
+            account_live_delta(before, slab.live_bytes_);
+            if (p) [[likely]]
+            {
+                sync_slab_ranges(idx);
+                return p;
+            }
+        }
+        const size_t before = big_pool_.live_bytes_;
+        void* p = big_pool_.acquire_aligned(bytes, alignment);
+        account_live_delta(before, big_pool_.live_bytes_);
+        return p;
     }
 
-    // M05: 过度对齐类型 (alignof(T) > 16) 走 allocate_aligned, destroy 对称释放
     template <typename T, typename... Args>
-    [[nodiscard]] FORCE_INLINE T* construct(Args&&... args) noexcept
+    [[nodiscard]] FORCE_INLINE T* create(Args&&... args) noexcept
     {
         void* ptr;
-        if constexpr (alignof(T) > SLAB_SIZES[0])
+        if constexpr (alignof(T) > base_alignment)
         {
-            ptr = allocate_aligned(sizeof(T), alignof(T));
+            ptr = acquire_aligned(sizeof(T), alignof(T));
         }
         else
         {
-            ptr = allocate(sizeof(T));
+            ptr = acquire_sized<sizeof(T)>();
         }
         if (!ptr) [[unlikely]]
         {
@@ -181,206 +340,266 @@ public:
         return new (ptr) T(std::forward<Args>(args)...);
     }
 
-    template <typename T>
-    FORCE_INLINE void destroy(T* ptr) noexcept
+    template <typename T, typename... Args>
+    [[nodiscard]] T* create_array(size_t count, Args&&... args) noexcept
     {
-        if (!ptr) [[unlikely]]
+        if (count == 0 || count > SIZE_MAX / sizeof(T)) [[unlikely]]
         {
-            return;
+            return nullptr;
         }
-        ptr->~T();
-        if constexpr (alignof(T) > SLAB_SIZES[0])
+        void* memory;
+        if constexpr (alignof(T) > base_alignment)
         {
-            deallocate_aligned(ptr);
+            memory = acquire_aligned(count * sizeof(T), alignof(T));
         }
         else
         {
-            deallocate(ptr, sizeof(T));
+            memory = acquire(count * sizeof(T));
         }
+        if (!memory) [[unlikely]]
+        {
+            return nullptr;
+        }
+        T* arr = static_cast<T*>(memory);
+        for (size_t i = 0; i < count; ++i)
+        {
+            new (arr + i) T(args...);
+        }
+        return arr;
     }
 
-    [[nodiscard]] bool owns(const void* p) const noexcept
+    // === 释放 ===
+    bool soft_delete(void* ptr) noexcept
     {
-        size_t idx = find_slab(p);
-        if (idx < SLAB_COUNT)
+        return release_routed<0>(ptr, false);
+    }
+
+    bool hard_delete(void* ptr) noexcept
+    {
+        return release_routed<0>(ptr, true);
+    }
+
+    template <size_t Size>
+    bool soft_delete_sized(void* ptr) noexcept
+    {
+        static_assert(Size > 0, "soft_delete_sized<Size> requires Size > 0");
+        return release_routed<Size>(ptr, false);
+    }
+
+    template <size_t Size>
+    bool hard_delete_sized(void* ptr) noexcept
+    {
+        static_assert(Size > 0, "hard_delete_sized<Size> requires Size > 0");
+        return release_routed<Size>(ptr, true);
+    }
+
+    bool soft_delete(void* ptr, operating_message& error,
+                     std::source_location site = std::source_location::current()) noexcept
+    {
+        if (soft_delete(ptr))
         {
             return true;
         }
-        return big_pool_.owns(const_cast<void*>(p));
+        error.write_failure((ptr == nullptr) ? om_err_null_pointer.code : om_err_not_found.code,
+                            msg_level::warn, site);
+        return false;
     }
 
-    // 帧级回收: slab 重建自由链表, big_pool 释放全部
+    bool hard_delete(void* ptr, operating_message& error,
+                     std::source_location site = std::source_location::current()) noexcept
+    {
+        if (hard_delete(ptr))
+        {
+            return true;
+        }
+        error.write_failure((ptr == nullptr) ? om_err_null_pointer.code : om_err_not_found.code,
+                            msg_level::warn, site);
+        return false;
+    }
+
+    template <typename T>
+    FORCE_INLINE void dispose(T* ptr) noexcept
+    {
+        if (ptr) [[likely]]
+        {
+            ptr->~T();
+        }
+    }
+
+    template <typename T>
+    FORCE_INLINE void dispose_array(T* ptr, size_t count) noexcept
+    {
+        if (ptr)
+        {
+            for (size_t i = count; i > 0; --i)
+            {
+                ptr[i - 1].~T();
+            }
+        }
+    }
+
+    // === 查询 ===
+    [[nodiscard]] bool owns(const void* ptr) const noexcept
+    {
+        if (!ptr) [[unlikely]]
+        {
+            return false;
+        }
+        if (const slab_range* range = find_slab_range(ptr))
+        {
+            return slabs_[range->layer].size_in_chunk(range->view, ptr) != 0;
+        }
+        return big_pool_.owns(ptr);
+    }
+
+    [[nodiscard]] size_t size_of(const void* ptr) const noexcept
+    {
+        if (!ptr) [[unlikely]]
+        {
+            return 0;
+        }
+        if (const slab_range* range = find_slab_range(ptr))
+        {
+            return slabs_[range->layer].size_in_chunk(range->view, ptr);
+        }
+        return big_pool_.size_of(ptr);
+    }
+
+    [[nodiscard]] memory_stats stats() const noexcept
+    {
+        memory_stats s{};
+        for (size_t i = 0; i < SLAB_COUNT; ++i)
+        {
+            const memory_stats part = slabs_[i].stats();
+            s.reserved_bytes += part.reserved_bytes;
+            s.reusable_bytes += part.reusable_bytes;
+            s.acquire_count += part.acquire_count;
+            s.release_count += part.release_count;
+            s.soft_delete_count += part.soft_delete_count;
+            s.hard_delete_count += part.hard_delete_count;
+        }
+        const memory_stats big = big_pool_.stats();
+        s.reserved_bytes += big.reserved_bytes;
+        s.reusable_bytes += big.reusable_bytes;
+        s.live_bytes = live_bytes_;
+        s.peak_live_bytes = peak_live_bytes_;
+        s.acquire_count += big.acquire_count;
+        s.release_count += big.release_count;
+        s.soft_delete_count += big.soft_delete_count;
+        s.hard_delete_count += big.hard_delete_count;
+        return s;
+    }
+
+    [[nodiscard]] bool empty() const noexcept
+    {
+        return live_bytes_ == 0;
+    }
+
+    // === 池管理 ===
+    void reset_stats() noexcept
+    {
+        for (size_t i = 0; i < SLAB_COUNT; ++i)
+        {
+            slabs_[i].reset_stats();
+        }
+        big_pool_.reset_stats();
+        peak_live_bytes_ = live_bytes_;
+    }
+
     void reset() noexcept
     {
         for (size_t i = 0; i < SLAB_COUNT; ++i)
         {
             slabs_[i].reset();
         }
-        big_pool_.release_all_memory();
+        big_pool_.reset();
+        live_bytes_ = 0;
     }
 
-    [[nodiscard]] size_t total_allocated_bytes() const noexcept
+    void release_all() noexcept
     {
-        size_t total = big_pool_.total_allocated_bytes();
         for (size_t i = 0; i < SLAB_COUNT; ++i)
         {
-            total += slabs_[i].used_bytes();
+            slabs_[i].release_all();
         }
-        return total;
+        big_pool_.release_all();
+        slab_ranges_.reduce_capacity(0);
+        indexed_chunk_counts_.fill(0);
+        live_bytes_ = 0;
     }
 
-    [[nodiscard]] size_t total_capacity_bytes() const noexcept
+    // === 重分配 ===
+    [[nodiscard]] bool resize_inplace(void* ptr, size_t old_bytes, size_t new_bytes) noexcept
     {
-        size_t total = big_pool_.total_capacity_bytes();
-        for (size_t i = 0; i < SLAB_COUNT; ++i)
-        {
-            total += slabs_[i].total_bytes();
-        }
-        return total;
-    }
-
-    [[nodiscard]] FORCE_INLINE void* allocate_zeroed(size_t n) noexcept
-    {
-        if (n <= SLAB_MAX) [[likely]]
-        {
-            size_t idx = slab_index(n);
-            if (idx < SLAB_COUNT)
-            {
-                void* p = slabs_[idx].allocate_zeroed();
-                if (p) [[likely]]
-                {
-                    return p;
-                }
-            }
-        }
-        return big_pool_.allocate_zeroed(n);
-    }
-
-    [[nodiscard]] FORCE_INLINE bool reallocate_inplace(void* p, size_t old_n, size_t new_n) noexcept
-    {
-        if (!p) [[unlikely]]
+        if (!ptr || new_bytes == 0) [[unlikely]]
         {
             return false;
         }
-        size_t old_idx = slab_index(old_n);
-        size_t new_idx = slab_index(new_n);
-        if (old_idx == new_idx && old_idx < SLAB_COUNT)
+        if (const slab_range* range = find_slab_range(ptr))
         {
-            return true;
-        }
-        if (old_idx >= SLAB_COUNT && new_idx >= SLAB_COUNT)
-        {
-            return big_pool_.reallocate_inplace(p, old_n, new_n);
-        }
-        return false;
-    }
-
-    // M04: 按 align 路由, 仅当请求对齐不超过 slab 档位实际保证时才走 slab
-    //   slab 档位 i 块大小 SLAB_SIZES[i], 块按其大小对齐, 故可保证 min(SLAB_SIZES[idx], n 的 2 幂整除值)
-    [[nodiscard]] void* allocate_aligned(size_t n, size_t align) noexcept
-    {
-        if (n == 0 || align == 0) [[unlikely]]
-        {
-            return nullptr;
-        }
-        align = std::bit_ceil(align);   // 对齐掩码要求 2 的幂
-        if (n <= SLAB_MAX) [[likely]]
-        {
-            size_t idx = slab_index(n);
-            if (idx < SLAB_COUNT && align <= SLAB_SIZES[idx]) [[likely]]
+            slab_allocator& slab = slabs_[range->layer];
+            if (slab.size_in_chunk(range->view, ptr) == 0) [[unlikely]]
             {
-                // 档位块大小是 2 的幂, 块按块大小对齐, 故满足 align <= 块大小
-                void* p = slabs_[idx].allocate();
-                if (p) [[likely]]
-                {
-                    return p;
-                }
+                return false;
             }
+            const size_t capacity = slab.block_size();
+            return old_bytes <= capacity && new_bytes <= capacity;
         }
-        return big_pool_.allocate_aligned(n, align);
+        const size_t before = big_pool_.live_bytes_;
+        const bool resized = big_pool_.resize_inplace(ptr, old_bytes, new_bytes);
+        account_live_delta(before, big_pool_.live_bytes_);
+        return resized;
     }
 
-    void deallocate_aligned(void* p) noexcept
+    [[nodiscard]] void* resize(void* ptr, size_t old_bytes, size_t new_bytes) noexcept
     {
-        if (!p) [[unlikely]]
+        if (new_bytes == 0) [[unlikely]]
         {
-            return;
-        }
-        size_t idx = find_slab(p);
-        if (idx < SLAB_COUNT) [[likely]]
-        {
-            slabs_[idx].deallocate(p);
-            return;
-        }
-        big_pool_.deallocate_aligned(p);
-    }
-
-    [[nodiscard]] size_t allocation_size(const void* p) const noexcept
-    {
-        if (!p) [[unlikely]]
-        {
-            return 0;
-        }
-        size_t idx = find_slab(p);
-        if (idx < SLAB_COUNT)
-        {
-            return slabs_[idx].block_size();
-        }
-        return big_pool_.allocation_size(const_cast<void*>(p));
-    }
-
-    template <typename T, typename... Args>
-    [[nodiscard]] FORCE_INLINE T* construct_array(size_t count, Args&&... args) noexcept
-    {
-        T* arr = static_cast<T*>(allocate(count * sizeof(T)));
-        if (!arr) [[unlikely]]
-        {
+            soft_delete(ptr);
             return nullptr;
         }
-        for (size_t i = 0; i < count; ++i)
+        if (!ptr) [[unlikely]]
         {
-            new (arr + i) T(std::forward<Args>(args)...);
+            return acquire(new_bytes);
         }
-        return arr;
+        if (const slab_range* range = find_slab_range(ptr))
+        {
+            slab_allocator& slab = slabs_[range->layer];
+            const size_t capacity = slab.block_size();
+            if (slab.size_in_chunk(range->view, ptr) == 0) [[unlikely]]
+            {
+                return nullptr;
+            }
+            if (old_bytes <= capacity && new_bytes <= capacity)
+            {
+                return ptr;
+            }
+            void* new_ptr = acquire_aligned(new_bytes, capacity);
+            if (!new_ptr) [[unlikely]]
+            {
+                return nullptr;
+            }
+            size_t copy_size = old_bytes < new_bytes ? old_bytes : new_bytes;
+            if (copy_size > capacity)
+            {
+                copy_size = capacity;
+            }
+            if (copy_size > 0)
+            {
+                std::memcpy(new_ptr, ptr, copy_size);
+            }
+            soft_delete(ptr);
+            return new_ptr;
+        }
+        const size_t before = big_pool_.live_bytes_;
+        void* resized = big_pool_.resize(ptr, old_bytes, new_bytes);
+        account_live_delta(before, big_pool_.live_bytes_);
+        return resized;
     }
 
-    [[nodiscard]] size_t peak_allocated_bytes() const noexcept
-    {
-        size_t total = big_pool_.peak_allocated_bytes();
-        for (size_t i = 0; i < SLAB_COUNT; ++i)
-        {
-            total += slabs_[i].peak_used_blocks() * slabs_[i].block_size();
-        }
-        return total;
-    }
-
-    struct layered_stats
-    {
-        size_t slab_used_bytes;
-        size_t slab_total_bytes;
-        size_t big_pool_used_bytes;
-        size_t big_pool_total_bytes;
-        size_t big_pool_peak_bytes;
-    };
-
-    [[nodiscard]] layered_stats stats() const noexcept
-    {
-        layered_stats s{};
-        for (size_t i = 0; i < SLAB_COUNT; ++i)
-        {
-            s.slab_used_bytes += slabs_[i].used_bytes();
-            s.slab_total_bytes += slabs_[i].total_bytes();
-        }
-        s.big_pool_used_bytes = big_pool_.total_allocated_bytes();
-        s.big_pool_total_bytes = big_pool_.total_capacity_bytes();
-        s.big_pool_peak_bytes = big_pool_.peak_allocated_bytes();
-        return s;
-    }
-
+    // === 池专属访问 ===
     [[nodiscard]] constexpr size_t slab_max() const noexcept { return SLAB_MAX; }
-    [[nodiscard]] list_memory_pool& big_pool() noexcept { return big_pool_; }
     [[nodiscard]] const list_memory_pool& big_pool() const noexcept { return big_pool_; }
-    [[nodiscard]] slab_allocator& slab(size_t i) noexcept { return slabs_[i]; }
     [[nodiscard]] const slab_allocator& slab(size_t i) const noexcept { return slabs_[i]; }
 };
 

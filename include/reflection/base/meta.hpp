@@ -1,20 +1,41 @@
 #pragma once
 
+#include <array>
+#include <atomic>
+#include <concepts>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <initializer_list>
+#include <memory>
+#include <new>
+#include <optional>
+#include <source_location>
+#include <string_view>
+#include <type_traits>
+#include <utility>
+
+#include "config/reflect_config.hpp"
+#include "part/dense.hpp"
+#include "part/fnv1a.hpp"
+#include "part/force_inline.hpp"
+#include "part/operating_message.hpp"
+#include "part/type/type_id.hpp"
+#include "part/type/void_any.hpp"
+#include "reflection/base/invoke.hpp"
+#include "reflection/base/type_ops.hpp"
+
+// meta.hpp - 字段 / 方法 / 类型 / 枚举元数据
+// 命名空间: reflect
+
+// ============================================================================
+
 // meta.hpp - 反射元数据结构定义
 // 命名空间: reflect
 // 包含: 字段/方法/类型/枚举/属性/继承/构造 元数据
 
-#include <atomic>
-#include <cstdint>
-#include <cstddef>
-#include <array>
-#include <utility>
-#include "reflection/base/invoke.hpp"
-#include "part/fnv1a.hpp"
-#include "reflection/base/field_ops.hpp"
-#include "part/type/void_any.hpp"
-#include "part/dense.hpp"
-#include "config/reflect_config.hpp"
 
 namespace reflect {
 
@@ -28,16 +49,27 @@ struct attr_entry
     void_any value;         // 类型擦除值
 };
 
+// 字段标志
+inline constexpr uint8_t field_flag_const = 1u << 0;
+inline constexpr uint8_t field_flag_private = 1u << 1;
+
+// 类型槽位状态
+enum class type_state : uint8_t
+{
+    empty = 0,
+    live = 1,
+    retired = 2
+};
+
 // 字段元数据
 struct field_meta
 {
     const char* name;           // 字段名
     uint32_t offset;            // 相对对象起始的偏移量
     int type_id;                // 字段类型 id (数组时为元素类型 id)
-    bool is_const;              // 是否 const 成员
-    bool is_private;            // 是否私有成员
+    uint8_t flags;              // field_flag_* 位标志
     uint8_t array_rank;         // 数组维度 (0=标量, 1~4=数组)
-    uint8_t reserved;           // 对齐填充
+    uint16_t reserved;          // 对齐填充
     uint32_t total_elements;    // 数组总元素数 (0=非数组)
     std::array<uint32_t, 4> extents{};  // 每维元素数 (仅前 array_rank 个有效)
     uint32_t element_stride;    // 元素步长 (字节)
@@ -45,6 +77,9 @@ struct field_meta
 
     // #4 属性/注解 (动态, 默认空)
     dense<attr_entry> attrs;
+
+    [[nodiscard]] bool is_const() const noexcept { return (flags & field_flag_const) != 0; }
+    [[nodiscard]] bool is_private() const noexcept { return (flags & field_flag_private) != 0; }
 };
 
 // === 方法参数类型 id 静态存储 (#12) ===
@@ -61,6 +96,8 @@ struct method_meta
     bool is_static;                 // 静态方法
     const int* arg_type_ids;        // #12 参数类型 id 数组 (nullptr=未设置)
     int vtable_offset;              // #6 虚函数 vtable 偏移 (-1=非虚)
+    uint8_t fn_size;                // 指针副本字节数 (0=未存)
+    std::array<std::byte, fn_storage_size> fn_storage{};  // 成员函数指针副本
 };
 
 // === 构造/销毁函数指针 (#1) ===
@@ -106,7 +143,7 @@ struct enum_meta
 struct type_meta
 {
     const char* name = nullptr;                         // 类型名
-    std::atomic<bool> registered{false};                // 是否已注册
+    std::atomic<uint8_t> state{0};                      // type_state
     std::atomic<uint16_t> field_count{0};               // 字段数
     std::atomic<uint16_t> method_count{0};              // 方法数
     size_t size = 0;                                    // sizeof(T)
@@ -175,3 +212,5 @@ inline bool visit_field_slots(const void* lhs, const void* rhs,
 } // namespace detail
 
 } // namespace reflect
+
+// ============================================================================

@@ -1,15 +1,51 @@
-// model.hpp - 存档模型: 安全限制 / 存档头 / 实体重映射 / 元数据
 #pragma once
 
-#include "part/dense.hpp"
-#include "part/id_table.hpp"
-#include "part/safety.hpp"
-#include "ecs/entity/entity.hpp"
+// model.hpp - 存档模型: 安全限制 / 头 / 实体重映射 / 元数据 / 统计 / 组件版本
+// 命名空间: serialize
+
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
 #include <string>
 #include <string_view>
+
+#include "part/dense.hpp"
+#include "part/id_table.hpp"
+#include "part/safety.hpp"
+#include "part/type/type_id.hpp"
+#include "ecs/entity/entity.hpp"
+
+// stats.hpp - 序列化统计信息
+
+
+struct serialize_stats
+{
+    size_t entity_count = 0;
+    size_t total_bytes = 0;
+    uint32_t archive_version = 0;
+    size_t skipped_count = 0;  // #D3 best_effort 模式跳过的损坏组件数
+
+    struct type_stats
+    {
+        std::string type_name;
+        size_t component_count = 0;
+        size_t bytes = 0;
+    };
+
+    dense<type_stats> per_type;
+
+    void reset() noexcept
+    {
+        entity_count = 0;
+        total_bytes = 0;
+        skipped_count = 0;
+        per_type.clear();
+    }
+};
+
+// model.hpp - 存档模型: 安全限制 / 存档头 / 实体重映射 / 元数据
+
 
 namespace serialize {
 
@@ -116,3 +152,65 @@ struct metadata_entry {
 
 } // namespace detail
 } // namespace serialize
+
+
+// component_version.hpp - 组件存档版本登记
+// 命名空间: serialize
+// 只记录版本号, 旧存档的字段迁移由业务侧在加载后自行处理
+
+
+
+namespace serialize {
+namespace detail {
+
+struct component_version_entry
+{
+    int type_id;
+    uint32_t version;
+};
+
+inline dense<component_version_entry>& component_version_registry() noexcept
+{
+    static dense<component_version_entry> reg;
+    return reg;
+}
+
+} // namespace detail
+
+template<typename T>
+void register_component_version(uint32_t version) noexcept
+{
+    const int tid = type_id::get_type_id<T>();
+    auto& reg = detail::component_version_registry();
+    for (size_t i = 0; i < reg.size(); ++i)
+    {
+        if (reg[i].type_id == tid)
+        {
+            reg[i].version = version;
+            return;
+        }
+    }
+    reg.emplace_back(detail::component_version_entry{tid, version});
+}
+
+[[nodiscard]] inline uint32_t lookup_component_version(int tid) noexcept
+{
+    const auto& reg = detail::component_version_registry();
+    for (size_t i = 0; i < reg.size(); ++i)
+    {
+        if (reg[i].type_id == tid)
+        {
+            return reg[i].version;
+        }
+    }
+    return 0;
+}
+
+template<typename T>
+[[nodiscard]] uint32_t lookup_component_version() noexcept
+{
+    return lookup_component_version(type_id::get_type_id<T>());
+}
+
+} // namespace serialize
+

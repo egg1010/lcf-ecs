@@ -57,7 +57,7 @@ window.DOCS_DATA['config'] = {
 #define REFLECT_MAX_FIELDS 128
 #define UTF8PP_USE_LAYERED_ALLOCATOR
 
-#include "ecs/component.hpp"
+#include "ecs/manager.hpp"
 \`\`\`
 
 ### 13.6 注意事项

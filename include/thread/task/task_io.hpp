@@ -9,7 +9,7 @@
 #include <thread>
 
 #include "part/index_pool.hpp"
-#include "thread/base/error.hpp"
+#include "part/operating_message.hpp"
 #include "thread/task/task_graph.hpp"
 
 namespace thread
@@ -29,7 +29,7 @@ struct io_result
 {
     std::ptrdiff_t bytes_{0};
     io_status status_{io_status::ok};
-    errc error_{errc::ok};
+    uint32_t error_{0};
 
     bool ok() const noexcept
     {
@@ -48,18 +48,18 @@ struct data_source
     void* self_{nullptr};
     io_result (*read_)(void*, std::span<std::byte>) noexcept{nullptr};
     io_result (*write_)(void*, std::span<const std::byte>) noexcept{nullptr};
-    errc (*close_)(void*) noexcept{nullptr};
+    uint32_t (*close_)(void*) noexcept{nullptr};
 
     io_result read(std::span<std::byte> buffer) noexcept
     {
         return read_ != nullptr ? read_(self_, buffer) : io_result{0, io_status::error,
-                                                                   errc::invalid_argument};
+                                                                   om_err_invalid_argument.code};
     }
 
     io_result write(std::span<const std::byte> buffer) noexcept
     {
         return write_ != nullptr ? write_(self_, buffer) : io_result{0, io_status::error,
-                                                                     errc::invalid_argument};
+                                                                     om_err_invalid_argument.code};
     }
 };
 
@@ -381,7 +381,8 @@ struct io_domain
         }
         if (graph_ != nullptr && request->task_.valid())
         {
-            if (!graph_->wake_waiting(request->task_))
+            operating_message error;
+            if (!graph_->wake_waiting_impl(request->task_, error))
             {
                 metrics_.wake_failures_.fetch_add(1, std::memory_order_relaxed);
             }
@@ -416,7 +417,7 @@ struct io_domain
                 backend_.cancel_(backend_.self_, &request);
             }
             metrics_.cancelled_.fetch_add(1, std::memory_order_relaxed);
-            complete(&request, io_result{0, io_status::cancelled, errc::cancelled});
+            complete(&request, io_result{0, io_status::cancelled, om_err_cancelled.code});
         }
     }
 
@@ -445,7 +446,8 @@ struct io_domain
                 // 此时再唤醒会污染下一次等待
                 if (graph_->waiting(request.task_))
                 {
-                    (void)graph_->wake_waiting(request.task_);
+                    operating_message error;
+                    (void)graph_->wake_waiting_impl(request.task_, error);
                 }
             }
         }
@@ -517,16 +519,17 @@ struct io_awaitable
         task_context* ctx = current_task_context();
         if (ctx == nullptr || ctx->cancelled())
         {
-            result_ = io_result{0, io_status::cancelled, errc::cancelled};
+            result_ = io_result{0, io_status::cancelled, om_err_cancelled.code};
             return false;
         }
         io_request* request = domain_->acquire();
         if (request == nullptr)
         {
-            result_ = io_result{0, io_status::error, errc::queue_full};
+            result_ = io_result{0, io_status::error, om_err_queue_full.code};
             return false;
         }
-        (void)ctx->graph_->prepare_external_wait(ctx->id_);
+        operating_message error;
+        (void)ctx->graph_->prepare_external_wait_impl(ctx->id_, error);
         request->task_ = ctx->id_;
         request->source_ = source_;
         request->buffer_ = buffer_.data();
@@ -535,7 +538,7 @@ struct io_awaitable
         if (!domain_->submit(request))
         {
             domain_->release(request);
-            result_ = io_result{0, io_status::error, errc::queue_full};
+            result_ = io_result{0, io_status::error, om_err_queue_full.code};
             return false;
         }
         pending_ = request;
@@ -556,9 +559,9 @@ struct io_awaitable
             domain_->cancel(request);
         }
         io_result result = request->result_;
-        if (result.status_ == io_status::error && result.error_ == errc::ok)
+        if (result.status_ == io_status::error && result.error_ == 0)
         {
-            result.error_ = errc::invariant_broken;
+            result.error_ = om_err_internal_invariant.code;
         }
         domain_->release(request);
         return result;

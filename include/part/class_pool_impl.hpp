@@ -726,78 +726,6 @@ void class_pool<T>::emplace_back(Args&&... args) noexcept {
 }
 
 template <typename T>
-void class_pool<T>::push_back(const T& value) noexcept {
-	if (count_cache_ != static_cast<size_t>(-1)) [[likely]] {
-		++count_cache_;
-	}
-	if (index_ >= maximum_quantity_) [[unlikely]] {
-		grow_data_and_bitmap(calculate_new_capacity(maximum_quantity_));
-	}
-	if constexpr (std::is_trivially_copyable_v<T>) {
-		std::memcpy(&data_ptr_[index_], &value, sizeof(T));
-	} else {
-		new (&data_ptr_[index_]) T(value);
-	}
-	bitmap_set(sparse_bits_, index_);
-	bitmap_set(live_bits_, index_);
-	++index_;
-}
-
-template <typename T>
-void class_pool<T>::push_back(T&& value) noexcept {
-	if (count_cache_ != static_cast<size_t>(-1)) [[likely]] {
-		++count_cache_;
-	}
-	if (index_ >= maximum_quantity_) [[unlikely]] {
-		grow_data_and_bitmap(calculate_new_capacity(maximum_quantity_));
-	}
-	if constexpr (std::is_trivially_copyable_v<T>) {
-		std::memcpy(&data_ptr_[index_], &value, sizeof(T));
-	} else {
-		new (&data_ptr_[index_]) T(std::move(value));
-	}
-	bitmap_set(sparse_bits_, index_);
-	bitmap_set(live_bits_, index_);
-	++index_;
-}
-
-template <typename T>
-void class_pool<T>::push_back_unchecked(const T& value) noexcept {
-	if (count_cache_ != static_cast<size_t>(-1)) [[likely]] {
-		++count_cache_;
-	}
-	if constexpr (sizeof(T) > 128) {
-		if (index_ >= maximum_quantity_) { LCF_UNREACHABLE(); }
-	}
-	if constexpr (std::is_trivially_copyable_v<T>) {
-		std::memcpy(&data_ptr_[index_], &value, sizeof(T));
-	} else {
-		new (&data_ptr_[index_]) T(value);
-	}
-	bitmap_set(sparse_bits_, index_);
-	bitmap_set(live_bits_, index_);
-	++index_;
-}
-
-template <typename T>
-void class_pool<T>::push_back_unchecked(T&& value) noexcept {
-	if (count_cache_ != static_cast<size_t>(-1)) [[likely]] {
-		++count_cache_;
-	}
-	if constexpr (sizeof(T) > 128) {
-		if (index_ >= maximum_quantity_) { LCF_UNREACHABLE(); }
-	}
-	if constexpr (std::is_trivially_copyable_v<T>) {
-		std::memcpy(&data_ptr_[index_], &value, sizeof(T));
-	} else {
-		new (&data_ptr_[index_]) T(std::move(value));
-	}
-	bitmap_set(sparse_bits_, index_);
-	bitmap_set(live_bits_, index_);
-	++index_;
-}
-
-template <typename T>
 template <typename... Args>
 void class_pool<T>::emplace_back_unchecked(Args&&... args) noexcept {
 	if (count_cache_ != static_cast<size_t>(-1)) [[likely]] {
@@ -810,99 +738,6 @@ void class_pool<T>::emplace_back_unchecked(Args&&... args) noexcept {
 	bitmap_set(sparse_bits_, index_);
 	bitmap_set(live_bits_, index_);
 	++index_;
-}
-
-template <typename T>
-template <typename... Args>
-void class_pool<T>::emplace_back_dense_unchecked(Args&&... args) noexcept {
-	if (count_cache_ != static_cast<size_t>(-1)) [[likely]] {
-		++count_cache_;
-	}
-	if constexpr (sizeof(T) > 128) {
-		if (index_ >= maximum_quantity_) { LCF_UNREACHABLE(); }
-	}
-	new (&data_ptr_[index_]) T(std::forward<Args>(args)...);
-	sparse_bits_[index_ / BITS_PER_WORD] |= (1ull << (index_ % BITS_PER_WORD));
-	live_bits_[index_ / BITS_PER_WORD] |= (1ull << (index_ % BITS_PER_WORD));
-	++index_;
-}
-
-template <typename T>
-void class_pool<T>::append_n(size_t n, const T& value) noexcept {
-	if (n == 0) [[unlikely]] { return; }
-
-	// 溢出安全扩容检查
-	if (n > maximum_quantity_ - index_) [[unlikely]] {
-		grow_data_and_bitmap(calculate_growth_for_reserve(index_ + n));
-	}
-
-	if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) == 1)
-	{
-		unsigned char byte;
-		std::memcpy(&byte, &value, 1);
-		std::memset(data_ptr_ + index_, byte, n);
-	}
-	else if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) <= 8)
-	{
-		fill_trivial_small(data_ptr_ + index_, value, n);
-	}
-	else
-	{
-		for (size_t i = 0; i < n; ++i)
-		{
-			new (&data_ptr_[index_ + i]) T(value);
-		}
-	}
-
-	const size_t start = index_;
-	const size_t last = start + n - 1;
-	const size_t start_word = start / BITS_PER_WORD;
-	const size_t start_bit = start % BITS_PER_WORD;
-	const size_t end_word = last / BITS_PER_WORD;
-	const size_t end_bit = last % BITS_PER_WORD;
-
-	if (start_word == end_word)
-	{
-		// 同 word: mask = bits [start_bit, end_bit]
-		uint64_t mask = (~0ull >> (63 - end_bit)) & (~0ull << start_bit);
-		sparse_bits_[start_word] |= mask;
-		live_bits_[start_word] |= mask;
-	}
-	else
-	{
-		// 跨 word: 首 + 中间 + 尾
-		sparse_bits_[start_word] |= (~0ull << start_bit);
-		live_bits_[start_word] |= (~0ull << start_bit);
-		sparse_bits_[end_word] |= (~0ull >> (63 - end_bit));
-		live_bits_[end_word] |= (~0ull >> (63 - end_bit));
-		// 中间 word 批量全 1 (这些位置原 bit 必然为 0, 可用 = 覆盖)
-		if (end_word > start_word + 1)
-		{
-			const size_t mid_end = end_word;
-#ifdef __AVX2__
-			__m256i ones = _mm256_set1_epi64x(~0ull);
-			size_t w = start_word + 1;
-			for (; w + 4 <= mid_end; w += 4)
-			{
-				_mm256_storeu_si256(reinterpret_cast<__m256i*>(sparse_bits_ + w), ones);
-				_mm256_storeu_si256(reinterpret_cast<__m256i*>(live_bits_ + w), ones);
-			}
-			for (; w < mid_end; ++w) { sparse_bits_[w] = ~0ull; live_bits_[w] = ~0ull; }
-#else
-			for (size_t w = start_word + 1; w < mid_end; ++w)
-			{
-				sparse_bits_[w] = ~0ull;
-				live_bits_[w] = ~0ull;
-			}
-#endif
-		}
-	}
-
-	// 更新状态 (is_dense_ / hole_count_ 不变: 追加不改变 dense/sparse 状态)
-	if (count_cache_ != static_cast<size_t>(-1)) [[likely]] {
-		count_cache_ += n;
-	}
-	index_ += n;
 }
 
 template <typename T>
@@ -1047,61 +882,6 @@ void class_pool<T>::resize_fill(size_t new_capacity, const T& value) noexcept {
 }
 
 template <typename T>
-void class_pool<T>::shrink_to_fit() noexcept {
-	invalidate_count_cache();
-	if (index_ == 0 && data_ptr_ != nullptr) [[unlikely]] {
-		release_bitmap();
-		deallocate_data(data_ptr_, maximum_quantity_);
-		data_ptr_ = nullptr;
-		sparse_bits_ = nullptr;
-		live_bits_ = nullptr;
-		maximum_quantity_ = 0;
-		hole_count_ = 0;
-		return;
-	}
-
-	if (index_ < maximum_quantity_ && index_ > 0) [[likely]] {
-		T* new_data = allocate_data(index_);
-		const bool was_inline = is_inline_bitmap();
-		const uint64_t saved_inline = was_inline ? inline_bits_ : 0;
-		const uint64_t saved_live = was_inline ? inline_live_bits_ : 0;
-		uint64_t* new_bits = obtain_bitmap(index_);
-		uint64_t* new_live = obtain_live_bitmap(index_);
-		if (was_inline) {
-			inline_bits_ = saved_inline;
-			inline_live_bits_ = saved_live;
-		}
-
-		if constexpr (std::is_trivially_copyable_v<T>) {
-			copy_trivial_data(new_data, data_ptr_, index_);
-		}
-		else if (is_dense()) {
-			uninitialized_move_dense(data_ptr_, data_ptr_ + index_, new_data);
-		}
-		else {
-			relocate_sparse<true>(new_data, data_ptr_, live_bits_, index_);
-		}
-		if (new_bits != sparse_bits_) {
-			copy_bitmap(new_bits, sparse_bits_, index_);
-			copy_bitmap(new_live, live_bits_, index_);
-		}
-
-		deallocate_data(data_ptr_, maximum_quantity_);
-		if (!was_inline) {
-			deallocate_bitmap(sparse_bits_, maximum_quantity_);
-			deallocate_bitmap(live_bits_, maximum_quantity_);
-		}
-
-		data_ptr_ = new_data;
-		sparse_bits_ = new_bits;
-		live_bits_ = new_live;
-		maximum_quantity_ = index_;
-		hole_count_ = static_cast<size_t>(-1);
-		update_dense_status();
-	}
-}
-
-template <typename T>
 void class_pool<T>::reduce_capacity(size_t new_capacity) noexcept {
 	invalidate_count_cache();
 	if (new_capacity >= maximum_quantity_) [[likely]] {
@@ -1194,14 +974,14 @@ void class_pool<T>::reduce_capacity(size_t new_capacity, class_pool<T>& dst) noe
 
 	if (is_dense()) {
 		for (size_t i = new_capacity; i < index_; ++i) {
-			dst.push_back(std::move(data_ptr_[i]));
+			dst.emplace_back(std::move(data_ptr_[i]));
 		}
 		destroy_dense_range(new_capacity, index_);
 	}
 	else {
 		for (size_t i = new_capacity; i < index_; ++i) {
 			if (bitmap_test(sparse_bits_, i)) {
-				dst.push_back(std::move(data_ptr_[i]));
+				dst.emplace_back(std::move(data_ptr_[i]));
 			}
 		}
 		destroy_sparse_range(new_capacity, index_);
@@ -1250,12 +1030,6 @@ void class_pool<T>::reduce_capacity(size_t new_capacity, class_pool<T>& dst) noe
 		live_bits_ = new_live;
 		maximum_quantity_ = new_capacity;
 	}
-}
-
-template <typename T>
-void class_pool<T>::reserve_exact(size_t new_capacity) noexcept {
-	invalidate_count_cache();
-	grow_data_and_bitmap(new_capacity);
 }
 
 template <typename T>
@@ -1350,16 +1124,6 @@ typename class_pool<T>::iterator class_pool<T>::emplace(const_iterator pos, Args
 }
 
 template <typename T>
-typename class_pool<T>::iterator class_pool<T>::insert(const_iterator pos, const T& value) noexcept {
-	return emplace(pos, value);
-}
-
-template <typename T>
-typename class_pool<T>::iterator class_pool<T>::insert(const_iterator pos, T&& value) noexcept {
-	return emplace(pos, std::move(value));
-}
-
-template <typename T>
 typename class_pool<T>::iterator class_pool<T>::erase(const_iterator pos) noexcept {
 	invalidate_count_cache();
 	const size_t index = static_cast<size_t>(pos.ptr_ - data_ptr_);
@@ -1388,9 +1152,9 @@ typename class_pool<T>::iterator class_pool<T>::erase(const_iterator pos) noexce
 				data_ptr_[index].~T();
 				bitmap_reset(live_bits_, index);
 			}
-		size_t dst = index;
-		size_t src = index + 1;
-		[[maybe_unused]] const size_t total_words = (index_ + BITS_PER_WORD - 1) / BITS_PER_WORD;
+			size_t dst = index;
+			size_t src = index + 1;
+			[[maybe_unused]] const size_t total_words = (index_ + BITS_PER_WORD - 1) / BITS_PER_WORD;
 			while (src < index_) {
 				size_t word_idx = src / BITS_PER_WORD;
 				size_t bit_in_word = src % BITS_PER_WORD;
@@ -1399,8 +1163,7 @@ typename class_pool<T>::iterator class_pool<T>::erase(const_iterator pos) noexce
 					size_t next_word = word_idx + 1;
 					if (bit_in_word == 0) {
 #ifdef __AVX2__
-						for (; next_word + 4 <= total_words; next_word += 4)
-						{
+						for (; next_word + 4 <= total_words; next_word += 4) {
 							__m256i v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(sparse_bits_ + next_word));
 							if (!_mm256_testz_si256(v, v)) { break; }
 						}
@@ -1452,6 +1215,33 @@ typename class_pool<T>::iterator class_pool<T>::erase(const_iterator pos) noexce
 	update_dense_status();
 	return iterator(data_ptr_ + index, data_ptr_ + index_,
 	                is_dense_ ? nullptr : sparse_bits_, data_ptr_);
+}
+
+template <typename T>
+size_t class_pool<T>::erase_unordered(size_t index) noexcept {
+	if (index >= index_) [[unlikely]] {
+		return index_;
+	}
+	invalidate_count_cache();
+	const size_t last = index_ - 1;
+	if (index != last && is_constructed_at(last)) {
+		if (is_constructed_at(index)) {
+			data_ptr_[index].~T();
+		}
+		new (&data_ptr_[index]) T(std::move(data_ptr_[last]));
+		bitmap_set(sparse_bits_, index);
+		bitmap_set(live_bits_, index);
+		data_ptr_[last].~T();
+	}
+	else if (is_constructed_at(index)) {
+		data_ptr_[index].~T();
+	}
+	bitmap_reset(sparse_bits_, last);
+	bitmap_reset(live_bits_, last);
+	--index_;
+	hole_count_ = static_cast<size_t>(-1);
+	update_dense_status();
+	return last;
 }
 
 template <typename T>
@@ -1612,6 +1402,7 @@ typename class_pool<T>::iterator class_pool<T>::erase(const_iterator first, cons
 			bitmap_reset(live_bits_, i);
 		}
 		index_ -= gap;
+		hole_count_ = static_cast<size_t>(-1);
 	}
 
 	update_dense_status();
@@ -1737,64 +1528,6 @@ T& class_pool<T>::emplace_at(size_t index, Args&&... args) noexcept {
 }
 
 template <typename T>
-template <typename... Args>
-T& class_pool<T>::sparse_emplace_at(size_t index, Args&&... args) noexcept {
-	invalidate_count_cache();
-	static_assert(std::is_constructible_v<T, Args...>,
-		"T must be constructible from the provided arguments");
-
-	if (index >= maximum_quantity_) [[unlikely]] {
-		grow_data_and_bitmap(calculate_growth_for_reserve(index + 1));
-	}
-
-	const bool extended = (index >= index_);
-	const size_t old_usage = index_;
-	if (extended) {
-		index_ = index + 1;
-		if (hole_count_ != static_cast<size_t>(-1)) {
-			hole_count_ += (index - old_usage);
-		}
-		if (index > old_usage) {
-			is_dense_ = 0;
-		}
-	}
-
-	if (is_dense_ && !extended) [[likely]] {
-		if constexpr (!std::is_trivially_destructible_v<T>) {
-			data_ptr_[index].~T();
-			bitmap_reset(live_bits_, index);
-		}
-		new (&data_ptr_[index]) T(std::forward<Args>(args)...);
-		bitmap_set(sparse_bits_, index);
-		bitmap_set(live_bits_, index);
-		return data_ptr_[index];
-	}
-
-	if (bitmap_test(sparse_bits_, index)) {
-		data_ptr_[index].~T();
-		bitmap_reset(live_bits_, index);
-	}
-	else if (!extended) {
-		if (hole_count_ > 0 && hole_count_ != static_cast<size_t>(-1)) {
-			--hole_count_;
-		}
-		else {
-			hole_count_ = static_cast<size_t>(-1);
-		}
-		if (bitmap_test(live_bits_, index)) {
-			data_ptr_[index].~T();
-			bitmap_reset(live_bits_, index);
-		}
-	}
-
-	new (&data_ptr_[index]) T(std::forward<Args>(args)...);
-	bitmap_set(sparse_bits_, index);
-	bitmap_set(live_bits_, index);
-	update_dense_status();
-	return data_ptr_[index];
-}
-
-template <typename T>
 void class_pool<T>::sparse_erase_at(size_t index) noexcept {
 	invalidate_count_cache();
 	if (index >= maximum_quantity_) { return; }
@@ -1807,18 +1540,6 @@ void class_pool<T>::sparse_erase_at(size_t index) noexcept {
 	bitmap_reset(sparse_bits_, index);
 	bitmap_reset(live_bits_, index);
 	if (was_allocated) {
-		if (hole_count_ != static_cast<size_t>(-1)) {
-			++hole_count_;
-		}
-		is_dense_ = 0;
-	}
-}
-
-template <typename T>
-void class_pool<T>::soft_sparse_delete(size_t index) noexcept {
-	invalidate_count_cache();
-	if (index < maximum_quantity_ && bitmap_test(sparse_bits_, index)) {
-		bitmap_reset(sparse_bits_, index);
 		if (hole_count_ != static_cast<size_t>(-1)) {
 			++hole_count_;
 		}
@@ -1869,20 +1590,6 @@ T& class_pool<T>::fill_the_hole(Args&&... args) noexcept {
 		return back();
 	}
 	return emplace_at(idx, std::forward<Args>(args)...);
-}
-
-template <typename T>
-template <typename... Args>
-size_t class_pool<T>::fill_the_hole_at(Args&&... args) noexcept {
-	static_assert(std::is_constructible_v<T, Args...>,
-		"T must be constructible from the provided arguments");
-	const size_t idx = find_first_hole_();
-	if (idx == static_cast<size_t>(-1)) {
-		emplace_back(std::forward<Args>(args)...);
-		return index_ - 1;
-	}
-	emplace_at(idx, std::forward<Args>(args)...);
-	return idx;
 }
 
 template <typename T>
@@ -2023,7 +1730,8 @@ void class_pool<T>::bulk_set_bits(size_t start, size_t end) noexcept {
 }
 
 template <typename T>
-void class_pool<T>::append_bulk(const T* src, size_t count) noexcept {
+template <bool Move>
+void class_pool<T>::append_bulk_impl(const T* src, size_t count) noexcept {
 	if (count == 0) { return; }
 	invalidate_count_cache();
 	if (index_ + count > maximum_quantity_) [[unlikely]] {
@@ -2031,55 +1739,31 @@ void class_pool<T>::append_bulk(const T* src, size_t count) noexcept {
 	}
 	if constexpr (std::is_trivially_copyable_v<T>) {
 		std::memcpy(data_ptr_ + index_, src, count * sizeof(T));
+	}
+	else if constexpr (Move) {
+		T* mutable_src = const_cast<T*>(src);
+		for (size_t i = 0; i < count; ++i) {
+			new (data_ptr_ + index_ + i) T(std::move(mutable_src[i]));
+		}
 	}
 	else {
 		for (size_t i = 0; i < count; ++i) {
 			new (data_ptr_ + index_ + i) T(src[i]);
 		}
 	}
-	size_t end = index_ + count;
+	const size_t end = index_ + count;
 	bulk_set_bits(index_, end);
 	index_ = end;
-	// 追加不改变 dense/sparse 状态 (与 append_n 一致): 有洞时误置 dense 会让遍历访问已销毁槽位
+}
+
+template <typename T>
+void class_pool<T>::append_bulk(const T* src, size_t count) noexcept {
+	append_bulk_impl<false>(src, count);
 }
 
 template <typename T>
 void class_pool<T>::append_bulk_move(T* src, size_t count) noexcept {
-	if (count == 0) { return; }
-	invalidate_count_cache();
-	if (index_ + count > maximum_quantity_) [[unlikely]] {
-		increase_capacity(index_ + count);
-	}
-	if constexpr (std::is_trivially_copyable_v<T>) {
-		std::memcpy(data_ptr_ + index_, src, count * sizeof(T));
-	}
-	else {
-		for (size_t i = 0; i < count; ++i) {
-			new (data_ptr_ + index_ + i) T(std::move(src[i]));
-		}
-	}
-	size_t end = index_ + count;
-	bulk_set_bits(index_, end);
-	index_ = end;
-	// 追加不改变 dense/sparse 状态
-}
-
-template <typename T>
-void class_pool<T>::append_incrementing(size_t count, uint64_t& counter) noexcept {
-	static_assert(std::is_trivially_copyable_v<T>,
-		"append_incrementing requires trivially copyable T");
-	if (count == 0) { return; }
-	invalidate_count_cache();
-	if (index_ + count > maximum_quantity_) [[unlikely]] {
-		increase_capacity(index_ + count);
-	}
-	for (size_t i = 0; i < count; ++i) {
-		data_ptr_[index_ + i] = ++counter;
-	}
-	size_t end = index_ + count;
-	bulk_set_bits(index_, end);
-	index_ = end;
-	// 追加不改变 dense/sparse 状态
+	append_bulk_impl<true>(src, count);
 }
 
 template <typename T>
@@ -2196,10 +1880,8 @@ void class_pool<T>::prepare_dense(size_t new_size) noexcept {
 		grow_data_and_bitmap(calculate_growth_for_reserve(new_size));
 	}
 	if (new_size > index_) {
-		if constexpr (!std::is_trivially_destructible_v<T>) {
-			for (size_t i = index_; i < new_size; ++i) {
-				new (&data_ptr_[i]) T{};
-			}
+		for (size_t i = index_; i < new_size; ++i) {
+			new (&data_ptr_[i]) T{};
 		}
 		bulk_set_bits(index_, new_size);
 		index_ = new_size;

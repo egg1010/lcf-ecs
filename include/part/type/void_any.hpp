@@ -17,17 +17,17 @@ inline memory::layered_allocator void_any_pool_{};
 
 [[nodiscard]] inline void* void_any_allocate(size_t n) noexcept
 {
-    return void_any_pool_.allocate(n);
+    return void_any_pool_.acquire(n);
 }
 
 [[nodiscard]] inline void* void_any_allocate_aligned(size_t n, size_t alignment) noexcept
 {
-    return void_any_pool_.allocate_aligned(n, alignment);
+    return void_any_pool_.acquire_aligned(n, alignment);
 }
 
 inline void void_any_deallocate(void* p) noexcept
 {
-    void_any_pool_.deallocate(p);
+    void_any_pool_.soft_delete(p);
 }
 #else
 [[nodiscard]] inline void* void_any_allocate(size_t n) noexcept

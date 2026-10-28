@@ -231,11 +231,11 @@ public:
         const void* base, size_t count, size_t stride) noexcept
     {
         dense<const void*> result;
-        result.reserve_exact(count);
+        result.increase_capacity(count);
         const char* ptr = static_cast<const char*>(base);
         for (size_t i = 0; i < count; ++i)
         {
-            result.push_back(static_cast<const void*>(ptr));
+            result.emplace_back(static_cast<const void*>(ptr));
             ptr += stride;
         }
         return result;
@@ -246,7 +246,7 @@ public:
         const void* base, size_t count, size_t stride, uint64_t seed) noexcept
     {
         dense<const void*> result;
-        result.reserve_exact(count);
+        result.increase_capacity(count);
         const char* ptr = static_cast<const char*>(base);
         uint64_t state = seed ? seed : 0x9E3779B97F4A7C15ULL;
         for (size_t i = 0; i < count; ++i)
@@ -255,7 +255,7 @@ public:
             state ^= state >> 7;
             state ^= state << 17;
             size_t idx = static_cast<size_t>(state % count);
-            result.push_back(static_cast<const void*>(ptr + idx * stride));
+            result.emplace_back(static_cast<const void*>(ptr + idx * stride));
         }
         return result;
     }
@@ -294,7 +294,7 @@ public:
         }
 
         dense<double> samples;
-        samples.reserve_exact(addrs.count);
+        samples.increase_capacity(addrs.count);
 
         double sum = 0;
         for (size_t i = 0; i < addrs.count; ++i)
@@ -302,7 +302,7 @@ public:
             uint64_t raw = measure_one_access_(addrs[i]);
             uint64_t cyc = (raw > baseline) ? raw - baseline : 0;
             double c = static_cast<double>(cyc);
-            samples.push_back(c);
+            samples.emplace_back(c);
             sum += c;
 
             switch (classify_latency_(cyc))
@@ -423,7 +423,7 @@ public:
             double avg_cycles;
         };
         dense<size_result> results;
-        results.reserve_exact(SCAN_COUNT);
+        results.increase_capacity(SCAN_COUNT);
 
         for (size_t i = 0; i < SCAN_COUNT; ++i)
         {
@@ -470,7 +470,7 @@ public:
             double net = (best_avg > static_cast<double>(baseline))
                              ? best_avg - static_cast<double>(baseline)
                              : 0;
-            results.push_back({sz, net});
+            results.emplace_back(size_result{sz, net});
         }
 
         // 分析延迟跳变点 (跳变判定: 相对增量 > 50% 且绝对增量 > 3 周期)

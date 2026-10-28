@@ -2,75 +2,72 @@ window.DOCS_DATA = window.DOCS_DATA || {};
 
 window.DOCS_DATA['memory_pool'] = {
   id: 'memory_pool',
-  title: "memory_pool — 内存池",
+  title: "memory_pool — 通用内存池",
   category: 'allocators',
   icon: 'K',
   order: 20,
-  content: `## 20. memory_pool — 内存池
+  content: `## 20. memory_pool — 通用内存池
 
-命名空间 \`memory\`。\`noexcept\`。
+命名空间 \`memory\`。所有接口 \`noexcept\`。
 
-变长内存池，提供分配、释放、统计、扩缩容接口。
+通用变长内存池，提供分配、软删除、硬删除、重分配、容量管理与统计。
 
 > 线程契约：单线程使用；多线程请各自持有独立实例，不跨线程共享或释放。
+>
+> 对齐契约：分配返回的地址至少按 16 字节对齐（\`memory::base_alignment\`）。
 
-### memory_block — 内存块
+### memory_stats — 统计信息
 
-| 接口 | 说明 |
-|------|------|
-| \`memory_block()\` | 默认构造 |
-| \`memory_block(uint8_t* data, size_t size)\` | 指定数据和大小构造 |
-| \`memory_block(memory_block&&)\` | 移动构造 |
-| \`operator=(memory_block&&)\` | 移动赋值 |
-| \`data_\` | 数据指针 |
-| \`size_\` | 数据大小 |
-
-> 注：禁止拷贝。
-
-### pool_stats — 统计信息
+本页所有分配器的 \`stats()\` 共用该结构。
 
 | 字段 | 说明 |
 |------|------|
-| \`total_allocated\` | 已分配总量 |
-| \`total_used\` | 已使用字节 |
-| \`total_free\` | 空闲字节 |
-| \`free_block_count\` | 空闲块数量 |
-| \`max_contiguous_free\` | 最大连续空闲块大小 |
-| \`fragmentation\` | 碎片率 [0,1] |
+| \`reserved_bytes\` | 池当前向系统保留的字节数 |
+| \`live_bytes\` | 当前存活分配的可用字节数 |
+| \`reusable_bytes\` | 当前可立即复用的空闲字节数 |
+| \`peak_live_bytes\` | 存活字节数的历史峰值 |
+| \`acquire_count\` | 成功分配次数 |
+| \`release_count\` | 成功删除总次数（软删除 + 硬删除） |
+| \`soft_delete_count\` | 软删除次数 |
+| \`hard_delete_count\` | 硬删除次数 |
 
-### memory_pool — 内存池
+### 接口
 
 | 接口 | 说明 |
 |------|------|
-| \`memory_pool(size_t chunk_size = 4096)\` | 构造，chunk_size 为新块最小尺寸提示 |
+| \`explicit memory_pool(size_t chunk_size = 4096)\` | 构造；chunk_size 为追加区块的大小提示 |
 | \`memory_pool(memory_pool&&)\` | 移动构造 |
 | \`operator=(memory_pool&&)\` | 移动赋值 |
-| \`allocate(size_t size)\` | 分配内存，返回 16 字节对齐指针，实际容量不小于请求 |
-| \`allocate_sized<Size>()\` | 模板化分配，Size 为编译期大小 |
-| \`deallocate(void* ptr)\` | 释放内存，重复释放被安全忽略 |
-| \`deallocate(void* ptr, size_t size)\` | 释放内存（size 仅为提示，按实际块大小回收） |
-| \`deallocate_sized<Size>(void* ptr)\` | 模板化释放，Size 仅为提示，与 allocate 系列配对 |
-| \`allocate_zeroed(size_t size)\` | 分配并清零 |
-| \`allocate_aligned(size_t size, size_t align)\` | 对齐分配，align 自动取整到 2 的幂 |
-| \`deallocate_aligned(void* p)\` | 释放对齐分配的内存 |
-| \`reallocate(void* ptr, size_t old_size, size_t new_size)\` | 重分配 |
-| \`reallocate_inplace(void* ptr, size_t old_size, size_t new_size)\` | 原位重分配，成功返回 true |
-| \`construct<T>(Args...)\` | 分配并构造对象，自动满足 alignof(T) |
-| \`destroy<T>(T* ptr)\` | 析构并释放对象 |
-| \`total_allocated()\` | 已分配总量 |
-| \`total_used()\` | 已使用量 |
-| \`peak_used()\` | 峰值使用量 |
-| \`chunk_size()\` | 块大小 |
-| \`empty()\` | 是否空闲 |
-| \`owns(const void* ptr)\` | 判断指针是否属于本池 |
-| \`allocation_size(const void* ptr)\` | 查询已分配大小 |
-| \`stats()\` | 返回 \`pool_stats\` |
-| \`iterate_free(Fn&& fn)\` | 遍历空闲块，回调签名 \`void(void* data_ptr, size_t block_size)\` |
-| \`increase_capacity(size_t size)\` | 扩容 |
-| \`reduce_capacity(size_t target)\` | 缩容至总量 <= target |
-| \`reset()\` | 重置到初始状态 |
+| \`swap(memory_pool& other)\` | 交换两个池的状态 |
+| \`acquire(size_t bytes)\` | 分配至少 bytes 字节；失败返回 nullptr |
+| \`acquire_sized<Size>()\` | 编译期大小分配；Size 必须大于 0 |
+| \`acquire_zeroed(size_t bytes)\` | 分配并将请求的前 bytes 字节清零 |
+| \`acquire_aligned(size_t bytes, size_t alignment)\` | 按 alignment 对齐分配；alignment 必须为 2 的幂，小于 16 时按 16 处理 |
+| \`create<T>(Args&&... args)\` | 分配并构造 T，自动满足 alignof(T)；失败返回 nullptr |
+| \`soft_delete(void* ptr)\` | 软删除：回收分配并保留内存供后续复用；非法或重复指针安全忽略 |
+| \`hard_delete(void* ptr)\` | 硬删除：回收分配并归还可合并空间；非法或重复指针安全忽略 |
+| \`soft_delete_sized<Size>(void* ptr)\` | 带编译期大小提示的软删除；size_of(ptr) < Size 时忽略 |
+| \`hard_delete_sized<Size>(void* ptr)\` | 带编译期大小提示的硬删除；size_of(ptr) < Size 时忽略 |
+| \`dispose<T>(T* ptr)\` | 仅调用析构函数，不回收内存 |
+| \`owns(const void* ptr)\` | 仅存活分配的起始地址返回 true |
+| \`size_of(const void* ptr)\` | 返回存活分配的可用字节数；非存活地址返回 0 |
+| \`contains(const void* ptr)\` | 判断地址是否落在本池管理的地址范围内 |
+| \`stats()\` | 返回 \`memory_stats\` |
+| \`empty()\` | 是否没有存活分配 |
+| \`free_block_count()\` | 当前空闲块数量 |
+| \`chunk_size()\` | 构造时指定的大小提示 |
+| \`reset_stats()\` | 清零分配与删除计数，峰值重置为当前存活字节 |
+| \`reset()\` | 回收所有存活分配并保留可复用容量，池可继续使用 |
+| \`release_all()\` | 回收所有分配并归还全部底层内存；计数与峰值保留 |
+| \`increase_capacity(size_t bytes)\` | 扩容到至少 bytes 保留字节；不大于当前保留量时无操作 |
+| \`reduce_capacity(size_t target)\` | 缩容到至多 target 保留字节；不移动存活块 |
+| \`resize_inplace(void* ptr, size_t old_bytes, size_t new_bytes)\` | 原位重分配；成功返回 true，失败返回 false 且原分配不变 |
+| \`resize(void* ptr, size_t old_bytes, size_t new_bytes)\` | 重分配；失败返回 nullptr 且原分配不变 |
+| \`iterate_free(Fn&& fn)\` | 遍历可复用空闲块，回调签名 \`void(void* ptr, size_t bytes)\` |
 
-> 注：禁止拷贝。
+> 注：禁止拷贝；析构等价于 \`release_all()\`。
+>
+> \`resize\` 约定：\`ptr\` 为 nullptr 时按 \`acquire(new_bytes)\` 处理；\`new_bytes\` 为 0 时软删除并返回 nullptr；无法原位时分配新块、拷贝数据并软删除旧块。过对齐分配发生移动时仍保持原对齐要求。
 
 ### 使用
 
@@ -78,54 +75,65 @@ window.DOCS_DATA['memory_pool'] = {
 using namespace memory;
 
 memory_pool pool;
-void* p = pool.allocate(64);
-pool.deallocate(p);
 
-void* q = pool.allocate(64);
-pool.deallocate(q, 64);
+void* p = pool.acquire(64);
+pool.soft_delete(p);
 
-// sized 模板路径
-void* r = pool.allocate_sized<64>();
-pool.deallocate_sized<64>(r);
+void* q = pool.acquire_sized<64>();
+pool.hard_delete_sized<64>(q);
 
-// 对齐分配
-void* a = pool.allocate_aligned(128, 32);
-pool.deallocate_aligned(a);
+void* z = pool.acquire_zeroed(128);  // 前 128 字节为 0
+pool.soft_delete(z);
 
-// 对象构造
+void* a = pool.acquire_aligned(256, 64);
+pool.soft_delete(a);
+
 struct Foo { int x; };
-Foo* foo = pool.construct<Foo>();
-pool.destroy(foo);
+Foo* foo = pool.create<Foo>();
+if (foo)
+{
+    pool.dispose(foo);      // 仅析构
+    pool.soft_delete(foo);  // 再回收内存
+}
 
 // 重分配
-void* buf = pool.allocate(32);
-void* bigger = pool.reallocate(buf, 32, 64);
-// 或原位重分配
-// bool ok = pool.reallocate_inplace(buf, 32, 64);
+void* buf = pool.acquire(32);
+void* bigger = pool.resize(buf, 32, 256);
+if (bigger)
+{
+    buf = bigger;
+}
 
 // 统计
-pool_stats s = pool.stats();
-// s.total_allocated, s.total_used, s.total_free, s.fragmentation
-
-// 遍历空闲块
-pool.iterate_free([](void* ptr, size_t sz) {
-    // ptr: 空闲块指针, sz: 空闲块大小
-});
+memory_stats s = pool.stats();
+size_t live = s.live_bytes;
+size_t reusable = s.reusable_bytes;
 
 // 容量管理
 pool.increase_capacity(1024 * 1024);
-pool.reduce_capacity(4096);
-pool.reset();
+pool.reduce_capacity(64 * 1024);
+
+// 遍历可复用空闲块
+pool.iterate_free([](void* ptr, size_t bytes) {
+    (void)ptr;
+    (void)bytes;
+});
+
+// 整体回收
+pool.release_all();
 \`\`\`
 
 ### 不要做什么
 
 | 错误做法 | 问题 | 正确做法 |
 |---------|------|---------|
-| 用 \`new\`/\`delete\` 管理 \`construct\` 分配的对象 | 与池分配不匹配 | 始终用 \`destroy<T>()\` 释放 |
-| \`allocate\` 后忘记 \`deallocate\` | 内存泄漏 | 每次 \`allocate\` 配对一个 \`deallocate\` |
+| 用 \`delete\` 释放 \`create\` 构造的对象 | 池内存不能用 \`delete\` 回收 | 先 \`dispose\` 再 \`soft_delete\` 或 \`hard_delete\` |
+| \`acquire\` 后忘记删除 | 内存泄漏 | 每次分配配对一个删除 |
 | 拷贝 \`memory_pool\` | 禁止拷贝 | 使用移动语义或引用传递 |
-| 在 \`iterate_free\` 回调中修改池状态 | 遍历中增删块会破坏链表 | 仅在回调中读取信息 |
+| 用非起始地址调用 \`owns\` / \`size_of\` | 仅存活分配的起始地址可识别 | 保存并使用分配返回的原指针 |
+| 对同一指针重复删除 | 重复删除被安全忽略，但通常意味着生命周期管理有误 | 删除后置空 |
+| 在 \`iterate_free\` 回调中分配或删除 | 遍历期间池状态不应改变 | 回调内只读取信息 |
+| 认为 \`contains\` 等价于 \`owns\` | \`contains\` 是地址范围查询 | 判断存活分配用 \`owns\` |
 
 ---
 
@@ -134,17 +142,19 @@ pool.reset();
 
 window.DOCS_DATA['list_memory_pool'] = {
   id: 'list_memory_pool',
-  title: "list_memory_pool — 链表内存池",
+  title: "list_memory_pool — 链式内存池",
   category: 'allocators',
   icon: 'J',
   order: 21,
-  content: `## 21. list_memory_pool — 链表内存池
+  content: `## 21. list_memory_pool — 链式内存池
 
-命名空间 \`memory\`。\`noexcept\`。
+命名空间 \`memory\`。所有接口 \`noexcept\`。
+
+支持软删除与硬删除的变长内存池。软删除保留内存，并保证同大小档的后续请求优先复用该块。
 
 > 线程契约：单线程使用；多线程请各自持有独立实例，不跨线程共享或释放。
-
-变长内存池，提供 \`allocate\`/\`hard_deallocate\`/\`soft_deallocate\` 三种释放方式。\`soft_deallocate\` 释放的块可被后续 \`allocate\` 复用。
+>
+> 对齐契约：分配返回的地址至少按 16 字节对齐（\`memory::base_alignment\`）。
 
 ### 接口
 
@@ -153,37 +163,34 @@ window.DOCS_DATA['list_memory_pool'] = {
 | \`list_memory_pool()\` | 默认构造 |
 | \`list_memory_pool(list_memory_pool&&)\` | 移动构造 |
 | \`operator=(list_memory_pool&&)\` | 移动赋值 |
-| \`allocate(size_t bytes)\` | 分配内存 |
-| \`allocate_zeroed(size_t bytes)\` | 分配并清零 |
-| \`allocate_aligned(size_t bytes, size_t align)\` | 对齐分配 |
-| \`deallocate(void* ptr)\` | 释放内存（默认软释放） |
-| \`deallocate(void* ptr, size_t bytes)\` | 释放内存（\`bytes\` 参数未使用，仅为签名统一） |
-| \`deallocate_aligned(void* p)\` | 释放对齐分配的内存 |
-| \`hard_deallocate(void* ptr)\` | 硬释放：释放内存 |
-| \`soft_deallocate(void* ptr)\` | 软释放：标记为可复用 |
-| \`reallocate(void* ptr, size_t old_bytes, size_t new_bytes)\` | 重分配 |
-| \`reallocate_inplace(void* ptr, size_t old_bytes, size_t new_bytes)\` | 原位重分配，成功返回 true |
-| \`construct<T>(Args...)\` | 分配并构造对象 |
-| \`destroy<T>(T* ptr)\` | 析构并释放对象 |
-| \`owns(void* ptr)\` | 判断指针是否属于本池 |
-| \`allocation_size(void* ptr)\` | 查询已分配大小 |
-| \`total_allocated_bytes()\` | 已分配字节 |
-| \`total_capacity_bytes()\` | 总容量字节 |
-| \`total_free_bytes()\` | 空闲字节 |
-| \`peak_allocated_bytes()\` | 峰值字节 |
-| \`allocation_count()\` | 分配次数 |
-| \`deallocation_count()\` | 释放次数 |
-| \`chunk_count()\` | chunk 数量 |
-| \`big_block_count()\` | 大块数量 |
-| \`stats()\` | 返回 \`pool_stats\` |
-| \`release_all_memory()\` | 释放所有内存归还系统 |
-| \`shrink_to_fit()\` | 归还空闲 wilderness 内存给系统 |
-| \`iterate_free(Fn&& fn)\` | 遍历空闲块，回调签名 \`void(void* ptr, size_t size, const char* category)\` |
 | \`swap(list_memory_pool& other)\` | 交换两个池的状态 |
-| \`reset_statistics()\` | 重置统计计数 |
-| \`reset()\` | 重置分配状态 |
+| \`acquire(size_t bytes)\` | 分配至少 bytes 字节；失败返回 nullptr |
+| \`acquire_sized<Size>()\` | 编译期大小分配；Size 必须大于 0 |
+| \`acquire_zeroed(size_t bytes)\` | 分配并将请求的前 bytes 字节清零 |
+| \`acquire_aligned(size_t bytes, size_t alignment)\` | 按 alignment 对齐分配；alignment 必须为 2 的幂，小于 16 时按 16 处理 |
+| \`create<T>(Args&&... args)\` | 分配并构造 T，自动满足 alignof(T)；失败返回 nullptr |
+| \`soft_delete(void* ptr)\` | 软删除：保留内存供同大小档复用；非法或重复指针安全忽略 |
+| \`hard_delete(void* ptr)\` | 硬删除：立即回收分配；非法或重复指针安全忽略 |
+| \`soft_delete_sized<Size>(void* ptr)\` | 带编译期大小提示的软删除；size_of(ptr) < Size 时忽略 |
+| \`hard_delete_sized<Size>(void* ptr)\` | 带编译期大小提示的硬删除；size_of(ptr) < Size 时忽略 |
+| \`dispose<T>(T* ptr)\` | 仅调用析构函数，不回收内存 |
+| \`owns(const void* ptr)\` | 仅存活分配的起始地址返回 true |
+| \`size_of(const void* ptr)\` | 返回存活分配的可用容量，可能大于请求值；非存活地址返回 0 |
+| \`contains(const void* ptr)\` | 判断地址是否落在本池管理的地址范围内 |
+| \`stats()\` | 返回 \`memory_stats\` |
+| \`empty()\` | 是否没有存活分配 |
+| \`reset_stats()\` | 清零分配与删除计数，峰值重置为当前存活字节 |
+| \`reset()\` | 回收所有存活分配并保留可复用容量，池可继续使用 |
+| \`release_all()\` | 回收所有分配并归还全部底层内存；计数与峰值保留 |
+| \`increase_capacity(size_t bytes)\` | 扩容到至少 bytes 保留字节；不大于当前保留量时无操作 |
+| \`reduce_capacity(size_t target)\` | 缩容到至多 target 保留字节；优先归还未使用的保留区域 |
+| \`resize_inplace(void* ptr, size_t old_bytes, size_t new_bytes)\` | 原位重分配；当前块容量满足请求时返回 true |
+| \`resize(void* ptr, size_t old_bytes, size_t new_bytes)\` | 重分配；失败返回 nullptr 且原分配不变 |
+| \`iterate_free(Fn&& fn)\` | 遍历可复用块，回调签名 \`void(void* ptr, size_t bytes)\` |
 
-> 注：禁止拷贝。
+> 注：禁止拷贝；析构等价于 \`release_all()\`。
+>
+> \`resize\` 约定：\`ptr\` 为 nullptr 时按 \`acquire(new_bytes)\` 处理；\`new_bytes\` 为 0 时软删除并返回 nullptr；无法原位时分配新块、拷贝数据并软删除旧块。过对齐分配发生移动时仍保持原对齐要求。
 
 ### 使用
 
@@ -191,36 +198,67 @@ window.DOCS_DATA['list_memory_pool'] = {
 using namespace memory;
 
 list_memory_pool pool;
-void* p = pool.allocate(64);
-void* q = pool.allocate(128);
 
-// 软删除: 可被后续 allocate 复用
-pool.soft_deallocate(p);
-void* r = pool.allocate(64);  // 可能复用 p 的内存
+void* p = pool.acquire(64);
+void* q = pool.acquire(8192);
 
-// 硬删除: 释放内存
-pool.hard_deallocate(q);
+// 软删除: 保留内存, 同大小档请求优先复用
+pool.soft_delete(p);
+void* r = pool.acquire(64);
+
+// 硬删除: 立即回收
+pool.hard_delete(q);
+
+// 编译期大小
+void* s = pool.acquire_sized<128>();
+pool.soft_delete_sized<128>(s);
 
 // 对齐分配
-void* a = pool.allocate_aligned(256, 32);
-pool.deallocate_aligned(a);
+void* a = pool.acquire_aligned(256, 64);
+pool.hard_delete(a);
 
-// 统计
-pool_stats s = pool.stats();
-size_t used = pool.total_allocated_bytes();
-size_t peak = pool.peak_allocated_bytes();
+// 超对齐对象
+struct alignas(64) Wide { unsigned char data[64]; };
+Wide* w = pool.create<Wide>();
+if (w)
+{
+    pool.dispose(w);
+    pool.soft_delete(w);
+}
 
-// 释放所有内存
-pool.release_all_memory();
+// 任意指针可安全查询
+int local = 0;
+bool mine = pool.owns(&local);       // false
+bool inside = pool.contains(&local); // false
+
+// 统计与容量管理
+memory_stats st = pool.stats();
+pool.increase_capacity(1024 * 1024);
+pool.reduce_capacity(64 * 1024);
+
+// 重分配
+void* buf = pool.acquire(128);
+void* bigger = pool.resize(buf, 128, 4096);
+if (bigger)
+{
+    buf = bigger;
+}
+
+// 整体回收
+pool.release_all();
 \`\`\`
 
 ### 不要做什么
 
 | 错误做法 | 问题 | 正确做法 |
 |---------|------|---------|
-| 对同一指针调用两次 \`soft_deallocate\` 或 \`hard_deallocate\` | 双重释放 | 释放后置空 |
-| 用 \`deallocate\` 释放非本池分配的指针 | 内存损坏 | 先 \`owns(ptr)\` 验证 |
-| 期望 \`soft_deallocate\` 立即归还内存给系统 | 软删除保留块供复用 | 需立即归还用 \`hard_deallocate\` 或 \`release_all_memory\` |
+| 期望 \`soft_delete\` 立即把内存归还系统 | 软删除保留内存供复用 | 需要归还时用 \`hard_delete\`、\`reduce_capacity\` 或 \`release_all\` |
+| 用非起始地址调用 \`owns\` / \`size_of\` | 仅存活分配的起始地址可识别 | 保存并使用分配返回的原指针 |
+| 对同一指针重复删除 | 重复删除被安全忽略，但通常意味着生命周期管理有误 | 删除后置空 |
+| 用本池接口删除非本池分配的指针 | 非本池指针会被安全忽略，但释放意图有误 | 先 \`owns(ptr)\` 验证 |
+| 认为 \`contains\` 等价于 \`owns\` | 硬删除后地址仍可能落在本池范围内 | 判断存活分配用 \`owns\` |
+| 拷贝 \`list_memory_pool\` | 禁止拷贝 | 使用移动语义或引用传递 |
+| 在 \`iterate_free\` 回调中分配或删除 | 遍历期间池状态不应改变 | 回调内只读取信息 |
 
 ---
 
@@ -235,57 +273,43 @@ window.DOCS_DATA['arena_allocator'] = {
   order: 26,
   content: `## 26. arena_allocator — 线性分配器
 
-命名空间 \`memory\`。\`noexcept\`。
+命名空间 \`memory\`。所有接口 \`noexcept\`。
 
-线性分配器，无单个 \`deallocate\`，仅 \`reset\`/\`restore\` 整体回收。两种模式：自有内存和借用外部 buffer。
+线性分配器，没有单个删除接口，只能通过 \`restore\` / \`reset\` 整体回收。支持自有内存与借用外部 buffer 两种模式。
 
 > 线程契约：单线程使用；多线程请各自持有独立实例，不跨线程共享或释放。
+>
+> 对齐契约：\`acquire\` 返回的地址至少按 16 字节对齐（\`memory::base_alignment\`）。
 
 ### 接口
 
 | 接口 | 说明 |
 |------|------|
-| \`arena_allocator()\` | 默认构造，空状态 |
-| \`arena_allocator(size_t capacity)\` | 自有模式：分配 capacity 字节 |
-| \`arena_allocator(void* buffer, size_t size)\` | 借用模式：使用外部 buffer |
+| \`arena_allocator()\` | 默认构造，空状态，不能分配 |
+| \`explicit arena_allocator(size_t capacity)\` | 自有模式：分配 capacity 字节 |
+| \`arena_allocator(void* buffer, size_t size)\` | 借用模式：使用外部 buffer，不持有所有权 |
 | \`arena_allocator(arena_allocator&&)\` | 移动构造 |
 | \`operator=(arena_allocator&&)\` | 移动赋值 |
-| \`allocate(size_t n, size_t align = 16)\` | 分配内存，溢出返回 nullptr |
-| \`allocate_zeroed(size_t n, size_t align = 16)\` | 分配并清零 |
-| \`allocate_array<T>(size_t count, size_t align = alignof(T))\` | 分配 count 个 T 的连续内存 |
-| \`construct<T>(Args...)\` | 分配并构造对象 |
-| \`construct_array<T>(size_t count, Args...)\` | 分配并构造 count 个对象 |
-| \`destroy<T>(T* p)\` | 析构对象（不回收内存） |
-| \`deallocate(void* p)\` | 空操作（无单个回收） |
-| \`deallocate(void* p, size_t n)\` | 空操作（重载，仅为签名统一） |
-| \`save_point()\` | 保存当前分配点 |
-| \`restore(size_t point)\` | 恢复到保存的分配点 |
-| \`reset()\` | 整体回收，不调用析构 |
-| \`used()\` | 已使用字节数 |
-| \`capacity()\` | 总容量 |
-| \`remaining()\` | 剩余字节数 |
-| \`empty()\` | 是否未分配 |
-| \`peak_used()\` | 峰值使用量 |
-| \`allocation_count()\` | 分配次数 |
-| \`owns(const void* p)\` | 判断指针是否属于本 arena |
+| \`swap(arena_allocator& other)\` | 交换两个分配器的状态 |
+| \`acquire(size_t bytes)\` | 分配至少 bytes 字节；空间不足或参数非法返回 nullptr |
+| \`acquire_zeroed(size_t bytes)\` | 分配并将前 bytes 字节清零 |
+| \`acquire_aligned(size_t bytes, size_t alignment)\` | 按 alignment 对齐分配；alignment 必须为 2 的幂，小于 16 时按 16 处理 |
+| \`create<T>(Args&&... args)\` | 分配并构造 T，自动满足 alignof(T)；失败返回 nullptr |
+| \`create_array<T>(size_t count, Args&&... args)\` | 使用同一组参数构造 count 个 T；失败返回 nullptr |
+| \`dispose<T>(T* ptr)\` | 仅调用析构函数，不回收内存 |
+| \`dispose_array<T>(T* ptr, size_t count)\` | 仅逆序调用 count 个元素的析构函数 |
+| \`owns(const void* ptr)\` | 仅存活分配的起始地址返回 true |
+| \`stats()\` | 返回 \`memory_stats\`；删除计数恒为 0 |
+| \`empty()\` | 是否没有存活分配 |
+| \`reset_stats()\` | 清零分配计数，峰值重置为当前存活字节 |
+| \`save_point()\` | 保存当前分配点，返回可用于 \`restore\` 的值 |
+| \`restore(size_t point)\` | 恢复到指定分配点；point 大于已使用字节或截断存活分配时无操作 |
+| \`reset()\` | 整体回收，不调用析构，不归还底层内存 |
+| \`used()\` | 已使用的字节数 |
+| \`capacity()\` | 总容量字节数 |
+| \`remaining()\` | 剩余可用字节数 |
 
-> 注：禁止拷贝；无单个 deallocate，必须 \`reset\`/\`restore\` 整体回收。
-
-### arena_scope — 作用域守卫
-
-| 接口 | 说明 |
-|------|------|
-| \`arena_scope(arena_allocator& a)\` | 构造时保存分配点 |
-| \`~arena_scope()\` | 析构时恢复分配点 |
-
-### double_buffered_arena — 双帧交替
-
-| 接口 | 说明 |
-|------|------|
-| \`double_buffered_arena(size_t capacity_per_frame)\` | 构造，每帧容量 |
-| \`flip()\` | 切换帧并重置新帧 |
-| \`current()\` | 当前帧（写入侧） |
-| \`previous()\` | 上一帧（读取侧） |
+> 注：禁止拷贝；没有单个删除接口；借用模式的 buffer 由调用方管理生命周期。
 
 ### 使用
 
@@ -294,37 +318,84 @@ using namespace memory;
 
 // 自有模式
 arena_allocator ar(4096);
-void* p1 = ar.allocate(128);
-void* p2 = ar.allocate(64, 32);  // 32 字节对齐
-ar.reset();  // 整体回收
+void* p = ar.acquire(128);
+void* q = ar.acquire_aligned(64, 64);
+void* z = ar.acquire_zeroed(32);
+ar.reset();
 
 // 借用模式
-alignas(64) uint8_t buf[2048];
-arena_allocator borrowed(buf, sizeof(buf));
-void* p3 = borrowed.allocate(100);
+alignas(64) unsigned char buffer[2048];
+arena_allocator borrowed(buffer, sizeof(buffer));
+void* b = borrowed.acquire(100);
 
-// 作用域守卫
+// 保存与恢复分配点
 arena_allocator arena(8192);
+const size_t mark = arena.save_point();
+void* tmp = arena.acquire(256);
+arena.restore(mark);
+
+// 作用域守卫: 离开作用域自动恢复分配点
 {
     arena_scope scope(arena);
-    void* a = arena.allocate(256);
-    void* b = arena.allocate(128);
-}  // 离开作用域自动 restore
+    void* scoped = arena.acquire(128);
+    (void)scoped;
+}
+
+// 对象与数组
+struct Foo { int x; Foo(int v) : x(v) {} };
+Foo* foo = arena.create<Foo>(7);
+if (foo)
+{
+    arena.dispose(foo);
+}
+
+Foo* arr = arena.create_array<Foo>(3, 1);
+if (arr)
+{
+    arena.dispose_array(arr, 3);
+}
+
+// 统计
+memory_stats st = arena.stats();
+size_t used = arena.used();
+size_t remaining = arena.remaining();
 
 // 双帧交替
 double_buffered_arena dba(65536);
-void* w = dba.current().allocate(64);   // 写入当前帧
-dba.flip();                            // 切换帧
-void* r = dba.previous().allocate(32); // 读取上一帧
+void* frame_data = dba.current().acquire(64);
+dba.flip();
+// frame_data 属于 dba.previous(), 本帧仍可读取
 \`\`\`
+
+### arena_scope — 作用域守卫
+
+| 接口 | 说明 |
+|------|------|
+| \`explicit arena_scope(arena_allocator& a)\` | 构造时保存分配点 |
+| \`~arena_scope()\` | 析构时恢复保存的分配点 |
+
+> 注：禁止拷贝。
+
+### double_buffered_arena — 双帧交替
+
+| 接口 | 说明 |
+|------|------|
+| \`explicit double_buffered_arena(size_t capacity_per_frame)\` | 构造，每帧容量为 capacity_per_frame |
+| \`flip()\` | 切换当前帧，并重置新的当前帧 |
+| \`current()\` | 当前帧（写入侧） |
+| \`previous()\` | 上一帧（读取侧） |
+
+> 注：两帧容量相同；\`flip()\` 后上一帧数据仍可读取。
 
 ### 不要做什么
 
 | 错误做法 | 问题 | 正确做法 |
 |---------|------|---------|
-| 对单个指针调用 \`deallocate\` | 空操作，内存不回收 | 用 \`reset\`/\`restore\` 整体回收 |
-| \`reset\` 后继续使用已分配指针 | 内存已回收，指针悬空 | \`reset\` 后重新分配 |
+| 对单个指针调用释放接口 | 线性分配器不提供单个删除 | 用 \`restore\` / \`reset\` 整体回收 |
+| \`reset\` 或 \`restore\` 后继续使用旧指针 | 内存已被回收，指针悬空 | 回收后重新分配 |
+| 把任意数值传给 \`restore\` | 会截断存活分配的值被忽略，容易误判回收结果 | 保存并使用 \`save_point()\` 的结果 |
 | 借用模式析构后期望释放 buffer | 借用模式不持有所有权 | 由 buffer 所有者管理生命周期 |
+| 期望 \`stats()\` 的删除计数增长 | 线性分配器没有单个删除 | 使用 \`live_bytes\` / \`reusable_bytes\` 观察状态 |
 
 ---
 
@@ -339,73 +410,89 @@ window.DOCS_DATA['slab_allocator'] = {
   order: 27,
   content: `## 27. slab_allocator — 固定块分配器
 
-命名空间 \`memory\`。\`noexcept\`。
+命名空间 \`memory\`。所有接口 \`noexcept\`。
+
+所有分配使用同一固定块大小。软删除与硬删除等价，块始终保留在分配器内供复用。
 
 > 线程契约：单线程使用；多线程请各自持有独立实例，不跨线程共享或释放。
-
-固定块大小分配器，所有块大小相同。
+>
+> 对齐契约：块起始地址按对齐参数对齐，对齐参数不小于 16 字节。
 
 ### 接口
 
 | 接口 | 说明 |
 |------|------|
-| \`slab_allocator(size_t block_size, size_t alignment = 16, size_t blocks_per_chunk = 256)\` | 构造，block_size 向上对齐到 alignment |
+| \`explicit slab_allocator(size_t block_size, size_t alignment = 16, size_t blocks_per_chunk = 256)\` | 构造；block_size 向上对齐到 alignment；alignment 小于 16 或非 2 的幂时按 16 处理 |
 | \`slab_allocator(slab_allocator&&)\` | 移动构造 |
 | \`operator=(slab_allocator&&)\` | 移动赋值 |
-| \`allocate()\` | 分配一个块，返回指针或 nullptr |
-| \`allocate_zeroed()\` | 分配并清零 |
-| \`deallocate(void* p)\` | 释放块 |
-| \`construct<T>(Args...)\` | 分配并构造对象，sizeof/alignof 超过块大小时返回 nullptr |
-| \`destroy<T>(T* ptr)\` | 析构并释放对象 |
-| \`reserve(size_t blocks)\` | 预分配至少 blocks 个空闲块 |
-| \`reset()\` | 重置：释放所有块到初始状态 |
-| \`owns(const void* p)\` | 判断指针是否属于本分配器 |
+| \`swap(slab_allocator& other)\` | 交换两个分配器的状态 |
+| \`acquire()\` | 分配一个块；失败返回 nullptr |
+| \`acquire_sized<Size>()\` | 编译期大小分配；Size 大于块大小时返回 nullptr |
+| \`acquire_zeroed()\` | 分配一个块并清零 |
+| \`create<T>(Args&&... args)\` | 分配并构造 T；sizeof(T) 或 alignof(T) 超出块能力时返回 nullptr |
+| \`soft_delete(void* ptr)\` | 软删除：回收块供复用；非法或重复指针安全忽略 |
+| \`hard_delete(void* ptr)\` | 硬删除：与 \`soft_delete\` 等价 |
+| \`soft_delete_sized<Size>(void* ptr)\` | 带编译期大小提示的软删除；Size 大于块大小时忽略 |
+| \`hard_delete_sized<Size>(void* ptr)\` | 带编译期大小提示的硬删除；Size 大于块大小时忽略 |
+| \`dispose<T>(T* ptr)\` | 仅调用析构函数，不回收内存 |
+| \`owns(const void* ptr)\` | 仅存活块的起始地址返回 true |
+| \`size_of(const void* ptr)\` | 返回块大小；非存活地址返回 0 |
+| \`stats()\` | 返回 \`memory_stats\` |
+| \`empty()\` | 是否全部块空闲 |
+| \`reset_stats()\` | 清零分配与删除计数，峰值重置为当前存活字节 |
+| \`reset()\` | 所有块回到空闲状态，不归还底层内存 |
+| \`release_all()\` | 释放全部底层内存；计数与峰值保留 |
 | \`block_size()\` | 实际块大小（对齐后） |
-| \`total_blocks()\` | 总块数 |
-| \`free_blocks()\` | 空闲块数 |
-| \`total_used()\` | 已使用块数 |
-| \`total_bytes()\` | 总字节数 |
-| \`used_bytes()\` | 已使用字节数 |
-| \`free_bytes()\` | 空闲字节数 |
-| \`peak_used_blocks()\` | 峰值使用块数 |
-| \`empty()\` | 是否全部空闲 |
-| \`min_addr()\` / \`max_addr()\` | 地址范围 |
+| \`total_blocks()\` | 当前总块数 |
+| \`free_blocks()\` | 当前空闲块数 |
 
-> 注：禁止拷贝；块大小固定，不支持变长分配。
+> 注：禁止拷贝；不支持变长分配；block_size 为 0 时分配器不可用，分配返回 nullptr；析构等价于 \`release_all()\`。
 
 ### 使用
 
 \`\`\`cpp
 using namespace memory;
 
-slab_allocator slab(64);  // 64 字节块
-void* p1 = slab.allocate();
-void* p2 = slab.allocate();
-slab.deallocate(p1);
-slab.deallocate(p2);
+slab_allocator slab(64);
 
-// 预分配
-slab_allocator slab2(32, 16, 64);
-slab2.reserve(100);  // 预分配至少 100 个块
+void* p = slab.acquire();
+void* q = slab.acquire_zeroed();
+slab.soft_delete(p);
+slab.hard_delete(q);  // 与 soft_delete 等价
 
-// 对象构造
+void* s = slab.acquire_sized<48>();  // 48 <= block_size
+slab.soft_delete_sized<48>(s);
+
 struct Foo { int x; Foo(int v) : x(v) {} };
-Foo* foo = slab.construct<Foo>(42);
-slab.destroy(foo);
+Foo* foo = slab.create<Foo>(42);
+if (foo)
+{
+    slab.dispose(foo);
+    slab.soft_delete(foo);
+}
 
-// 统计
+// 统计与池信息
+memory_stats st = slab.stats();
 size_t total = slab.total_blocks();
-size_t used = slab.total_used();
-bool all_free = slab.empty();
+size_t free_count = slab.free_blocks();
+size_t block = slab.block_size();
+
+// 整体回收
+slab.reset();        // 保留底层内存
+slab.release_all();  // 归还底层内存
 \`\`\`
 
 ### 不要做什么
 
 | 错误做法 | 问题 | 正确做法 |
 |---------|------|---------|
-| \`deallocate\` 非本 slab 分配的指针 | 分配状态被破坏 | 先 \`owns(p)\` 验证 |
-| 同一指针 \`deallocate\` 两次 | 双重释放 | 释放后置空 |
-| 跨 \`block_size\` 混用分配器 | 块大小不匹配 | 每种块大小用独立 slab_allocator |
+| 用 \`acquire_sized<Size>\` 请求大于块大小的对象 | 返回 nullptr，不会分配 | 使用足够大的 block_size 或改用变长池 |
+| 用 \`create<T>\` 构造超出块能力的类型 | sizeof/alignof 超限时返回 nullptr | 检查返回值或增大 block_size |
+| 在同一分配器中混用不同大小的对象 | 块大小固定，不代表请求大小 | 每种块大小使用独立 \`slab_allocator\` |
+| 用本分配器删除非本分配器的指针 | 会被安全忽略，但释放意图有误 | 先 \`owns(p)\` 验证 |
+| 对同一指针重复删除 | 重复删除被安全忽略，但通常意味着生命周期管理有误 | 删除后置空 |
+| 期望软删除归还内存给系统 | 软删除与硬删除都只把块放回空闲状态 | 需要归还时用 \`release_all\` |
+| 拷贝 \`slab_allocator\` | 禁止拷贝 | 使用移动语义或引用传递 |
 
 ---
 
@@ -420,11 +507,13 @@ window.DOCS_DATA['layered_allocator'] = {
   order: 28,
   content: `## 28. layered_allocator — 分层分配器
 
-命名空间 \`memory\`。\`noexcept\`。
+命名空间 \`memory\`。所有接口 \`noexcept\`。
 
-分层分配器，小块走 slab，大块走 list_memory_pool。
+按请求大小自动选择定长块或变长块路径的分层分配器，统一提供分配、删除、重分配与统计接口。
 
 > 线程契约：单线程使用；多线程请各自持有独立实例，不跨线程共享或释放。
+>
+> 对齐契约：分配返回的地址至少按 16 字节对齐（\`memory::base_alignment\`）。
 
 ### 接口
 
@@ -433,29 +522,34 @@ window.DOCS_DATA['layered_allocator'] = {
 | \`layered_allocator()\` | 默认构造 |
 | \`layered_allocator(layered_allocator&&)\` | 移动构造 |
 | \`operator=(layered_allocator&&)\` | 移动赋值 |
-| \`allocate(size_t n)\` | 分配内存，按大小自动选择 slab 或大池 |
-| \`allocate_zeroed(size_t n)\` | 分配并清零 |
-| \`allocate_aligned(size_t n, size_t align)\` | 对齐分配，align 自动取整到 2 的幂，按对齐保证选择路径 |
-| \`deallocate(void* p)\` | 释放内存，按指针归属自动选择路径 |
-| \`deallocate(void* p, size_t n)\` | 释放内存（n 仅为提示，按指针归属选择路径） |
-| \`deallocate_aligned(void* p)\` | 释放对齐分配的内存 |
-| \`reallocate(void* p, size_t old_n, size_t new_n)\` | 重分配 |
-| \`reallocate_inplace(void* p, size_t old_n, size_t new_n)\` | 原位重分配，成功返回 true |
-| \`construct<T>(Args...)\` | 分配并构造对象，自动满足 alignof(T) |
-| \`construct_array<T>(size_t count, Args...)\` | 分配并构造 count 个对象 |
-| \`destroy<T>(T* ptr)\` | 析构并释放对象 |
-| \`owns(const void* p)\` | 判断指针是否属于本分配器 |
-| \`allocation_size(const void* p)\` | 查询已分配大小 |
-| \`reset()\` | 重置到初始状态 |
-| \`total_allocated_bytes()\` | 已分配字节 |
-| \`total_capacity_bytes()\` | 总容量字节 |
-| \`peak_allocated_bytes()\` | 峰值字节 |
-| \`stats()\` | 返回 \`layered_stats\` |
-| \`slab_max()\` | slab 路径上限（128） |
-| \`big_pool()\` | 大块路径的 list_memory_pool 引用 |
-| \`slab(size_t i)\` | slab 路径的 slab_allocator 引用 |
+| \`acquire(size_t bytes)\` | 分配至少 bytes 字节；失败返回 nullptr |
+| \`acquire_sized<Size>()\` | 编译期大小分配；Size 必须大于 0 |
+| \`acquire_zeroed(size_t bytes)\` | 分配并将请求的前 bytes 字节清零 |
+| \`acquire_aligned(size_t bytes, size_t alignment)\` | 按 alignment 对齐分配；alignment 必须为 2 的幂 |
+| \`create<T>(Args&&... args)\` | 分配并构造 T，自动满足 alignof(T)；失败返回 nullptr |
+| \`create_array<T>(size_t count, Args&&... args)\` | 使用同一组参数构造 count 个 T；失败返回 nullptr |
+| \`soft_delete(void* ptr)\` | 软删除：按指针归属回收，保留内存供复用；非法或重复指针安全忽略 |
+| \`hard_delete(void* ptr)\` | 硬删除：按指针归属回收；非法或重复指针安全忽略 |
+| \`soft_delete_sized<Size>(void* ptr)\` | 带编译期大小提示的软删除；size_of(ptr) < Size 时忽略 |
+| \`hard_delete_sized<Size>(void* ptr)\` | 带编译期大小提示的硬删除；size_of(ptr) < Size 时忽略 |
+| \`dispose<T>(T* ptr)\` | 仅调用析构函数，不回收内存 |
+| \`dispose_array<T>(T* ptr, size_t count)\` | 仅逆序调用 count 个元素的析构函数 |
+| \`owns(const void* ptr)\` | 仅存活分配的起始地址返回 true |
+| \`size_of(const void* ptr)\` | 返回存活分配的可用容量；非存活地址返回 0 |
+| \`stats()\` | 返回 \`memory_stats\`（各路径合计） |
+| \`empty()\` | 是否没有存活分配 |
+| \`reset_stats()\` | 清零分配与删除计数，峰值重置为当前存活字节 |
+| \`reset()\` | 回收所有存活分配并保留可复用容量，分配器可继续使用 |
+| \`release_all()\` | 回收所有分配并归还全部底层内存；计数与峰值保留 |
+| \`resize_inplace(void* ptr, size_t old_bytes, size_t new_bytes)\` | 原位重分配；当前块容量满足请求时返回 true |
+| \`resize(void* ptr, size_t old_bytes, size_t new_bytes)\` | 重分配；失败返回 nullptr 且原分配不变 |
+| \`slab_max()\` | 定长块路径支持的最大请求字节数 |
+| \`big_pool()\` | 只读访问变长块路径，返回 \`const list_memory_pool&\` |
+| \`slab(size_t i)\` | 只读访问定长块路径，返回 \`const slab_allocator&\`，i 取值 0..3 |
 
-> 注：禁止拷贝。
+> 注：禁止拷贝；\`create_array\` 需配对 \`dispose_array\` 与 \`soft_delete\`/\`hard_delete\`；析构等价于 \`release_all()\`。
+>
+> \`resize\` 约定：\`ptr\` 为 nullptr 时按 \`acquire(new_bytes)\` 处理；\`new_bytes\` 为 0 时软删除并返回 nullptr；无法原位时分配新块、拷贝数据并软删除旧块。过对齐分配发生移动时仍保持原对齐要求。
 
 ### 使用
 
@@ -463,43 +557,62 @@ window.DOCS_DATA['layered_allocator'] = {
 using namespace memory;
 
 layered_allocator alloc;
-void* small = alloc.allocate(64);    // 走 slab
-void* big = alloc.allocate(256);      // 走 list_memory_pool
-alloc.deallocate(small);
-alloc.deallocate(big, 256);          // 带大小提示
 
-// 对齐分配
-void* a = alloc.allocate_aligned(128, 32);
-alloc.deallocate_aligned(a);
+void* small = alloc.acquire(64);
+void* big = alloc.acquire(8192);
+alloc.soft_delete(small);
+alloc.hard_delete(big);
 
-// 对象构造
+void* s = alloc.acquire_sized<64>();
+alloc.soft_delete_sized<64>(s);
+
+void* a = alloc.acquire_aligned(512, 64);
+alloc.hard_delete(a);
+
 struct Foo { int x; Foo(int v) : x(v) {} };
-Foo* foo = alloc.construct<Foo>(42);
-alloc.destroy(foo);
+Foo* foo = alloc.create<Foo>(1);
+if (foo)
+{
+    alloc.dispose(foo);
+    alloc.soft_delete(foo);
+}
 
-// 批量构造
-Foo* arr = alloc.construct_array<Foo>(10, 0);
+Foo* arr = alloc.create_array<Foo>(4, 2);
+if (arr)
+{
+    alloc.dispose_array(arr, 4);
+    alloc.soft_delete(arr);
+}
 
 // 重分配
-void* buf = alloc.allocate(32);
-void* bigger = alloc.reallocate(buf, 32, 64);
+void* buf = alloc.acquire(128);
+void* bigger = alloc.resize(buf, 128, 4096);
+if (bigger)
+{
+    buf = bigger;
+}
 
-// 统计
-layered_stats s = alloc.stats();
-size_t used = alloc.total_allocated_bytes();
-size_t peak = alloc.peak_allocated_bytes();
+// 统计与只读路径查询
+memory_stats st = alloc.stats();
+size_t limit = alloc.slab_max();
+const list_memory_pool& pool = alloc.big_pool();
+const slab_allocator& block_pool = alloc.slab(0);
+memory_stats pool_stats = pool.stats();
+size_t block_size = block_pool.block_size();
 
-// 重置
-alloc.reset();
+// 整体回收
+alloc.release_all();
 \`\`\`
 
 ### 不要做什么
 
 | 错误做法 | 问题 | 正确做法 |
 |---------|------|---------|
-| \`deallocate\` 非本分配器分配的指针 | 内存损坏 | 先 \`owns(p)\` 验证 |
-| 同一指针 \`deallocate\` 两次 | 双重释放 | 释放后置空 |
-| 期望 slab 路径支持 >128B | slab 上限 128B | >128B 自动走 list_memory_pool |
+| 用本分配器删除非本分配器分配的指针 | 会被安全忽略，但释放意图有误 | 先 \`owns(ptr)\` 验证 |
+| 对同一指针重复删除 | 重复删除被安全忽略，但通常意味着生命周期管理有误 | 删除后置空 |
+| 只对 \`create_array\` 的元素调用 \`dispose_array\` | 元素已析构，但内存仍未回收 | \`dispose_array\` 后再 \`soft_delete\` 或 \`hard_delete\` |
+| 忽略 \`resize\` 的失败返回值 | 失败时原分配仍有效，继续使用新指针会出错 | 检查返回值，失败时保留原指针 |
+| 拷贝 \`layered_allocator\` | 禁止拷贝 | 使用移动语义或引用传递 |
 
 ---
 
@@ -514,9 +627,9 @@ window.DOCS_DATA['stl_allocator'] = {
   order: 29,
   content: `## 29. stl_allocator — STL Allocator 适配器
 
-命名空间 \`memory\`。\`noexcept\`。
+命名空间 \`memory\`。
 
-将项目内存池适配为 C++ STL Allocator，可用于 \`std::vector\`/\`std::list\` 等标准容器。
+将项目内存池适配为 C++ STL Allocator，可用于 \`std::vector\` / \`std::list\` 等标准容器。
 
 > 线程契约：单线程使用，不跨线程共享容器。
 
@@ -524,18 +637,20 @@ window.DOCS_DATA['stl_allocator'] = {
 
 | 接口 | 说明 |
 |------|------|
-| \`stl_allocator()\` | 默认构造 |
-| \`stl_allocator(Pool& pool)\` | 绑定到指定内存池 |
-| \`stl_allocator(const stl_allocator<U, Pool>&)\` | 转换构造（跨类型 U → T） |
-| \`allocate(size_t n)\` | 分配 n 个 T 的内存，失败调用 \`handle_oom\` |
-| \`deallocate(T* p, size_t n)\` | 释放 n 个 T 的内存 |
+| \`stl_allocator()\` | 默认构造，未绑定池；分配会触发 \`handle_oom\` |
+| \`explicit stl_allocator(Pool& pool)\` | 绑定到指定内存池 |
+| \`stl_allocator(const stl_allocator<U, Pool>& other)\` | 转换构造（跨类型 U → T） |
+| \`allocate(size_t n)\` | 分配 n 个 T 的内存并满足 alignof(T)；n 为 0 返回 nullptr，其余失败调用 \`handle_oom\` |
+| \`deallocate(T* p, size_t n)\` | 软删除 n 个 T 的内存（n 不参与回收） |
 | \`pool()\` | 获取绑定的内存池指针 |
 | \`rebind<U>::other\` | 重绑定类型 U 的 allocator 类型 |
 | \`address(T& x)\` / \`address(const T& x)\` | 取对象地址 |
 | \`max_size()\` | 最大可分配元素数 |
-| \`construct<U>(U* p, Args...)\` | 在 p 处构造 U 对象 |
+| \`construct<U>(U* p, Args&&... args)\` | 在 p 处构造 U 对象 |
 | \`destroy<U>(U* p)\` | 析构 p 指向的对象 |
 | \`operator==\` / \`operator!=\` | 比较两个分配器是否等价 |
+
+> 注：同一内存池上的 \`stl_allocator\` 实例互相等价；不同内存池上的实例不等价。容器生命周期不得超过绑定的内存池。
 
 ### 使用
 
@@ -557,7 +672,13 @@ std::list<int, list_alloc> l{list_alloc(pool)};
 l.push_back(10);
 \`\`\`
 
-> 注：同一内存池上的 stl_allocator 实例互相等价；不同内存池上的实例不等价。
+### 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 使用默认构造的 \`stl_allocator\` 分配 | 未绑定池，触发 \`handle_oom\` | 用 \`stl_allocator(pool)\` 绑定池 |
+| 容器比绑定的内存池存活更久 | 池析构后容器仍持有其内存 | 先销毁容器，再销毁池 |
+| 手动调用 \`deallocate\` 释放非该容器分配的内存 | 生命周期管理错误 | 交给容器管理分配与释放 |
 
 ---
 
@@ -580,23 +701,44 @@ window.DOCS_DATA['oom_handler'] = {
 
 | 接口 | 说明 |
 |------|------|
-| \`handle_oom(size_t requested_bytes, const char* allocator_name, std::source_location loc = ...)\` | 输出 OOM 诊断后终止程序 |
+| \`handle_oom(size_t requested_bytes, const char* allocator_name, std::source_location loc = std::source_location::current())\` | 输出 OOM 诊断后终止程序；\`allocator_name\` 可为 nullptr |
+
+> 注：\`handle_oom\` 标记为 \`[[noreturn]]\`，调用后不会返回。
 
 ### 使用
 
 \`\`\`cpp
 using namespace memory;
 
-void* custom_alloc(size_t n) {
+void* custom_alloc(size_t n)
+{
     void* p = std::malloc(n);
-    if (!p) {
+    if (!p)
+    {
         handle_oom(n, "custom_alloc");
+    }
+    return p;
+}
+
+// 包装函数可透传调用处的位置信息
+void* checked_alloc(size_t n,
+    std::source_location loc = std::source_location::current())
+{
+    void* p = std::malloc(n);
+    if (!p)
+    {
+        handle_oom(n, "checked_alloc", loc);
     }
     return p;
 }
 \`\`\`
 
-> 注：\`handle_oom\` 标记为 \`[[noreturn]]\`，调用后不会返回。
+### 不要做什么
+
+| 错误做法 | 问题 | 正确做法 |
+|---------|------|---------|
+| 期望 \`handle_oom\` 返回后继续执行 | 调用后程序终止 | 在调用前完成必要的状态清理 |
+| 对可恢复的分配失败也调用 \`handle_oom\` | 会直接终止程序 | 可恢复场景检查分配接口的 nullptr 返回值 |
 
 ---
 

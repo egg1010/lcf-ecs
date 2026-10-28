@@ -24,7 +24,7 @@ public:
         if (!enabled_) [[unlikely]] return;
         if (overflow_read_ < overflow_.size() || !buffer_.try_push(event)) [[unlikely]]
         {
-            overflow_.push_back(event);
+            overflow_.emplace_back(event);
         }
     }
 

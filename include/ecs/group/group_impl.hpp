@@ -43,12 +43,12 @@ inline void group<First, Rest...>::rebuild() noexcept
     const size_t n = indices.size();
 
     // 预分配容量,避免 emplace_back 反复重分配
-    cached_.reserve_exact(n);
+    cached_.increase_capacity(n);
 
     if (use_mask_path_)
     {
         // 位掩码路径: check_blocks 过滤 + mapping 构建合并为单遍历
-        dense_mappings_.reserve_exact(n);
+        dense_mappings_.increase_capacity(n);
         for (size_t i = 0; i < n; ++i)
         {
             if (!check_blocks(indices[i])) continue;
@@ -60,14 +60,14 @@ inline void group<First, Rest...>::rebuild() noexcept
                 if (k == primary_idx_) continue;
                 entry[k] = sets_[k]->sparse_dense_at(eid);
             }
-            cached_.push_back(static_cast<uint32_t>(i));
-            dense_mappings_.push_back(entry);
+            cached_.emplace_back(static_cast<uint32_t>(i));
+            dense_mappings_.emplace_back(entry);
         }
     }
     else
     {
         // sparse 路径: has_all 判断与 mapping 构建合并 (单次遍历)
-        dense_mappings_.reserve_exact(n);
+        dense_mappings_.increase_capacity(n);
         for (size_t i = 0; i < n; ++i)
         {
             if (i + 8 < n) [[likely]]
@@ -100,8 +100,8 @@ inline void group<First, Rest...>::rebuild() noexcept
             }
             if (has_all)
             {
-                cached_.push_back(static_cast<uint32_t>(i));
-                dense_mappings_.push_back(entry);
+                cached_.emplace_back(static_cast<uint32_t>(i));
+                dense_mappings_.emplace_back(entry);
             }
         }
     }

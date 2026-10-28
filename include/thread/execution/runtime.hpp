@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <new>
 
-#include "thread/base/error.hpp"
+#include "part/operating_message.hpp"
 #include "thread/base/job.hpp"
 #include "thread/base/sync.hpp"
 #include "thread/base/tls.hpp"
@@ -479,7 +479,6 @@ struct runtime_context
             const std::size_t slots = job_slots == 0 ? runtime_default_job_slots : job_slots;
             if (!jobs_.create(slots))
             {
-                FRAMEWORK_REPORT(error_severity::fatal, errc::invariant_broken);
                 return false;
             }
         }

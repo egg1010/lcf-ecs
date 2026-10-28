@@ -9,6 +9,7 @@
 #include <string>
 #include <utility>
 #include "include/part/time/timer.hpp"
+#include "include/part/operating_message.hpp"
 #include "include/part/analysis.hpp"
 
 // Windows 控制台默认代码页 (GBK/936) 会把 UTF-8 中文输出显示为乱码,
@@ -34,6 +35,13 @@ inline void t_console_utf8() noexcept
         done = true;
     }
 #endif
+}
+
+// 不关心失败原因的调用点共用同一个错误对象；按线程隔离，避免并发测试互相覆盖
+inline operating_message& scratch_error() noexcept
+{
+    static thread_local operating_message message;
+    return message;
 }
 
 // ==== 全局统计 (单线程测试) ====

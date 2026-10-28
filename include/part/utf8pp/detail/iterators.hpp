@@ -479,6 +479,6 @@
     {
         dense<utf8_view> result;
         for (auto it = grapheme_begin(); it != grapheme_end(); ++it)
-            result.push_back(*it);
+            result.emplace_back(*it);
         return result;
     }

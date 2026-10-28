@@ -858,8 +858,8 @@
                         size_t primary_i = sorted_indices_[i];
                         uint32_t eid = indices[primary_i];
                         uint32_t ver = primary->sparse_version_at(eid);
-                        sorted_entities_.push_back(entity(eid, ver));
-                        (std::get<Is>(sorted_pool_copies_).push_back(
+                        sorted_entities_.emplace_back(entity(eid, ver));
+                        (std::get<Is>(sorted_pool_copies_).emplace_back(
                             (*std::get<Is>(original_pools))[primary_i]), ...);
                     }
                 }
@@ -875,8 +875,8 @@
                         {
                             uint32_t eid = indices[primary_i];
                             uint32_t ver = primary->sparse_version_at(eid);
-                            sorted_entities_.push_back(entity(eid, ver));
-                            (std::get<Is>(sorted_pool_copies_).push_back(
+                            sorted_entities_.emplace_back(entity(eid, ver));
+                            (std::get<Is>(sorted_pool_copies_).emplace_back(
                                 (*std::get<Is>(original_pools))[m[Is]]), ...);
                         }
                     }
@@ -907,7 +907,7 @@
 
                 sorted_indices_.increase_capacity(n);
                 for (size_t i = 0; i < n; ++i)
-                    sorted_indices_.push_back(i);
+                    sorted_indices_.emplace_back(i);
 
                 size_t* idx_data = sorted_indices_.data();
 
@@ -1094,11 +1094,11 @@
                     group_keys_[i] = entries[i].key;
                 }
 
-                group_starts_.push_back(0);
+                group_starts_.emplace_back(0);
                 for (size_t i = 1; i < n; ++i)
                 {
                     if (group_keys_[i] != group_keys_[i - 1])
-                        group_starts_.push_back(i);
+                        group_starts_.emplace_back(i);
                 }
 
                 for (size_t i = 0; i < N; ++i)
@@ -1283,7 +1283,7 @@
                     uint32_t ver = primary->sparse_version_at(eid);
                     entity e(eid, ver);
                     if (base_.contains_impl(e, std::index_sequence_for<First, Rest...>{}))
-                        changed_indices_.push_back(i);
+                        changed_indices_.emplace_back(i);
                 }
                 needs_rebuild_ = false;
             }
@@ -1382,7 +1382,7 @@
                 const size_t n = indices.size();
                 // 仅扩展，不覆盖已追踪的版本号
                 while (last_observed_versions_.size() < n)
-                    last_observed_versions_.push_back(0);
+                    last_observed_versions_.emplace_back(0);
 
                 auto* track_set = base_.sets_[TrackIdx];
 
@@ -1403,7 +1403,7 @@
                             last_observed_versions_[i] = cur;
                         else
                             last_observed_versions_[i] = cur;
-                        changed_indices_.push_back(i);
+                        changed_indices_.emplace_back(i);
                     }
                 }
                 needs_rebuild_ = false;
@@ -1495,7 +1495,7 @@
                 auto& indices = primary->get_entity_indices();
                 const size_t n = indices.size();
                 while (last_observed_added_.size() < n)
-                    last_observed_added_.push_back(0);
+                    last_observed_added_.emplace_back(0);
 
                 auto* track_set = base_.sets_[TrackIdx];
 
@@ -1520,7 +1520,7 @@
                             last_observed_added_[i] = cur;
                         else
                             last_observed_added_[i] = cur;
-                        added_indices_.push_back(i);
+                        added_indices_.emplace_back(i);
                     }
                 }
                 needs_rebuild_ = false;

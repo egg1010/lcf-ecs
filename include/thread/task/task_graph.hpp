@@ -11,8 +11,7 @@
 #include "part/dense.hpp"
 #include "thread/execution/coroutine.hpp"
 #include "thread/task/detail/context_store.hpp"
-#include "thread/base/error.hpp"
-#include "thread/base/error_report.hpp"
+#include "part/operating_message.hpp"
 #include "thread/task/task_admission.hpp"
 #include "thread/task/task_dependency.hpp"
 #include "thread/task/task_trace.hpp"
@@ -151,6 +150,11 @@ struct task_access_tables
     dense<std::uint8_t> wait_write_{};
 };
 
+using error_sink = void (*)(const operating_message&, void*) noexcept;
+
+// 异步失败交付：任务体以 faulted 结束时按次调用一次，成功与正常取消不调用
+using om_completion_error_fn = void (*)(operating_message, void*) noexcept;
+
 struct task_graph
 {
     task_graph() noexcept = default;
@@ -167,7 +171,14 @@ struct task_graph
     // 生命周期
     // ------------------------------------------------------------------
 
-    bool create(const task_graph_config& config) noexcept;
+    bool create_impl(const task_graph_config& config, operating_message& error) noexcept;
+
+    operating_message create(const task_graph_config& config) noexcept
+    {
+        operating_message error;
+        (void)create_impl(config, error);
+        return error;
+    }
 
     void destroy() noexcept;
 
@@ -205,29 +216,49 @@ struct task_graph
     // 注册
     // ------------------------------------------------------------------
 
-    task_id declare(const char* name, task_body body = {}) noexcept
+    task_id declare_impl(const char* name, task_body body, operating_message& error) noexcept
     {
         route_word route = route_word::make(thread::role::general, order_mode::parallel,
                                             affinity_kind::none, priority::normal,
                                             task_worker_none);
         parent_word parent{};
-        return declare_full(name, body, route, parent, invalid_order_key, 0);
+        return declare_full_impl(name, body, route, parent, invalid_order_key, 0, error);
     }
 
-    task_id declare(const char* name, task_body body, thread::role target) noexcept;
+    task_id declare(const char* name, task_body body = {}) noexcept
+    {
+        operating_message error;
+        return declare_impl(name, body, error);
+    }
 
     task_id declare_full(const char* name, task_body body, route_word route, parent_word parent,
                          std::uint64_t key, std::uint32_t flags) noexcept
     {
+        operating_message error;
+        return declare_full_impl(name, body, route, parent, key, flags, error);
+    }
+
+    task_id declare_impl(const char* name, task_body body, thread::role target,
+                         operating_message& error) noexcept;
+
+    task_id declare(const char* name, task_body body, thread::role target) noexcept
+    {
+        operating_message error;
+        return declare_impl(name, body, target, error);
+    }
+
+    task_id declare_full_impl(const char* name, task_body body, route_word route,
+                              parent_word parent, std::uint64_t key, std::uint32_t flags,
+                              operating_message& error) noexcept
+    {
         if (!created_)
         {
-            report(error_severity::error, errc::not_running, "task graph not created");
+            error.write_failure(om_err_not_running.code, msg_level::error, msg::here());
             return invalid_task;
         }
         if (!valid_route(route, true))
         {
-            report(error_severity::error, errc::task_decl_invalid, "invalid route combination",
-                   invalid_task, route.role_value(), task_worker_none);
+            error.write_failure(om_err_invalid_argument.code, msg_level::error, msg::here());
             return invalid_task;
         }
         task_id id{};
@@ -240,7 +271,7 @@ struct task_graph
             table_.append(id, name, body, route, parent, resolved_key, flags);
         if (node == nullptr)
         {
-            report(error_severity::error, errc::task_table_full, "task table full");
+            error.write_failure(om_err_queue_full.code, msg_level::error, msg::here());
             return invalid_task;
         }
         (void)contexts_.inherit(parent.parent(), index);
@@ -256,34 +287,112 @@ struct task_graph
     // 身份变更
     // ------------------------------------------------------------------
 
-    bool set_body(task_id id, task_body body) noexcept;
+    bool set_body_impl(task_id id, task_body body, operating_message& error) noexcept;
 
-    bool migrate(task_id id, thread::role target) noexcept;
+    operating_message set_body(task_id id, task_body body) noexcept
+    {
+        operating_message error;
+        (void)set_body_impl(id, body, error);
+        return error;
+    }
 
-    bool rebind(task_id id, thread::role target) noexcept;
+    bool migrate_impl(task_id id, thread::role target, operating_message& error) noexcept;
 
-    bool set_role(task_id id, thread::role target) noexcept;
+    operating_message migrate(task_id id, thread::role target) noexcept
+    {
+        operating_message error;
+        (void)migrate_impl(id, target, error);
+        return error;
+    }
 
-    bool pin(task_id id, std::uint32_t worker) noexcept;
+    bool rebind_impl(task_id id, thread::role target, operating_message& error) noexcept;
 
-    bool set_stealable(task_id id, bool value) noexcept;
+    operating_message rebind(task_id id, thread::role target) noexcept
+    {
+        operating_message error;
+        (void)rebind_impl(id, target, error);
+        return error;
+    }
 
-    bool set_order_mode(task_id id, order_mode mode) noexcept;
+    bool set_role_impl(task_id id, thread::role target, operating_message& error) noexcept;
 
-    bool set_priority(task_id id, priority value) noexcept;
+    operating_message set_role(task_id id, thread::role target) noexcept
+    {
+        operating_message error;
+        (void)set_role_impl(id, target, error);
+        return error;
+    }
 
-    bool reorder(task_id id, order_key key) noexcept;
+    bool pin_impl(task_id id, std::uint32_t worker, operating_message& error) noexcept;
 
-    bool reparent(task_id id, task_id parent) noexcept;
+    operating_message pin(task_id id, std::uint32_t worker) noexcept
+    {
+        operating_message error;
+        (void)pin_impl(id, worker, error);
+        return error;
+    }
 
-    bool add_dependency(task_id before, task_id after) noexcept;
+    bool set_stealable_impl(task_id id, bool value, operating_message& error) noexcept;
 
-    bool set_activation(task_id id, activation_policy policy, std::uint32_t period = 1,
-                        activation_overlap overlap = activation_overlap::drop) noexcept
+    operating_message set_stealable(task_id id, bool value) noexcept
+    {
+        operating_message error;
+        (void)set_stealable_impl(id, value, error);
+        return error;
+    }
+
+    bool set_order_mode_impl(task_id id, order_mode mode, operating_message& error) noexcept;
+
+    operating_message set_order_mode(task_id id, order_mode mode) noexcept
+    {
+        operating_message error;
+        (void)set_order_mode_impl(id, mode, error);
+        return error;
+    }
+
+    bool set_priority_impl(task_id id, priority value, operating_message& error) noexcept;
+
+    operating_message set_priority(task_id id, priority value) noexcept
+    {
+        operating_message error;
+        (void)set_priority_impl(id, value, error);
+        return error;
+    }
+
+    bool reorder_impl(task_id id, order_key key, operating_message& error) noexcept;
+
+    operating_message reorder(task_id id, order_key key) noexcept
+    {
+        operating_message error;
+        (void)reorder_impl(id, key, error);
+        return error;
+    }
+
+    bool reparent_impl(task_id id, task_id parent, operating_message& error) noexcept;
+
+    operating_message reparent(task_id id, task_id parent) noexcept
+    {
+        operating_message error;
+        (void)reparent_impl(id, parent, error);
+        return error;
+    }
+
+    bool add_dependency_impl(task_id before, task_id after, operating_message& error) noexcept;
+
+    operating_message add_dependency(task_id before, task_id after) noexcept
+    {
+        operating_message error;
+        (void)add_dependency_impl(before, after, error);
+        return error;
+    }
+
+    bool set_activation(task_id id, activation_policy policy, std::uint32_t period,
+                        activation_overlap overlap, operating_message& error) noexcept
     {
         task_node* node = node_of(id);
         if (node == nullptr)
         {
+            error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
             return false;
         }
         node->set_activation(policy, overlap);
@@ -293,23 +402,50 @@ struct task_graph
         {
             if (periodic_.size() < periodic_.capacity())
             {
-                periodic_.push_back(id.index_);
+                periodic_.emplace_back(id.index_);
                 periodic_flag_[id.index_] = 1;
+            }
+            else
+            {
+                error.write_failure(om_err_capacity_exceeded.code, msg_level::warn, msg::here());
+                return false;
             }
         }
         return true;
     }
 
-    bool add_access(task_id id, resource_id resource, access_mode mode) noexcept;
+    bool add_access_impl(task_id id, resource_id resource, access_mode mode,
+                    operating_message& error) noexcept;
+
+    operating_message add_access(task_id id, resource_id resource, access_mode mode) noexcept
+    {
+        operating_message error;
+        (void)add_access_impl(id, resource, mode, error);
+        return error;
+    }
 
     resource_table& resources() noexcept;
 
     // 时间预算：任务体通过 ctx.budget_exceeded() 查询，用于跳帧/降级
-    bool set_budget(task_id id, std::uint64_t budget_ns) noexcept;
+    bool set_budget_impl(task_id id, std::uint64_t budget_ns, operating_message& error) noexcept;
+
+    operating_message set_budget(task_id id, std::uint64_t budget_ns) noexcept
+    {
+        operating_message error;
+        (void)set_budget_impl(id, budget_ns, error);
+        return error;
+    }
 
     std::uint64_t budget_of(task_id id) const noexcept;
 
-    bool set_deadline(task_id id, std::uint64_t timeout_ns) noexcept;
+    bool set_deadline_impl(task_id id, std::uint64_t timeout_ns, operating_message& error) noexcept;
+
+    operating_message set_deadline(task_id id, std::uint64_t timeout_ns) noexcept
+    {
+        operating_message error;
+        (void)set_deadline_impl(id, timeout_ns, error);
+        return error;
+    }
 
     context_id create_context(std::uint64_t request_id, std::uint64_t trace_id,
                               std::uint64_t tenant_id) noexcept
@@ -317,7 +453,14 @@ struct task_graph
         return contexts_.create_context(request_id, trace_id, tenant_id);
     }
 
-    bool set_context(task_id id, context_id ctx) noexcept;
+    bool set_context_impl(task_id id, context_id ctx, operating_message& error) noexcept;
+
+    operating_message set_context(task_id id, context_id ctx) noexcept
+    {
+        operating_message error;
+        (void)set_context_impl(id, ctx, error);
+        return error;
+    }
 
     context_id context_of(task_id id) const noexcept;
 
@@ -327,24 +470,82 @@ struct task_graph
     // 协程等待：由 task_flow 的等待原语在 await_suspend 内调用
     // ------------------------------------------------------------------
 
-    bool prepare_switch(task_id id, thread::role target) noexcept;
+    bool prepare_switch_impl(task_id id, thread::role target, operating_message& error) noexcept;
 
-    bool prepare_frame_wait(task_id id, thread::role target) noexcept;
+    operating_message prepare_switch(task_id id, thread::role target) noexcept
+    {
+        operating_message error;
+        (void)prepare_switch_impl(id, target, error);
+        return error;
+    }
 
-    bool prepare_frame_pair(task_id id, thread::role first, thread::role second) noexcept;
+    bool prepare_frame_wait_impl(task_id id, thread::role target, operating_message& error) noexcept;
 
-    bool prepare_join(task_id parent, task_id child) noexcept;
+    operating_message prepare_frame_wait(task_id id, thread::role target) noexcept
+    {
+        operating_message error;
+        (void)prepare_frame_wait_impl(id, target, error);
+        return error;
+    }
+
+    bool prepare_frame_pair_impl(task_id id, thread::role first, thread::role second,
+                            operating_message& error) noexcept;
+
+    operating_message prepare_frame_pair(task_id id, thread::role first, thread::role second) noexcept
+    {
+        operating_message error;
+        (void)prepare_frame_pair_impl(id, first, second, error);
+        return error;
+    }
+
+    bool prepare_join_impl(task_id parent, task_id child, operating_message& error) noexcept;
+
+    operating_message prepare_join(task_id parent, task_id child) noexcept
+    {
+        operating_message error;
+        (void)prepare_join_impl(parent, child, error);
+        return error;
+    }
 
     // IO / 阻塞卸载的等待登记：完成事件通过 wake_waiting 回投
-    bool prepare_external_wait(task_id id) noexcept;
+    bool prepare_external_wait_impl(task_id id, operating_message& error) noexcept;
 
-    bool prepare_join_any(task_id parent, std::span<const task_id> children) noexcept;
+    operating_message prepare_external_wait(task_id id) noexcept
+    {
+        operating_message error;
+        (void)prepare_external_wait_impl(id, error);
+        return error;
+    }
+
+    bool prepare_join_any_impl(task_id parent, std::span<const task_id> children,
+                          operating_message& error) noexcept;
+
+    operating_message prepare_join_any(task_id parent, std::span<const task_id> children) noexcept
+    {
+        operating_message error;
+        (void)prepare_join_any_impl(parent, children, error);
+        return error;
+    }
 
     void clear_join_any(task_id parent) noexcept;
 
-    bool prepare_timed(task_id id, std::uint64_t delay_ns) noexcept;
+    bool prepare_timed_impl(task_id id, std::uint64_t delay_ns, operating_message& error) noexcept;
 
-    bool wake_waiting(task_id id) noexcept;
+    operating_message prepare_timed(task_id id, std::uint64_t delay_ns) noexcept
+    {
+        operating_message error;
+        (void)prepare_timed_impl(id, delay_ns, error);
+        return error;
+    }
+
+    bool wake_waiting_impl(task_id id, operating_message& error) noexcept;
+
+    operating_message wake_waiting(task_id id) noexcept
+    {
+        operating_message error;
+        (void)wake_waiting_impl(id, error);
+        return error;
+    }
 
     bool waiting(task_id id) const noexcept;
 
@@ -367,22 +568,64 @@ struct task_graph
     // 定时等待到期唤醒：由看门狗周期调用
     std::size_t wake_timed(std::uint64_t now_ns) noexcept;
 
-    void raise(error_severity severity, errc code, task_id id, const char* text) noexcept;
+    void raise(msg_level level, uint32_t code, task_id id, const char* text) noexcept;
 
     // 卡住上报去重：首次标记返回 true
-    bool mark_hung(task_id id) noexcept;
+    bool mark_hung_impl(task_id id, operating_message& error) noexcept;
 
-    bool submit_work(job* target) noexcept;
+    operating_message mark_hung(task_id id) noexcept
+    {
+        operating_message error;
+        (void)mark_hung_impl(id, error);
+        return error;
+    }
+
+    bool submit_work_impl(job* target, operating_message& error) noexcept;
+
+    operating_message submit_work(job* target) noexcept
+    {
+        operating_message error;
+        (void)submit_work_impl(target, error);
+        return error;
+    }
 
     context_table& contexts() noexcept;
 
-    bool disable(task_id id) noexcept;
+    bool disable_impl(task_id id, operating_message& error) noexcept;
 
-    bool enable(task_id id) noexcept;
+    operating_message disable(task_id id) noexcept
+    {
+        operating_message error;
+        (void)disable_impl(id, error);
+        return error;
+    }
 
-    bool cancel(task_id scope) noexcept;
+    bool enable_impl(task_id id, operating_message& error) noexcept;
 
-    bool clear_cancel(task_id scope) noexcept;
+    operating_message enable(task_id id) noexcept
+    {
+        operating_message error;
+        (void)enable_impl(id, error);
+        return error;
+    }
+
+    bool cancel_impl(task_id scope, operating_message& error) noexcept;
+
+    operating_message cancel(task_id scope) noexcept
+    {
+        operating_message error;
+        (void)cancel_impl(scope, error);
+        return error;
+    }
+
+    bool clear_cancel_impl(task_id scope, operating_message& error) noexcept;
+
+    operating_message clear_cancel(task_id scope) noexcept
+    {
+        operating_message error;
+        (void)clear_cancel_impl(scope, error);
+        return error;
+    }
 
     bool cancelled(task_id id) const noexcept;
 
@@ -390,11 +633,32 @@ struct task_graph
     // 激活
     // ------------------------------------------------------------------
 
-    bool activate(task_id id) noexcept;
+    bool activate_impl(task_id id, operating_message& error) noexcept;
 
-    bool activate(task_id id, activate_options options) noexcept;
+    operating_message activate(task_id id) noexcept
+    {
+        operating_message error;
+        (void)activate_impl(id, error);
+        return error;
+    }
 
-    bool deactivate(task_id id) noexcept;
+    bool activate_impl(task_id id, activate_options options, operating_message& error) noexcept;
+
+    operating_message activate(task_id id, activate_options options) noexcept
+    {
+        operating_message error;
+        (void)activate_impl(id, options, error);
+        return error;
+    }
+
+    bool deactivate_impl(task_id id, operating_message& error) noexcept;
+
+    operating_message deactivate(task_id id) noexcept
+    {
+        operating_message error;
+        (void)deactivate_impl(id, error);
+        return error;
+    }
 
     // ------------------------------------------------------------------
     // 执行入口（worker 调用）
@@ -426,26 +690,25 @@ struct task_graph
     // 外部线程接入
     // ------------------------------------------------------------------
 
-    bool attach_thread(thread::role id, const char* label = nullptr) noexcept
+    bool attach_thread_impl(thread::role id, const char* label,
+                            operating_message& error) noexcept
     {
         role_slot* slot = role_at(id);
         if (slot == nullptr)
         {
-            report(error_severity::error, errc::role_unbound, "attach_thread unknown role", {}, id);
+            error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
             return false;
         }
         if (!slot->external_)
         {
-            report(error_severity::error, errc::role_unbound,
-                   "attach_thread requires external role", {}, id);
+            error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
             return false;
         }
         bool expected = false;
         if (!slot->attached_.compare_exchange_strong(expected, true, std::memory_order_acq_rel,
                                                      std::memory_order_acquire))
         {
-            report(error_severity::warning, errc::already_registered,
-                   "attach_thread called twice", {}, id);
+            error.write_failure(om_err_already_exists.code, msg_level::warn, msg::here());
             return false;
         }
         slot->thread_hash_.store(static_cast<std::uint64_t>(std::hash<std::thread::id>{}(
@@ -461,6 +724,13 @@ struct task_graph
             slot->name_[i] = '\0';
         }
         return true;
+    }
+
+    operating_message attach_thread(thread::role id, const char* label = nullptr) noexcept
+    {
+        operating_message error;
+        (void)attach_thread_impl(id, label, error);
+        return error;
     }
 
     void detach_thread(thread::role id) noexcept;
@@ -523,7 +793,14 @@ struct task_graph
     bool draining() const noexcept;
 
     // 热重载：替换下一次激活使用的任务体；旧版本保留到 manager 销毁
-    bool replace_body(task_id id, task_body body) noexcept;
+    bool replace_body_impl(task_id id, task_body body, operating_message& error) noexcept;
+
+    operating_message replace_body(task_id id, task_body body) noexcept
+    {
+        operating_message error;
+        (void)replace_body_impl(id, body, error);
+        return error;
+    }
 
     std::uint32_t body_version(task_id id) noexcept;
 
@@ -535,14 +812,14 @@ struct task_graph
 
     void set_error_sink(error_sink sink, void* user) noexcept;
 
+    void set_completion_error(om_completion_error_fn fn, void* user) noexcept;
+
     // 入队后唤醒空闲 worker；由 manager 注入，图不感知线程实现
     void set_wake_hook(void* self, void (*wake)(void*, std::uint32_t) noexcept) noexcept;
 
     void wake_worker(std::uint32_t worker) noexcept;
 
-    const error_reporter& reporter() const noexcept;
 
-    error_state last_error() const noexcept;
 
   private:
     // ------------------------------------------------------------------
@@ -684,7 +961,14 @@ struct task_graph
         clear_wait(index);
         const bool failed =
             (node->flags_.load(std::memory_order_acquire) & flag_body_failed) != 0;
-        finish(node, failed ? errc::task_body_faulted : errc::ok);
+        if (!failed)
+        {
+            finish(node, 0);
+            return;
+        }
+        const uint32_t fail_code =
+            ctx.fail_code_ != 0 ? ctx.fail_code_ : om_err_task_body_faulted.code;
+        finish(node, fail_code, ctx.fail_site_);
     }
 
     bool run_coroutine(task_node* node, task_context& ctx, const task_body& effective) noexcept;
@@ -705,7 +989,8 @@ struct task_graph
         }
     }
 
-    void finish(task_node* node, errc error) noexcept;
+    void finish(task_node* node, uint32_t error,
+                std::source_location site = std::source_location::current()) noexcept;
 
     void rearm(task_node* node, bool new_activation = false) noexcept
     {
@@ -757,15 +1042,23 @@ struct task_graph
 
     bool periodic_listed(std::uint32_t index) const noexcept;
 
-    void report(error_severity severity, errc code, const char* text, task_id id = invalid_task,
+    void report(msg_level level, uint32_t code, const char* text, task_id id = invalid_task,
                 thread::role id_role = thread::role::general,
                 std::uint32_t worker = task_worker_none) noexcept
     {
-        last_state_.code_ = code;
-        last_state_.severity_ = severity;
-        set_last_error(code, severity, 0);
+        (void)id;
+        (void)id_role;
+        (void)worker;
         metrics_.rejected_.fetch_add(1, std::memory_order_relaxed);
-        reporter_.emit(severity, code, 0, id, id_role, worker, std::string_view{text});
+        if (sink_ == nullptr)
+        {
+            return;
+        }
+        operating_message error;
+        error.set_text_mode(om_text_mode::plain);
+        error.write_failure_text(code, level, msg::here(),
+                                 text != nullptr ? std::string_view{text} : std::string_view{});
+        sink_(error, sink_user_);
     }
 
     task_graph_config config_{};
@@ -806,8 +1099,10 @@ struct task_graph
     dense<std::uint8_t> periodic_flag_{};
     dense<std::uint8_t> worker_role_{};
     task_metrics metrics_{};
-    error_reporter reporter_{};
-    error_state last_state_{};
+    error_sink sink_{nullptr};
+    void* sink_user_{nullptr};
+    om_completion_error_fn completion_fn_{nullptr};
+    void* completion_user_{nullptr};
     std::atomic<std::uint64_t> route_cursor_{0};
     std::atomic<bool> draining_{false};
     void* wake_self_{nullptr};

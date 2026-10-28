@@ -84,7 +84,7 @@ public:
         json_reader sub(raw);
         if (!sub.read_string(decode, v)) return {};
         if (v.data() == decode.data() && !decode.empty()) {
-            tmp_pool_.push_back(std::make_unique<std::string>(std::move(decode)));
+            tmp_pool_.emplace_back(std::make_unique<std::string>(std::move(decode)));
             return std::string_view(*tmp_pool_.back());
         }
         return v;
@@ -100,7 +100,7 @@ public:
         }
         json_reader sub(raw);
         std::string b64 = sub.read_string();
-        tmp_pool_.push_back(std::make_unique<std::string>(detail::base64_decode(b64)));
+        tmp_pool_.emplace_back(std::make_unique<std::string>(detail::base64_decode(b64)));
         return std::string_view(*tmp_pool_.back());
     }
 

@@ -35,7 +35,7 @@ public:
     FORCE_INLINE
     void free_id(T id) noexcept
     {
-        recycled_ids_.push_back(id);
+        recycled_ids_.emplace_back(id);
     }
 
     [[nodiscard]] FORCE_INLINE

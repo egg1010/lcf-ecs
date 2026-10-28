@@ -6,15 +6,16 @@
 namespace thread
 {
 
-inline bool task_graph::create(const task_graph_config& config) noexcept
+inline bool task_graph::create_impl(const task_graph_config& config, operating_message& error) noexcept
     {
     if (table_.capacity() != 0 || config.task_capacity == 0)
     {
+        error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
         return false;
     }
     if (config.worker_count > task_worker_none)
     {
-        report(error_severity::fatal, errc::invalid_argument, "worker_count exceeds 24-bit field");
+        error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
         return false;
     }
     config_ = config;
@@ -22,12 +23,12 @@ inline bool task_graph::create(const task_graph_config& config) noexcept
 
     if (!table_.create(static_cast<std::uint32_t>(config.task_capacity)))
     {
-        report(error_severity::fatal, errc::invariant_broken, "task table allocation failed");
+        error.write_failure(om_err_capacity_exceeded.code, msg_level::error, msg::here());
         return false;
     }
     if (!inject_.create(config.inject_capacity))
     {
-        report(error_severity::fatal, errc::invariant_broken, "task inject queue failed");
+        error.write_failure(om_err_capacity_exceeded.code, msg_level::error, msg::here());
         destroy();
         return false;
     }
@@ -35,7 +36,7 @@ inline bool task_graph::create(const task_graph_config& config) noexcept
     budget_ns_.resize_fill(config.task_capacity, 0);
     body_destroy_.resize_fill(config.task_capacity, nullptr);
     delay_frame_.resize_fill(config.task_capacity, 0);
-    delayed_.reserve_exact(config.task_capacity);
+    delayed_.increase_capacity(config.task_capacity);
     waits_.kind_.resize_fill(config.task_capacity, 0);
     waits_.aux_.resize_fill(config.task_capacity, 0);
     waits_.state_.resize_fill(config.task_capacity, 0);
@@ -43,11 +44,11 @@ inline bool task_graph::create(const task_graph_config& config) noexcept
     waits_.start_ns_.resize_fill(config.task_capacity, 0);
     waits_.since_.resize_fill(config.task_capacity, 0);
     access_.head_.resize_fill(config.task_capacity, 0);
-    access_.edges_.reserve_exact(config.access_capacity);
+    access_.edges_.increase_capacity(config.access_capacity);
     access_.wait_task_.resize_fill(config.task_capacity, invalid_resource_index);
     access_.wait_write_.resize_fill(config.task_capacity, 0);
     waits_.pending_.resize_fill(config.task_capacity, 0);
-    body_versions_.reserve_exact(config.task_capacity);
+    body_versions_.increase_capacity(config.task_capacity);
     body_version_count_.resize_fill(config.task_capacity, 0);
     body_version_capacity_ = config.body_version_capacity == 0 ? 1 : config.body_version_capacity;
     hot_bodies_ = static_cast<std::atomic<void*>*>(
@@ -55,7 +56,7 @@ inline bool task_graph::create(const task_graph_config& config) noexcept
                       std::align_val_t(alignof(std::atomic<void*>)), std::nothrow));
     if (hot_bodies_ == nullptr)
     {
-        report(error_severity::fatal, errc::invariant_broken, "hot body table allocation failed");
+        error.write_failure(om_err_out_of_memory.code, msg_level::error, msg::here());
         destroy();
         return false;
     }
@@ -67,18 +68,18 @@ inline bool task_graph::create(const task_graph_config& config) noexcept
         !resources_.create(static_cast<std::uint32_t>(config.resource_capacity),
                            static_cast<std::uint32_t>(config.task_capacity)))
     {
-        report(error_severity::fatal, errc::invariant_broken, "resource table allocation failed");
+        error.write_failure(om_err_capacity_exceeded.code, msg_level::error, msg::here());
         destroy();
         return false;
     }
-    waits_.frame_waiters_.reserve_exact(config.task_capacity);
+    waits_.frame_waiters_.increase_capacity(config.task_capacity);
     waits_.join_parent_.resize_fill(config.task_capacity, invalid_task_index);
     view_capacity_ = static_cast<std::uint32_t>(config.task_capacity);
     void* view_memory = ::operator new(sizeof(task_context) * view_capacity_,
                                        std::align_val_t(alignof(task_context)), std::nothrow);
     if (view_memory == nullptr)
     {
-        report(error_severity::fatal, errc::invariant_broken, "task context view allocation failed");
+        error.write_failure(om_err_out_of_memory.code, msg_level::error, msg::here());
         destroy();
         return false;
     }
@@ -90,25 +91,27 @@ inline bool task_graph::create(const task_graph_config& config) noexcept
     if (!contexts_.create(static_cast<std::uint32_t>(config.context_capacity),
                           static_cast<std::uint32_t>(config.task_capacity)))
     {
-        report(error_severity::fatal, errc::invariant_broken, "context table allocation failed");
+        error.write_failure(om_err_capacity_exceeded.code, msg_level::error, msg::here());
         destroy();
         return false;
     }
     if (config.dependency_capacity != 0)
     {
-        edges_.reserve_exact(config.dependency_capacity);
+        edges_.increase_capacity(config.dependency_capacity);
     }
     deadline_.resize_fill(config.task_capacity, 0);
-    periodic_.reserve_exact(config.task_capacity);
+    periodic_.increase_capacity(config.task_capacity);
     periodic_flag_.resize_fill(config.task_capacity, 0);
 
     if (!create_workers(config))
     {
+        error.write_failure(om_err_capacity_exceeded.code, msg_level::error, msg::here());
         destroy();
         return false;
     }
     if (!create_roles(config))
     {
+        error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
         destroy();
         return false;
     }
@@ -215,6 +218,7 @@ inline std::uint64_t task_graph::begin_frame(thread::role id) noexcept
     {
         return frame;
     }
+    operating_message activate_error;
     // 延迟激活：本角色到帧后转入正常激活
     for (std::size_t i = 0; i < delayed_.size(); ++i)
     {
@@ -234,7 +238,7 @@ inline std::uint64_t task_graph::begin_frame(thread::role id) noexcept
             continue;
         }
         node->flags_.fetch_and(~flag_delay_armed, std::memory_order_acq_rel);
-        (void)activate(task_id{index});
+        (void)activate_impl(task_id{index}, activate_error);
     }
     for (std::size_t i = 0; i < periodic_.size(); ++i)
     {
@@ -257,7 +261,7 @@ inline std::uint64_t task_graph::begin_frame(thread::role id) noexcept
         {
             continue;
         }
-        (void)activate(task_id{index});
+        (void)activate_impl(task_id{index}, activate_error);
     }
     return frame;
     }
@@ -299,15 +303,15 @@ inline void task_graph::release_bodies() noexcept
     const std::uint32_t count = table_.size();
     for (std::uint32_t i = 0; i < count && i < body_destroy_.size(); ++i)
     {
-        task_body_destroy destroy = body_destroy_[i];
-        if (destroy == nullptr)
+        task_body_destroy destroy_fn = body_destroy_[i];
+        if (destroy_fn == nullptr)
         {
             continue;
         }
         task_node* node = table_.at_index(i);
         if (node != nullptr && node->body_object_ != nullptr)
         {
-            destroy(node->body_object_);
+            destroy_fn(node->body_object_);
             node->body_object_ = nullptr;
         }
         body_destroy_[i] = nullptr;
@@ -325,7 +329,7 @@ inline bool task_graph::create_workers(const task_graph_config& config) noexcept
                                   std::align_val_t(alignof(task_worker_slot)), std::nothrow);
     if (memory == nullptr)
     {
-        report(error_severity::fatal, errc::invariant_broken, "worker slot allocation failed");
+        report(msg_level::error, om_err_internal_invariant.code, "worker slot allocation failed");
         return false;
     }
     workers_ = static_cast<task_worker_slot*>(memory);
@@ -336,7 +340,7 @@ inline bool task_graph::create_workers(const task_graph_config& config) noexcept
             !workers_[i].bound_.create(config.local_capacity) ||
             !workers_[i].mailbox_.create(config.local_capacity))
         {
-            report(error_severity::fatal, errc::invariant_broken, "worker queue create failed");
+            report(msg_level::error, om_err_internal_invariant.code, "worker queue create failed");
             return false;
         }
     }
@@ -349,7 +353,7 @@ inline bool task_graph::create_roles(const task_graph_config& config) noexcept
     role_count_ = config.role_count == 0 ? 1u : config.role_count;
     if (role_count_ > role_id_max)
     {
-        report(error_severity::fatal, errc::invalid_argument, "role count exceeds 65535");
+        report(msg_level::error, om_err_invalid_argument.code, "role count exceeds 65535");
         return false;
     }
     void* memory =
@@ -357,7 +361,7 @@ inline bool task_graph::create_roles(const task_graph_config& config) noexcept
                        std::nothrow);
     if (memory == nullptr)
     {
-        report(error_severity::fatal, errc::invariant_broken, "role table allocation failed");
+        report(msg_level::error, om_err_internal_invariant.code, "role table allocation failed");
         return false;
     }
     roles_ = static_cast<role_slot*>(memory);
@@ -413,7 +417,7 @@ inline bool task_graph::create_roles(const task_graph_config& config) noexcept
             // 嵌入式模式：无工作线程，由调用线程 pump 顺序域
             if (worker_count_ != 0 || role_count_ != 1)
             {
-                report(error_severity::fatal, errc::invalid_argument, "role has no worker");
+                report(msg_level::error, om_err_invalid_argument.code, "role has no worker");
                 return false;
             }
             slot.mode_ = order_mode::sequential;
@@ -422,18 +426,18 @@ inline bool task_graph::create_roles(const task_graph_config& config) noexcept
         if (static_cast<std::size_t>(slot.first_worker_) + slot.worker_count_ > worker_count_ &&
             slot.worker_count_ != 0)
         {
-            report(error_severity::fatal, errc::invalid_argument, "role range out of bounds");
+            report(msg_level::error, om_err_invalid_argument.code, "role range out of bounds");
             return false;
         }
         if (slot.mode_ == order_mode::sequential && slot.worker_count_ > 1)
         {
-            report(error_severity::fatal, errc::invalid_argument,
+            report(msg_level::error, om_err_invalid_argument.code,
                    "sequential role requires exactly one worker");
             return false;
         }
         if (slot.external_ && slot.mode_ != order_mode::sequential)
         {
-            report(error_severity::fatal, errc::invalid_argument,
+            report(msg_level::error, om_err_invalid_argument.code,
                    "external role must be sequential");
             return false;
         }
@@ -442,7 +446,7 @@ inline bool task_graph::create_roles(const task_graph_config& config) noexcept
         {
             if (owner[w] != 0xFFu)
             {
-                report(error_severity::fatal, errc::invalid_argument, "role ranges overlap");
+                report(msg_level::error, om_err_invalid_argument.code, "role ranges overlap");
                 return false;
             }
             owner[w] = static_cast<std::uint8_t>(i);
@@ -456,7 +460,7 @@ inline bool task_graph::create_roles(const task_graph_config& config) noexcept
                                               std::nothrow);
             if (seq_memory == nullptr)
             {
-                report(error_severity::fatal, errc::invariant_broken,
+                report(msg_level::error, om_err_internal_invariant.code,
                        "sequencer allocation failed");
                 return false;
             }
@@ -464,7 +468,7 @@ inline bool task_graph::create_roles(const task_graph_config& config) noexcept
             if (!slot.sequencer_->create(slot.id_, config.command_capacity, config.task_capacity,
                                          table_, slot.policy_))
             {
-                report(error_severity::fatal, errc::invariant_broken, "sequencer create failed");
+                report(msg_level::error, om_err_internal_invariant.code, "sequencer create failed");
                 return false;
             }
         }
@@ -474,19 +478,19 @@ inline bool task_graph::create_roles(const task_graph_config& config) noexcept
     {
         if (owner[w] == 0xFFu)
         {
-            report(error_severity::fatal, errc::invalid_argument, "worker not covered by role");
+            report(msg_level::error, om_err_invalid_argument.code, "worker not covered by role");
             return false;
         }
     }
     return true;
     }
 
-inline bool task_graph::set_body(task_id id, task_body body) noexcept
+inline bool task_graph::set_body_impl(task_id id, task_body body, operating_message& error) noexcept
     {
     task_node* node = node_of(id);
     if (node == nullptr)
     {
-        report(error_severity::error, errc::task_identity_invalid, "set_body invalid task", id);
+        error.write_failure(om_err_invalid_argument.code, msg_level::error, msg::here());
         return false;
     }
     node->body_kind_ = body.kind_;
@@ -499,28 +503,28 @@ inline bool task_graph::set_body(task_id id, task_body body) noexcept
     return true;
     }
 
-inline bool task_graph::migrate(task_id id, thread::role target) noexcept
+inline bool task_graph::migrate_impl(task_id id, thread::role target, operating_message& error) noexcept
     {
-    return set_role(id, target);
+    return set_role_impl(id, target, error);
     }
 
-inline bool task_graph::rebind(task_id id, thread::role target) noexcept
+inline bool task_graph::rebind_impl(task_id id, thread::role target, operating_message& error) noexcept
     {
-    return set_role(id, target);
+    return set_role_impl(id, target, error);
     }
 
-inline bool task_graph::set_role(task_id id, thread::role target) noexcept
+inline bool task_graph::set_role_impl(task_id id, thread::role target, operating_message& error) noexcept
     {
     task_node* node = node_of(id);
     if (node == nullptr)
     {
-        report(error_severity::error, errc::task_identity_invalid, "migrate on invalid task", id);
+        error.write_failure(om_err_invalid_argument.code, msg_level::error, msg::here());
         return false;
     }
     const role_slot* slot = role_at(target);
     if (slot == nullptr)
     {
-        report(error_severity::error, errc::role_unbound, "migrate to unbound role", id, target);
+        error.write_failure(om_err_invalid_argument.code, msg_level::error, msg::here());
         return false;
     }
     for (;;)
@@ -530,8 +534,7 @@ inline bool task_graph::set_role(task_id id, thread::role target) noexcept
         new_route.set_role(target);
         if (!valid_route(new_route, true))
         {
-            report(error_severity::error, errc::affinity_violation,
-                   "migrate rejected by combination matrix", id, target);
+            error.write_failure(om_err_invalid_argument.code, msg_level::error, msg::here());
             return false;
         }
         if (node->route_.compare_exchange_weak(old_route.value_, new_route.value_,
@@ -549,17 +552,17 @@ inline bool task_graph::set_role(task_id id, thread::role target) noexcept
     return true;
     }
 
-inline bool task_graph::pin(task_id id, std::uint32_t worker) noexcept
+inline bool task_graph::pin_impl(task_id id, std::uint32_t worker, operating_message& error) noexcept
     {
     task_node* node = node_of(id);
     if (node == nullptr)
     {
-        report(error_severity::error, errc::task_identity_invalid, "pin on invalid task", id);
+        error.write_failure(om_err_invalid_argument.code, msg_level::error, msg::here());
         return false;
     }
     if (worker >= worker_count_)
     {
-        report(error_severity::error, errc::no_such_worker, "pin target out of range", id);
+        error.write_failure(om_err_not_found.code, msg_level::error, msg::here());
         return false;
     }
     for (;;)
@@ -571,8 +574,7 @@ inline bool task_graph::pin(task_id id, std::uint32_t worker) noexcept
         if (role_index(new_route.role_value()) >= role_count_ ||
             !worker_in_role(worker, new_route.role_value()))
         {
-            report(error_severity::warning, errc::affinity_violation,
-                   "pin target not in task role", id, new_route.role_value(), worker);
+            error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
             return false;
         }
         if (node->route_.compare_exchange_weak(old_route.value_, new_route.value_,
@@ -586,20 +588,18 @@ inline bool task_graph::pin(task_id id, std::uint32_t worker) noexcept
     return true;
     }
 
-inline bool task_graph::set_stealable(task_id id, bool value) noexcept
+inline bool task_graph::set_stealable_impl(task_id id, bool value, operating_message& error) noexcept
     {
     task_node* node = node_of(id);
     if (node == nullptr)
     {
-        report(error_severity::error, errc::task_identity_invalid, "set_stealable invalid task",
-               id);
+        error.write_failure(om_err_invalid_argument.code, msg_level::error, msg::here());
         return false;
     }
     const route_word route{node->route_.load(std::memory_order_acquire)};
     if (route.affinity() != affinity_kind::worker || route.mode() == order_mode::sequential)
     {
-        report(error_severity::warning, errc::invalid_steal_policy,
-               "set_stealable requires bound parallel task", id, route.role_value());
+        error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
         return false;
     }
     std::uint32_t flags = node->flags_.load(std::memory_order_acquire);
@@ -615,13 +615,12 @@ inline bool task_graph::set_stealable(task_id id, bool value) noexcept
     }
     }
 
-inline bool task_graph::set_order_mode(task_id id, order_mode mode) noexcept
+inline bool task_graph::set_order_mode_impl(task_id id, order_mode mode, operating_message& error) noexcept
     {
     task_node* node = node_of(id);
     if (node == nullptr)
     {
-        report(error_severity::error, errc::task_identity_invalid, "set_order_mode invalid task",
-               id);
+        error.write_failure(om_err_invalid_argument.code, msg_level::error, msg::here());
         return false;
     }
     for (;;)
@@ -631,8 +630,7 @@ inline bool task_graph::set_order_mode(task_id id, order_mode mode) noexcept
         new_route.set_mode(mode);
         if (!valid_route(new_route, true))
         {
-            report(error_severity::warning, errc::task_decl_invalid,
-                   "sequential requires a sequential role", id, new_route.role_value());
+            error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
             return false;
         }
         if (node->route_.compare_exchange_weak(old_route.value_, new_route.value_,
@@ -644,20 +642,18 @@ inline bool task_graph::set_order_mode(task_id id, order_mode mode) noexcept
     }
     }
 
-inline bool task_graph::set_priority(task_id id, priority value) noexcept
+inline bool task_graph::set_priority_impl(task_id id, priority value, operating_message& error) noexcept
     {
     task_node* node = node_of(id);
     if (node == nullptr)
     {
-        report(error_severity::error, errc::task_identity_invalid, "set_priority invalid task",
-               id);
+        error.write_failure(om_err_invalid_argument.code, msg_level::error, msg::here());
         return false;
     }
     const route_word current{node->route_.load(std::memory_order_acquire)};
     if (current.mode() == order_mode::sequential)
     {
-        report(error_severity::warning, errc::invalid_argument,
-               "priority is not supported on sequential tasks", id);
+        error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
         return false;
     }
     for (;;)
@@ -674,17 +670,17 @@ inline bool task_graph::set_priority(task_id id, priority value) noexcept
     }
     }
 
-inline bool task_graph::reorder(task_id id, order_key key) noexcept
+inline bool task_graph::reorder_impl(task_id id, order_key key, operating_message& error) noexcept
     {
     task_node* node = node_of(id);
     if (node == nullptr)
     {
-        report(error_severity::error, errc::task_identity_invalid, "reorder invalid task", id);
+        error.write_failure(om_err_invalid_argument.code, msg_level::error, msg::here());
         return false;
     }
     if (key.value_ == invalid_order_key)
     {
-        report(error_severity::error, errc::order_key_exhausted, "order key exhausted", id);
+        error.write_failure(om_err_capacity_exceeded.code, msg_level::error, msg::here());
         return false;
     }
     const route_word route{node->route_.load(std::memory_order_acquire)};
@@ -697,15 +693,14 @@ inline bool task_graph::reorder(task_id id, order_key key) noexcept
         }
         if (slot->policy_ == order_policy::fifo)
         {
-            report(error_severity::warning, errc::order_policy_unsupported,
-                   "fifo role does not support reorder", id, route.role_value());
+            error.write_failure(om_err_unsupported_operation.code, msg_level::warn, msg::here());
             return false;
         }
         node->order_key_.store(key.value_, std::memory_order_release);
         const task_command command{task_op::reorder, id.index_, 0, key.value_};
         if (!slot->sequencer_->push_command(command))
         {
-            report(error_severity::warning, errc::queue_full, "reorder command queue full", id);
+            error.write_failure(om_err_queue_full.code, msg_level::warn, msg::here());
             return false;
         }
         metrics_.reorders_.fetch_add(1, std::memory_order_relaxed);
@@ -716,12 +711,12 @@ inline bool task_graph::reorder(task_id id, order_key key) noexcept
     return true;
     }
 
-inline bool task_graph::reparent(task_id id, task_id parent) noexcept
+inline bool task_graph::reparent_impl(task_id id, task_id parent, operating_message& error) noexcept
     {
     task_node* node = node_of(id);
     if (node == nullptr)
     {
-        report(error_severity::error, errc::task_identity_invalid, "reparent invalid task", id);
+        error.write_failure(om_err_invalid_argument.code, msg_level::error, msg::here());
         return false;
     }
     if (parent.valid())
@@ -729,27 +724,24 @@ inline bool task_graph::reparent(task_id id, task_id parent) noexcept
         task_node* target = node_of(parent);
         if (target == nullptr)
         {
-            report(error_severity::error, errc::task_identity_invalid, "reparent invalid parent",
-                   parent);
+            error.write_failure(om_err_invalid_argument.code, msg_level::error, msg::here());
             return false;
         }
         if (parent.index_ == id.index_ || is_ancestor(parent.index_, id.index_))
         {
-            report(error_severity::error, errc::task_state_conflict, "reparent would form a cycle",
-                   id);
+            error.write_failure(om_err_invalid_argument.code, msg_level::error, msg::here());
             return false;
         }
         if (target->state() == task_state::completed)
         {
-            report(error_severity::warning, errc::task_state_conflict,
-                   "reparent target already completed", id);
+            error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
             return false;
         }
     }
     const std::uint16_t depth = parent.valid() ? depth_of(parent.index_) : 0;
     if (depth + 1 > task_max_depth)
     {
-        report(error_severity::error, errc::task_depth_exceeded, "reparent depth exceeded", id);
+        error.write_failure(om_err_capacity_exceeded.code, msg_level::error, msg::here());
         return false;
     }
     for (;;)
@@ -769,33 +761,32 @@ inline bool task_graph::reparent(task_id id, task_id parent) noexcept
     return true;
     }
 
-inline bool task_graph::add_dependency(task_id before, task_id after) noexcept
+inline bool task_graph::add_dependency_impl(task_id before, task_id after, operating_message& error) noexcept
     {
     task_node* target = node_of(after);
     if (target == nullptr || node_of(before) == nullptr)
     {
-        report(error_severity::error, errc::task_identity_invalid, "dependency endpoints invalid",
-               after);
+        error.write_failure(om_err_invalid_argument.code, msg_level::error, msg::here());
         return false;
     }
     if (before.index_ == after.index_)
     {
-        report(error_severity::error, errc::task_decl_invalid, "self dependency rejected", after);
+        error.write_failure(om_err_invalid_argument.code, msg_level::error, msg::here());
         return false;
     }
     if (edges_.size() >= edges_.capacity())
     {
-        report(error_severity::error, errc::invariant_broken, "dependency table full", after);
+        error.write_failure(om_err_internal_invariant.code, msg_level::error, msg::here());
         return false;
     }
     const std::uint32_t head = dep_head_[before.index_];
-    edges_.push_back(dep_edge{after.index_, head});
+    edges_.emplace_back(dep_edge{after.index_, head});
     dep_head_[before.index_] = static_cast<std::uint32_t>(edges_.size());
     target->pending_deps_.fetch_add(1, std::memory_order_acq_rel);
     return true;
     }
 
-inline bool task_graph::add_access(task_id id, resource_id resource, access_mode mode) noexcept
+inline bool task_graph::add_access_impl(task_id id, resource_id resource, access_mode mode, operating_message& error) noexcept
     {
     if (!id.valid() || id.index_ >= access_.head_.size() || !resource.valid())
     {
@@ -821,49 +812,49 @@ inline bool task_graph::add_access(task_id id, resource_id resource, access_mode
     }
     if (access_.edges_.size() >= access_.edges_.capacity())
     {
-        report(error_severity::warning, errc::queue_full, "access table full", id);
+        error.write_failure(om_err_queue_full.code, msg_level::warn, msg::here());
         return false;
     }
     resource_edge edge{};
     edge.resource_ = resource.value_;
     edge.mode_ = static_cast<std::uint32_t>(mode);
     edge.next_ = access_.head_[id.index_];
-    access_.edges_.push_back(edge);
+    access_.edges_.emplace_back(edge);
     access_.head_[id.index_] = static_cast<std::uint32_t>(access_.edges_.size());
     return true;
     }
 
-inline bool task_graph::set_budget(task_id id, std::uint64_t budget_ns) noexcept
+inline bool task_graph::set_budget_impl(task_id id, std::uint64_t budget_ns, operating_message& error) noexcept
     {
     task_node* node = node_of(id);
     if (node == nullptr || id.index_ >= budget_ns_.size())
     {
-        report(error_severity::error, errc::task_identity_invalid, "set_budget invalid task", id);
+        error.write_failure(om_err_invalid_argument.code, msg_level::error, msg::here());
         return false;
     }
     budget_ns_[id.index_] = budget_ns;
     return true;
     }
 
-inline bool task_graph::set_deadline(task_id id, std::uint64_t timeout_ns) noexcept
+inline bool task_graph::set_deadline_impl(task_id id, std::uint64_t timeout_ns, operating_message& error) noexcept
     {
     task_node* node = node_of(id);
     if (node == nullptr || id.index_ >= deadline_.size())
     {
+        error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
         return false;
     }
     deadline_[id.index_] = timeout_ns;
     return true;
     }
 
-inline bool task_graph::set_context(task_id id, context_id ctx) noexcept
+inline bool task_graph::set_context_impl(task_id id, context_id ctx, operating_message& error) noexcept
     {
     if (!contexts_.set(id, ctx))
     {
         if (id.valid() && ctx.valid())
         {
-            report(error_severity::error, errc::task_identity_invalid, "set_context invalid id",
-                   id);
+            error.write_failure(om_err_invalid_argument.code, msg_level::error, msg::here());
         }
         return false;
     }
@@ -881,11 +872,12 @@ inline void task_graph::set_default_deadline(std::uint64_t timeout_ns) noexcept
     default_deadline_ns_.store(timeout_ns, std::memory_order_release);
     }
 
-inline bool task_graph::disable(task_id id) noexcept
+inline bool task_graph::disable_impl(task_id id, operating_message& error) noexcept
     {
     task_node* node = node_of(id);
     if (node == nullptr)
     {
+        error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
         return false;
     }
     std::uint32_t state = node->state_.load(std::memory_order_acquire);
@@ -893,6 +885,7 @@ inline bool task_graph::disable(task_id id) noexcept
     {
         if (state == task_state_constructing)
         {
+            error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
             return false;
         }
         if (node->state_.compare_exchange_weak(state, static_cast<std::uint32_t>(task_state::disabled),
@@ -904,11 +897,12 @@ inline bool task_graph::disable(task_id id) noexcept
     }
     }
 
-inline bool task_graph::enable(task_id id) noexcept
+inline bool task_graph::enable_impl(task_id id, operating_message& error) noexcept
     {
     task_node* node = node_of(id);
     if (node == nullptr)
     {
+        error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
         return false;
     }
     std::uint32_t state = node->state_.load(std::memory_order_acquire);
@@ -917,6 +911,7 @@ inline bool task_graph::enable(task_id id) noexcept
         if (state != static_cast<std::uint32_t>(task_state::disabled) &&
             state != static_cast<std::uint32_t>(task_state::faulted))
         {
+            error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
             return false;
         }
         if (node->state_.compare_exchange_weak(state, static_cast<std::uint32_t>(task_state::dormant),
@@ -929,11 +924,12 @@ inline bool task_graph::enable(task_id id) noexcept
     }
     }
 
-inline bool task_graph::cancel(task_id scope) noexcept
+inline bool task_graph::cancel_impl(task_id scope, operating_message& error) noexcept
     {
     task_node* node = node_of(scope);
     if (node == nullptr)
     {
+        error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
         return false;
     }
     node->flags_.fetch_or(flag_cancelled, std::memory_order_acq_rel);
@@ -946,11 +942,12 @@ inline bool task_graph::cancel(task_id scope) noexcept
     return true;
     }
 
-inline bool task_graph::clear_cancel(task_id scope) noexcept
+inline bool task_graph::clear_cancel_impl(task_id scope, operating_message& error) noexcept
     {
     task_node* node = node_of(scope);
     if (node == nullptr)
     {
+        error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
         return false;
     }
     node->flags_.fetch_and(~flag_cancelled, std::memory_order_acq_rel);
@@ -962,29 +959,30 @@ inline void task_graph::set_draining(bool value) noexcept
     draining_.store(value, std::memory_order_release);
     }
 
-inline bool task_graph::replace_body(task_id id, task_body body) noexcept
+inline bool task_graph::replace_body_impl(task_id id, task_body body,
+                                     operating_message& error) noexcept
     {
     if (!id.valid() || hot_bodies_ == nullptr || id.index_ >= view_capacity_)
     {
+        error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
         return false;
     }
     if (body_version_count_.size() != 0 &&
         body_version_count_[id.index_] >= body_version_capacity_)
     {
-        report(error_severity::warning, errc::queue_full, "body version capacity reached", id);
+        error.write_failure(om_err_queue_full.code, msg_level::warn, msg::here());
         return false;
     }
     auto* entry = new (std::nothrow) body_entry{body, ++body_version_counter_};
     if (entry == nullptr)
     {
-        report(error_severity::error, errc::invariant_broken, "body version allocation failed",
-               id);
+        error.write_failure(om_err_out_of_memory.code, msg_level::error, msg::here());
         return false;
     }
     hot_bodies_[id.index_].store(static_cast<void*>(entry), std::memory_order_release);
     if (body_versions_.size() < body_versions_.capacity())
     {
-        body_versions_.push_back(entry);
+        body_versions_.emplace_back(entry);
     }
     if (body_version_count_.size() != 0)
     {
@@ -1005,7 +1003,14 @@ inline void task_graph::set_admission(admission_controller* controller) noexcept
 
 inline void task_graph::set_error_sink(error_sink sink, void* user) noexcept
     {
-    reporter_.set_sink(sink, user);
+    sink_ = sink;
+    sink_user_ = user;
+    }
+
+inline void task_graph::set_completion_error(om_completion_error_fn fn, void* user) noexcept
+    {
+    completion_fn_ = fn;
+    completion_user_ = user;
     }
 
 inline void task_graph::set_wake_hook(void* self, void (*wake)(void*, std::uint32_t) noexcept) noexcept
@@ -1088,12 +1093,13 @@ inline std::uint32_t task_graph::task_statistics_live() const noexcept
     return static_cast<std::uint32_t>(started > finished ? started - finished : 0);
     }
 
-inline task_id task_graph::declare(const char* name, task_body body, thread::role target) noexcept
+inline task_id task_graph::declare_impl(const char* name, task_body body, thread::role target,
+                                        operating_message& error) noexcept
     {
     route_word route = route_word::make(target, order_mode::parallel, affinity_kind::none,
                                         priority::normal, task_worker_none);
     parent_word parent{};
-    return declare_full(name, body, route, parent, invalid_order_key, 0);
+    return declare_full_impl(name, body, route, parent, invalid_order_key, 0, error);
     }
 
 inline resource_table& task_graph::resources() noexcept
@@ -1127,9 +1133,9 @@ inline std::uint64_t task_graph::deadline_of(task_id id) const noexcept
                                : default_deadline_ns_.load(std::memory_order_relaxed);
     }
 
-inline void task_graph::raise(error_severity severity, errc code, task_id id, const char* text) noexcept
+inline void task_graph::raise(msg_level level, uint32_t code, task_id id, const char* text) noexcept
     {
-    report(severity, code, text, id);
+    report(level, code, text, id);
     }
 
 inline context_table& task_graph::contexts() noexcept
@@ -1237,7 +1243,6 @@ inline task_view task_graph::view(task_id id) noexcept
     const task_node* node = node_of(id);
     if (node == nullptr)
     {
-        report(error_severity::warning, errc::task_identity_invalid, "view invalid task", id);
         return result;
     }
     result.id_ = id;
@@ -1296,16 +1301,6 @@ inline std::uint32_t task_graph::body_version(task_id id) noexcept
 inline trace_recorder* task_graph::trace() const noexcept
     {
     return trace_;
-    }
-
-inline const error_reporter& task_graph::reporter() const noexcept
-    {
-    return reporter_;
-    }
-
-inline error_state task_graph::last_error() const noexcept
-    {
-    return last_state_;
     }
 
 inline task_node* task_graph::node_of(task_id id) noexcept

@@ -103,7 +103,7 @@ private:
     void hot_set_allocate_(size_t entries) noexcept
     {
         hot_.entries = static_cast<hot_entry_*>(
-            global_hot_memory_pool().allocate_zeroed(entries * sizeof(hot_entry_)));
+            global_hot_memory_pool().acquire_zeroed(entries * sizeof(hot_entry_)));
         hot_.mask = entries - 1;
     }
 
@@ -111,7 +111,7 @@ private:
     {
         if (hot_.entries)
         {
-            global_hot_memory_pool().deallocate(hot_.entries, (hot_.mask + 1) * sizeof(hot_entry_));
+            global_hot_memory_pool().soft_delete(hot_.entries);
             hot_.entries = nullptr;
             hot_.mask = 0;
         }
@@ -615,19 +615,19 @@ private:
     void init_typed_storage()
     {
         if (typed_pool_) [[unlikely]] return;
-        auto* pool = new (std::nothrow) dense<T>();
-        if (!pool) [[unlikely]] std::abort();
+        auto* created_pool = new (std::nothrow) dense<T>();
+        if (!created_pool) [[unlikely]] std::abort();
         component_size_ = sizeof(T);
         if (pending_increase_capacity_ > 0)
         {
-            pool->increase_capacity(pending_increase_capacity_);
+            created_pool->increase_capacity(pending_increase_capacity_);
             dense_.increase_capacity(pending_increase_capacity_);
             versions_.increase_capacity(pending_increase_capacity_);
             entity_change_tracking_.increase_capacity(pending_increase_capacity_);
             pending_increase_capacity_ = 0;
         }
-        typed_pool_ = pool;
-        typed_pool_data_ = pool->data();
+        typed_pool_ = created_pool;
+        typed_pool_data_ = created_pool->data();
         ops_ = {
             /*.destroy_pool =*/[](void* p) noexcept { delete static_cast<dense<T>*>(p); },
             /*.swap_pop =*/[](void* p, size_t index) noexcept {
@@ -866,8 +866,8 @@ private:
     }
 
     template <typename T, typename Entities, typename F>
-    operating_message add_batch_impl(Entities& entities, size_t count, F&& get_component) noexcept
-    {
+    bool add_batch_impl(Entities& entities, size_t count, F&& get_component, operating_message& error) noexcept
+{
         operating_message result;
         using DT = std::decay_t<T>;
         const int tid = type_id::get_type_id<DT>();
@@ -884,8 +884,13 @@ private:
             const entity& e = entities[i];
             if (!e.is_valid()) [[unlikely]]
             {
-                result.write(false, "single_class_set::add_batch(): invalid entity index ", e.parts_.index_);
-                return result;
+                result.write(false, om_err_invalid_entity, "single_class_set::add_batch(): invalid entity index ", e.parts_.index_, msg::warn, msg::here());
+                if (!result)
+                {
+                    error = result;
+                    return false;
+                }
+                return true;
             }
             if (e.parts_.index_ > max_index) max_index = e.parts_.index_;
             if (all_new && e.parts_.index_ < sparse_size_ && sparse_version_at(e.parts_.index_) == e.parts_.version_)
@@ -909,10 +914,10 @@ private:
 
             for (size_t i = 0; i < count; ++i)
             {
-                dense_.push_back_unchecked(entities[i].parts_.index_);
+                dense_.emplace_back_unchecked(entities[i].parts_.index_);
             }
             for (size_t i = 0; i < count; ++i)
-                versions_.push_back_unchecked(entities[i].parts_.version_);
+                versions_.emplace_back_unchecked(entities[i].parts_.version_);
 
             // 顺序追加检测: 若 entities 恰好为 [append_pos, append_pos+1, ..., append_pos+count-1]
             //   则用 emplace_back_dense_unchecked 替代 sparse_set_unchecked
@@ -960,7 +965,7 @@ private:
                     {
                         if (i + 16 < count) [[likely]] PREFETCH_R(&entities[i + 16]);
                         sparse_[append_pos + i] = (sparse_entry{static_cast<uint32_t>(dense_start + i), entities[i].parts_.version_});
-                        temp_components.push_back_unchecked(get_component(i));
+                        temp_components.emplace_back_unchecked(get_component(i));
                     }
                 }
                 else
@@ -970,7 +975,7 @@ private:
                         if (i + 16 < count) [[likely]] PREFETCH_R(&entities[i + 16]);
                         uint32_t idx = entities[i].parts_.index_;
                         sparse_set_unchecked(idx, entities[i].parts_.version_, static_cast<uint32_t>(dense_start + i));
-                        temp_components.push_back_unchecked(get_component(i));
+                        temp_components.emplace_back_unchecked(get_component(i));
                     }
                 }
                 pool->append_bulk_move(temp_components.data(), count);
@@ -979,7 +984,7 @@ private:
             entity_change_tracking_.increase_capacity(entity_change_tracking_.size() + count);
             for (size_t i = 0; i < count; ++i)
             {
-                entity_change_tracking_.push_back_unchecked(change_tracking_entry{(uint32_t)++global_change_counter_, (uint32_t)++global_added_counter_});
+                entity_change_tracking_.emplace_back_unchecked(change_tracking_entry{(uint32_t)++global_change_counter_, (uint32_t)++global_added_counter_});
             }
         }
         else
@@ -993,9 +998,9 @@ private:
                 const entity& e = entities[i];
                 uint32_t ver = sparse_version_at(e.parts_.index_);
                 if (ver == e.parts_.version_)
-                    exist_positions.push_back_unchecked(static_cast<uint32_t>(i));
+                    exist_positions.emplace_back_unchecked(static_cast<uint32_t>(i));
                 else
-                    new_positions.push_back_unchecked(static_cast<uint32_t>(i));
+                    new_positions.emplace_back_unchecked(static_cast<uint32_t>(i));
             }
 
             size_t new_count = new_positions.size();
@@ -1019,13 +1024,13 @@ private:
                 for (size_t j = 0; j < new_count; ++j)
                 {
                     size_t i = new_positions[j];
-                    new_entity_indices.push_back_unchecked(entities[i].parts_.index_);
-                    new_entity_versions.push_back_unchecked(entities[i].parts_.version_);
-                    new_components.push_back_unchecked(get_component(i));
+                    new_entity_indices.emplace_back_unchecked(entities[i].parts_.index_);
+                    new_entity_versions.emplace_back_unchecked(entities[i].parts_.version_);
+                    new_components.emplace_back_unchecked(get_component(i));
                 }
                 dense_.append_bulk(new_entity_indices.data(), new_count);
                 for (size_t j = 0; j < new_count; ++j)
-                    versions_.push_back_unchecked(new_entity_versions[j]);
+                    versions_.emplace_back_unchecked(new_entity_versions[j]);
                 using component_return_t = decltype(get_component(0));
                 if constexpr (std::is_rvalue_reference_v<component_return_t>)
                     pool->append_bulk_move(new_components.data(), new_count);
@@ -1042,7 +1047,7 @@ private:
                 entity_change_tracking_.increase_capacity(entity_change_tracking_.size() + new_count);
                 for (size_t i = 0; i < new_count; ++i)
                 {
-                    entity_change_tracking_.push_back_unchecked(change_tracking_entry{(uint32_t)++global_change_counter_, (uint32_t)++global_added_counter_});
+                    entity_change_tracking_.emplace_back_unchecked(change_tracking_entry{(uint32_t)++global_change_counter_, (uint32_t)++global_added_counter_});
                 }
             }
 
@@ -1060,7 +1065,12 @@ private:
         ++version_;
         if (typed_pool_ && ops_.get_pool_data) typed_pool_data_ = ops_.get_pool_data(typed_pool_);
         check_mode_switch_();
-        return result;
+        if (!result)
+        {
+            error = result;
+            return false;
+        }
+        return true;
     }
 
 public:
@@ -1094,16 +1104,11 @@ public:
     }
 
     template <typename T>
-    single_class_set(entity e, T&& object, size_t r_size = 1024) noexcept
-        : single_class_set()
-    {
-        increase_capacity(r_size);
-        add(e, std::forward<T>(object));
-    }
+    single_class_set(entity e, T&& object, size_t r_size = 1024) noexcept;
 
     template <typename T>
-    operating_message add(entity e, T&& object) noexcept
-    {
+    bool add_impl(entity e, T&& object, operating_message& error) noexcept
+{
         operating_message result;
         using DT = std::decay_t<T>;
         const int tid = type_id::get_type_id<DT>();
@@ -1114,14 +1119,24 @@ public:
         }
         else if (type_id_ != tid) [[unlikely]]
         {
-            result.write(false, "single_class_set::add(): type mismatch");
-            return result;
+            result.write(false, om_err_type_mismatch, "single_class_set::add(): type mismatch", msg::warn, msg::here());
+            if (!result)
+            {
+                error = result;
+                return false;
+            }
+            return true;
         }
 
         if (!e.is_valid()) [[unlikely]]
         {
-            result.write(false, "single_class_set::add(): ID is invalid, index=", e.parts_.index_);
-            return result;
+            result.write(false, om_err_invalid_entity, "single_class_set::add(): ID is invalid, index=", e.parts_.index_, msg::warn, msg::here());
+            if (!result)
+            {
+                error = result;
+                return false;
+            }
+            return true;
         }
 
         auto* pool = get_typed_pool<DT>();
@@ -1145,17 +1160,22 @@ public:
             sparse_reserve_(sparse_size_ + 1);
             sparse_[e.parts_.index_] = sparse_entry{dense_idx, e.parts_.version_};
             sparse_size_ = static_cast<size_t>(e.parts_.index_) + 1;
-            dense_.push_back_unchecked(e.parts_.index_);
-            versions_.push_back_unchecked(e.parts_.version_);
-            pool->push_back_unchecked(std::forward<T>(object));
+            dense_.emplace_back_unchecked(e.parts_.index_);
+            versions_.emplace_back_unchecked(e.parts_.version_);
+            pool->emplace_back_unchecked(std::forward<T>(object));
             ++version_;
             if (track_changes_enabled_) [[likely]] {
-                entity_change_tracking_.push_back_unchecked(
+                entity_change_tracking_.emplace_back_unchecked(
                     change_tracking_entry{(uint32_t)++global_change_counter_, (uint32_t)++global_added_counter_});
             }
             if (on_add_) [[unlikely]] on_add_(e, &(*pool)[dense_idx], on_add_data_);
             check_mode_switch_();
-            return result;
+            if (!result)
+            {
+                error = result;
+                return false;
+            }
+            return true;
         }
 
         // slow path: index 可能超出当前范围或落在已存在区间内
@@ -1216,12 +1236,17 @@ public:
                 if (on_add_) [[unlikely]] on_add_(e, &(*pool)[reuse], on_add_data_);
                 ++version_;
                 check_mode_switch_();
-                return result;
+                if (!result)
+                {
+                    error = result;
+                    return false;
+                }
+                return true;
             }
-            dense_.push_back(e.parts_.index_);
+            dense_.emplace_back(e.parts_.index_);
             dense_idx = static_cast<uint32_t>(dense_.size() - 1);
             ver = e.parts_.version_;
-            versions_.push_back(ver);
+            versions_.emplace_back(ver);
             // 优化: se != nullptr 表示槽位已在容量内 (如 hard_remove 后复用 slot)
             //   直接赋值 8B sparse_entry, 免去 sparse_reserve_ 分支
             //   se == nullptr 表示 idx 超出当前容量, 需 sparse_set_at 扩容
@@ -1234,7 +1259,7 @@ public:
                 sparse_set_at(e.parts_.index_, dense_idx, ver);
             }
             void* old_pool_data = typed_pool_data_;
-            pool->push_back(std::forward<T>(object));
+            pool->emplace_back(std::forward<T>(object));
             if (pool->data() != old_pool_data) [[unlikely]]
             {
                 bump_pool_version();
@@ -1253,39 +1278,59 @@ public:
             }
             else
             {
-                entity_change_tracking_.push_back(
+                entity_change_tracking_.emplace_back(
                     change_tracking_entry{(uint32_t)++global_change_counter_, new_added});
             }
         }
         typed_pool_data_ = pool->data();
         check_mode_switch_();
-        return result;
+        if (!result)
+        {
+            error = result;
+            return false;
+        }
+        return true;
     }
 
     // def 组件添加: 数据按字节从 data 拷入 (长度 = 注册时的 type_def::size)
     //   首次调用惰性初始化 def 池; 池语义与模板池互斥, 混用返回错误
     //   路径结构与 add<T> 同构: fast path 末尾追加 / slow path 覆盖|死槽复用|追加
-    operating_message add_def(entity e, int def_id, const type_def& def, const void* data) noexcept
-    {
+    bool add_def_impl(entity e, int def_id, const type_def& def, const void* data, operating_message& error) noexcept
+{
         operating_message result;
         if (type_id_ == -1) [[unlikely]]
         {
             if (!init_def_pool(def_id, def)) [[unlikely]]
             {
-                result.write(false, "single_class_set::add_def(): def pool init failed, id=", def_id);
-                return result;
+                result.write(false, om_err_capacity_exceeded, "single_class_set::add_def(): def pool init failed, id=", def_id, msg::warn, msg::here());
+                if (!result)
+                {
+                    error = result;
+                    return false;
+                }
+                return true;
             }
         }
         else if (type_id_ != def_id) [[unlikely]]
         {
-            result.write(false, "single_class_set::add_def(): type mismatch, id=", def_id);
-            return result;
+            result.write(false, om_err_type_mismatch, "single_class_set::add_def(): type mismatch, id=", def_id, msg::warn, msg::here());
+            if (!result)
+            {
+                error = result;
+                return false;
+            }
+            return true;
         }
 
         if (!e.is_valid()) [[unlikely]]
         {
-            result.write(false, "single_class_set::add_def(): ID is invalid, index=", e.parts_.index_);
-            return result;
+            result.write(false, om_err_invalid_entity, "single_class_set::add_def(): ID is invalid, index=", e.parts_.index_, msg::warn, msg::here());
+            if (!result)
+            {
+                error = result;
+                return false;
+            }
+            return true;
         }
 
         auto* dp = static_cast<def_pool_t*>(typed_pool_);
@@ -1302,8 +1347,13 @@ public:
                 entity_change_tracking_.increase_capacity(new_cap);
                 if (!dp->reserve(new_cap)) [[unlikely]]
                 {
-                    result.write(false, "single_class_set::add_def(): pool reserve failed, id=", def_id);
-                    return result;
+                    result.write(false, om_err_capacity_exceeded, "single_class_set::add_def(): pool reserve failed, id=", def_id, msg::warn, msg::here());
+                    if (!result)
+                    {
+                        error = result;
+                        return false;
+                    }
+                    return true;
                 }
                 typed_pool_data_ = dp->data;
                 bump_pool_version();
@@ -1312,8 +1362,13 @@ public:
             {
                 if (!dp->reserve((dp->capacity == 0) ? 64 : dp->capacity * 2)) [[unlikely]]
                 {
-                    result.write(false, "single_class_set::add_def(): pool reserve failed, id=", def_id);
-                    return result;
+                    result.write(false, om_err_capacity_exceeded, "single_class_set::add_def(): pool reserve failed, id=", def_id, msg::warn, msg::here());
+                    if (!result)
+                    {
+                        error = result;
+                        return false;
+                    }
+                    return true;
                 }
                 typed_pool_data_ = dp->data;
                 bump_pool_version();
@@ -1321,17 +1376,22 @@ public:
             sparse_reserve_(sparse_size_ + 1);
             sparse_[e.parts_.index_] = sparse_entry{dense_idx, e.parts_.version_};
             sparse_size_ = static_cast<size_t>(e.parts_.index_) + 1;
-            dense_.push_back_unchecked(e.parts_.index_);
-            versions_.push_back_unchecked(e.parts_.version_);
+            dense_.emplace_back_unchecked(e.parts_.index_);
+            versions_.emplace_back_unchecked(e.parts_.version_);
             std::memcpy(dp->element(dense_idx), data, dp->component_size);
             ++dp->size;  // 与 dense_ 同步 (不变量: dp->size == dense_.size())
             ++version_;
             if (track_changes_enabled_) [[likely]] {
-                entity_change_tracking_.push_back_unchecked(
+                entity_change_tracking_.emplace_back_unchecked(
                     change_tracking_entry{(uint32_t)++global_change_counter_, (uint32_t)++global_added_counter_});
             }
             if (on_add_) [[unlikely]] on_add_(e, dp->element(dense_idx), on_add_data_);
-            return result;
+            if (!result)
+            {
+                error = result;
+                return false;
+            }
+            return true;
         }
 
         // slow path (同 add<T>): 覆盖已存在 / 复用软删除死槽 / 越界追加
@@ -1388,12 +1448,17 @@ public:
                 }
                 if (on_add_) [[unlikely]] on_add_(e, dp->element(reuse), on_add_data_);
                 ++version_;
-                return result;
+                if (!result)
+                {
+                    error = result;
+                    return false;
+                }
+                return true;
             }
-            dense_.push_back(e.parts_.index_);
+            dense_.emplace_back(e.parts_.index_);
             dense_idx = static_cast<uint32_t>(dense_.size() - 1);
             ver = e.parts_.version_;
-            versions_.push_back(ver);
+            versions_.emplace_back(ver);
             if (se) [[likely]]
             {
                 sparse_[e.parts_.index_] = {dense_idx, ver};
@@ -1406,8 +1471,13 @@ public:
             {
                 if (!dp->reserve((dense_idx + 1) * 2)) [[unlikely]]
                 {
-                    result.write(false, "single_class_set::add_def(): pool reserve failed, id=", def_id);
-                    return result;
+                    result.write(false, om_err_capacity_exceeded, "single_class_set::add_def(): pool reserve failed, id=", def_id, msg::warn, msg::here());
+                    if (!result)
+                    {
+                        error = result;
+                        return false;
+                    }
+                    return true;
                 }
                 typed_pool_data_ = dp->data;
                 bump_pool_version();
@@ -1428,25 +1498,35 @@ public:
             }
             else
             {
-                entity_change_tracking_.push_back(
+                entity_change_tracking_.emplace_back(
                     change_tracking_entry{(uint32_t)++global_change_counter_, new_added});
             }
         }
         typed_pool_data_ = dp->data;
-        return result;
+        if (!result)
+        {
+            error = result;
+            return false;
+        }
+        return true;
     }
 
     template <typename T>
-    operating_message add_batch(std::span<const entity> entities, std::span<const T> components) noexcept
-    {
+    bool add_batch_impl(std::span<const entity> entities, std::span<const T> components, operating_message& error) noexcept
+{
         if (entities.size() != components.size()) [[unlikely]]
         {
             operating_message result;
-            result.write(false, "single_class_set::add_batch(): entities and components size mismatch");
-            return result;
+            result.write(false, om_err_invalid_argument, "single_class_set::add_batch(): entities and components size mismatch", msg::warn, msg::here());
+            if (!result)
+            {
+                error = result;
+                return false;
+            }
+            return true;
         }
         return add_batch_impl<T>(entities, entities.size(),
-            [&components](size_t i) -> const T& { return components[i]; });
+            [&components](size_t i) -> const T& { return components[i]; }, error);
     }
 
     template <typename T>
@@ -1704,26 +1784,36 @@ public:
         return global_change_counter_;
     }
 
-    operating_message hard_remove(entity e) noexcept;
+    bool hard_remove_impl(entity e, operating_message& error) noexcept;
 
-    operating_message soft_remove(entity e) noexcept
-    {
+    bool soft_remove_impl(entity e, operating_message& error) noexcept
+{
         operating_message result;
         if (!e.is_valid() || e.parts_.index_ >= sparse_size_) [[unlikely]]
         {
-            result.write(false, "single_class_set::soft_remove(): invalid entity or version mismatch, index=", e.parts_.index_);
-            return result;
+            result.write(false, om_err_invalid_entity, "single_class_set::soft_remove(): invalid entity or version mismatch, index=", e.parts_.index_, msg::warn, msg::here());
+            if (!result)
+            {
+                error = result;
+                return false;
+            }
+            return true;
         }
         const sparse_entry* se = sparse_entry_checked_(e.parts_.index_);
         if (!se || se->dense == dense_invalid || se->version != e.parts_.version_) [[unlikely]]
         {
-            result.write(false, "single_class_set::soft_remove(): invalid entity or version mismatch, index=", e.parts_.index_);
-            return result;
+            result.write(false, om_err_invalid_entity, "single_class_set::soft_remove(): invalid entity or version mismatch, index=", e.parts_.index_, msg::warn, msg::here());
+            if (!result)
+            {
+                error = result;
+                return false;
+            }
+            return true;
         }
 
         // 登记死槽供 add 复用; 墓碑的物理移除延迟到 compact (组件数据暂留)
         const uint32_t slot = se->dense;
-        free_dense_.push_back(slot);
+        free_dense_.emplace_back(slot);
         sparse_[e.parts_.index_] = {dense_invalid, 0};
         if (slot < versions_.size())
         {
@@ -1736,23 +1826,38 @@ public:
         ++version_;
         ++position_epoch_;
         try_auto_compact_();
-        return result;
+        if (!result)
+        {
+            error = result;
+            return false;
+        }
+        return true;
     }
 
     // 密度回收 (手动入口): 活条目前压, 墓碑物理移除并补发 on_remove 回调
     // 迭代期调用为程序错误 (与 clear/swap 同策略)
-    operating_message compact() noexcept
-    {
+    bool compact_impl(operating_message& error) noexcept
+{
         operating_message result;
         if (iteration_depth_ > 0) [[unlikely]]
         {
-            result.write(false, "single_class_set::compact(): forbidden during iteration");
-            return result;
+            result.write(false, om_err_unsupported_operation, "single_class_set::compact(): forbidden during iteration", msg::warn, msg::here());
+            if (!result)
+            {
+                error = result;
+                return false;
+            }
+            return true;
         }
         const size_t before = dense_.size();
         compact_impl_();
         result.write(true, "single_class_set::compact(): reclaimed ", before - dense_.size(), " tombstones");
-        return result;
+        if (!result)
+        {
+            error = result;
+            return false;
+        }
+        return true;
     }
 
     // 活条目数 (O(n) 扫描): size() 为物理槽位数 (含墓碑), 本接口为逻辑存活数
@@ -2047,7 +2152,7 @@ public:
         }
         else
         {
-            free_dense_.push_back(static_cast<uint32_t>(j));
+            free_dense_.emplace_back(static_cast<uint32_t>(j));
         }
         if (sparse_[b].dense == static_cast<uint32_t>(j)) [[likely]]
         {
@@ -2055,7 +2160,7 @@ public:
         }
         else
         {
-            free_dense_.push_back(static_cast<uint32_t>(i));
+            free_dense_.emplace_back(static_cast<uint32_t>(i));
         }
         if (i < entity_change_tracking_.size() && j < entity_change_tracking_.size())
         {
@@ -2100,14 +2205,14 @@ public:
         dense<uint32_t> new_dense;
         new_dense.increase_capacity(n);
         for (size_t i = 0; i < n; ++i)
-            new_dense.push_back(dense_[sorted_indices[i]]);
+            new_dense.emplace_back(dense_[sorted_indices[i]]);
 
         dense<uint32_t> new_versions;
         if (versions_.size() >= n)
         {
             new_versions.increase_capacity(n);
             for (size_t i = 0; i < n; ++i)
-                new_versions.push_back(versions_[sorted_indices[i]]);
+                new_versions.emplace_back(versions_[sorted_indices[i]]);
         }
 
         dense<T>* typed_pool = get_typed_pool_ptr<T>();
@@ -2116,7 +2221,7 @@ public:
             dense<T> new_pool;
             new_pool.increase_capacity(n);
             for (size_t i = 0; i < n; ++i)
-                new_pool.push_back(std::move((*typed_pool)[sorted_indices[i]]));
+                new_pool.emplace_back(std::move((*typed_pool)[sorted_indices[i]]));
             *typed_pool = std::move(new_pool);
             if (ops_.get_pool_data) typed_pool_data_ = ops_.get_pool_data(typed_pool_);
         }
@@ -2127,7 +2232,7 @@ public:
             new_tracking.increase_capacity(n);
             for (size_t i = 0; i < n; ++i)
             {
-                new_tracking.push_back(entity_change_tracking_[sorted_indices[i]]);
+                new_tracking.emplace_back(entity_change_tracking_[sorted_indices[i]]);
             }
             entity_change_tracking_ = std::move(new_tracking);
         }
@@ -2194,6 +2299,52 @@ public:
         {
             ::operator delete(sparse_, sparse_cap_ * sizeof(sparse_entry));
         }
+    }
+
+    template <typename T>
+    operating_message add(entity e, T&& object) noexcept
+    {
+        operating_message error;
+        (void)add_impl(e, std::forward<T>(object), error);
+        return error;
+    }
+
+    template <typename T>
+    operating_message add_batch(std::span<const entity> entities,
+                                std::span<const T> components) noexcept
+    {
+        operating_message error;
+        (void)add_batch_impl(entities, components, error);
+        return error;
+    }
+
+    template <typename T>
+    operating_message add_def(entity e, int def_id, const type_def& def, const void* data) noexcept
+    {
+        operating_message error;
+        (void)add_def_impl(e, def_id, def, data, error);
+        return error;
+    }
+
+    operating_message soft_remove(entity e) noexcept
+    {
+        operating_message error;
+        (void)soft_remove_impl(e, error);
+        return error;
+    }
+
+    operating_message hard_remove(entity e) noexcept
+    {
+        operating_message error;
+        (void)hard_remove_impl(e, error);
+        return error;
+    }
+
+    operating_message compact() noexcept
+    {
+        operating_message error;
+        (void)compact_impl(error);
+        return error;
     }
 };
 
@@ -2274,7 +2425,7 @@ public:
         {
             pending_overflow_ = set_->acquire_overflow_buffer_();
         }
-        pending_overflow_->push_back(e);
+        pending_overflow_->emplace_back(e);
     }
 
     [[nodiscard]] bool pending_empty() const noexcept
@@ -2345,19 +2496,38 @@ public:
 };
 
 // 类外定义: 依赖 safe_iterator 完整类型
-inline operating_message single_class_set::hard_remove(entity e) noexcept
+template <typename T>
+inline single_class_set::single_class_set(entity e, T&& object, size_t r_size) noexcept
+    : single_class_set()
+{
+    increase_capacity(r_size);
+    operating_message error;
+    (void)add(e, std::forward<T>(object), error);
+}
+
+inline bool single_class_set::hard_remove_impl(entity e, operating_message& error) noexcept
 {
     operating_message result;
     if (!e.is_valid() || e.parts_.index_ >= sparse_size_) [[unlikely]]
     {
-        result.write(false, "single_class_set::hard_remove(): invalid entity or version mismatch, index=", e.parts_.index_);
-        return result;
+        result.write(false, om_err_invalid_entity, "single_class_set::hard_remove(): invalid entity or version mismatch, index=", e.parts_.index_, msg::warn, msg::here());
+        if (!result)
+        {
+            error = result;
+            return false;
+        }
+        return true;
     }
     const sparse_entry* se = sparse_entry_checked_(e.parts_.index_);
     if (!se || se->dense == dense_invalid || se->version != e.parts_.version_) [[unlikely]]
     {
-        result.write(false, "single_class_set::hard_remove(): invalid entity or version mismatch, index=", e.parts_.index_);
-        return result;
+        result.write(false, om_err_invalid_entity, "single_class_set::hard_remove(): invalid entity or version mismatch, index=", e.parts_.index_, msg::warn, msg::here());
+        if (!result)
+        {
+            error = result;
+            return false;
+        }
+        return true;
     }
 
     auto index = se->dense;
@@ -2392,7 +2562,7 @@ inline operating_message single_class_set::hard_remove(entity e) noexcept
         if (moved_is_tombstone)
         {
             // 墓碑搬运到 index 槽: sparse 保持 dense_invalid, 登记新死槽供复用
-            free_dense_.push_back(static_cast<uint32_t>(index));
+            free_dense_.emplace_back(static_cast<uint32_t>(index));
         }
         else
         {
@@ -2431,7 +2601,12 @@ inline operating_message single_class_set::hard_remove(entity e) noexcept
     sparse_[e.parts_.index_] = {dense_invalid, 0};
     ++version_;
     ++position_epoch_;
-    return result;
+    if (!result)
+    {
+        error = result;
+        return false;
+    }
+    return true;
 }
 
 } // namespace ecs

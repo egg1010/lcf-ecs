@@ -16,10 +16,10 @@
 enum class archive_type : uint8_t {
     null_t,
     bool_t,
-    int32_t,
-    uint32_t,
-    int64_t,
-    uint64_t,
+    i32,
+    u32,
+    i64,
+    u64,
     float32_t,
     float64_t,
     string_t,
@@ -148,17 +148,17 @@ struct archive_codec
 
     // 深度结构校验: 各格式可覆写以验证内部结构完整性
     // 默认实现: 创建 reader 检查构造期无错误
-    [[nodiscard]] virtual operating_message validate(std::string_view data) const noexcept {
+    [[nodiscard]] virtual bool validate(std::string_view data, operating_message& error) const noexcept {
         archive_reader* r = create_reader(data);
-        operating_message res;
-        if (!r || r->has_error())
+        const bool ok = (r != nullptr) && !r->has_error();
+        if (!ok)
         {
-            res.write(false, "格式校验失败");
+            error.write_failure(om_err_checksum_failed.code, msg_level::warn, msg::here());
         }
         if (r)
         {
             destroy_reader(r);
         }
-        return res;
+        return ok;
     }
 };

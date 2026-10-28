@@ -34,8 +34,8 @@ public:
             return false;
         }
         const size_t next = values_.size();
-        values_.push_back(T(std::forward<U>(value)));
-        ids_.push_back(id);
+        values_.emplace_back(T(std::forward<U>(value)));
+        ids_.emplace_back(id);
         index_[static_cast<size_t>(id)] = static_cast<int32_t>(next);
         return true;
     }

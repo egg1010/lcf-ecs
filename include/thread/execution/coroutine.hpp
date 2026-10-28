@@ -11,7 +11,7 @@
 #include <type_traits>
 #include <utility>
 
-#include "thread/base/error.hpp"
+#include "part/operating_message.hpp"
 #include "thread/base/job.hpp"
 #include "thread/base/platform.hpp"
 #include "thread/execution/runtime.hpp"
@@ -27,7 +27,7 @@ struct task_result
 {
     alignas(T) unsigned char storage_[sizeof(T)]{};
     bool has_value_{false};
-    errc error_{errc::ok};
+    uint32_t error_{0};
 
     task_result() noexcept = default;
 
@@ -36,7 +36,7 @@ struct task_result
         set(std::move(value));
     }
 
-    task_result(errc error) noexcept : error_(error)
+    task_result(uint32_t error) noexcept : error_(error)
     {
     }
 
@@ -74,7 +74,7 @@ struct task_result
 
     bool ok() const noexcept
     {
-        return error_ == errc::ok;
+        return error_ == 0;
     }
 
     bool has_value() const noexcept
@@ -102,10 +102,10 @@ struct task_result
     {
         new (storage_) T(std::move(value));
         has_value_ = true;
-        error_ = errc::ok;
+        error_ = 0;
     }
 
-    void set_error(errc error) noexcept
+    void set_error(uint32_t error) noexcept
     {
         reset();
         error_ = error;
@@ -124,36 +124,36 @@ struct task_result
 template <>
 struct task_result<void>
 {
-    errc error_{errc::ok};
+    uint32_t error_{0};
 
     task_result() noexcept = default;
 
-    task_result(errc error) noexcept : error_(error)
+    task_result(uint32_t error) noexcept : error_(error)
     {
     }
 
     bool ok() const noexcept
     {
-        return error_ == errc::ok;
+        return error_ == 0;
     }
 };
 
 // when_all 的错误汇总：返回第一个非 ok 的错误码，不分配
-inline errc first_error(std::span<const errc> errors) noexcept
+inline uint32_t first_error(std::span<const uint32_t> errors) noexcept
 {
-    for (errc value : errors)
+    for (uint32_t value : errors)
     {
-        if (value != errc::ok)
+        if (value != 0)
         {
             return value;
         }
     }
-    return errc::ok;
+    return 0;
 }
 
-inline bool all_ok(std::span<const errc> errors) noexcept
+inline bool all_ok(std::span<const uint32_t> errors) noexcept
 {
-    return first_error(errors) == errc::ok;
+    return first_error(errors) == 0;
 }
 
 inline constexpr std::size_t coro_frame_tiers[] = {128, 256, 512};
@@ -364,7 +364,7 @@ template <typename T> struct task
     {
         T value_{};
         std::coroutine_handle<> continuation_{};
-        errc error_{errc::ok};
+        uint32_t error_{0};
 
         static void* operator new(std::size_t size) noexcept
         {
@@ -463,7 +463,7 @@ template <typename T> struct task
 
         void unhandled_exception() noexcept
         {
-            FRAMEWORK_REPORT(error_severity::fatal, errc::handler_faulted);
+            LCF_TRAP();
         }
     };
 
@@ -562,9 +562,9 @@ template <typename T> struct task
         {
             if (handle_ == nullptr)
             {
-                return task_result<T>{errc::cancelled};
+                return task_result<T>{om_err_cancelled.code};
             }
-            if (handle_.promise().error_ != errc::ok)
+            if (handle_.promise().error_ != 0)
             {
                 return task_result<T>{handle_.promise().error_};
             }
@@ -586,7 +586,7 @@ template <> struct task<void>
     struct promise_type
     {
         std::coroutine_handle<> continuation_{};
-        errc error_{errc::ok};
+        uint32_t error_{0};
 
         static void* operator new(std::size_t size) noexcept
         {
@@ -684,7 +684,7 @@ template <> struct task<void>
 
         void unhandled_exception() noexcept
         {
-            FRAMEWORK_REPORT(error_severity::fatal, errc::handler_faulted);
+            LCF_TRAP();
         }
     };
 
@@ -778,7 +778,7 @@ template <> struct task<void>
         {
             if (handle_ == nullptr)
             {
-                return task_result<void>{errc::cancelled};
+                return task_result<void>{om_err_cancelled.code};
             }
             return task_result<void>{handle_.promise().error_};
         }

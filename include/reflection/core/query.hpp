@@ -1,17 +1,39 @@
 #pragma once
 
+#include <array>
+#include <atomic>
+#include <concepts>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <initializer_list>
+#include <memory>
+#include <new>
+#include <optional>
+#include <source_location>
+#include <string_view>
+#include <type_traits>
+#include <utility>
+
+#include "config/reflect_config.hpp"
+#include "part/dense.hpp"
+#include "part/fnv1a.hpp"
+#include "part/force_inline.hpp"
+#include "part/operating_message.hpp"
+#include "part/type/type_id.hpp"
+#include "part/type/void_any.hpp"
+#include "reflection/core/storage.hpp"
+
+// query.hpp - 类型视图与枚举视图
+// 命名空间: reflect
+
+// ============================================================================
+
 // query.hpp - 反射查询器
 // 命名空间: reflect
 
-#include <cstring>
-#include <cstdlib>
-#include <utility>
-#include <type_traits>
-#include <optional>
-#include <source_location>
-#include <array>
-#include "part/type/type_id.hpp"
-#include "reflection/core/storage.hpp"
 
 namespace reflect {
 
@@ -89,12 +111,12 @@ inline R call_method(const method_meta* m, void* obj, Args&&... args) noexcept
     std::array<const void*, sizeof...(Args)> arg_ptrs = { static_cast<const void*>(&args)... };
     if constexpr (std::is_void_v<R>)
     {
-        m->invoker(obj, arg_ptrs.data(), nullptr);
+        m->invoker(obj, arg_ptrs.data(), nullptr, m->fn_storage.data());
     }
     else
     {
         alignas(alignof(R)) std::array<char, sizeof(R)> result_buf{};
-        m->invoker(obj, arg_ptrs.data(), result_buf.data());
+        m->invoker(obj, arg_ptrs.data(), result_buf.data(), m->fn_storage.data());
         R* result_ptr = reinterpret_cast<R*>(result_buf.data());
         R ret = std::move(*result_ptr);
         result_ptr->~R();
@@ -318,32 +340,6 @@ public:
 
     // === 数组便捷接口 ===
 
-    // 聚合查询
-    [[nodiscard]] const field_meta* array_info(size_t i) const noexcept
-    {
-        if (!meta_)
-        {
-            return nullptr;
-        }
-        if (i >= field_count())
-        {
-            return nullptr;
-        }
-        const field_meta& fm = meta_->fields[i];
-        return fm.array_rank > 0 ? &fm : nullptr;
-    }
-
-    // 聚合查询 (按名)
-    [[nodiscard]] const field_meta* array_info_by_name(const char* name) const noexcept
-    {
-        const field_meta* f = field_by_name(name);
-        if (!f || f->array_rank == 0)
-        {
-            return nullptr;
-        }
-        return f;
-    }
-
     // 类型安全访问
     template<typename T>
     [[nodiscard]] T* try_array_get(void* obj, size_t field_idx, uint32_t element_idx) const noexcept
@@ -532,82 +528,7 @@ public:
     {
         return get_by_path_as<T>(const_cast<void*>(obj), path);
     }
-
-    template<typename F>
-    void for_each_field(void* obj, F&& f) const noexcept
-    {
-        if (!meta_)
-        {
-            return;
-        }
-        size_t n = meta_->field_count.load(std::memory_order_acquire);
-        for (size_t i = 0; i < n; ++i)
-        {
-            const field_meta& fm = meta_->fields[i];
-            f(fm.name,
-              static_cast<char*>(obj) + fm.offset,
-              fm.type_id);
-        }
-    }
-
-    template<typename F>
-    void for_each_field(const void* obj, F&& f) const noexcept
-    {
-        for_each_field(const_cast<void*>(obj), std::forward<F>(f));
-    }
-
-    template<typename F>
-    void for_each_field_meta(F&& f) const noexcept
-    {
-        if (!meta_)
-        {
-            return;
-        }
-        size_t n = meta_->field_count.load(std::memory_order_acquire);
-        for (size_t i = 0; i < n; ++i)
-        {
-            f(meta_->fields[i]);
-        }
-    }
-
-    template<typename F>
-    void for_each_method(F&& f) const noexcept
-    {
-        if (!meta_)
-        {
-            return;
-        }
-        size_t n = meta_->method_count.load(std::memory_order_acquire);
-        for (size_t i = 0; i < n; ++i)
-        {
-            f(meta_->methods[i]);
-        }
-    }
 };
-
-// 按类型查询 (失败 abort)
-template<typename T>
-[[nodiscard]] query_view get() noexcept
-{
-    const type_meta* m = global().get_type(type_id::get_type_id<T>());
-    if (m == nullptr)
-    {
-        std::abort();
-    }
-    return query_view(m);
-}
-
-// 按类型名查询 (失败 abort)
-[[nodiscard]] inline query_view get_by_name(const char* name) noexcept
-{
-    const type_meta* m = global().find_type(name);
-    if (m == nullptr)
-    {
-        std::abort();
-    }
-    return query_view(m);
-}
-
 // 软失败查询: 按类型
 template<typename T>
 [[nodiscard]] query_view try_get() noexcept
@@ -622,3 +543,106 @@ template<typename T>
 }
 
 } // namespace reflect
+
+// ============================================================================
+// ============================================================================
+// enum_view.hpp - 枚举反射查询接口 (#3)
+// 命名空间: reflect
+// 基于 enum_meta 的 values 列表实现枚举值↔名称转换
+
+
+namespace reflect {
+
+class enum_view
+{
+    const enum_meta* meta_{nullptr};
+
+public:
+    enum_view() noexcept = default;
+    explicit enum_view(const enum_meta* m) noexcept : meta_(m) {}
+
+    [[nodiscard]] bool valid() const noexcept { return meta_ != nullptr; }
+    [[nodiscard]] const char* name() const noexcept { return meta_ ? meta_->name : nullptr; }
+    [[nodiscard]] int type_id_value() const noexcept { return meta_ ? meta_->type_id : -1; }
+    [[nodiscard]] int underlying_type_id() const noexcept { return meta_ ? meta_->underlying_type_id : -1; }
+    [[nodiscard]] size_t value_count() const noexcept { return meta_ ? meta_->values.size() : 0; }
+
+    // 值 → 名称 (失败返回 nullptr)
+    [[nodiscard]] const char* value_to_name(uint64_t value) const noexcept
+    {
+        if (!meta_)
+        {
+            return nullptr;
+        }
+        size_t n = meta_->values.size();
+        for (size_t i = 0; i < n; ++i)
+        {
+            if (meta_->values[i].value == value)
+            {
+                return meta_->values[i].name;
+            }
+        }
+        return nullptr;
+    }
+
+    template<typename E>
+    [[nodiscard]] const char* value_to_name(E value) const noexcept
+    {
+        static_assert(std::is_enum_v<E>);
+        using UT = std::underlying_type_t<E>;
+        return value_to_name(static_cast<uint64_t>(static_cast<UT>(value)));
+    }
+
+    // 名称 → 值 (失败返回 false)
+    [[nodiscard]] bool name_to_value(const char* name, uint64_t& out) const noexcept
+    {
+        if (!meta_ || !name)
+        {
+            return false;
+        }
+        uint64_t nh = fnv1a_runtime(name);
+        size_t n = meta_->values.size();
+        for (size_t i = 0; i < n; ++i)
+        {
+            if (meta_->values[i].name_hash == nh)
+            {
+                out = meta_->values[i].value;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    template<typename E>
+    [[nodiscard]] bool name_to_value(const char* name, E& out) const noexcept
+    {
+        static_assert(std::is_enum_v<E>);
+        using UT = std::underlying_type_t<E>;
+        uint64_t v;
+        if (!name_to_value(name, v))
+        {
+            return false;
+        }
+        out = static_cast<E>(static_cast<UT>(v));
+        return true;
+    }
+
+    // 遍历所有枚举值
+    template<typename F>
+    void for_each_value(F&& f) const noexcept
+    {
+        if (!meta_)
+        {
+            return;
+        }
+        size_t n = meta_->values.size();
+        for (size_t i = 0; i < n; ++i)
+        {
+            f(meta_->values[i].value, meta_->values[i].name);
+        }
+    }
+};
+
+} // namespace reflect
+
+// ============================================================================

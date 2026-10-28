@@ -127,7 +127,7 @@ public:
         operating_message res;
         if (r_.has_error())
         {
-            res.write(false, "binary_reader error");
+            res.write(false, om_err_decode_failed, "binary_reader error", msg::warn, msg::here());
         }
         return res;
     }
@@ -160,21 +160,20 @@ struct binary_codec final : archive_codec
     void destroy_reader(archive_reader* r) const noexcept override { delete r; }
 
     // 深度结构校验: 遍历所有字段并验证长度边界
-    [[nodiscard]] operating_message validate(std::string_view data) const noexcept override;
+    [[nodiscard]] bool validate(std::string_view data, operating_message& error) const noexcept override;
 };
 
 // ============================================================================
 // binary_codec::validate — 深度结构校验
 // 遍历存档头 + 元数据 + 实体 + 类型表, 验证长度边界与游标一致性
 // ============================================================================
-inline operating_message binary_codec::validate(std::string_view data) const noexcept
+inline bool binary_codec::validate(std::string_view data, operating_message& error) const noexcept
 {
     binary_reader r(data);
     if (r.has_error())
     {
-        operating_message res;
-        res.write(false, "二进制 magic/头校验失败");
-        return res;
+        error.write_failure(om_err_checksum_failed.code, msg_level::warn, msg::here());
+        return false;
     }
 
     // archive_ver + engine_ver
@@ -182,44 +181,39 @@ inline operating_message binary_codec::validate(std::string_view data) const noe
     (void)r.read_u32();
     if (r.has_error())
     {
-        operating_message res;
-        res.write(false, "二进制版本字段读取失败");
-        return res;
+        error.write_failure(om_err_version_mismatch.code, msg_level::warn, msg::here());
+        return false;
     }
 
     // 元数据 (字符串)
     (void)r.read_string();
     if (r.has_error())
     {
-        operating_message res;
-        res.write(false, "二进制元数据字段读取失败");
-        return res;
+        error.write_failure(om_err_decode_failed.code, msg_level::warn, msg::here());
+        return false;
     }
 
     // 实体状态 (字符串)
     (void)r.read_string();
     if (r.has_error())
     {
-        operating_message res;
-        res.write(false, "二进制实体字段读取失败");
-        return res;
+        error.write_failure(om_err_decode_failed.code, msg_level::warn, msg::here());
+        return false;
     }
 
     // 类型表
     uint32_t type_count = r.read_u32();
     if (r.has_error())
     {
-        operating_message res;
-        res.write(false, "二进制类型计数读取失败");
-        return res;
+        error.write_failure(om_err_decode_failed.code, msg_level::warn, msg::here());
+        return false;
     }
 
     // 安全上限: 防止恶意 type_count 导致空转
     if (type_count > 65536)
     {
-        operating_message res;
-        res.write(false, "二进制类型计数异常: ", type_count);
-        return res;
+        error.write_failure(om_err_decode_failed.code, msg_level::warn, msg::here());
+        return false;
     }
 
     for (uint32_t i = 0; i < type_count; ++i)
@@ -229,19 +223,17 @@ inline operating_message binary_codec::validate(std::string_view data) const noe
         uint32_t data_len = r.read_u32();
         if (r.has_error())
         {
-            operating_message res;
-            res.write(false, "二进制类型 #", i, " 头部读取失败");
-            return res;
+            error.write_failure(om_err_decode_failed.code, msg_level::warn, msg::here());
+            return false;
         }
         r.skip(data_len);
         if (r.has_error())
         {
-            operating_message res;
-            res.write(false, "二进制类型 #", i, " 数据越界 (len=", data_len, ")");
-            return res;
+            error.write_failure(om_err_out_of_range.code, msg_level::warn, msg::here());
+            return false;
         }
     }
 
-    return operating_message{};
+    return true;
 }
 

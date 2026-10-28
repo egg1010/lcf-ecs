@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "thread/base/error.hpp"
+#include "part/operating_message.hpp"
 #include "thread/execution/lane.hpp"
 #include "thread/pool/manager.hpp"
 #include "thread/pool/profile.hpp"
@@ -118,10 +118,6 @@ struct metrics_snapshot
     std::uint64_t total_stolen{0};
     std::uint64_t total_parks{0};
 
-    std::uint64_t errors_by_tag[tag_count_max] = {};
-    std::uint64_t errors_total{0};
-    std::uint64_t ignored_fatal{0};
-    std::uint64_t handler_faults{0};
 
     double steal_hit_ratio() const noexcept
     {
@@ -213,7 +209,6 @@ inline metrics_snapshot collect_metrics(manager& mgr) noexcept
     if (wc > wc_clamped)
     {
         snapshot.workers_truncated = wc - wc_clamped;
-        FRAMEWORK_REPORT(error_severity::warning, errc::invalid_argument);
     }
 
     const std::size_t lc = mgr.lane_count();
@@ -239,7 +234,6 @@ inline metrics_snapshot collect_metrics(manager& mgr) noexcept
     if (lc > lc_clamped)
     {
         snapshot.lanes_truncated = lc - lc_clamped;
-        FRAMEWORK_REPORT(error_severity::warning, errc::invalid_argument);
     }
 
     const frame_pool& frames = mgr.runtime()->frames_;
@@ -251,15 +245,6 @@ inline metrics_snapshot collect_metrics(manager& mgr) noexcept
     {
         snapshot.frame_high_water[i] = frames.high_water(i);
     }
-
-    const error_counters& ec = global_error_counters();
-    for (std::size_t i = 0; i < tag_count_max; ++i)
-    {
-        snapshot.errors_by_tag[i] = ec.by_tag_[i].load(std::memory_order_relaxed);
-    }
-    snapshot.errors_total = ec.total_.load(std::memory_order_relaxed);
-    snapshot.ignored_fatal = ec.ignored_fatal_.load(std::memory_order_relaxed);
-    snapshot.handler_faults = ec.handler_faults_.load(std::memory_order_relaxed);
 
     return snapshot;
 }

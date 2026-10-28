@@ -69,7 +69,7 @@ public:
     {
         double now = timer::now_nanoseconds();
         timers_.increase_capacity(timers_.size() + 1);
-        timers_.push_back(timer_entry(now + delay_ns, 0.0, task, true));
+        timers_.emplace_back(timer_entry(now + delay_ns, 0.0, task, true));
         return timers_.size() - 1;
     }
 
@@ -79,7 +79,7 @@ public:
     {
         double now = timer::now_nanoseconds();
         timers_.increase_capacity(timers_.size() + 1);
-        timers_.push_back(timer_entry(now + period_ns, period_ns, task, true));
+        timers_.emplace_back(timer_entry(now + period_ns, period_ns, task, true));
         return timers_.size() - 1;
     }
 

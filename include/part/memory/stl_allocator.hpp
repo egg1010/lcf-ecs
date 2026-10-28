@@ -3,10 +3,12 @@
 #include <cstdint>
 #include <new>
 #include <memory>
+#include "memory_common.hpp"
 #include "oom_handler.hpp"
 #include "../force_inline.hpp"
 
-// STL Allocator 适配器: 包装支持 allocate(size_t)/deallocate(void*) 的内存池
+// STL Allocator 适配器: 内部映射到 acquire / soft_delete / dispose,
+// 不向标准库暴露硬删除
 
 namespace memory
 {
@@ -49,7 +51,15 @@ public:
             handle_oom(n * sizeof(T), "stl_allocator::allocate(null pool)");
         }
         size_t bytes = n * sizeof(T);
-        void* p = pool_->allocate(bytes);
+        void* p = nullptr;
+        if constexpr (alignof(T) > base_alignment)
+        {
+            p = pool_->acquire_aligned(bytes, alignof(T));
+        }
+        else
+        {
+            p = pool_->acquire(bytes);
+        }
         if (!p) [[unlikely]]
         {
             handle_oom(bytes, "stl_allocator::allocate");
@@ -57,13 +67,13 @@ public:
         return static_cast<T*>(p);
     }
 
-    void deallocate(T* p, size_t n) noexcept
+    void deallocate(T* p, size_t /*n*/) noexcept
     {
         if (!p || !pool_) [[unlikely]]
         {
             return;
         }
-        pool_->deallocate(p, n * sizeof(T));
+        pool_->soft_delete(p);
     }
 
     [[nodiscard]] constexpr Pool* pool() const noexcept { return pool_; }

@@ -29,33 +29,14 @@
 // 内存分配层: 启用时接入 layered_allocator, 否则回退 malloc/free
 #if defined(UTF8PP_USE_LAYERED_ALLOCATOR)
 #include "../memory/layered_allocator.hpp"
-#include <bit>
 
 inline memory::layered_allocator utf8pp_pool_{};
 
-[[nodiscard]] static constexpr size_t utf8pp_slab_index(size_t n) noexcept
-{
-    if (n <= 16) return 0;
-    if (n <= 128) return std::bit_width(n - 1) - 4;
-    return 4;
-}
+[[nodiscard]] FORCE_INLINE void* utf8pp_alloc(size_t n) noexcept { return utf8pp_pool_.acquire(n); }
 
-[[nodiscard]] FORCE_INLINE void* utf8pp_alloc(size_t n) noexcept { return utf8pp_pool_.allocate(n); }
+FORCE_INLINE void utf8pp_free(void* p, size_t /*n*/) noexcept { (void)utf8pp_pool_.soft_delete(p); }
 
-FORCE_INLINE void utf8pp_free(void* p, size_t n) noexcept
-{
-    if (!p) [[unlikely]] return;
-    if (n > 128) { utf8pp_pool_.big_pool().soft_deallocate(p); return; }
-    size_t idx = utf8pp_slab_index(n);
-    if (utf8pp_pool_.slab(idx).owns(p)) [[likely]]
-    {
-        utf8pp_pool_.slab(idx).deallocate(p);
-        return;
-    }
-    utf8pp_pool_.big_pool().soft_deallocate(p);
-}
-
-FORCE_INLINE void utf8pp_free(void* p) noexcept { return utf8pp_pool_.deallocate(p); }
+FORCE_INLINE void utf8pp_free(void* p) noexcept { (void)utf8pp_pool_.soft_delete(p); }
 #else
 [[nodiscard]] FORCE_INLINE void* utf8pp_alloc(size_t n) noexcept { return std::malloc(n); }
 FORCE_INLINE void utf8pp_free(void* p) noexcept { return std::free(p); }

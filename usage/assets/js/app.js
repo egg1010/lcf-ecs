@@ -11,10 +11,10 @@
   ];
 
   var CATEGORIES = [
-    { id: 'ecs',           name: 'ECS 核心',    icon: 'E', band: 'api',     entry: 'ecs/component.hpp' },
-    { id: 'reflection',    name: '反射',        icon: 'R', band: 'api',     entry: 'reflection/reflection.hpp' },
-    { id: 'serialization', name: '序列化',      icon: 'Z', band: 'api',     entry: 'serialization/serialization.hpp' },
-    { id: 'thread',        name: '多线程',      icon: 'X', band: 'api',     entry: 'thread/thread_all.hpp' },
+    { id: 'ecs',           name: 'ECS 核心',    icon: 'E', band: 'api',     entry: 'ecs/manager.hpp' },
+    { id: 'reflection',    name: '反射',        icon: 'R', band: 'api',     entry: 'reflection/manager.hpp' },
+    { id: 'serialization', name: '序列化',      icon: 'Z', band: 'api',     entry: 'serialization/manager.hpp' },
+    { id: 'thread',        name: '多线程',      icon: 'X', band: 'api',     entry: 'thread/manager.hpp' },
     { id: 'config',        name: '宏配置',      icon: '#', band: 'config' },
     { id: 'containers',    name: '容器',        icon: 'C', band: 'modules' },
     { id: 'allocators',    name: '内存分配器',  icon: 'A', band: 'modules' },

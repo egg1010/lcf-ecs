@@ -6,32 +6,30 @@
 namespace thread
 {
 
-inline bool task_graph::prepare_switch(task_id id, thread::role target) noexcept
+inline bool task_graph::prepare_switch_impl(task_id id, thread::role target, operating_message& error) noexcept
     {
     task_node* node = node_of(id);
     if (node == nullptr)
     {
-        report(error_severity::error, errc::task_identity_invalid, "switch_to invalid task", id);
+        error.write_failure(om_err_invalid_argument.code, msg_level::error, msg::here());
         return false;
     }
     const role_slot* slot = role_at(target);
     if (slot == nullptr)
     {
-        report(error_severity::error, errc::role_unbound, "switch_to unknown role", id, target);
+        error.write_failure(om_err_invalid_argument.code, msg_level::error, msg::here());
         return false;
     }
     const route_word route{node->route_.load(std::memory_order_acquire)};
     if (route.mode() == order_mode::sequential && slot->mode_ != order_mode::sequential)
     {
-        report(error_severity::warning, errc::task_decl_invalid,
-               "switch_to target lacks sequential domain", id, target);
+        error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
         return false;
     }
     if (route.affinity() == affinity_kind::worker &&
         (node->flags_.load(std::memory_order_acquire) & flag_allow_steal) == 0)
     {
-        report(error_severity::warning, errc::affinity_violation,
-               "switch_to rejected on hard-bound task", id, target);
+        error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
         return false;
     }
     for (;;)
@@ -55,18 +53,18 @@ inline bool task_graph::prepare_switch(task_id id, thread::role target) noexcept
     return true;
     }
 
-inline bool task_graph::prepare_frame_wait(task_id id, thread::role target) noexcept
+inline bool task_graph::prepare_frame_wait_impl(task_id id, thread::role target, operating_message& error) noexcept
     {
     if (node_of(id) == nullptr || role_at(target) == nullptr)
     {
-        report(error_severity::warning, errc::role_unbound, "next_frame invalid role", id, target);
+        error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
         return false;
     }
     set_wait(id.index_, wait_kind::frame, static_cast<std::uint32_t>(role_index(target)));
     return true;
     }
 
-inline bool task_graph::prepare_frame_pair(task_id id, thread::role first, thread::role second) noexcept
+inline bool task_graph::prepare_frame_pair_impl(task_id id, thread::role first, thread::role second, operating_message& error) noexcept
     {
     if (node_of(id) == nullptr || role_at(first) == nullptr || role_at(second) == nullptr)
     {
@@ -76,8 +74,7 @@ inline bool task_graph::prepare_frame_pair(task_id id, thread::role first, threa
     const std::size_t b = role_index(second);
     if (a >= 32 || b >= 32)
     {
-        report(error_severity::warning, errc::invalid_argument,
-               "frame_sync supports roles below 32", id);
+        error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
         return false;
     }
     set_wait(id.index_, wait_kind::frame_sync,
@@ -85,22 +82,21 @@ inline bool task_graph::prepare_frame_pair(task_id id, thread::role first, threa
     return true;
     }
 
-inline bool task_graph::prepare_join(task_id parent, task_id child) noexcept
+inline bool task_graph::prepare_join_impl(task_id parent, task_id child, operating_message& error) noexcept
     {
     task_node* node = node_of(parent);
     task_node* target = node_of(child);
     if (node == nullptr || target == nullptr)
     {
-        report(error_severity::error, errc::task_identity_invalid, "join invalid task", parent);
+        error.write_failure(om_err_invalid_argument.code, msg_level::error, msg::here());
         return false;
     }
     if (parent.index_ == child.index_)
     {
-        report(error_severity::error, errc::task_state_conflict, "join on self rejected",
-               parent);
+        error.write_failure(om_err_invalid_argument.code, msg_level::error, msg::here());
         return false;
     }
-    if (!activate(child))
+    if (!activate_impl(child, error))
     {
         const task_state state = target->state();
         if (state == task_state::disabled || state == task_state::faulted)
@@ -118,17 +114,18 @@ inline bool task_graph::prepare_join(task_id parent, task_id child) noexcept
     return true;
     }
 
-inline bool task_graph::prepare_external_wait(task_id id) noexcept
+inline bool task_graph::prepare_external_wait_impl(task_id id, operating_message& error) noexcept
     {
     if (node_of(id) == nullptr)
     {
+        error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
         return false;
     }
     set_wait(id.index_, wait_kind::external, 0u);
     return true;
     }
 
-inline bool task_graph::prepare_join_any(task_id parent, std::span<const task_id> children) noexcept
+inline bool task_graph::prepare_join_any_impl(task_id parent, std::span<const task_id> children, operating_message& error) noexcept
     {
     task_node* node = node_of(parent);
     if (node == nullptr || children.empty())
@@ -138,7 +135,7 @@ inline bool task_graph::prepare_join_any(task_id parent, std::span<const task_id
     node->flags_.fetch_or(flag_join_any, std::memory_order_acq_rel);
     for (std::size_t i = 0; i < children.size(); ++i)
     {
-        if (!prepare_join(parent, children[i]))
+        if (!prepare_join_impl(parent, children[i], error))
         {
             node->flags_.fetch_and(~flag_join_any, std::memory_order_release);
             return false;
@@ -156,10 +153,11 @@ inline void task_graph::clear_join_any(task_id parent) noexcept
     }
     }
 
-inline bool task_graph::prepare_timed(task_id id, std::uint64_t delay_ns) noexcept
+inline bool task_graph::prepare_timed_impl(task_id id, std::uint64_t delay_ns, operating_message& error) noexcept
     {
     if (node_of(id) == nullptr || id.index_ >= waits_.deadline_.size())
     {
+        error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
         return false;
     }
     waits_.deadline_[id.index_] = monotonic_now_ns() + delay_ns;
@@ -167,9 +165,14 @@ inline bool task_graph::prepare_timed(task_id id, std::uint64_t delay_ns) noexce
     return true;
     }
 
-inline bool task_graph::wake_waiting(task_id id) noexcept
+inline bool task_graph::wake_waiting_impl(task_id id, operating_message& error) noexcept
     {
-    return wake_waiting_index(id.index_);
+    if (!wake_waiting_index(id.index_))
+    {
+        error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
+        return false;
+    }
+    return true;
     }
 
 inline bool task_graph::waiting(task_id id) const noexcept
@@ -222,11 +225,12 @@ inline std::size_t task_graph::wake_timed(std::uint64_t now_ns) noexcept
     return woken;
     }
 
-inline bool task_graph::mark_hung(task_id id) noexcept
+inline bool task_graph::mark_hung_impl(task_id id, operating_message& error) noexcept
     {
     task_node* node = node_of(id);
     if (node == nullptr)
     {
+        error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
         return false;
     }
     const std::uint32_t previous =
@@ -474,11 +478,11 @@ inline void task_graph::register_waiter(std::uint32_t index) noexcept
     }
     if (waits_.frame_waiters_.size() >= waits_.frame_waiters_.capacity())
     {
-        report(error_severity::warning, errc::queue_full, "frame waiter table full",
+        report(msg_level::warn, om_err_queue_full.code, "frame waiter table full",
                task_id{index});
         return;
     }
-    waits_.frame_waiters_.push_back(index);
+    waits_.frame_waiters_.emplace_back(index);
     }
 
 inline void task_graph::suspend_bookkeeping(task_node* node, std::uint32_t index) noexcept
@@ -577,7 +581,7 @@ inline bool task_graph::wake_waiting_index(std::uint32_t index) noexcept
     {
         node->state_.store(static_cast<std::uint32_t>(task_state::dormant),
                            std::memory_order_release);
-        report(error_severity::warning, errc::queue_full, "wake routing failed",
+        report(msg_level::warn, om_err_queue_full.code, "wake routing failed",
                task_id{index});
         return false;
     }
@@ -640,26 +644,27 @@ inline void task_graph::wake_frame_waiters(thread::role id) noexcept
     }
     }
 
-inline bool task_graph::submit_work(job* target) noexcept
+inline bool task_graph::submit_work_impl(job* target, operating_message& error) noexcept
     {
     if (submit_job_ == nullptr || target == nullptr)
     {
+        error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
         return false;
     }
     return submit_job_(submit_self_, target);
     }
 
-inline bool task_graph::activate(task_id id) noexcept
+inline bool task_graph::activate_impl(task_id id, operating_message& error) noexcept
     {
-    return activate(id, activate_options{});
+    return activate_impl(id, activate_options{}, error);
     }
 
-inline bool task_graph::activate(task_id id, activate_options options) noexcept
+inline bool task_graph::activate_impl(task_id id, activate_options options, operating_message& error) noexcept
     {
     task_node* node = node_of(id);
     if (node == nullptr)
     {
-        report(error_severity::error, errc::task_identity_invalid, "activate invalid task", id);
+        error.write_failure(om_err_invalid_argument.code, msg_level::error, msg::here());
         return false;
     }
     if (options.delay_frames_ != 0)
@@ -668,13 +673,12 @@ inline bool task_graph::activate(task_id id, activate_options options) noexcept
     }
     if (cancelled(id))
     {
-        report(error_severity::warning, errc::cancelled, "activate rejected by cancel scope", id);
+        error.write_failure(om_err_cancelled.code, msg_level::warn, msg::here());
         return false;
     }
     if (node->pending_deps_.load(std::memory_order_acquire) > 0)
     {
-        report(error_severity::warning, errc::task_state_conflict,
-               "activate rejected: dependencies pending", id);
+        error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
         return false;
     }
     for (std::uint32_t attempt = 0; attempt < 8; ++attempt)
@@ -686,14 +690,12 @@ inline bool task_graph::activate(task_id id, activate_options options) noexcept
         }
         if (state == static_cast<std::uint32_t>(task_state::disabled))
         {
-            report(error_severity::warning, errc::task_state_conflict, "activate disabled task",
-                   id);
+            error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
             return false;
         }
         if (state == static_cast<std::uint32_t>(task_state::faulted))
         {
-            report(error_severity::warning, errc::task_state_conflict, "activate faulted task",
-                   id);
+            error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
             return false;
         }
         if (state == static_cast<std::uint32_t>(task_state::ready) ||
@@ -708,8 +710,7 @@ inline bool task_graph::activate(task_id id, activate_options options) noexcept
             }
             if (node->overlap() == activation_overlap::error)
             {
-                report(error_severity::warning, errc::task_state_conflict,
-                       "overlapping activation rejected", id);
+                error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
                 return false;
             }
             metrics_.coalesced_.fetch_add(1, std::memory_order_relaxed);
@@ -730,7 +731,7 @@ inline bool task_graph::activate(task_id id, activate_options options) noexcept
         {
             node->state_.store(static_cast<std::uint32_t>(task_state::dormant),
                                std::memory_order_release);
-            report(error_severity::warning, errc::queue_full, "admission rejected", id);
+            error.write_failure(om_err_queue_full.code, msg_level::warn, msg::here());
             return false;
         }
         if (!acquire_all(id.index_))
@@ -745,7 +746,7 @@ inline bool task_graph::activate(task_id id, activate_options options) noexcept
             release_all(id.index_);
             node->state_.store(static_cast<std::uint32_t>(task_state::dormant),
                                std::memory_order_release);
-            report(error_severity::warning, errc::queue_full, "activate queue full", id);
+            error.write_failure(om_err_queue_full.code, msg_level::warn, msg::here());
             return false;
         }
         metrics_.activations_.fetch_add(1, std::memory_order_relaxed);
@@ -767,11 +768,12 @@ inline bool task_graph::activate(task_id id, activate_options options) noexcept
     return false;
     }
 
-inline bool task_graph::deactivate(task_id id) noexcept
+inline bool task_graph::deactivate_impl(task_id id, operating_message& error) noexcept
     {
     task_node* node = node_of(id);
     if (node == nullptr)
     {
+        error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
         return false;
     }
     std::uint32_t expected = static_cast<std::uint32_t>(task_state::ready);
@@ -780,6 +782,7 @@ inline bool task_graph::deactivate(task_id id) noexcept
                                               std::memory_order_acq_rel,
                                               std::memory_order_acquire))
     {
+        error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
         return false;
     }
     node->dispatch_epoch_.fetch_add(1, std::memory_order_acq_rel);
@@ -912,7 +915,7 @@ inline std::size_t task_graph::pump_role(thread::role id, std::size_t budget) no
     }
     if (slot->external_ && !slot->attached_.load(std::memory_order_acquire))
     {
-        report(error_severity::warning, errc::role_unbound, "pump_role on unattached thread", {},
+        report(msg_level::warn, om_err_invalid_argument.code, "pump_role on unattached thread", {},
                id);
         return 0;
     }
@@ -1107,7 +1110,7 @@ inline void task_graph::forward(task_node* node, ticket value, std::uint32_t wor
         return;
     }
     metrics_.forward_failures_.fetch_add(1, std::memory_order_relaxed);
-    report(error_severity::warning, errc::forward_failed,
+    report(msg_level::warn, om_err_io_failed.code,
            "ticket forward failed, executing locally", task_id{value.index()}, target.role_,
            worker);
     std::uint32_t expected = static_cast<std::uint32_t>(task_state::ready);
@@ -1194,7 +1197,7 @@ inline bool task_graph::run_coroutine(task_node* node, task_context& ctx, const 
         if (handle == nullptr)
         {
             metrics_.faults_.fetch_add(1, std::memory_order_relaxed);
-            report(error_severity::error, errc::coroutine_frame_exhausted,
+            report(msg_level::error, om_err_capacity_exceeded.code,
                    "coroutine frame allocation failed", ctx.id_, ctx.role_, ctx.worker_);
             node->flags_.fetch_or(flag_faulted, std::memory_order_release);
             return false;
@@ -1224,7 +1227,7 @@ inline bool task_graph::arm_delay(task_id id, std::uint32_t frames) noexcept
     const role_slot* slot = role_at(node->route().role_value());
     if (slot == nullptr)
     {
-        report(error_severity::error, errc::role_unbound, "delayed activate without role", id);
+        report(msg_level::error, om_err_invalid_argument.code, "delayed activate without role", id);
         return false;
     }
     const std::uint64_t target =
@@ -1239,16 +1242,16 @@ inline bool task_graph::arm_delay(task_id id, std::uint32_t frames) noexcept
     if (delayed_.size() >= delayed_.capacity())
     {
         node->flags_.fetch_and(~flag_delay_armed, std::memory_order_acq_rel);
-        report(error_severity::warning, errc::queue_full, "delayed activate table full", id);
+        report(msg_level::warn, om_err_queue_full.code, "delayed activate table full", id);
         return false;
     }
-    delayed_.push_back(id.index_);
+    delayed_.emplace_back(id.index_);
     return true;
     }
 
-inline void task_graph::finish(task_node* node, errc error) noexcept
+inline void task_graph::finish(task_node* node, uint32_t error, std::source_location site) noexcept
     {
-    if (error != errc::ok)
+    if (error != 0)
     {
         node->flags_.fetch_or(flag_faulted, std::memory_order_acq_rel);
         metrics_.faults_.fetch_add(1, std::memory_order_relaxed);
@@ -1260,6 +1263,12 @@ inline void task_graph::finish(task_node* node, errc error) noexcept
         node->state_.store(static_cast<std::uint32_t>(task_state::faulted),
                            std::memory_order_release);
         metrics_.completions_.fetch_add(1, std::memory_order_release);
+        if (completion_fn_ != nullptr)
+        {
+            operating_message failure;
+            failure.write_failure(error, msg_level::error, site);
+            completion_fn_(failure, completion_user_);
+        }
         return;
     }
 
@@ -1326,7 +1335,8 @@ inline void task_graph::notify_dependents(std::uint32_t index) noexcept
                                                            std::memory_order_acquire))
                 {
                     target->pending_deps_.store(0, std::memory_order_release);
-                    (void)activate(task_id{link.to_});
+                    operating_message error;
+                    (void)activate_impl(task_id{link.to_}, error);
                 }
             }
             else
@@ -1336,7 +1346,8 @@ inline void task_graph::notify_dependents(std::uint32_t index) noexcept
                 if (previous == 1)
                 {
                     target->pending_deps_.store(0, std::memory_order_release);
-                    (void)activate(task_id{link.to_});
+                    operating_message error;
+                    (void)activate_impl(task_id{link.to_}, error);
                 }
                 else if (previous == 0)
                 {
@@ -1469,7 +1480,8 @@ inline void task_graph::start_children(task_id parent_id) noexcept
             continue;
         }
         parent->pending_children_.fetch_add(1, std::memory_order_acq_rel);
-        (void)activate(task_id{index});
+        operating_message error;
+        (void)activate_impl(task_id{index}, error);
     }
     }
 

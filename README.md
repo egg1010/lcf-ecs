@@ -1,89 +1,67 @@
 # lcf-ecs
 
-> 轻量级 C++20 header-only ECS 库
-
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![C++ Standard](https://img.shields.io/badge/C%2B%2B-20-00599C.svg)](https://isocpp.org/)
 [![Version](https://img.shields.io/badge/version-1.0.8-brightgreen.svg)](VERSION.md)
-[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg)]()
-[![Header Only](https://img.shields.io/badge/build-header--only-orange.svg)]()
 
----
+一个 C++20 的 header-only 库，包含 ECS、反射、序列化与线程池四个模块，以及它们共用的基础组件。代码以头文件形式提供，不依赖第三方库。
 
-## 目录
+A C++20 header-only library offering four modules — ECS, reflection, serialization and a thread pool — plus the primitives they share. Everything ships as headers, with no third-party dependencies.
 
-- [lcf-ecs](#lcf-ecs)
-  - [目录](#目录)
-  - [构建](#构建)
-  - [快速上手](#快速上手)
-  - [文档](#文档)
-  - [License](#license)
+## 模块 / Modules
 
-## 构建
+| 模块 / Module | 内容 / Contents | 入口 / Entry |
+|---|---|---|
+| ECS | 实体、组件存储、视图、分组 / entities, component storage, views, groups | `include/ecs/manager.hpp` |
+| 反射 / Reflection | 类型与字段注册、查询视图 / type and field registration, query views | `include/reflection/manager.hpp` |
+| 序列化 / Serialization | 对象与整存档读写，四种编码格式 / object and full-archive I/O in four formats | `include/serialization/manager.hpp` |
+| 线程池 / Thread pool | Worker、lane、任务图与帧循环 / workers, lanes, task graph, frame driving | `include/thread/manager.hpp` |
 
-需要 CMake 3.20+ 和 C++20 编译器。
-
-```bash
-# Windows (MinGW GCC)
-cmake -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
-cmake --build build --parallel
-
-# Windows (MSVC)
-cmake -B build -G "Visual Studio 17 2022" -A x64
-cmake --build build --config Release
-
-# Linux / macOS
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --parallel
-```
-
-## 快速上手
-
-复制 `include/` 文件夹到项目中，然后 `#include "include/ecs/component.hpp"`。
+## 使用 / Usage
 
 ```cpp
-#include "include/ecs/component.hpp"
+#include "include/ecs/manager.hpp"
 
-struct Position { float x, y, z; };
-struct Velocity { float x, y, z; };
-struct Health   { int cur, max; };
+struct position { float x, y, z; };
+struct velocity { float x, y, z; };
 
 int main()
 {
     ecs::manager mgr;
-    mgr.preallocate_entities(10);
 
-    // 创建实体并挂载组件
-    auto e1 = mgr.create_entity();
-    auto e2 = mgr.create_entity();
-    mgr.add(e1, Position{1, 2, 3});
-    mgr.add(e1, Velocity{4, 5, 6});
-    mgr.addc(e2, Health{80, 100});
+    auto e = mgr.create_entity();
+    mgr.add(e, position{1.0f, 2.0f, 3.0f});
+    mgr.add(e, velocity{0.5f, 0.0f, 0.0f});
 
-    // 单组件视图遍历
-    mgr.view<Position>().for_each([](Position& p) {
-        p.x += 1.0f;
-    });
-
-    // 多组件视图（带过滤）
-    mgr.view<Position, Velocity>().for_each([](entity e, Position& p, Velocity& v) {
+    mgr.view<position, velocity>().for_each([](position& p, velocity& v) {
         p.x += v.x;
     });
 
-    // 条件视图：拥有 Position 但缺少 Velocity
-    mgr.view<Position>(ecs::without<Velocity>);
-
-    // 遍历 Position，同时获取 Health 指针（无 Health 时为空）
-    mgr.view<Position>(ecs::with<Health>);
-
-    mgr.delete_entity(e1);
-    return 0;
+    mgr.delete_entity(e);
 }
 ```
 
-## 文档
+## 环境 / Requirements
 
-详细接口文档见 [usage/index.html](usage/index.html)（浏览器打开即可，离线可用）。
+- C++20 编译器（GCC 11+ / Clang 14+ / MSVC 19.30+）/ A C++20 compiler
+
+## 范围 / Scope
+
+- 三个主模块（ECS、反射、线程池）互不依赖；序列化依赖 ECS 与反射。
+- 类型 id 与稳定类型名保存在进程级注册表中，跨动态库使用时需自行管理生命周期。
+- `part/` 包含容器、内存分配器、编解码、算法与 Unicode 处理等基础组件，部分与 ECS 无直接关系，可按需使用。
+- 文档只描述接口调用方式，不展开实现细节。
+
+- The three core modules (ECS, reflection, thread pool) do not depend on each other; serialization depends on ECS and reflection.
+- Type ids and stable type names live in process-wide registries; manage their lifetime yourself when crossing shared library boundaries.
+- `part/` holds containers, allocators, codecs, algorithms and Unicode helpers. Some of it is unrelated to ECS and can be used on its own.
+- The documentation describes how to call the interfaces, not how they are implemented.
+
+## 文档 / Documentation
+
+浏览器打开 [usage/index.html](usage/index.html)，离线可用。接口按模块分章。
+
+Open [usage/index.html](usage/index.html) in a browser; it works offline and documents interfaces per module.
 
 ## License
 

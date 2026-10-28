@@ -115,24 +115,25 @@ inline bool apply_spec(task_graph& graph, task_id id, const task_spec& spec) noe
     {
         return false;
     }
+    operating_message error;
     // 注册默认值：general / parallel / normal，与默认值相同则跳过写入
-    if (spec.role_ != thread::role::general && !graph.set_role(id, spec.role_))
+    if (spec.role_ != thread::role::general && !graph.set_role_impl(id, spec.role_, error))
     {
         return false;
     }
-    if (spec.mode_ == order_mode::sequential && !graph.set_order_mode(id, spec.mode_))
+    if (spec.mode_ == order_mode::sequential && !graph.set_order_mode_impl(id, spec.mode_, error))
     {
         return false;
     }
     if (spec.affinity_ == affinity_kind::worker)
     {
-        if (!graph.pin(id, spec.worker_))
+        if (!graph.pin_impl(id, spec.worker_, error))
         {
             return false;
         }
         if (spec.flags_ & flag_allow_steal)
         {
-            if (!graph.set_stealable(id, true))
+            if (!graph.set_stealable_impl(id, true, error))
             {
                 return false;
             }
@@ -140,16 +141,16 @@ inline bool apply_spec(task_graph& graph, task_id id, const task_spec& spec) noe
     }
     if (spec.mode_ == order_mode::parallel && spec.priority_ != priority::normal)
     {
-        (void)graph.set_priority(id, spec.priority_);
+        (void)graph.set_priority_impl(id, spec.priority_, error);
     }
     if (spec.key_ != invalid_order_key)
     {
-        (void)graph.reorder(id, order_key{spec.key_});
+        (void)graph.reorder_impl(id, order_key{spec.key_}, error);
     }
-    (void)graph.set_activation(id, spec.activation_, spec.period_, spec.overlap_);
+    (void)graph.set_activation(id, spec.activation_, spec.period_, spec.overlap_, error);
     if (spec.deadline_ != 0)
     {
-        (void)graph.set_deadline(id, spec.deadline_);
+        (void)graph.set_deadline_impl(id, spec.deadline_, error);
     }
     if ((spec.flags_ & flag_detached) != 0)
     {
@@ -161,25 +162,25 @@ inline bool apply_spec(task_graph& graph, task_id id, const task_spec& spec) noe
     }
     for (std::uint32_t i = 0; i < spec.read_count_; ++i)
     {
-        if (!graph.add_access(id, spec.reads_[i], access_mode::read))
+        if (!graph.add_access_impl(id, spec.reads_[i], access_mode::read, error))
         {
             return false;
         }
     }
     for (std::uint32_t i = 0; i < spec.write_count_; ++i)
     {
-        if (!graph.add_access(id, spec.writes_[i], access_mode::write))
+        if (!graph.add_access_impl(id, spec.writes_[i], access_mode::write, error))
         {
             return false;
         }
     }
     if (spec.context_.valid())
     {
-        (void)graph.set_context(id, spec.context_);
+        (void)graph.set_context_impl(id, spec.context_, error);
     }
     if (spec.after_.valid())
     {
-        if (!graph.add_dependency(spec.after_, id))
+        if (!graph.add_dependency_impl(spec.after_, id, error))
         {
             return false;
         }
@@ -580,13 +581,14 @@ struct task_builder
         {
             return invalid_task;
         }
-        if (!graph_->set_body(tail_, body))
+        operating_message error;
+        if (!graph_->set_body_impl(tail_, body, error))
         {
             return invalid_task;
         }
         if (spec_.activation_ == activation_policy::once)
         {
-            (void)graph_->activate(tail_);
+            (void)graph_->activate_impl(tail_, error);
         }
         return tail_;
     }
@@ -604,7 +606,9 @@ struct task_builder
         parent_word parent{};
         const std::uint64_t key =
             spec_.key_ == invalid_order_key ? invalid_order_key : spec_.key_ + 1u;
-        const task_id next = graph_->declare_full(nullptr, body, route, parent, key, spec_.flags_);
+        operating_message error;
+        const task_id next =
+            graph_->declare_full_impl(nullptr, body, route, parent, key, spec_.flags_, error);
         if (!next.valid())
         {
             return *this;
@@ -760,10 +764,12 @@ struct task_decl
     bool allow_steal_{false};
 };
 
-inline bool declare_all(task_graph& graph, const task_decl* decls, std::size_t count) noexcept
+inline bool declare_all_impl(task_graph& graph, const task_decl* decls, std::size_t count,
+                              operating_message& error) noexcept
 {
     if (decls == nullptr || count == 0)
     {
+        error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
         return false;
     }
     for (std::size_t i = 0; i < count; ++i)
@@ -771,46 +777,53 @@ inline bool declare_all(task_graph& graph, const task_decl* decls, std::size_t c
         const task_decl& decl = decls[i];
         if (decl.name_ == nullptr || decl.body_ == nullptr)
         {
+            error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
             return false;
         }
         if (role_index(decl.role_) >= graph.role_count())
         {
+            error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
             return false;
         }
         if (decl.mode_ == order_mode::sequential &&
             graph.role_mode(decl.role_) != order_mode::sequential)
         {
+            error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
             return false;
         }
         if (decl.affinity_ == affinity_kind::worker)
         {
             if (decl.worker_ >= graph.worker_count())
             {
+                error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
                 return false;
             }
             if (decl.allow_steal_ && decl.mode_ != order_mode::parallel)
             {
+                error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
                 return false;
             }
         }
         else if (decl.allow_steal_)
         {
+            error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
             return false;
         }
     }
 
     dense<task_id> created{};
-    created.reserve_exact(count);
+    created.increase_capacity(count);
     for (std::size_t i = 0; i < count; ++i)
     {
         const task_decl& decl = decls[i];
-        task_builder builder{&graph, graph.declare(decl.name_, {})};
+        task_builder builder{&graph, graph.declare_impl(decl.name_, {}, error)};
         if (!builder.tail_.valid())
         {
             for (std::size_t k = 0; k < created.size(); ++k)
             {
-                (void)graph.disable(created[k]);
+                (void)graph.disable_impl(created[k], error);
             }
+            error.write_failure(om_err_capacity_exceeded.code, msg_level::warn, msg::here());
             return false;
         }
         builder.spec_.role_ = decl.role_;
@@ -823,12 +836,21 @@ inline bool declare_all(task_graph& graph, const task_decl* decls, std::size_t c
         {
             for (std::size_t k = 0; k < created.size(); ++k)
             {
-                (void)graph.disable(created[k]);
+                (void)graph.disable_impl(created[k], error);
             }
+            error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
             return false;
         }
-        created.push_back(builder.tail_);
+        created.emplace_back(builder.tail_);
     }
     return true;
 }
+inline operating_message declare_all(task_graph& graph, const task_decl* decls,
+                                       std::size_t count) noexcept
+{
+    operating_message error;
+    (void)declare_all_impl(graph, decls, count, error);
+    return error;
+}
+
 } // namespace thread

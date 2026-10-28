@@ -48,7 +48,7 @@ class flatbuffer_archive_writer final : public archive_writer
         n.first_child = fb_detail::NONE;
         n.last_child = fb_detail::NONE;
         n.next_sibling = fb_detail::NONE;
-        nodes_.push_back(n);
+        nodes_.emplace_back(n);
         return static_cast<uint32_t>(nodes_.size() - 1);
     }
 
@@ -119,7 +119,7 @@ class flatbuffer_archive_writer final : public archive_writer
             uint32_t elem_size = 4;
             for (uint32_t c = n.first_child; c != fb_detail::NONE; c = nodes_[c].next_sibling)
             {
-                elems.push_back(c);
+                elems.emplace_back(c);
                 if (nodes_[c].kind == 0)
                 {
                     elem_size = nodes_[c].data_len;
@@ -128,7 +128,7 @@ class flatbuffer_archive_writer final : public archive_writer
             uint32_t base_align = (elem_size >= 4) ? elem_size : 4;
             out_.resize(align_up(static_cast<uint32_t>(out_.size()), base_align), 0);
             uint32_t vec_pos = static_cast<uint32_t>(out_.size());
-            uint32_t elems_off = align_up(vec_pos + 4, elem_size);
+            uint32_t elems_off = static_cast<uint32_t>(align_up(vec_pos + 4, elem_size));
             uint32_t total = (elems_off - vec_pos) + static_cast<uint32_t>(elems.size()) * elem_size;
             out_.resize(vec_pos + total, 0);
             put_u32(vec_pos, static_cast<uint32_t>(elems.size()));
@@ -154,7 +154,7 @@ class flatbuffer_archive_writer final : public archive_writer
         uint32_t max_align = 4;
         for (uint32_t c = n.first_child; c != fb_detail::NONE; c = nodes_[c].next_sibling)
         {
-            fields.push_back(c);
+            fields.emplace_back(c);
             if (nodes_[c].field_id > max_field)
             {
                 max_field = nodes_[c].field_id;
@@ -170,17 +170,17 @@ class flatbuffer_archive_writer final : public archive_writer
 
         // 计算各字段内联布局
         dense<uint32_t> field_off;
-        for (size_t i = 0; i < fields.size(); ++i) { field_off.push_back(0); }
+        for (size_t i = 0; i < fields.size(); ++i) { field_off.emplace_back(0); }
         uint32_t body = 4;
         for (size_t i = 0; i < fields.size(); ++i)
         {
             uint32_t c = fields[i];
             uint32_t a = (nodes_[c].kind == 0) ? nodes_[c].data_len : 4;
-            body = align_up(body, a);
+            body = static_cast<uint32_t>(align_up(body, a));
             field_off[i] = body;
             body += a;
         }
-        uint32_t table_size = align_up(body, max_align);
+        uint32_t table_size = static_cast<uint32_t>(align_up(body, max_align));
 
         // 先放 vtable, 再放 table
         out_.resize(align_up(static_cast<uint32_t>(out_.size()), 2), 0);
@@ -223,8 +223,8 @@ public:
         stack_.increase_capacity(16);
         dyn_.increase_capacity(16);
         uint32_t root = new_node(3, 0, 0);
-        stack_.push_back(root);
-        dyn_.push_back(0);
+        stack_.emplace_back(root);
+        dyn_.emplace_back(0);
     }
 
     void begin_object() noexcept override {
@@ -236,8 +236,8 @@ public:
         uint32_t fid = (nodes_[stack_.back()].kind == 4) ? 0 : pending_;
         uint32_t n = new_node(3, 0, fid);
         add_child(stack_.back(), n);
-        stack_.push_back(n);
-        dyn_.push_back(0);
+        stack_.emplace_back(n);
+        dyn_.emplace_back(0);
     }
 
     void end_object() noexcept override {
@@ -252,8 +252,8 @@ public:
         uint32_t fid = (nodes_[stack_.back()].kind == 4) ? 0 : pending_;
         uint32_t n = new_node(4, 0, fid);
         add_child(stack_.back(), n);
-        stack_.push_back(n);
-        dyn_.push_back(0);
+        stack_.emplace_back(n);
+        dyn_.emplace_back(0);
     }
 
     void end_array() noexcept override {
@@ -269,10 +269,10 @@ public:
     }
 
     void write_bool(bool v) noexcept override { add_scalar(static_cast<uint8_t>(archive_type::bool_t), &v, 1); }
-    void write_i32(int32_t v) noexcept override { add_scalar(static_cast<uint8_t>(archive_type::int32_t), &v, 4); }
-    void write_u32(uint32_t v) noexcept override { add_scalar(static_cast<uint8_t>(archive_type::uint32_t), &v, 4); }
-    void write_i64(int64_t v) noexcept override { add_scalar(static_cast<uint8_t>(archive_type::int64_t), &v, 8); }
-    void write_u64(uint64_t v) noexcept override { add_scalar(static_cast<uint8_t>(archive_type::uint64_t), &v, 8); }
+    void write_i32(int32_t v) noexcept override { add_scalar(static_cast<uint8_t>(archive_type::i32), &v, 4); }
+    void write_u32(uint32_t v) noexcept override { add_scalar(static_cast<uint8_t>(archive_type::u32), &v, 4); }
+    void write_i64(int64_t v) noexcept override { add_scalar(static_cast<uint8_t>(archive_type::i64), &v, 8); }
+    void write_u64(uint64_t v) noexcept override { add_scalar(static_cast<uint8_t>(archive_type::u64), &v, 8); }
     void write_f32(float v) noexcept override { add_scalar(static_cast<uint8_t>(archive_type::float32_t), &v, 4); }
     void write_f64(double v) noexcept override { add_scalar(static_cast<uint8_t>(archive_type::float64_t), &v, 8); }
 
@@ -360,7 +360,7 @@ class flatbuffer_archive_reader final : public archive_reader
         f.slot_count = (vsize >= 4) ? (vsize - 4) / 2 : 0;
         f.iter = 0;
         f.is_vec = false;
-        stack_.push_back(f);
+        stack_.emplace_back(f);
     }
 
     void push_vector(uint32_t pos) noexcept {
@@ -374,7 +374,7 @@ class flatbuffer_archive_reader final : public archive_reader
         f.table = nullptr;
         f.vtable = 0;
         f.slot_count = 0;
-        stack_.push_back(f);
+        stack_.emplace_back(f);
     }
 
     [[nodiscard]] uint32_t follow_uoffset(uint32_t pos) const noexcept {
@@ -553,7 +553,7 @@ public:
         operating_message m;
         if (err_)
         {
-            m.write(false, "flatbuffer: 二进制布局解析错误");
+            m.write(false, om_err_decode_failed, "flatbuffer: 二进制布局解析错误", msg::warn, msg::here());
         }
         return m;
     }
@@ -590,12 +590,12 @@ struct flatbuffer_codec final : archive_codec
         return root >= 8 && root < data.size();
     }
 
-    [[nodiscard]] operating_message validate(std::string_view data) const noexcept override {
-        operating_message m;
+    [[nodiscard]] bool validate(std::string_view data, operating_message& error) const noexcept override {
         if (!matches(data))
         {
-            m.write(false, "flatbuffer: file_identifier/root 校验失败");
+            error.write_failure(om_err_checksum_failed.code, msg_level::warn, msg::here());
+            return false;
         }
-        return m;
+        return true;
     }
 };

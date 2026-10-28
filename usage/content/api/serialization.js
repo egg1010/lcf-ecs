@@ -10,7 +10,7 @@ window.DOCS_DATA['serialization'] = {
 
 命名空间 \`ecs\`。\`noexcept\`。
 
-模块分两层。**通用对象序列化**（\`object_archive\`）与 \`part/codec\` 编解码原语不依赖 ECS，可序列化任意数据；**ECS 存档**（\`full_archive\`）在其之上枚举实体与组件。两层共用同一份字段层与编解码原语。
+模块分两部分。**对象与数组序列化**不依赖 ECS，可序列化任意数据类型；**整存档**在绑定 `ecs::manager` 后枚举实体与组件。两者共用同一份字段层与编解码原语，统一经 `serialize::manager` 调用。
 
 | 能力 | 说明 |
 |------|------|
@@ -22,7 +22,6 @@ window.DOCS_DATA['serialization'] = {
 | 类型登记 | 稳定类型名、类型工厂表、枚举与实体引用字段注册 |
 | 实体枚举与重建 | 运行期枚举实体、索引保序重建 |
 | 选择性过滤 | 按条件筛选存档内容 |
-| 字段迁移 | 字段级迁移 + 组件版本控制 |
 | 统计与导出 | 统计信息、跨语言 schema 导出 |
 | 编码器 | 抽象接口 + JSON / 二进制 / Protobuf / FlatBuffers |
 | 安全工具 | 安全限制、base64 / RLE / CRC32C |
@@ -36,24 +35,32 @@ window.DOCS_DATA['serialization'] = {
 | 数据类型 | 序列化方式 | 要求 |
 |---------|-----------|------|
 | 提供 \`to_json()\` / \`from_json()\` | 原生 JSON 值 | 两方法成对提供 |
-| 已注册反射（\`REGISTER_MEMBERS\`） | 遍历字段生成对象 / 数组 | 字段为基本类型、\`std::string\`、嵌套对象、数组或已注册枚举 |
+| 已注册反射（\`add_field\` / \`add_fields\`） | 遍历字段生成对象 / 数组 | 字段为基本类型、\`std::string\`、嵌套对象、数组或已注册枚举 |
 | trivially copyable 且未反射 | 原始字节（JSON 格式下为 base64 字符串） | 无 |
 | 其他 | 空载荷（加载时跳过） | — |
 
-### 12.2 object_archive 接口
+### 12.2 manager 接口
 
-命名空间 \`ecs\`。序列化任意数据类型，不需要 \`register_components\`，不依赖 \`manager\`。
+命名空间 \`serialize\`。序列化统一入口，可失败接口返回 \`operating_message\`（空对象表示成功）。构造时可选注入 \`ecs::manager\` 以启用整存档。
 
 | 接口 | 说明 |
 |------|------|
-| \`object_archive()\` | 构造 |
-| \`bridge\` | \`codec_bridge\`：校验开关、压缩 / 加密函数对、保存 / 加载变换钩子 |
-| \`limits\` | \`safety_limits\`：文件大小、元素数等上限 |
-| \`format_version\` | 存档格式版本，加载时高于当前值拒绝（默认 1） |
-| \`save_object(out, fmt, obj)\` / \`load_object(data, obj)\` | 单对象字符串读写 |
-| \`save_array(out, fmt, items, count)\` / \`load_array(data, dense<T>& out)\` | 对象数组字符串读写，\`items\` 为 \`const T*\` |
-| \`save_object_to_file(path, fmt, obj)\` / \`load_object_from_file(path, obj)\` | 单对象文件读写 |
-| \`save_array_to_file(path, fmt, items, count)\` / \`load_array_from_file(path, dense<T>& out)\` | 对象数组文件读写 |
+| \`manager()\` | 构造，用于对象与数组序列化 |
+| \`manager(ecs::manager& world)\` | 构造并绑定 ECS 世界，可整存档 |
+| \`set_format(fmt)\` | 输出格式，默认 \`json\` |
+| \`set_checksum(on)\` | CRC32C 校验开关 |
+| \`set_compression(c, d)\` / \`set_encryption(e, d)\` | 压缩 / 加密函数对 |
+| \`set_save_transform(cb)\` / \`set_load_transform(cb)\` | 保存 / 加载变换钩子 |
+| \`save_object(out, obj)\` / \`load_object(data, obj)\` | 单对象字符串读写 |
+| \`save_array(out, items, count)\` / \`load_array(data, dense<T>&)\` | 对象数组读写，\`items\` 为 \`const T*\` |
+| \`save_object_to_file(path, obj)\` / \`load_object_from_file(path, obj)\` | 单对象文件读写 |
+| \`save_array_to_file(path, items, count)\` / \`load_array_from_file(path, dense<T>&)\` | 对象数组文件读写 |
+| \`save_world(out)\` / \`save_world_to_file(path)\` | 整存档保存，需绑定 world |
+| \`load_world(data)\` / \`load_world_from_file(path)\` | 整存档加载，自动检测格式 |
+| \`set_world_metadata(key, value)\` | 整存档元数据 |
+| \`world_schema_proto()\` / \`world_schema_fbs()\` | 按注册表生成 \`.proto\` / \`.fbs\` |
+| \`last_stats()\` | 上一次存档统计，未绑定 world 返回 nullptr |
+| \`world()\` / \`objects()\` | 底层 \`full_archive\` / \`object_archive\` 访问器 |
 
 \`fmt\` 为 \`archive_format::json\`（默认）/ \`binary\` / \`protobuf\` / \`flatbuffer\`；加载自动检测格式。
 
@@ -62,34 +69,44 @@ window.DOCS_DATA['serialization'] = {
 \`\`\`cpp
 
 struct item_record { int id; float weight; std::string name; };
-REGISTER_TYPE_ONLY(item_record);
-REGISTER_MEMBERS(item_record, id, weight, name);
+reflect::global().register_type_only<item_record>("item_record");
+reflect::global().register_member_runtime<item_record>("item_record", "id", &item_record::id);
+reflect::global().register_member_runtime<item_record>("item_record", "weight", &item_record::weight);
+reflect::global().register_member_runtime<item_record>("item_record", "name", &item_record::name);
 
-object_archive oa;
+serialize::manager m;
+m.set_format(archive_format::json);
 
 // 单对象
 item_record one{7, 1.5f, "alpha"};
 std::string js;
-oa.save_object(js, archive_format::json, one);
+if (auto e = m.save_object(js, one); !e)
+{
+    std::fprintf(stderr, "save failed: %u\n", e.code());
+}
 item_record back{};
-oa.load_object(js, back);
+if (auto e = m.load_object(js, back); !e)
+{
+    std::fprintf(stderr, "load failed: %u\n", e.code());
+}
 
 // 对象数组 (配置表 / 数据块)
 dense<item_record> items;
-items.push_back(item_record{1, 1.0f, "a"});
-items.push_back(item_record{2, 2.0f, "b"});
+items.emplace_back(item_record{1, 1.0f, "a"});
+items.emplace_back(item_record{2, 2.0f, "b"});
 std::string bin;
-oa.save_array(bin, archive_format::protobuf, items.data(), items.size());
+m.set_format(archive_format::protobuf).save_array(bin, items.data(), items.size());
 
 dense<item_record> loaded;
-oa.load_array(bin, loaded);              // 自动检测格式
+if (auto e = m.load_array(bin, loaded); !e)   // 自动检测格式
+{
+    std::fprintf(stderr, "load array failed: %u\n", e.code());
+}
 
 // 变换链 (校验默认启用)
-oa.bridge.enable_checksum = true;
-oa.bridge.compress_cb = rle_compress;
-oa.bridge.decompress_cb = rle_decompress;
-oa.bridge.encrypt_cb = my_encrypt;
-oa.bridge.decrypt_cb = my_decrypt;
+m.set_checksum(true)
+ .set_compression(rle_compress, rle_decompress)
+ .set_encryption(my_encrypt, my_decrypt);
 \`\`\`
 
 ### 12.4 对象存档表示
@@ -286,7 +303,7 @@ codec_registry::instance().register_codec(&my_codec_instance);
 
 ---
 
-# 二、ECS 存档（full_archive）
+# 二、整存档
 
 ### 12.14 组件载荷约定
 
@@ -297,28 +314,19 @@ codec_registry::instance().register_codec(&my_codec_instance);
 | trivially copyable 且未反射 | 原始字节 | 无 |
 | 其他 | 空载荷（加载时跳过） | — |
 
-### 12.15 full_archive 接口
+### 12.15 整存档接口
 
-命名空间 \`ecs\`。ECS 存档唯一入口，\`register_components\` 一次后保存 / 加载免 \`Ts...\`。
+绑定 \`ecs::manager\` 后经 manager 保存 / 加载；版本、过滤器、加载策略等高级配置经 \`world()\` 访问底层 \`full_archive\`。
 
 | 接口 | 说明 |
 |------|------|
-| \`full_archive(manager& m)\` | 构造，绑定 manager |
-| \`register_components<Ts...>()\` | 注册组件类型（幂等），保存与加载两端次序须一致 |
-| \`save_to_string(out, fmt)\` / \`save_to_file(path, fmt)\` | 全量保存，\`fmt\` 同 12.2 |
-| \`load_from_string(data)\` / \`load_from_file(path)\` | 全量加载，自动检测格式 |
-| \`set_archive_version(v)\` / \`archive_version()\` | 存档版本读写 |
-| \`set_engine_version(v)\` / \`engine_version()\` | 引擎版本读写 |
-| \`set_metadata(key, value)\` / \`get_metadata(key)\` / \`all_metadata()\` | 元数据读写 |
-| \`set_checksum_enabled(b)\` / \`is_checksum_enabled()\` | CRC32C 校验开关（默认启用） |
-| \`set_filter(f)\` / \`filter()\` | 选择性过滤器 |
-| \`set_load_mode(m)\` / \`get_load_mode()\` | 加载模式 |
-| \`set_load_policy(p)\` / \`get_load_policy()\` | 加载策略 |
-| \`set_compression(c, d)\` / \`set_encryption(e, d)\` | 压缩 / 加密函数对 |
-| \`on_save(cb)\` / \`on_load(cb)\` / \`set_progress_callback(cb)\` | 变换钩子 / 进度回调 |
-| \`limits()\` / \`last_stats()\` | 安全限制 / 上一次统计 |
-| \`component_schema()\` | 运行期收集的组件类型描述 |
-| \`schema_proto()\` / \`schema_fbs()\` | 按注册表生成 \`.proto\` / \`.fbs\` |
+| \`manager(ecs::manager& world)\` | 绑定 ECS 世界 |
+| \`world()->register_components<Ts...>()\` | 注册组件类型（幂等），保存与加载两端次序须一致 |
+| \`save_world(out)\` / \`save_world_to_file(path)\` | 全量保存 |
+| \`load_world(data)\` / \`load_world_from_file(path)\` | 全量加载，自动检测格式 |
+| \`set_world_metadata(key, value)\` | 写入元数据 |
+| \`world_schema_proto()\` / \`world_schema_fbs()\` | 按注册表生成 \`.proto\` / \`.fbs\` |
+| \`world()\` | 高级配置：\`set_archive_version\` / \`set_engine_version\` / \`set_filter\` / \`set_load_mode\` / \`set_load_policy\` / \`set_progress_callback\` / \`component_schema()\` / \`limits()\` / \`last_stats()\` |
 
 ### 12.16 使用示例
 
@@ -329,24 +337,30 @@ auto e1 = mgr.create_entity();
 mgr.add(e1, Position{1.0f, 2.0f, 3.0f});
 mgr.get_entity_state(e1.parts_.index_).tag = 5;
 
-full_archive saver(mgr);
-saver.register_components<Position, Velocity>();
-saver.set_metadata("author", "dev");
-saver.set_checksum_enabled(false);
+serialize::manager saver(mgr);
+saver.world()->register_components<Position, Velocity>();
+(void)saver.set_world_metadata("author", "dev");
+saver.set_checksum(false).set_format(archive_format::protobuf);
 
 std::string data;
-saver.save_to_string(data, archive_format::protobuf);
+if (auto e = saver.save_world(data); !e)
+{
+    std::fprintf(stderr, "save failed: %u\n", e.code());
+}
 
 ecs::manager mgr2;
-full_archive loader(mgr2);
-loader.register_components<Position, Velocity>();
-loader.load_from_string(data);          // 自动检测格式
+serialize::manager loader(mgr2);
+loader.world()->register_components<Position, Velocity>();
+if (auto e = loader.load_world(data); !e)   // 自动检测格式
+{
+    std::fprintf(stderr, "load failed: %u\n", e.code());
+}
 
 uint32_t idx = mgr2.get_single_class_set<Position>()->get_entity_indices()[0];
 // 索引与状态还原: idx == e1.parts_.index_, mgr2.get_entity_state(idx).tag == 5
 
-std::string proto = saver.schema_proto();
-std::string fbs   = saver.schema_fbs();
+std::string proto = loader.world_schema_proto();
+std::string fbs   = loader.world_schema_fbs();
 \`\`\`
 
 ### 12.17 存档表示
@@ -375,7 +389,7 @@ JSON 格式的根结构：
 
 ### 12.18 安全限制
 
-\`safety_limits\` 控制加载上限，经 \`full_archive::limits()\` 或 \`object_archive::limits\` 修改。
+`safety_limits` 控制加载上限，经 `m.world()->limits()` 或 `m.objects().limits` 修改。
 
 | 字段 | 默认值 | 说明 |
 |------|--------|------|
@@ -408,7 +422,7 @@ JSON 格式的根结构：
 | \`serialize_filter::by_flags(mask, value)\` | \`(flags & mask) == value\` |
 | \`serialize_filter::by_entities(ids)\` | 仅保留白名单索引；收窄到单个实体即单实体保存 |
 
-多条件为 AND 关系，经 \`full_archive::set_filter(&filter)\` 应用。
+多条件为 AND 关系，经 `m.world()->set_filter(&filter)` 应用。
 
 ### 12.21 加载模式
 
@@ -421,19 +435,6 @@ JSON 格式的根结构：
 ### 12.22 存档元数据
 
 \`set_metadata(key, value)\` 存入自定义键值对，保存写入 \`meta\`，加载回填；\`get_metadata(key)\` / \`all_metadata()\` 读取。
-
-### 12.23 组件版本与字段级迁移
-
-| 接口 | 说明 |
-|------|------|
-| \`register_component_version<T>(version)\` | 注册组件当前版本，保存写入 \`cv\` |
-| \`register_migration<T>(from, to, fn)\` | 注册单步迁移函数，加载按 \`from → to\` 链式调用 |
-| \`lookup_component_version<T>()\` | 查询组件当前版本 |
-| \`register_field_rename<T>(old_name, new_name)\` | 加载时字段改名 |
-| \`register_field_drop<T>(field_name)\` | 加载时丢弃字段 |
-| \`register_field_default<T>(field_name, default_json)\` | 缺失字段注入默认值 |
-
-迁移函数签名 \`void(*)(json_reader& old, json_writer& neu)\`，需自行调用 \`old.enter_object()\`。存档无 \`cv\` 条目时不迁移。
 
 ### 12.24 加载策略
 
@@ -478,7 +479,7 @@ JSON 格式的根结构：
 | 跨编译器加载未注册稳定名 | 类型名不匹配 | 用 \`register_type_name\` 注册稳定名 |
 | 组件含 entity 引用字段未注册 | 引用指向旧索引 | 用 \`register_entity_field<T>(field_name)\` 注册 |
 | 加载高于当前版本的存档 | 版本检查失败 | 提高 \`set_archive_version\` 或降级存档 |
-| 迁移函数未调用 \`old.enter_object()\` | 读取不到字段 | 在迁移 lambda 开头调用 |
+| 版本不匹配 | 加载失败 | 保存端与加载端 \`set_archive_version\` 保持一致 |
 | 启用校验后直接读格式标识 | 前 8 字节为 \`LCCS\` | 先 \`set_checksum_enabled(false)\`，或用 \`detect_codec\` |
 | \`replace\` 加载到含信号的 manager | 旧实体销毁触发信号 | 属预期行为，注意信号槽清理 |
 | \`create_writer\` / \`create_reader\` 后未 \`destroy_*\` | 内存泄漏 | 用完立即销毁 |

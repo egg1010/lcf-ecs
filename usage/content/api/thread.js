@@ -10,6 +10,8 @@ window.DOCS_DATA['thread_manager'] = {
 
 工作线程池管理器：配置、启动、提交任务、按通道调度、优雅停止，并汇总运行统计。无线程模式（嵌入式）下由 \`pump\` 驱动执行。
 
+入口 \`thread/manager.hpp\`；帧循环场景用 \`thread::app\`（§57），开箱即用的应用骨架，在 manager 外面加了一层默认设置。
+
 ### 47.1 配置 manager_config
 
 | 字段 | 默认值 | 说明 |
@@ -46,7 +48,7 @@ window.DOCS_DATA['thread_manager'] = {
 
 | 接口 | 说明 |
 |------|------|
-| \`configure(manager_config, runtime_context* = nullptr)\` | 创建线程与队列并绑定运行时；已配置返回 \`false\` |
+| \`configure(manager_config, runtime_context* = nullptr)\` | 创建线程与队列并绑定运行时，返回 \`operating_message\`；重复配置返回 \`already_exists\` |
 | \`start()\` | 启动工作线程 |
 | \`stop()\` / \`stop(stop_mode, destroy_policy)\` | 停止并回收 |
 | \`running()\` | 是否已启动 |
@@ -91,8 +93,10 @@ window.DOCS_DATA['thread_manager'] = {
 \`\`\`cpp
 
 thread::manager mgr;
+operating_message error;
 if (!mgr.configure(thread::profile::server(4)))
 {
+    std::fprintf(stderr, "configure failed: %u\n", error.code());
     return 1;
 }
 mgr.start();
@@ -418,73 +422,81 @@ if (q.try_pop(got))
 
 window.DOCS_DATA['thread_error'] = {
   id: 'thread_error',
-  title: "thread::error — 错误处理与日志",
+  title: "thread — 错误交付",
   category: 'thread',
   icon: 'E',
   order: 53,
-  content: `## 53. thread::error — 错误处理与日志
+  content: `## 53. thread — 错误交付
 
-统一错误码、严重级、处置动作与日志出口，全模块以 \`FRAMEWORK_REPORT\` 上报。
+线程模块不定义独立错误码与错误类型，全部失败经 \`operating_message\` 交付。
 
-### 53.1 错误码 errc
+### 53.1 错误码
 
-| 值 | 说明 |
-|----|------|
-| \`ok\` | 无错误 |
-| \`no_such_lane\` / \`no_such_worker\` / \`no_such_tag\` | 目标不存在 |
-| \`lane_destroyed\` | 通道已销毁 |
-| \`inject_queue_full\` / \`lane_queue_full\` | 队列已满 |
-| \`job_slot_exhausted\` / \`coroutine_frame_exhausted\` | 槽 / 帧耗尽 |
-| \`thread_spawn_failed\` | 线程创建失败 |
-| \`not_running\` / \`shutdown_in_progress\` | 未运行 / 正在关闭 |
-| \`already_registered\` | 重复注册 |
-| \`invalid_argument\` / \`timeout\` | 参数非法 / 超时 |
-| \`invariant_broken\` | 不变量被破坏 |
-| \`handler_faulted\` | 处理器自身出错 |
-| \`cancelled\` | 已取消 |
+| 常量 | 触发点 |
+|------|--------|
+| \`om_err_not_running\` | 未 \`configure\` / 未启动就提交 |
+| \`om_err_shutting_down\` | 关闭流程中提交 |
+| \`om_err_queue_full\` | 注入队列或本地队列已满 |
+| \`om_err_capacity_exceeded\` | 槽位、帧池、任务表容量不足 |
+| \`om_err_out_of_memory\` | 建图期内存分配失败 |
+| \`om_err_spawn_failed\` | 工作线程创建失败 |
+| \`om_err_invalid_argument\` | 非法配置、任务身份或角色划分 |
+| \`om_err_cancelled\` | 取消作用域导致的中止 |
+| \`om_err_timeout\` | 截止时间或看门狗超时 |
+| \`om_err_already_exists\` | 重复配置 |
+| \`thread_task_body_faulted\` | 任务体调用 \`ctx.fail()\` |
 
-### 53.2 严重级与动作
+### 53.2 级别
 
-| 类型 | 取值 |
-|------|------|
-| \`error_severity\` | \`info\` / \`warning\` / \`error\` / \`fatal\` |
-| \`error_action\` | \`continue_\` / \`abort_frame\` / \`shutdown\` / \`terminate_\` |
+\`msg_level\`：\`debug\` / \`info\` / \`warn\` / \`error\`。线程侧同步失败用 \`warn\`，配置与建图失败用 \`error\`。
 
-### 53.3 处理器与日志
+### 53.3 交付出口
 
 | 接口 | 说明 |
 |------|------|
-| \`set_error_handler(handler)\` | 设置 \`error\` 级处理器 |
-| \`set_fatal_handler(handler)\` | 设置 \`fatal\` 级处理器 |
-| \`set_log_sink(sink, user)\` | 设置日志出口 |
-| \`report(...)\` | 上报一条错误，返回处置动作 |
-| \`reset_error_state()\` | 复位计数器与处理器 |
-| \`global_error_counters()\` | 全局错误计数 |
-| \`severity_name(severity)\` / \`errc_name(code)\` | 名称查询 |
+| \`configure(config, error, runtime = nullptr)\` | 配置失败写调用方错误对象 |
+| \`create(config)\` | 建图失败时返回带错误码的对象 |
+| \`submit(job*, error, preferred)\` / \`try_submit(job*, error, preferred)\` | 提交失败写错误码 |
+| \`set_error_sink(sink, user)\` | 同步失败出口，\`void(const operating_message&, void*)\` |
+| \`set_completion_error(fn, user)\` | 异步失败出口，\`void(operating_message, void*)\`，每个 faulted 激活一次 |
+| \`ctx.fail(code, site)\` | 任务体主动上报失败，码与站点随回调交付 |
 
-### 53.4 报告宏
+成功路径不写错误对象、不调用回调；库不保存最近错误，也不做全局计数。
 
-| 宏 | 说明 |
-|----|------|
-| \`FRAMEWORK_REPORT(severity, code)\` | 上报错误，自动填充站点 |
-| \`FRAMEWORK_REPORT_TAGGED(severity, code, tag, lane, flags)\` | 带标签上报 |
-| \`FRAMEWORK_INVARIANT(condition, code)\` | 断言，失败即终止 |
-
-### 53.5 示例
+### 53.4 示例
 
 \`\`\`cpp
-thread::set_log_sink([](thread::log_level level, const char* text, void*) noexcept {
-    thread::error_severity sev = static_cast<thread::error_severity>(level);
-    std::printf("[%s] %s\n", thread::severity_name(sev), text);
+const operating_message error = thread::manager mgr;
+if (!mgr.configure(thread::profile::server(4)))
+{
+    std::fprintf(stderr, "configure failed: %u\n", error.code());
+    return 1;
+}
+
+mgr.set_completion_error(+[](operating_message failure, void*) noexcept
+{
+    std::fprintf(stderr, "task failed: %u level=%d\n",
+                 failure.code(), static_cast<int>(failure.level()));
 }, nullptr);
+
+thread::task_body body{};
+body.kind_ = thread::task_body_plain_ctx;
+body.invoke_.plain_ctx_ = +[](thread::task_context& ctx) noexcept
+{
+    if (!load_resource())
+    {
+        ctx.fail(om_err_io_failed.code);
+    }
+};
 \`\`\`
 
-### 53.6 不要做什么
+### 53.5 不要做什么
 
 | 错误做法 | 问题 | 正确做法 |
 |---------|------|---------|
-| 在处理器内再次上报 | 触发递归保护 | 处理器只记录或返回动作 |
-| 依赖 \`fatal\` 默认行为 | 默认终止进程 | 如需继续，注册 \`fatal\` 处理器返回 \`continue_\` |
+| 依赖线程侧全局计数器统计失败 | 库不提供全局状态 | 在 sink / 回调里累加到自己的容器 |
+| 在回调里阻塞或再次提交会死锁的任务 | 回调运行在 worker 线程 | 只做入队或记录 |
+| 忽略 \`configure\` 返回值 | 后续提交必然失败 | 读取错误码并处理 |
 `
 };
 
@@ -655,10 +667,13 @@ window.DOCS_DATA['thread_task_graph'] = {
 
 ### 56.4 注册
 
+全部可失败接口只有一个形态：返回 \`operating_message\`。成功时该对象为空，失败时带错误码与级别。
+
+
 | 接口 | 说明 |
 |------|------|
 | \`declare(name)\` | 注册空任务，返回 \`task_builder\`，由 \`run\` 提交任务体 |
-| \`declare(name, task_body)\` | 注册并直接绑定任务体，返回 \`task_id\` |
+| \`declare(name, task_body)\` | 注册并直接绑定任务体，返回 \`task_id\`；失败返回无效句柄 |
 | \`declare(name, task_body, role)\` | 指定角色注册 |
 | \`declare_full(name, body, route_word, parent_word, key, flags)\` | 完整字段注册 |
 | \`declare_all(decls, count)\` | 按声明表批量注册，任一非法则全部不生效 |
@@ -747,7 +762,7 @@ mgr.declare_all(decls, 2);
 | \`deactivate(id)\` | 撤销尚未执行的激活 |
 | \`migrate(id, role)\` / \`rebind(id, role)\` | 改变角色，下一次激活生效 |
 | \`pin(id, worker)\` | 绑定工作线程，并清除可窃取声明 |
-| \`set_stealable(id, true/false)\` | 仅对绑定并行任务有效 |
+| \`set_stealable(id, value)\` | 仅对绑定并行任务有效 |
 | \`set_order_mode(id, mode)\` | 切换顺序 / 并行 |
 | \`set_priority(id, p)\` | 顺序任务拒绝 |
 | \`reorder(id, order_key)\` | 顺序域内调整相对位置 |
@@ -774,18 +789,25 @@ mgr.declare_all(decls, 2);
 | \`has_worker_work(worker)\` | 指定线程是否还有可执行任务 |
 | \`drain(limit = 1000000)\` | 在当前线程排空任务，返回执行数 |
 
-### 56.7 错误上报
+### 56.7 错误交付
 
 | 接口 | 说明 |
 |------|------|
-| \`set_error_sink(error_sink, void* user)\` | 安装上报出口；传 \`nullptr\` 恢复默认输出 |
-| \`reporter()\` | \`error_reporter\`：\`reported_\` / \`suppressed_\` / \`sink_faults_\` |
-| \`last_error()\` | 最近一次失败：\`code_\` / \`severity_\` / \`site_\` |
+| \`set_error_sink(error_sink, void* user)\` | 同步失败出口，签名 \`void(const operating_message&, void*)\`；传 \`nullptr\` 关闭 |
+| \`set_completion_error(fn, void* user)\` | 异步失败出口，签名 \`void(operating_message, void*)\`，每个 faulted 激活恰好一次 |
+| \`configure(config)\` | 配置失败写调用方错误对象 |
+| \`submit(job*, error, preferred)\` / \`try_submit(job*, error, preferred)\` | 提交失败写 \`queue_full\` / \`shutting_down\` / \`null_pointer\` |
 
-\`error_report\`：\`severity_\` / \`code_\` / \`site_\` / \`sequence_\` / \`task_\` / \`role_\` / \`worker_\` / \`message_\`。\`message_\` 只在回调期间有效。
+成功与正常取消不触发任何回调；库不保存最近错误副本，需要历史由调用方容器记录。
 
 \`\`\`cpp
-mgr.set_error_sink(+[](const thread::error_report& report, void* user) noexcept
+mgr.set_error_sink(+[](const operating_message& report, void* user) noexcept
+{
+    auto* out = static_cast<queue*>(user);
+    (void)out->try_push(report);
+}, &out);
+
+mgr.set_completion_error(+[](operating_message report, void* user) noexcept
 {
     auto* out = static_cast<queue*>(user);
     (void)out->try_push(report);
@@ -812,7 +834,7 @@ mgr.set_error_sink(+[](const thread::error_report& report, void* user) noexcept
 
 \`manager_config\` 增加字段：\`task_capacity\`（\`0\` 关闭任务图）、\`roles\`、\`role_count\`、\`task_local_capacity\`、\`task_command_capacity\`、\`task_inject_capacity\`、\`task_dependency_capacity\`。
 
-\`manager\` 转发全部任务图接口：\`declare\` / \`declare_all\` / \`activate\` / \`deactivate\` / \`migrate\` / \`pin\` / \`set_stealable\` / \`set_order_mode\` / \`set_priority\` / \`reorder\` / \`reparent\` / \`disable\` / \`enable\` / \`cancel\` / \`clear_cancel\` / \`cancelled\` / \`set_deadline\` / \`view\` / \`state_of\` / \`attach_thread\` / \`detach_thread\` / \`pump_role\` / \`begin_frame\` / \`end_frame\` / \`frame_of\` / \`set_error_sink\` / \`last_error\` / \`task_stats\` / \`tasks\`。
+\`manager\` 转发全部任务图接口：\`declare\` / \`declare_all\` / \`activate\` / \`deactivate\` / \`migrate\` / \`pin\` / \`set_stealable\` / \`set_order_mode\` / \`set_priority\` / \`reorder\` / \`reparent\` / \`disable\` / \`enable\` / \`cancel\` / \`clear_cancel\` / \`cancelled\` / \`set_deadline\` / \`view\` / \`state_of\` / \`attach_thread\` / \`detach_thread\` / \`pump_role\` / \`begin_frame\` / \`end_frame\` / \`frame_of\` / \`set_error_sink\` / \`set_completion_error\` / \`task_stats\` / \`tasks\`。
 
 ### 56.10 示例
 
@@ -840,8 +862,10 @@ int main()
     config.role_count = 3;
 
     thread::manager mgr;
+    operating_message error;
     if (!mgr.configure(config))
     {
+        std::fprintf(stderr, "configure failed: %u\n", error.code());
         return 1;
     }
     if (!mgr.attach_thread(thread::role::renderer, "render-main"))
@@ -898,30 +922,30 @@ thread::task<void> frame_flow(thread::task_context& ctx)
 
 | 接口 | 返回 | 说明 |
 |------|------|------|
-| \`switch_to(role)\` | \`errc\` | 下一次在目标角色恢复；硬绑定任务返回 \`affinity_violation\` 且继续当前线程 |
-| \`next_frame(role)\` | \`errc\` | 等待该角色下一个 \`end_frame\` |
-| \`frame_sync(a, b)\` | \`errc\` | 等待两个角色帧纪元都前进（角色编号需小于 32） |
-| \`join(id)\` | \`errc\` | 激活并等待子任务 |
-| \`when_all(ids, errs)\` | \`errc\` | 等待全部子任务，错误写入调用方数组 |
+| \`switch_to(role)\` | 错误码 | 下一次在目标角色恢复；硬绑定任务返回 \`om_err_invalid_argument\` 且继续当前线程 |
+| \`next_frame(role)\` | 错误码 | 等待该角色下一个 \`end_frame\` |
+| \`frame_sync(a, b)\` | 错误码 | 等待两个角色帧纪元都前进（角色编号需小于 32） |
+| \`join(id)\` | 错误码 | 激活并等待子任务 |
+| \`when_all(ids, errs)\` | 错误码 | 等待全部子任务，错误码写入调用方数组 |
 | \`when_any(ids)\` | \`task_id\` | 返回第一个完成的子任务编号 |
-| \`parallel_for(begin, end, body)\` | \`errc\` | 按工作项分片并行，父任务挂起等待 |
-| \`sleep_for(duration)\` / \`sleep_until(time_point)\` | \`errc\` | 定时等待，到期后恢复 |
+| \`parallel_for(begin, end, body)\` | 错误码 | 按工作项分片并行，父任务挂起等待 |
+| \`sleep_for(duration)\` / \`sleep_until(time_point)\` | 错误码 | 定时等待，到期后恢复 |
 | \`co_yield_now()\` | — | 让出当前时间片并重新入队 |
 
-等待原语只能在任务体内使用；在任务体外调用返回 \`invariant_broken\`。
+等待原语只能在任务体内使用；在任务体外调用返回 \`om_err_not_running\`。
 
 ### 56.12 类型化结果 task_result
 
 | 成员 | 说明 |
 |------|------|
-| \`error_\` | \`errc\`，\`ok\` 表示成功 |
-| \`ok()\` | \`error_ == errc::ok\` |
+| \`error_\` | \`uint32_t\` 错误码，0 表示成功 |
+| \`ok()\` | \`error_ == 0\` |
 | \`has_value()\` | 是否持有值 |
 | \`value()\` | 取值引用 |
 | \`take()\` | 移动取值并清空 |
-| \`set(value)\` / \`set_error(errc)\` | 写入值或错误 |
+| \`set(value)\` / \`set_error(code)\` | 写入值或错误码 |
 
-\`co_await task<T>\` 返回 \`task_result<T>\`；\`co_await task<void>\` 返回 \`task_result<void>\`。\`join\` 只回传 \`errc\`。
+\`co_await task<T>\` 返回 \`task_result<T>\`；\`co_await task<void>\` 返回 \`task_result<void>\`。\`join\` 只回传错误码。
 
 \`\`\`cpp
 thread::task<int> compute(thread::task_context&) { co_return 42; }
@@ -983,9 +1007,11 @@ thread::task<void> use(thread::task_context&)
 | \`ctx.heartbeat()\` | 上报心跳 |
 | \`ctx.budget_exceeded()\` | 本次激活是否超过时间预算 |
 | \`set_budget(id, ns)\` / \`budget_of(id)\` | 设置 / 查询任务时间预算 |
-| \`ctx.fail()\` | 报告不可恢复错误，本次激活置 \`faulted\` |
+| \`ctx.fail()\` | 报告不可恢复错误，本次激活置 \`faulted\`，默认码 \`thread_task_body_faulted\` |
+| \`ctx.fail(code, site = current())\` | 带错误码与站点上报；异步回调按该码交付 |
 | \`watchdog_stats()\` | \`deadline_misses_\` / \`hung_tasks_\` / \`max_wait_ns_\` 等 |
 | \`watchdog_scan(now_ns)\` | 手动扫描一次 |
+| \`set_completion_error(fn, user)\` | 异步失败回调：每个 faulted 激活调用恰好一次，成功与取消不调用 |
 
 任务需在安全点轮询 \`ctx.cancelled()\`。取消作用域会同时撤销该任务在途的 IO 请求，挂起中的 \`read_some/write_all\` 以 \`cancelled\` 返回。
 
@@ -1027,7 +1053,7 @@ thread::task<void> read_flow(thread::task_context&)
 |------|------|
 | \`manager_config::blocking_threads\` | 阻塞线程数；\`0\` 关闭 |
 | \`manager_config::blocking_capacity\` | 队列容量 |
-| \`blocking_call(domain, fn, arg)\` | \`co_await\` 返回 \`errc\` |
+| \`blocking_call(domain, fn, arg)\` | \`co_await\` 返回错误码 |
 | \`blocking_domain::queue_depth()\` | 队列深度 |
 | \`blocking_domain::completed_\` / \`rejected_\` | 计数 |
 
@@ -1194,7 +1220,7 @@ app.every_frame("io.pipeline", pipeline);
 |------|------|
 | \`state_of(handle)\` / \`state_of(task_id)\` | 任务状态 |
 | \`stats()\` | \`task_metrics\` 计数快照 |
-| \`last_error()\` | 最近一次失败：\`code_\` / \`severity_\` / \`site_\` |
+| \`config_error()\` | 构造期配置失败的错误对象，\`valid()\` 为 \`false\` 时读取 |
 | \`phase()\` | 关闭阶段 |
 | \`frame_index()\` | 当前帧号 |
 | \`main_role()\` | 默认角色 |

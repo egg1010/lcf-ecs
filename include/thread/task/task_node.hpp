@@ -8,7 +8,7 @@
 #include <cstring>
 #include <new>
 
-#include "thread/base/error.hpp"
+#include "part/operating_message.hpp"
 #include "thread/base/platform.hpp"
 #include "thread/task/task_context.hpp"
 #include "thread/base/task_identity.hpp"
@@ -168,10 +168,18 @@ inline bool task_context::budget_exceeded() const noexcept
 
 inline void task_context::fail() noexcept
 {
-    if (node_ != nullptr)
+    fail(om_err_task_body_faulted.code, std::source_location{});
+}
+
+inline void task_context::fail(std::uint32_t code, std::source_location site) noexcept
+{
+    if (node_ == nullptr)
     {
-        node_->flags_.fetch_or(flag_body_failed, std::memory_order_acq_rel);
+        return;
     }
+    node_->flags_.fetch_or(flag_body_failed, std::memory_order_acq_rel);
+    fail_code_ = code == 0 ? om_err_task_body_faulted.code : code;
+    fail_site_ = site;
 }
 
 inline task_id current_task() noexcept

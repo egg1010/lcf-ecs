@@ -202,7 +202,7 @@ window.DOCS_DATA['single_class_set'] = {
 | \`get_type_id_value()\` | 获取类型 ID 值 |
 | \`get_typed_pool_ptr<T>()\` | 获取类型化组件池指针（带 type_id 检查） |
 | \`get_typed_pool_ptr<T>() const\` | const 版本 |
-| \`add/remove\` 系列接口返回值 | 返回 \`operating_message\`（值类型） |
+| \`add/remove\` 系列接口返回值 | \`operating_message\`，失败时带错误码与级别 |
 | \`get_entity_indices()\` | 获取实体索引数组（dense 数组） |
 | \`get_entity_indices() const\` | const 版本 |
 | \`get_entity_versions()\` | 获取实体版本号数组 |
@@ -256,6 +256,8 @@ window.DOCS_DATA['manager'] = {
 ECS 核心管理类，管理实体和所有组件集合。
 
 > 注：\`manager\` 可移动，禁止拷贝。
+>
+> 本章示例中的 \`error\` 均为同一作用域内复用的 \`operating_message\` 对象：\`operating_message error;\`。失败时库写码、级别与站点，成功时不读写该对象。
 
 ### 预分配接口
 
@@ -383,7 +385,7 @@ mgr.preallocate_component_signals(4096);
 | \`get_single_class_set<T>() const\` | const 版本 |
 | \`get_component_container<T>()\` | 获取类型化组件池指针 |
 | \`has_component<T>()\` | 查询组件类型是否已在管理器中注册（存在组件集合，不关心是否已有实例） |
-| \`add/add_batch/hard_remove/soft_remove\` | 返回 \`operating_message\`（值类型） |
+| \`add/add_batch/hard_remove/soft_remove\` | 返回 \`operating_message\`，成功时该对象为空 |
 | \`get_component_meta(int type_id)\` | 获取组件元数据（含组件大小） |
 | \`get_single_class_set_by_id(int type_id)\` | 通过 type_id 获取组件集合（运行时视图用） |
 | \`get_entity_manager()\` | 获取 \`entity_manager&\` 引用（暴露掩码 / 状态 / 标志接口） |
@@ -574,7 +576,7 @@ mgr.soft_remove_def(e2, "VelocityDef");      // 按名软删除
 
 // 批量查询组件
 class_pool<Position*> results;
-results.reserve_exact(entities.size());
+results.increase_capacity(entities.size());
 mgr.get_ptr_batch<Position>(entities.data(), results.data(), entities.size());
 
 // 预取组件指针

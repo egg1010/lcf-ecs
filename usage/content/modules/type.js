@@ -158,9 +158,9 @@ if (p) {
 \`\`\`cpp
 
 dense<void_any> bag;
-bag.push_back(42);
-bag.push_back(std::string("item"));
-bag.push_back(3.14);
+bag.emplace_back(42);
+bag.emplace_back(std::string("item"));
+bag.emplace_back(3.14);
 
 // 遍历并按类型取值
 for (size_t i = 0; i < bag.size(); ++i) {

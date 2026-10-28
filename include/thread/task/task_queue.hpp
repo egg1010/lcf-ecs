@@ -7,7 +7,7 @@
 #include <type_traits>
 
 #include "part/dense.hpp"
-#include "thread/base/error.hpp"
+#include "part/operating_message.hpp"
 #include "thread/base/task_identity.hpp"
 #include "thread/task/task_table.hpp"
 #include "thread/task/task_node.hpp"
@@ -350,7 +350,7 @@ struct ready_heap
     bool create(std::size_t capacity, task_table& table) noexcept
     {
         table_ = &table;
-        items_.reserve_exact(capacity);
+        items_.increase_capacity(capacity);
         return true;
     }
 
@@ -377,7 +377,7 @@ struct ready_heap
 
     bool push(const heap_entry& entry) noexcept
     {
-        items_.push_back(entry);
+        items_.emplace_back(entry);
         const std::size_t position = items_.size() - 1;
         set_slot(position, entry.index_);
         sift_up(position);

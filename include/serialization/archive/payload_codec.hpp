@@ -1,27 +1,334 @@
-// payload_codec.hpp - 组件载荷编解码 (反射字段 / 用户 JSON / 原始字节) + 类型化加载
 #pragma once
 
-#include "part/codec/archive_codec.hpp"
-#include "part/codec/codec_json.hpp"
-#include "part/type/type_id.hpp"
-#include "part/dense.hpp"
-#include "part/safety.hpp"
-#include "ecs/component.hpp"
-#include "reflection/core/query.hpp"
-#include "reflection/base/meta.hpp"
-#include "serialization/base/model.hpp"
-#include "serialization/base/stats.hpp"
-#include "serialization/codec/type_registry.hpp"
-#include "serialization/codec/field_codec.hpp"
-#include "serialization/codec/entity_source.hpp"
-#include "serialization/base/archive_filter.hpp"
-#include "serialization/base/migration.hpp"
+// payload_codec.hpp - 组件载荷编解码 / 对象与数组归档
+// 命名空间: serialize
+
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
+
+#include "part/codec/archive_codec.hpp"
+#include "part/codec/codec_json.hpp"
+#include "part/codec/codec_registry.hpp"
+#include "part/dense.hpp"
+#include "part/operating_message.hpp"
+#include "part/safety.hpp"
+#include "part/type/type_id.hpp"
+#include "ecs/manager.hpp"
+#include "reflection/core/query.hpp"
+#include "serialization/base/entity_identity.hpp"
+#include "serialization/base/model.hpp"
+#include "serialization/codec/field_codec.hpp"
+#include "serialization/codec/type_registry.hpp"
+
+// object_archive.hpp - 与 ECS 解耦的通用对象序列化 (单对象 / 对象数组)
+
+
+namespace serialize {
+
+namespace detail {
+
+// 载荷规则与组件一致: 用户 to_json > 反射字段 > 原始字节
+template<typename T>
+bool write_object_value(archive_writer& w, const T& v) noexcept
+{
+    if constexpr (field_codec::has_json_serialize<T>)
+    {
+        std::string j = v.to_json();
+        w.write_raw(j);
+        return true;
+    }
+    else if constexpr (std::is_trivially_copyable_v<T>)
+    {
+        if (field_codec::is_reflected<T>())
+        {
+            return field_codec::to_archive(w, v);
+        }
+        w.write_bytes(&v, sizeof(T));
+        return true;
+    }
+    else
+    {
+        if (field_codec::is_reflected<T>())
+        {
+            return field_codec::to_archive(w, v);
+        }
+        w.write_bytes(nullptr, 0);
+        return true;
+    }
+}
+
+template<typename T>
+bool read_object_value(archive_reader& r, T& v) noexcept
+{
+    if constexpr (field_codec::has_json_deserialize<T>)
+    {
+        v.from_json(r.read_bytes_view(0));
+        return !r.has_error();
+    }
+    else if constexpr (std::is_trivially_copyable_v<T>)
+    {
+        if (field_codec::is_reflected<T>())
+        {
+            return field_codec::from_archive(r, v);
+        }
+        const std::string_view bytes = r.read_bytes_view(sizeof(T));
+        if (bytes.size() != sizeof(T))
+        {
+            return false;
+        }
+        std::memcpy(&v, bytes.data(), sizeof(T));
+        return true;
+    }
+    else
+    {
+        if (field_codec::is_reflected<T>())
+        {
+            return field_codec::from_archive(r, v);
+        }
+        r.skip_value();
+        return false;
+    }
+}
+
+} // namespace detail
+
+class object_archive
+{
+    template<typename T>
+    operating_message read_body(archive_reader& r, dense<T>& out) noexcept
+    {
+        operating_message error;
+        if (!r.enter_object())
+        {
+            if (!r.has_error())
+            {
+                return error;
+            }
+            return r.last_error();
+        }
+
+        r.next_key();
+        const uint32_t fv = r.read_u32();
+        if (fv > format_version)
+        {
+            error.write_failure(om_err_version_mismatch.code, msg_level::warn, msg::here());
+            return error;
+        }
+
+        r.next_key();
+        if (!r.enter_array())
+        {
+            error.write_failure(om_err_decode_failed.code, msg_level::warn, msg::here());
+            return error;
+        }
+        while (r.next_element())
+        {
+            if (out.size() >= limits.max_array_elements)
+            {
+                error.write_failure(om_err_capacity_exceeded.code, msg_level::warn, msg::here());
+                return error;
+            }
+            T v{};
+            if (!detail::read_object_value<T>(r, v))
+            {
+                error.write_failure(om_err_decode_failed.code, msg_level::warn, msg::here());
+                return error;
+            }
+            r.end_element();
+            out.emplace_back(std::move(v));
+        }
+        r.leave_array();
+        r.leave_object();
+        return error;
+    }
+
+    [[nodiscard]] static bool read_all(const std::string& path, std::string& content,
+                                       size_t max_file_size) noexcept
+    {
+        std::ifstream f(path, std::ios::binary | std::ios::ate);
+        if (!f)
+        {
+            return false;
+        }
+        const std::streamsize sz = f.tellg();
+        if (sz < 0 || static_cast<size_t>(sz) > max_file_size)
+        {
+            return false;
+        }
+        f.seekg(0, std::ios::beg);
+        content.resize(static_cast<size_t>(sz));
+        f.read(content.data(), sz);
+        return true;
+    }
+
+public:
+    codec_bridge bridge;
+    safety_limits limits;
+    uint32_t format_version = 1;
+
+    template<typename T>
+    operating_message save_array(std::string& out, archive_format fmt,
+                                 const T* items, size_t count) noexcept
+    {
+        operating_message error;
+        const archive_codec* codec = codec_bridge::pick(fmt);
+        if (codec == nullptr)
+        {
+            error.write_failure(om_err_not_found.code, msg_level::warn, msg::here());
+            return error;
+        }
+        archive_writer* w = codec->create_writer();
+        if (w == nullptr)
+        {
+            error.write_failure(om_err_capacity_exceeded.code, msg_level::warn, msg::here());
+            return error;
+        }
+        w->begin_object();
+        w->key("v"); w->write_u32(format_version);
+        w->key("items"); w->begin_array(count);
+        bool ok = true;
+        for (size_t i = 0; i < count; ++i)
+        {
+            if (!detail::write_object_value<T>(*w, items[i]))
+            {
+                ok = false;
+            }
+        }
+        w->end_array();
+        w->end_object();
+
+        out = w->take();
+        codec->destroy_writer(w);
+        if (!ok)
+        {
+            out.clear();
+            error.write_failure(om_err_unsupported_operation.code, msg_level::warn, msg::here());
+            return error;
+        }
+        bridge.wrap_save(out);
+        return error;
+    }
+
+    template<typename T>
+    operating_message load_array(std::string_view data, dense<T>& out) noexcept
+    {
+        operating_message error;
+        out.clear();
+        std::string content(data);
+        error = bridge.unwrap_load(content);
+        if (!error)
+        {
+            return error;
+        }
+        const archive_codec* codec = detect_codec(content);
+        if (codec == nullptr)
+        {
+            error.write_failure(om_err_decode_failed.code, msg_level::warn, msg::here());
+            return error;
+        }
+        archive_reader* r = codec->create_reader(content);
+        if (r == nullptr || r->has_error())
+        {
+            if (r != nullptr)
+            {
+                codec->destroy_reader(r);
+            }
+            error.write_failure(om_err_checksum_failed.code, msg_level::warn, msg::here());
+            return error;
+        }
+        operating_message body_error = read_body<T>(*r, out);
+        codec->destroy_reader(r);
+        return body_error;
+    }
+
+    template<typename T>
+    operating_message save_object(std::string& out, archive_format fmt, const T& obj) noexcept
+    {
+        return save_array(out, fmt, &obj, 1);
+    }
+
+    template<typename T>
+    operating_message load_object(std::string_view data, T& obj) noexcept
+    {
+        dense<T> items;
+        operating_message error = load_array(data, items);
+        if (!error)
+        {
+            return error;
+        }
+        if (items.size() != 1)
+        {
+            error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
+            return error;
+        }
+        obj = std::move(items[0]);
+        return error;
+    }
+
+    template<typename T>
+    operating_message save_array_to_file(const std::string& path, archive_format fmt,
+                                         const T* items, size_t count) noexcept
+    {
+        std::string data;
+        operating_message error = save_array(data, fmt, items, count);
+        if (!error)
+        {
+            return error;
+        }
+        std::ofstream f(path, std::ios::binary | std::ios::trunc);
+        if (!f)
+        {
+            error.write_failure(om_err_io_failed.code, msg_level::warn, msg::here());
+            return error;
+        }
+        f.write(data.data(), static_cast<std::streamsize>(data.size()));
+        return error;
+    }
+
+    template<typename T>
+    operating_message load_array_from_file(const std::string& path, dense<T>& out) noexcept
+    {
+        operating_message error;
+        std::string content;
+        if (!read_all(path, content, limits.max_file_size))
+        {
+            error.write_failure(om_err_io_failed.code, msg_level::warn, msg::here());
+            return error;
+        }
+        return load_array(content, out);
+    }
+
+    template<typename T>
+    operating_message save_object_to_file(const std::string& path, archive_format fmt,
+                                          const T& obj) noexcept
+    {
+        return save_array_to_file(path, fmt, &obj, 1);
+    }
+
+    template<typename T>
+    operating_message load_object_from_file(const std::string& path, T& obj) noexcept
+    {
+        operating_message error;
+        std::string content;
+        if (!read_all(path, content, limits.max_file_size))
+        {
+            error.write_failure(om_err_io_failed.code, msg_level::warn, msg::here());
+            return error;
+        }
+        return load_object(content, obj);
+    }
+};
+
+} // namespace serialize
+
+// payload_codec.hpp - 组件载荷编解码 (反射字段 / 用户 JSON / 原始字节) + 类型化加载
+
 
 namespace serialize {
 
@@ -124,7 +431,8 @@ bool construct_component(load_context& ctx, ecs::entity e, std::string_view data
         T comp{};
         comp.from_json(data_str);
         remap_component_refs<T>(comp, *ctx.remap);
-        ctx.mgr->add<T>(e, std::move(comp));
+        operating_message error;
+        (void)ctx.mgr->add_impl<T>(e, std::move(comp), error);
         return true;
     }
     else if constexpr (std::is_trivially_copyable_v<T>)
@@ -139,7 +447,8 @@ bool construct_component(load_context& ctx, ecs::entity e, std::string_view data
                 return false;
             }
             remap_component_refs<T>(comp, *ctx.remap);
-            ctx.mgr->add<T>(e, std::move(comp));
+            operating_message error;
+        (void)ctx.mgr->add_impl<T>(e, std::move(comp), error);
             return true;
         }
         else
@@ -156,7 +465,8 @@ bool construct_component(load_context& ctx, ecs::entity e, std::string_view data
             T comp{};
             std::memcpy(&comp, decoded.data(), sizeof(T));
             remap_component_refs<T>(comp, *ctx.remap);
-            ctx.mgr->add<T>(e, std::move(comp));
+            operating_message error;
+        (void)ctx.mgr->add_impl<T>(e, std::move(comp), error);
             return true;
         }
     }
@@ -172,7 +482,8 @@ bool construct_component(load_context& ctx, ecs::entity e, std::string_view data
                 return false;
             }
             remap_component_refs<T>(comp, *ctx.remap);
-            ctx.mgr->add<T>(e, std::move(comp));
+            operating_message error;
+        (void)ctx.mgr->add_impl<T>(e, std::move(comp), error);
             return true;
         }
         return false;
@@ -183,26 +494,17 @@ template<typename T>
 bool load_typed_component(archive_reader& r, load_context& ctx, ecs::entity e, int tid,
                           uint32_t saved_ver, uint32_t current_ver) noexcept
 {
+    (void)tid;
+    (void)saved_ver;
+    (void)current_ver;
     T comp{};
     if (!field_codec::from_archive(r, comp))
     {
         return false;
     }
-    if (saved_ver != 0 && saved_ver < current_ver)
-    {
-        json_archive_writer jw;
-        field_codec::to_archive(jw, comp);
-        std::string migrated = migrate_component_string(tid, saved_ver, current_ver, jw.take());
-        T clone{};
-        json_archive_reader jr(migrated);
-        field_codec::from_archive(jr, clone);
-        if (!jr.has_error())
-        {
-            comp = std::move(clone);
-        }
-    }
     remap_component_refs<T>(comp, *ctx.remap);
-    ctx.mgr->add<T>(e, std::move(comp));
+    operating_message error;
+    (void)ctx.mgr->add_impl<T>(e, std::move(comp), error);
     return true;
 }
 
@@ -251,10 +553,6 @@ bool load_one_type(load_context& ctx, archive_reader& r, uint32_t saved_ver) noe
             std::string data_str(raw);
             if (!data_str.empty() && data_str != "null")
             {
-                if (saved_ver != 0 && saved_ver < current_ver)
-                {
-                    data_str = migrate_component_string(tid, saved_ver, current_ver, data_str);
-                }
                 if (!construct_component<T>(ctx, e, data_str))
                 {
                     if (!ctx.skip_errors())
@@ -311,7 +609,8 @@ bool load_one_type(load_context& ctx, archive_reader& r, uint32_t saved_ver) noe
                     T comp{};
                     std::memcpy(&comp, bytes.data(), sizeof(T));
                     remap_component_refs<T>(comp, remap);
-                    ctx.mgr->add<T>(e, std::move(comp));
+                    operating_message error;
+        (void)ctx.mgr->add_impl<T>(e, std::move(comp), error);
                     ++comp_count;
                 }
             }
@@ -348,7 +647,7 @@ bool load_one_type(load_context& ctx, archive_reader& r, uint32_t saved_ver) noe
 
     if (ctx.stats != nullptr)
     {
-        ctx.stats->per_type.push_back({std::string(get_type_name<T>()), comp_count, 0});
+        ctx.stats->per_type.emplace_back(serialize_stats::type_stats{std::string(get_type_name<T>()), comp_count, 0});
     }
     return true;
 }
@@ -449,7 +748,7 @@ inline bool write_components(archive_writer& w, ecs::manager& mgr,
             });
         }
         w.end_array();
-        stats.per_type.push_back({std::string(entry.name), count, 0});
+        stats.per_type.emplace_back(serialize_stats::type_stats{std::string(entry.name), count, 0});
     });
 
     entity_source::for_each_def_type([&](int tid) {
@@ -476,7 +775,7 @@ inline bool write_components(archive_writer& w, ecs::manager& mgr,
             });
         }
         w.end_array();
-        stats.per_type.push_back({std::string(nm), count, 0});
+        stats.per_type.emplace_back(serialize_stats::type_stats{std::string(nm), count, 0});
     });
     return ok;
 }
@@ -521,7 +820,8 @@ inline bool load_def_block(archive_reader& r, ecs::manager& mgr, int tid,
         {
             continue;
         }
-        (void)mgr.add_def(e, tid, bytes.data());
+        operating_message error;
+        (void)mgr.add_def_impl(e, tid, bytes.data(), error);
     }
     r.leave_array();
     return true;
@@ -536,3 +836,4 @@ void register_components() noexcept
 }
 
 } // namespace serialize
+

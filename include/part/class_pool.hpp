@@ -23,11 +23,6 @@
 
 // 跨平台预取/属性宏: 集中定义于 force_inline.hpp (PREFETCH_R/PREFETCH_NTA/NOINLINE/FORCE_INLINE 等)
 
-// 前置声明: pool_strided_span 定义于本文件末尾的视图扩展段
-// 用于 strided_span_view 成员函数返回值声明
-template <typename T>
-struct pool_strided_span;
-
 // 清除最低设置位 (BMI1 BLSR 指令, 不可用时回退到标量)
 // clang (MSVC ABI) 定义 _MSC_VER 但无 -mbmi 时 intrinsic 需 target 特性, 排除
 [[nodiscard]] static inline uint64_t clear_lowest_bit(uint64_t x) noexcept
@@ -208,6 +203,8 @@ private:
 	void destroy_dense_range(size_t first, size_t last) noexcept;
 	void destroy_sparse_range(size_t first, size_t last) noexcept;
 	void destroy_all() noexcept;
+	template <bool Move>
+	void append_bulk_impl(const T* src, size_t count) noexcept;
 	void uninitialized_move_dense(T* src_first, T* src_last, T* dst) noexcept;
 
 	template <bool MoveAndDestroy>
@@ -451,26 +448,23 @@ public:
 
 	template <typename... Args>
 	void emplace_back(Args&&... args) noexcept;
-	void push_back(const T& value) noexcept;
-	void push_back(T&& value) noexcept;
-	void push_back_unchecked(const T& value) noexcept;
-	void push_back_unchecked(T&& value) noexcept;
 	template <typename... Args>
 	void emplace_back_unchecked(Args&&... args) noexcept;
-	template <typename... Args>
-	void emplace_back_dense_unchecked(Args&&... args) noexcept;
-	void append_n(size_t n, const T& value) noexcept;
 	void clear() noexcept;
 
-	// 下标访问 (等价 operator[], 无边界检查)
-	[[nodiscard]] constexpr T& get(size_t index) noexcept
+	// 越界或空洞返回 nullptr, 判断交给调用方
+	[[nodiscard]] constexpr T* get(size_t index) noexcept
 	{
-		return data_ptr_[index];
+		if (index >= index_) [[unlikely]] { return nullptr; }
+		if (is_dense_) [[likely]] { return data_ptr_ + index; }
+		return bitmap_test(sparse_bits_, index) ? data_ptr_ + index : nullptr;
 	}
 
-	[[nodiscard]] constexpr const T& get(size_t index) const noexcept
+	[[nodiscard]] constexpr const T* get(size_t index) const noexcept
 	{
-		return data_ptr_[index];
+		if (index >= index_) [[unlikely]] { return nullptr; }
+		if (is_dense_) [[likely]] { return data_ptr_ + index; }
+		return bitmap_test(sparse_bits_, index) ? data_ptr_ + index : nullptr;
 	}
 
 	// 越界保护访问: index 越界时改访问 error_index, error_index 也越界时回落到 0
@@ -493,7 +487,6 @@ public:
 	}
 
 	[[nodiscard]] constexpr size_type capacity() const noexcept { return maximum_quantity_; }
-	[[nodiscard]] constexpr size_type sparse_capacity() const noexcept { return maximum_quantity_; }
 	[[nodiscard]] constexpr size_type size() const noexcept { return index_; }
 	[[nodiscard]] constexpr bool empty() const noexcept { return index_ == 0; }
 
@@ -513,7 +506,6 @@ public:
 
 	void increase_capacity(size_t new_capacity) noexcept;
 	void resize_fill(size_t new_capacity, const T& value) noexcept;
-	void shrink_to_fit() noexcept;
 	void reduce_capacity(size_t new_capacity) noexcept;
 	void reduce_capacity(size_t new_capacity, class_pool<T>& dst) noexcept;
 
@@ -533,14 +525,11 @@ public:
 		return data_ptr_[index_ - 1];
 	}
 	
-	void reserve_exact(size_t new_capacity) noexcept;
-
 	template <typename... Args>
 	iterator emplace(const_iterator pos, Args&&... args) noexcept;
-	iterator insert(const_iterator pos, const T& value) noexcept;
-	iterator insert(const_iterator pos, T&& value) noexcept;
 	iterator erase(const_iterator pos) noexcept;
 	iterator erase(const_iterator first, const_iterator last) noexcept;
+	size_t erase_unordered(size_t index) noexcept;
 	void swap(class_pool& other) noexcept;
 	void pop_back() noexcept;
 
@@ -601,10 +590,7 @@ public:
 
 	template <typename... Args>
 	T& emplace_at(size_t index, Args&&... args) noexcept;
-	template <typename... Args>
-	T& sparse_emplace_at(size_t index, Args&&... args) noexcept;
 	void sparse_erase_at(size_t index) noexcept;
-	void soft_sparse_delete(size_t index) noexcept;
 	void soft_dense_delete(size_t start, size_t end) noexcept;
 
 	[[nodiscard]] constexpr bool is_constructed_at(size_t index) const noexcept {
@@ -621,14 +607,9 @@ public:
 	T& fill_the_hole(Args&&... args) noexcept;
 
 	// 与 fill_the_hole 语义等价, 但返回被填补位置的索引 (填洞或追加)
-	template <typename... Args>
-	size_t fill_the_hole_at(Args&&... args) noexcept;
-
 	// 批量追加接口 (与 dense 对齐)
 	void append_bulk(const T* src, size_t count) noexcept;
 	void append_bulk_move(T* src, size_t count) noexcept;
-	void append_incrementing(size_t count, uint64_t& counter) noexcept;
-
 	template <typename F>
 	void append_generated(size_t count, F&& generator) noexcept;
 
@@ -640,20 +621,14 @@ public:
 	// 视图成员函数: 转发至 container_views.hpp 全局函数 (与 dense 接口对齐)
 
 	template <typename F>
-	void for_each(F&& f) noexcept
+	LCF_FLATTEN void for_each(F&& f) noexcept
 	{
-		for (auto it = begin(); it != end(); ++it)
-		{
-			f(*it);
-		}
+		::for_each(*this, std::forward<F>(f));
 	}
 	template <typename F>
-	void for_each(F&& f) const noexcept
+	LCF_FLATTEN void for_each(F&& f) const noexcept
 	{
-		for (auto it = cbegin(); it != cend(); ++it)
-		{
-			f(*it);
-		}
+		::for_each(*this, std::forward<F>(f));
 	}
 
 	template <typename F> void reverse_for_each(F&& f) noexcept;
@@ -667,12 +642,7 @@ public:
 	[[nodiscard]] std::span<const T> first(size_t n) const noexcept;
 	[[nodiscard]] std::span<T> last(size_t n) noexcept;
 	[[nodiscard]] std::span<const T> last(size_t n) const noexcept;
-	template <size_t N> [[nodiscard]] std::span<T> first_fixed() noexcept;
-	template <size_t N> [[nodiscard]] std::span<const T> first_fixed() const noexcept;
-	template <size_t N> [[nodiscard]] std::span<T> last_fixed() noexcept;
-	template <size_t N> [[nodiscard]] std::span<const T> last_fixed() const noexcept;
-
-	[[nodiscard]] pool_strided_span<T> strided_span_view(size_t start, size_t step, size_t count) noexcept;
+	[[nodiscard]] container_strided_span<class_pool<T>> strided_span_view(size_t start, size_t step, size_t count) noexcept;
 	template <typename F> void strided_for_each(size_t start, size_t step, F&& f) noexcept;
 	template <typename F> void strided_for_each(size_t start, size_t step, F&& f) const noexcept;
 	template <size_t Step, typename F> void strided_for_each(F&& f) noexcept;
@@ -695,7 +665,6 @@ public:
 	[[nodiscard]] T* find_if_not(Pred pred) noexcept;
 	template <typename Pred> requires std::predicate<Pred, const T&>
 	[[nodiscard]] const T* find_if_not(Pred pred) const noexcept;
-	[[nodiscard]] bool contains(const T& value) const noexcept;
 	template <typename Pred> requires std::predicate<Pred, const T&>
 	[[nodiscard]] size_t count_if(Pred pred) const noexcept;
 	template <typename Pred, typename F>
@@ -709,8 +678,6 @@ public:
 
 	template <typename F, typename U = T>
 	[[nodiscard]] U reduce(F&& f, U init) const noexcept;
-	template <typename F, typename U = T>
-	[[nodiscard]] U reduce_pairwise(F&& f, U init) const noexcept;
 	[[nodiscard]] T* min_element() noexcept;
 	[[nodiscard]] const T* min_element() const noexcept;
 	[[nodiscard]] T* max_element() noexcept;
@@ -738,11 +705,6 @@ public:
 	[[nodiscard]] std::span<T> window_span(size_t offset) noexcept;
 	template <size_t N> requires (N > 0)
 	[[nodiscard]] std::span<const T> window_span(size_t offset) const noexcept;
-	template <size_t N> requires (N > 0)
-	[[nodiscard]] std::span<T> chunk_span(size_t chunk_idx) noexcept;
-	template <size_t N> requires (N > 0)
-	[[nodiscard]] std::span<const T> chunk_span(size_t chunk_idx) const noexcept;
-
 	template <typename F> requires std::invocable<F, size_t, T&>
 	void for_each_enumerated(F&& f) noexcept;
 	template <typename F> requires std::invocable<F, size_t, const T&>
@@ -776,10 +738,6 @@ public:
 	template <typename U>
 	[[nodiscard]] bool equal(std::span<const U> other) const noexcept;
 
-	[[nodiscard]] T* aligned_data() noexcept;
-	[[nodiscard]] const T* aligned_data() const noexcept;
-	[[nodiscard]] std::span<T> aligned_span() noexcept;
-	[[nodiscard]] std::span<const T> aligned_span() const noexcept;
 	template <typename F> requires std::is_trivially_copyable_v<T> && std::invocable<F, T&>
 	void simd_for_each(F&& f) noexcept;
 	template <typename F> requires std::is_trivially_copyable_v<T> && std::invocable<F, const T&>
@@ -794,10 +752,6 @@ public:
 	void reverse_copy_to(std::span<T> dst) const noexcept;
 
 	// class_pool 独有接口
-	[[nodiscard]] size_t compact_to(T* dst, size_t count) const noexcept;
-	[[nodiscard]] size_t live_count() const noexcept;
-	[[nodiscard]] size_t holes_count() const noexcept;
-
 private:
 	[[nodiscard]] size_t find_first_hole_() noexcept;
 	void recompute_is_dense() noexcept;
@@ -813,93 +767,18 @@ template <typename T>
 void swap(class_pool<T>& a, class_pool<T>& b) noexcept;
 
 #include "class_pool_impl.hpp"
-// 视图扩展: pool_strided_span 与容器视图适配（原 class_pool_views.hpp）
-template <typename T>
-struct pool_strided_span
-{
-	class_pool<T>* pool_{nullptr};
-	size_t start_{0};
-	size_t step_{0};
-	size_t count_{0};
-
-	constexpr pool_strided_span(class_pool<T>* p, size_t s, size_t st, size_t c) noexcept
-		: pool_(p), start_(s), step_(st), count_(c) {}
-
-	[[nodiscard]] constexpr size_t size() const noexcept { return count_; }
-	[[nodiscard]] constexpr bool empty() const noexcept { return count_ == 0; }
-
-	[[nodiscard]] inline T& operator[](size_t i) noexcept
-	{
-		return (*pool_)[start_ + i * step_];
-	}
-
-	template <typename F>
-	LCF_FLATTEN void for_each(F&& f) noexcept
-	{
-		::strided_for_each(*pool_, start_, step_, std::forward<F>(f));
-	}
-
-	template <typename F>
-	LCF_FLATTEN void for_each(F&& f) const noexcept
-	{
-		::strided_for_each(*pool_, start_, step_, std::forward<F>(f));
-	}
-};
-
-template <typename T>
-[[nodiscard]] inline pool_strided_span<T> strided_span_view(
-    class_pool<T>& pool, size_t start, size_t step, size_t count) noexcept
-{
-	// start 越界收敛, step=0 视为空视图, count 收敛到可用槽位数
-	const size_t size = pool.size();
-	const size_t s = start > size ? size : start;
-	const size_t max_cnt = (step > 0) ? (size - s) / step : 0;
-	const size_t cnt = count > max_cnt ? max_cnt : count;
-	return pool_strided_span<T>(&pool, s, step ? step : 1, cnt);
-}
 
 
 template <typename T, typename Pred>
     requires std::predicate<Pred, const T&>
 inline void filter_indices_to(class_pool<T>& pool, class_pool<size_t>& dst, Pred pred) noexcept
 {
-	for (auto it = pool.begin(); it != pool.end(); ++it)
-	{
-		if (pred(*it)) [[likely]]
-		{
-			const size_t idx = static_cast<size_t>(&(*it) - pool.data());
-			dst.push_back(idx);
-		}
-	}
+	::filter_indices_to(static_cast<const class_pool<T>&>(pool), dst, std::forward<Pred>(pred));
 }
 
-
-template <typename T>
-[[nodiscard]] inline size_t compact_to(const class_pool<T>& pool, T* dst, size_t count) noexcept
-{
-	size_t di = 0;
-	const size_t cap = count;
-	for (auto it = pool.cbegin(); it != pool.cend() && di < cap; ++it, ++di)
-	{
-		new (&dst[di]) T(*it);
-	}
-	return di;
-}
 
 // 活跃元素数 (语义等价 pool.count()), class_pool 独有
-template <typename T>
-[[nodiscard]] inline size_t live_count(const class_pool<T>& pool) noexcept
-{
-	return pool.count();
-}
-
 // 空洞数 = 高水位 - 活跃数, class_pool 独有
-template <typename T>
-[[nodiscard]] inline size_t holes_count(const class_pool<T>& pool) noexcept
-{
-	return pool.size() - pool.count();
-}
-
 // 视图成员函数定义: 转发至 container_views.hpp 全局函数
 
 template <typename T>
@@ -956,32 +835,7 @@ inline std::span<const T> class_pool<T>::last(size_t n) const noexcept
 	return ::last(*this, n);
 }
 template <typename T>
-template <size_t N>
-inline std::span<T> class_pool<T>::first_fixed() noexcept
-{
-	return ::first_fixed<N>(*this);
-}
-template <typename T>
-template <size_t N>
-inline std::span<const T> class_pool<T>::first_fixed() const noexcept
-{
-	return ::first_fixed<N>(*this);
-}
-template <typename T>
-template <size_t N>
-inline std::span<T> class_pool<T>::last_fixed() noexcept
-{
-	return ::last_fixed<N>(*this);
-}
-template <typename T>
-template <size_t N>
-inline std::span<const T> class_pool<T>::last_fixed() const noexcept
-{
-	return ::last_fixed<N>(*this);
-}
-
-template <typename T>
-inline pool_strided_span<T> class_pool<T>::strided_span_view(
+inline container_strided_span<class_pool<T>> class_pool<T>::strided_span_view(
     size_t start, size_t step, size_t count) noexcept
 {
 	return ::strided_span_view(*this, start, step, count);
@@ -1065,11 +919,6 @@ inline const T* class_pool<T>::find_if_not(Pred pred) const noexcept
 	return ::find_if_not(*this, pred);
 }
 template <typename T>
-inline bool class_pool<T>::contains(const T& value) const noexcept
-{
-	return ::contains(*this, value);
-}
-template <typename T>
 template <typename Pred> requires std::predicate<Pred, const T&>
 inline size_t class_pool<T>::count_if(Pred pred) const noexcept
 {
@@ -1101,12 +950,6 @@ template <typename F, typename U>
 inline U class_pool<T>::reduce(F&& f, U init) const noexcept
 {
 	return ::reduce(*this, std::forward<F>(f), std::move(init));
-}
-template <typename T>
-template <typename F, typename U>
-inline U class_pool<T>::reduce_pairwise(F&& f, U init) const noexcept
-{
-	return ::reduce_pairwise(*this, std::forward<F>(f), std::move(init));
 }
 template <typename T>
 inline T* class_pool<T>::min_element() noexcept
@@ -1192,19 +1035,6 @@ inline std::span<const T> class_pool<T>::window_span(size_t offset) const noexce
 	return ::window_span<N>(*this, offset);
 }
 template <typename T>
-template <size_t N> requires (N > 0)
-inline std::span<T> class_pool<T>::chunk_span(size_t chunk_idx) noexcept
-{
-	return ::chunk_span<N>(*this, chunk_idx);
-}
-template <typename T>
-template <size_t N> requires (N > 0)
-inline std::span<const T> class_pool<T>::chunk_span(size_t chunk_idx) const noexcept
-{
-	return ::chunk_span<N>(*this, chunk_idx);
-}
-
-template <typename T>
 template <typename F> requires std::invocable<F, size_t, T&>
 inline void class_pool<T>::for_each_enumerated(F&& f) noexcept
 {
@@ -1276,17 +1106,7 @@ template <typename T>
 template <typename U>
 inline bool class_pool<T>::equal(const class_pool<U>& other) const noexcept
 {
-	if (count() != other.count()) [[unlikely]] { return false; }
-	auto ia = cbegin();
-	auto ib = other.cbegin();
-	const auto ea = cend();
-	while (ia != ea)
-	{
-		if (!(*ia == *ib)) [[unlikely]] { return false; }
-		++ia;
-		++ib;
-	}
-	return true;
+	return ::equal(*this, other);
 }
 template <typename T>
 template <typename U>
@@ -1295,26 +1115,6 @@ inline bool class_pool<T>::equal(std::span<const U> other) const noexcept
 	return equal(other.data(), other.size());
 }
 
-template <typename T>
-inline T* class_pool<T>::aligned_data() noexcept
-{
-	return ::aligned_data(*this);
-}
-template <typename T>
-inline const T* class_pool<T>::aligned_data() const noexcept
-{
-	return ::aligned_data(*this);
-}
-template <typename T>
-inline std::span<T> class_pool<T>::aligned_span() noexcept
-{
-	return ::aligned_span(*this);
-}
-template <typename T>
-inline std::span<const T> class_pool<T>::aligned_span() const noexcept
-{
-	return ::aligned_span(*this);
-}
 template <typename T>
 template <typename F> requires std::is_trivially_copyable_v<T> && std::invocable<F, T&>
 inline void class_pool<T>::simd_for_each(F&& f) noexcept
@@ -1365,18 +1165,3 @@ inline void class_pool<T>::reverse_copy_to(std::span<T> dst) const noexcept
 }
 
 // class_pool 独有接口
-template <typename T>
-inline size_t class_pool<T>::compact_to(T* dst, size_t count) const noexcept
-{
-	return ::compact_to(*this, dst, count);
-}
-template <typename T>
-inline size_t class_pool<T>::live_count() const noexcept
-{
-	return ::live_count(*this);
-}
-template <typename T>
-inline size_t class_pool<T>::holes_count() const noexcept
-{
-	return ::holes_count(*this);
-}

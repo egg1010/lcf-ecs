@@ -8,7 +8,7 @@
 #include <thread>
 
 #include "part/dense.hpp"
-#include "thread/base/error.hpp"
+#include "part/operating_message.hpp"
 #include "thread/base/job.hpp"
 #include "thread/execution/lane.hpp"
 #include "thread/queue/mpmc_queue.hpp"
@@ -92,7 +92,6 @@ struct worker
                                                        : config.priority_levels,
                            config.local_capacity))
         {
-            FRAMEWORK_REPORT(error_severity::error, errc::invariant_broken);
             return false;
         }
         steal_scratch_.resize_fill(config.steal_batch == 0 ? 64 : config.steal_batch, nullptr);
@@ -286,7 +285,6 @@ struct worker
                         if (moved != nullptr && !stack_.push(moved))
                         {
                             release_job(moved);
-                            FRAMEWORK_REPORT(error_severity::error, errc::job_slot_exhausted);
                         }
                     }
                     next = slot_from_index(batch[0]);
@@ -582,7 +580,6 @@ struct worker
                     if (!stack_.push(steal_scratch_[i]))
                     {
                         release_job(steal_scratch_[i]);
-                        FRAMEWORK_REPORT(error_severity::error, errc::job_slot_exhausted);
                     }
                 }
                 return steal_scratch_[0];

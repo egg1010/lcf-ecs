@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <new>
 
-#include "thread/base/error.hpp"
+#include "part/operating_message.hpp"
 #include "thread/base/job.hpp"
 #include "thread/queue/mpmc_queue.hpp"
 #include "thread/execution/runtime.hpp"
@@ -96,7 +96,6 @@ struct lane
         rt_ = runtime != nullptr ? runtime : default_runtime();
         if (!queue_.create(config.capacity == 0 ? lane_default_capacity : config.capacity))
         {
-            FRAMEWORK_REPORT(error_severity::error, errc::invariant_broken);
             return false;
         }
         owner_.store(lane_owner_none, std::memory_order_relaxed);

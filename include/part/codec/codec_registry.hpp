@@ -27,10 +27,10 @@ class codec_registry
         static protobuf_codec   pb_c;
         static flatbuffer_codec fb_c;
 
-        codecs_.push_back(&json_c);
-        codecs_.push_back(&bin_c);
-        codecs_.push_back(&pb_c);
-        codecs_.push_back(&fb_c);
+        codecs_.emplace_back(&json_c);
+        codecs_.emplace_back(&bin_c);
+        codecs_.emplace_back(&pb_c);
+        codecs_.emplace_back(&fb_c);
     }
 
 public:
@@ -41,7 +41,7 @@ public:
 
     // 注册自定义格式
     void register_codec(const archive_codec* c) noexcept {
-        codecs_.push_back(c);
+        codecs_.emplace_back(c);
     }
 
     // 按 magic 头检测格式, 返回对应 codec (无匹配返回 JSON 作为兜底)

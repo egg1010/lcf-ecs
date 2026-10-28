@@ -4,31 +4,64 @@
 #include <cstring>
 #include <new>
 #include <utility>
+#include "../dense.hpp"
 #include "../force_inline.hpp"
+#include "../operating_message.hpp"
+#include "memory_common.hpp"
 
 namespace memory {
 
-// 线性分配器: 仅 reset/restore 整体回收, 无单个 deallocate
+// 线性分配器: 仅 save_point/restore/reset 整体回收, 无单个释放
 class arena_allocator
 {
 private:
-    uint8_t* cursor_{nullptr};
-    uint8_t* end_{nullptr};
-    uint8_t* base_{nullptr};
-    bool owns_memory_{false};
-    size_t peak_used_{0};
-    size_t allocation_count_{0};
+    struct alloc_record
+    {
+        size_t offset;
+        size_t size;
+    };
 
-    static constexpr size_t DEFAULT_ALIGN = 16;
+    uint8_t* cursor_{ nullptr };
+    uint8_t* end_{ nullptr };
+    uint8_t* base_{ nullptr };
+    bool owns_memory_{ false };
+    dense<alloc_record> allocations_;
+    size_t live_bytes_{ 0 };
+    size_t peak_live_bytes_{ 0 };
+    size_t acquire_count_{ 0 };
+
     static constexpr size_t BASE_ALIGN = 64;
+
+    [[nodiscard]] const alloc_record* find_record(size_t offset) const noexcept
+    {
+        size_t lo = 0;
+        size_t hi = allocations_.size();
+        while (lo < hi)
+        {
+            size_t mid = lo + (hi - lo) / 2;
+            if (allocations_[mid].offset < offset)
+            {
+                lo = mid + 1;
+            }
+            else
+            {
+                hi = mid;
+            }
+        }
+        if (lo >= allocations_.size())
+        {
+            return nullptr;
+        }
+        return allocations_[lo].offset == offset ? &allocations_[lo] : nullptr;
+    }
 
 public:
     constexpr arena_allocator() noexcept = default;
 
     explicit arena_allocator(size_t capacity) noexcept
         : cursor_(static_cast<uint8_t*>(
-              ::operator new(capacity, std::align_val_t{BASE_ALIGN}, std::nothrow)))
-        , end_(cursor_ ? cursor_ + capacity : nullptr)   // M11: 分配失败不对空指针做偏移
+              ::operator new(capacity, std::align_val_t{ BASE_ALIGN }, std::nothrow)))
+        , end_(cursor_ ? cursor_ + capacity : nullptr)
         , base_(cursor_)
         , owns_memory_(true)
     {}
@@ -44,7 +77,7 @@ public:
     {
         if (owns_memory_ && base_) [[likely]]
         {
-            ::operator delete(base_, std::align_val_t{BASE_ALIGN});
+            ::operator delete(base_, std::align_val_t{ BASE_ALIGN });
         }
     }
 
@@ -52,15 +85,8 @@ public:
     arena_allocator& operator=(const arena_allocator&) = delete;
 
     arena_allocator(arena_allocator&& other) noexcept
-        : cursor_(other.cursor_)
-        , end_(other.end_)
-        , base_(other.base_)
-        , owns_memory_(other.owns_memory_)
     {
-        other.cursor_ = nullptr;
-        other.end_ = nullptr;
-        other.base_ = nullptr;
-        other.owns_memory_ = false;
+        swap(other);
     }
 
     arena_allocator& operator=(arena_allocator&& other) noexcept
@@ -69,73 +95,106 @@ public:
         {
             if (owns_memory_ && base_) [[likely]]
             {
-                ::operator delete(base_, std::align_val_t{BASE_ALIGN});
+                ::operator delete(base_, std::align_val_t{ BASE_ALIGN });
             }
-            cursor_ = other.cursor_;
-            end_ = other.end_;
-            base_ = other.base_;
-            owns_memory_ = other.owns_memory_;
-            other.cursor_ = nullptr;
-            other.end_ = nullptr;
-            other.base_ = nullptr;
-            other.owns_memory_ = false;
+            cursor_ = nullptr;
+            end_ = nullptr;
+            base_ = nullptr;
+            owns_memory_ = false;
+            allocations_.clear();
+            live_bytes_ = 0;
+            peak_live_bytes_ = 0;
+            acquire_count_ = 0;
+            swap(other);
         }
         return *this;
     }
 
-    // M11: align 必须为非零 2 的幂, 整数偏移检查后再形成指针, 空 arena 返回 nullptr
-    [[nodiscard]] FORCE_INLINE void* allocate(size_t n, size_t align = DEFAULT_ALIGN) noexcept
+    void swap(arena_allocator& other) noexcept
     {
-        if (align == 0 || (align & (align - 1)) != 0) [[unlikely]]
+        std::swap(cursor_, other.cursor_);
+        std::swap(end_, other.end_);
+        std::swap(base_, other.base_);
+        std::swap(owns_memory_, other.owns_memory_);
+        allocations_.swap(other.allocations_);
+        std::swap(live_bytes_, other.live_bytes_);
+        std::swap(peak_live_bytes_, other.peak_live_bytes_);
+        std::swap(acquire_count_, other.acquire_count_);
+    }
+
+    // === 分配 ===
+    [[nodiscard]] FORCE_INLINE void* acquire(size_t bytes) noexcept
+    {
+        return acquire_aligned(bytes, base_alignment);
+    }
+
+    [[nodiscard]] FORCE_INLINE void* acquire(
+        size_t bytes, operating_message& error,
+        std::source_location site = std::source_location::current()) noexcept
+    {
+        void* p = acquire(bytes);
+        if (!p) [[unlikely]]
+        {
+            error.write_failure(om_err_capacity_exceeded.code, msg_level::error, site);
+        }
+        return p;
+    }
+
+    [[nodiscard]] FORCE_INLINE void* acquire_zeroed(size_t bytes) noexcept
+    {
+        void* p = acquire(bytes);
+        if (p) [[likely]]
+        {
+            std::memset(p, 0, bytes);
+        }
+        return p;
+    }
+
+    [[nodiscard]] void* acquire_aligned(size_t bytes, size_t alignment) noexcept
+    {
+        if (bytes == 0 || alignment == 0) [[unlikely]]
         {
             return nullptr;
+        }
+        if ((alignment & (alignment - 1)) != 0) [[unlikely]]
+        {
+            return nullptr;
+        }
+        if (alignment < base_alignment)
+        {
+            alignment = base_alignment;
         }
         if (!cursor_) [[unlikely]]
         {
             return nullptr;
         }
-        uintptr_t addr = reinterpret_cast<uintptr_t>(cursor_);
-        uintptr_t aligned = (addr + align - 1) & ~(static_cast<uintptr_t>(align) - 1);
-        size_t offset = static_cast<size_t>(aligned - reinterpret_cast<uintptr_t>(base_));
-        size_t capacity = static_cast<size_t>(end_ - base_);
-        if (offset > capacity || n > capacity - offset) [[unlikely]]   // 溢出安全的容量检查
+        const uintptr_t addr = reinterpret_cast<uintptr_t>(cursor_);
+        const uintptr_t aligned = (addr + alignment - 1) & ~(static_cast<uintptr_t>(alignment) - 1);
+        const size_t offset = static_cast<size_t>(aligned - reinterpret_cast<uintptr_t>(base_));
+        const size_t capacity = static_cast<size_t>(end_ - base_);
+        if (offset > capacity || bytes > capacity - offset) [[unlikely]]
         {
             return nullptr;
         }
-        cursor_ = base_ + offset + n;
-        ++allocation_count_;
-        size_t cur_used = static_cast<size_t>(cursor_ - base_);
-        if (cur_used > peak_used_) [[unlikely]]
+        if (bytes > SIZE_MAX - offset) [[unlikely]]
         {
-            peak_used_ = cur_used;
+            return nullptr;
         }
+        allocations_.emplace_back(alloc_record{ offset, bytes });
+        cursor_ = base_ + offset + bytes;
+        live_bytes_ += bytes;
+        if (live_bytes_ > peak_live_bytes_) [[unlikely]]
+        {
+            peak_live_bytes_ = live_bytes_;
+        }
+        ++acquire_count_;
         return base_ + offset;
     }
 
-    [[nodiscard]] FORCE_INLINE void* allocate_zeroed(size_t n, size_t align = DEFAULT_ALIGN) noexcept
-    {
-        void* p = allocate(n, align);
-        if (p) [[likely]]
-        {
-            std::memset(p, 0, n);
-        }
-        return p;
-    }
-
-    template <typename T>
-    [[nodiscard]] FORCE_INLINE T* allocate_array(size_t count, size_t align = alignof(T)) noexcept
-    {
-        if (count > static_cast<size_t>(-1) / sizeof(T)) [[unlikely]]   // M11: 乘法溢出
-        {
-            return nullptr;
-        }
-        return static_cast<T*>(allocate(count * sizeof(T), align));
-    }
-
     template <typename T, typename... Args>
-    [[nodiscard]] FORCE_INLINE T* construct(Args&&... args) noexcept
+    [[nodiscard]] FORCE_INLINE T* create(Args&&... args) noexcept
     {
-        void* ptr = allocate(sizeof(T), alignof(T));
+        void* ptr = acquire_aligned(sizeof(T), alignof(T));
         if (!ptr) [[unlikely]]
         {
             return nullptr;
@@ -144,33 +203,84 @@ public:
     }
 
     template <typename T, typename... Args>
-    [[nodiscard]] FORCE_INLINE T* construct_array(size_t count, Args&&... args) noexcept
+    [[nodiscard]] T* create_array(size_t count, Args&&... args) noexcept
     {
-        T* arr = allocate_array<T>(count);
-        if (!arr) [[unlikely]]
+        if (count == 0 || count > SIZE_MAX / sizeof(T)) [[unlikely]]
         {
             return nullptr;
         }
+        void* memory = acquire_aligned(count * sizeof(T), alignof(T));
+        if (!memory) [[unlikely]]
+        {
+            return nullptr;
+        }
+        T* arr = static_cast<T*>(memory);
         for (size_t i = 0; i < count; ++i)
         {
-            new (arr + i) T(std::forward<Args>(args)...);
+            new (arr + i) T(args...);
         }
         return arr;
     }
 
     template <typename T>
-    FORCE_INLINE void destroy(T* p) noexcept
+    FORCE_INLINE void dispose(T* ptr) noexcept
     {
-        if (p) [[likely]]
+        if (ptr) [[likely]]
         {
-            p->~T();
+            ptr->~T();
         }
     }
 
-    // 无单个 deallocate, 仅 reset/restore 整体回收
-    // deallocate 为 no-op, 仅用于泛型代码统一调用
-    FORCE_INLINE void deallocate(void* /*p*/) noexcept {}
-    FORCE_INLINE void deallocate(void* /*p*/, size_t /*n*/) noexcept {}
+    template <typename T>
+    FORCE_INLINE void dispose_array(T* ptr, size_t count) noexcept
+    {
+        if (ptr)
+        {
+            for (size_t i = count; i > 0; --i)
+            {
+                ptr[i - 1].~T();
+            }
+        }
+    }
+
+    // === 查询 ===
+    [[nodiscard]] bool owns(const void* ptr) const noexcept
+    {
+        if (!ptr || !base_) [[unlikely]]
+        {
+            return false;
+        }
+        const uintptr_t up = reinterpret_cast<uintptr_t>(ptr);
+        const uintptr_t begin = reinterpret_cast<uintptr_t>(base_);
+        if (up < begin) [[unlikely]]
+        {
+            return false;
+        }
+        return find_record(static_cast<size_t>(up - begin)) != nullptr;
+    }
+
+    [[nodiscard]] memory_stats stats() const noexcept
+    {
+        memory_stats s{};
+        s.reserved_bytes = capacity();
+        s.live_bytes = live_bytes_;
+        s.reusable_bytes = remaining();
+        s.peak_live_bytes = peak_live_bytes_;
+        s.acquire_count = acquire_count_;
+        return s;
+    }
+
+    [[nodiscard]] bool empty() const noexcept
+    {
+        return live_bytes_ == 0;
+    }
+
+    // === 池管理 ===
+    void reset_stats() noexcept
+    {
+        acquire_count_ = 0;
+        peak_live_bytes_ = live_bytes_;
+    }
 
     [[nodiscard]] FORCE_INLINE size_t save_point() const noexcept
     {
@@ -184,34 +294,62 @@ public:
         {
             return;
         }
-        uint8_t* target = base_ + point;
-        if (target <= cursor_) [[likely]]
+        const size_t used = static_cast<size_t>(cursor_ - base_);
+        if (point > used) [[unlikely]]
         {
-            cursor_ = target;
+            return;
         }
+        size_t keep = 0;
+        while (keep < allocations_.size() && allocations_[keep].offset < point)
+        {
+            ++keep;
+        }
+        if (keep > 0)
+        {
+            const alloc_record& last_kept = allocations_[keep - 1];
+            if (last_kept.offset > SIZE_MAX - last_kept.size ||
+                last_kept.offset + last_kept.size > point) [[unlikely]]
+            {
+                return;
+            }
+        }
+        while (allocations_.size() > keep)
+        {
+            live_bytes_ -= allocations_[allocations_.size() - 1].size;
+            allocations_.pop_back();
+        }
+        cursor_ = base_ + point;
     }
 
-    // 整体回收, 不调用析构
+    // 整体回收, 不调用析构, 不归还底层内存
     FORCE_INLINE void reset() noexcept
     {
         cursor_ = base_;
+        allocations_.clear();
+        live_bytes_ = 0;
     }
 
-    // 空 arena (默认构造/分配失败) 时容量为 0, 不对空指针做差
-    [[nodiscard]] constexpr size_t used() const noexcept { return cursor_ ? static_cast<size_t>(cursor_ - base_) : 0; }
-    [[nodiscard]] constexpr size_t capacity() const noexcept { return end_ ? static_cast<size_t>(end_ - base_) : 0; }
-    [[nodiscard]] constexpr size_t remaining() const noexcept { return end_ ? static_cast<size_t>(end_ - cursor_) : 0; }
-    [[nodiscard]] constexpr bool empty() const noexcept { return cursor_ == base_; }
-
-    [[nodiscard]] constexpr size_t peak_used() const noexcept { return peak_used_; }
-    [[nodiscard]] constexpr size_t allocation_count() const noexcept { return allocation_count_; }
-
-    [[nodiscard]] bool owns(const void* p) const noexcept
+    // === 池专属查询 ===
+    [[nodiscard]] constexpr size_t used() const noexcept
     {
-        const uint8_t* up = static_cast<const uint8_t*>(p);
-        return up >= base_ && up < end_;
+        return cursor_ ? static_cast<size_t>(cursor_ - base_) : 0;
+    }
+
+    [[nodiscard]] constexpr size_t capacity() const noexcept
+    {
+        return end_ ? static_cast<size_t>(end_ - base_) : 0;
+    }
+
+    [[nodiscard]] constexpr size_t remaining() const noexcept
+    {
+        return end_ ? static_cast<size_t>(end_ - cursor_) : 0;
     }
 };
+
+inline void swap(arena_allocator& a, arena_allocator& b) noexcept
+{
+    a.swap(b);
+}
 
 // RAII 作用域守卫: 构造 save_point, 析构 restore
 class arena_scope
@@ -240,11 +378,11 @@ class double_buffered_arena
 {
 private:
     arena_allocator arenas_[2];
-    int current_{0};
+    int current_{ 0 };
 
 public:
     explicit double_buffered_arena(size_t capacity_per_frame) noexcept
-        : arenas_{arena_allocator(capacity_per_frame), arena_allocator(capacity_per_frame)}
+        : arenas_{ arena_allocator(capacity_per_frame), arena_allocator(capacity_per_frame) }
     {}
 
     ~double_buffered_arena() noexcept = default;

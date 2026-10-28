@@ -25,7 +25,7 @@ struct priority_stack
             return false;
         }
         levels_ = levels;
-        deques_.reserve_exact(levels);
+        deques_.increase_capacity(levels);
         for (std::uint8_t i = 0; i < levels; ++i)
         {
             deques_.emplace_back();

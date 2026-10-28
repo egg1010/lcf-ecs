@@ -550,7 +550,7 @@
             {
                 if (tomb && !set->is_dense_slot_live(i)) [[unlikely]] continue;
                 if (pred_((*pool)[i]))
-                    filtered_.push_back_unchecked(i);
+                    filtered_.emplace_back_unchecked(i);
             }
         }
 
@@ -682,7 +682,7 @@
                 uint32_t b_dense = set_b->sparse_dense_at(eid);
                 if (b_dense != UINT32_MAX)
                 {
-                    filtered_.push_back((static_cast<uint64_t>(i) << 32) | b_dense);
+                    filtered_.emplace_back((static_cast<uint64_t>(i) << 32) | b_dense);
                 }
             }
         }
@@ -814,7 +814,7 @@
                     uint32_t bd = set_b->sparse_dense_at(eid);
                     if (bd != UINT32_MAX) b_dense = bd;
                 }
-                filtered_.push_back((static_cast<uint64_t>(i) << 32) | b_dense);
+                filtered_.emplace_back((static_cast<uint64_t>(i) << 32) | b_dense);
             }
 
             if (set_b)
@@ -833,7 +833,7 @@
                             T* a = set_a->template get_ptr_fast<T>(e);
                             if (a && pred_(*a)) continue;
                         }
-                        filtered_b_.push_back(i);
+                        filtered_b_.emplace_back(i);
                     }
                 }
             }

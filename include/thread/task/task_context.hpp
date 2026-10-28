@@ -3,7 +3,9 @@
 #include <atomic>
 #include <cstdint>
 #include <new>
+#include <source_location>
 
+#include "part/operating_message.hpp"
 #include "thread/base/task_identity.hpp"
 #include "thread/base/tls.hpp"
 
@@ -221,6 +223,8 @@ struct task_context
     task_node* node_{nullptr};
     task_graph* graph_{nullptr};
     context_id context_{};
+    std::uint32_t fail_code_{0};
+    std::source_location fail_site_{};
 
     bool cancelled() const noexcept;
 
@@ -228,6 +232,10 @@ struct task_context
 
     // 任务体报告不可恢复错误：本次激活以 faulted 结束，不影响其他任务
     void fail() noexcept;
+
+    // 带错误码与站点的失败上报；code 为 0 时按 task_body_faulted 处理
+    void fail(std::uint32_t code,
+              std::source_location site = std::source_location::current()) noexcept;
 
     // 帧/时间预算：任务体可主动查询，用于跳帧或降级
     bool budget_exceeded() const noexcept;

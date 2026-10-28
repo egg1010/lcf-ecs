@@ -65,7 +65,7 @@ window.DOCS_DATA['codec'] = {
 | \`create_reader(data)\` | 创建读取器（不复制输入） |
 | \`destroy_writer(w)\` / \`destroy_reader(r)\` | 销毁写入器 / 读取器 |
 | \`matches(data)\` | 数据是否匹配本格式 |
-| \`validate(data)\` | 结构校验，返回 \`operating_message\` |
+| \`validate(data)\` | 结构校验，返回 \`operating_message\`，成功时为空 |
 
 ### 59.5 注册表与内置格式
 

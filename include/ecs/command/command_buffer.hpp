@@ -35,13 +35,15 @@ private:
         // fast_get_ptr 跳过 type_id 检查 (payload 类型在录制时已确定)
         T* p = payload.template fast_get_ptr<T>();
         if (!p) [[unlikely]] return;
-        mgr->template add<T>(e, std::move(*p));
+        operating_message error;
+        (void)mgr->template add_impl<T>(e, std::move(*p), error);
     }
 
     template <typename T>
     static void apply_remove(manager* mgr, entity e, void_any&) noexcept
     {
-        mgr->template soft_remove<T>(e);
+        operating_message error;
+        (void)mgr->template soft_remove_impl<T>(e, error);
     }
 
     static void apply_destroy(manager* mgr, entity e, void_any&) noexcept
@@ -64,7 +66,7 @@ public:
     template <typename T>
     void add_component(entity e, T&& comp) noexcept
     {
-        commands_.push_back(command{
+        commands_.emplace_back(command{
             e,
             void_any(std::forward<T>(comp)),
             &apply_add<std::decay_t<T>>});
@@ -73,7 +75,7 @@ public:
     template <typename T>
     void remove_component(entity e) noexcept
     {
-        commands_.push_back(command{
+        commands_.emplace_back(command{
             e,
             void_any{},
             &apply_remove<T>});
@@ -81,7 +83,7 @@ public:
 
     void destroy_entity(entity e) noexcept
     {
-        commands_.push_back(command{
+        commands_.emplace_back(command{
             e,
             void_any{},
             &apply_destroy});

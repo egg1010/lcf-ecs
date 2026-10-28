@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <thread>
 
-#include "thread/base/error.hpp"
+#include "part/operating_message.hpp"
 #include "thread/task/task_graph.hpp"
 
 namespace thread
@@ -132,7 +132,8 @@ struct blocking_domain
             completed_.fetch_add(1, std::memory_order_relaxed);
             if (graph_ != nullptr && op.task_.valid())
             {
-                (void)graph_->wake_waiting(op.task_);
+                operating_message error;
+                (void)graph_->wake_waiting_impl(op.task_, error);
             }
         }
     }
@@ -143,7 +144,7 @@ struct blocking_awaitable
     blocking_domain* domain_{nullptr};
     void (*run_)(void* arg) noexcept{nullptr};
     void* arg_{nullptr};
-    errc result_{errc::ok};
+    uint32_t result_{0};
 
     bool await_ready() const noexcept
     {
@@ -155,25 +156,26 @@ struct blocking_awaitable
         task_context* ctx = current_task_context();
         if (ctx == nullptr || ctx->cancelled())
         {
-            result_ = errc::cancelled;
+            result_ = om_err_cancelled.code;
             return false;
         }
-        (void)ctx->graph_->prepare_external_wait(ctx->id_);
+        operating_message error;
+        (void)ctx->graph_->prepare_external_wait_impl(ctx->id_, error);
         blocking_op op{run_, arg_, ctx->id_};
         if (!domain_->submit(op))
         {
-            result_ = errc::queue_full;
+            result_ = om_err_queue_full.code;
             return false;
         }
         return true;
     }
 
-    errc await_resume() const noexcept
+    uint32_t await_resume() const noexcept
     {
         const task_context* ctx = current_task_context();
         if (ctx != nullptr && ctx->cancelled())
         {
-            return errc::cancelled;
+            return om_err_cancelled.code;
         }
         return result_;
     }
@@ -183,6 +185,6 @@ inline blocking_awaitable blocking_call(blocking_domain& domain,
                                         void (*run)(void* arg) noexcept,
                                         void* arg = nullptr) noexcept
 {
-    return blocking_awaitable{&domain, run, arg, errc::ok};
+    return blocking_awaitable{&domain, run, arg, 0};
 }
 } // namespace thread

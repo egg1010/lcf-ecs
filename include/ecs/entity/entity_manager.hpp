@@ -145,7 +145,7 @@ public:
         for (size_t i = 0; i < count; ++i)
         {
             uint32_t idx = id_manager_.get_id();
-            preallocated_entities_.push_back_unchecked(entity(idx, version_v_[idx]));
+            preallocated_entities_.emplace_back_unchecked(entity(idx, version_v_[idx]));
         }
     }
 

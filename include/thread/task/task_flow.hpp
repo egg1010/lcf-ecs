@@ -29,7 +29,7 @@ inline task_graph* current_graph() noexcept
 struct switch_to_awaitable
 {
     thread::role target_{thread::role::general};
-    errc result_{errc::ok};
+    uint32_t result_{0};
 
     bool await_ready() const noexcept
     {
@@ -42,28 +42,29 @@ struct switch_to_awaitable
         task_context* ctx = current_task_context();
         if (graph == nullptr || ctx == nullptr)
         {
-            result_ = errc::invariant_broken;
+            result_ = om_err_internal_invariant.code;
             return false;
         }
         if (ctx->cancelled())
         {
-            result_ = errc::cancelled;
+            result_ = om_err_cancelled.code;
             return false;
         }
-        if (!graph->prepare_switch(ctx->id_, target_))
+        operating_message error;
+        if (!graph->prepare_switch_impl(ctx->id_, target_, error))
         {
-            result_ = errc::affinity_violation;
+            result_ = om_err_invalid_argument.code;
             return false;
         }
         return true;
     }
 
-    errc await_resume() const noexcept
+    uint32_t await_resume() const noexcept
     {
         const task_context* ctx = current_task_context();
         if (ctx != nullptr && ctx->cancelled())
         {
-            return errc::cancelled;
+            return om_err_cancelled.code;
         }
         return result_;
     }
@@ -71,7 +72,7 @@ struct switch_to_awaitable
 
 inline switch_to_awaitable switch_to(thread::role target) noexcept
 {
-    return switch_to_awaitable{target, errc::ok};
+    return switch_to_awaitable{target, 0};
 }
 
 // ---------------------------------------------------------------------------
@@ -81,7 +82,7 @@ inline switch_to_awaitable switch_to(thread::role target) noexcept
 struct next_frame_awaitable
 {
     thread::role target_{thread::role::general};
-    errc result_{errc::ok};
+    uint32_t result_{0};
 
     bool await_ready() const noexcept
     {
@@ -94,28 +95,29 @@ struct next_frame_awaitable
         task_context* ctx = current_task_context();
         if (graph == nullptr || ctx == nullptr)
         {
-            result_ = errc::invariant_broken;
+            result_ = om_err_internal_invariant.code;
             return false;
         }
         if (ctx->cancelled())
         {
-            result_ = errc::cancelled;
+            result_ = om_err_cancelled.code;
             return false;
         }
-        if (!graph->prepare_frame_wait(ctx->id_, target_))
+        operating_message error;
+        if (!graph->prepare_frame_wait_impl(ctx->id_, target_, error))
         {
-            result_ = errc::role_unbound;
+            result_ = om_err_invalid_argument.code;
             return false;
         }
         return true;
     }
 
-    errc await_resume() const noexcept
+    uint32_t await_resume() const noexcept
     {
         const task_context* ctx = current_task_context();
         if (ctx != nullptr && ctx->cancelled())
         {
-            return errc::cancelled;
+            return om_err_cancelled.code;
         }
         return result_;
     }
@@ -123,14 +125,14 @@ struct next_frame_awaitable
 
 inline next_frame_awaitable next_frame(thread::role target) noexcept
 {
-    return next_frame_awaitable{target, errc::ok};
+    return next_frame_awaitable{target, 0};
 }
 
 struct frame_sync_awaitable
 {
     thread::role first_{thread::role::general};
     thread::role second_{thread::role::general};
-    errc result_{errc::ok};
+    uint32_t result_{0};
 
     bool await_ready() const noexcept
     {
@@ -143,18 +145,19 @@ struct frame_sync_awaitable
         task_context* ctx = current_task_context();
         if (graph == nullptr || ctx == nullptr)
         {
-            result_ = errc::invariant_broken;
+            result_ = om_err_internal_invariant.code;
             return false;
         }
-        if (!graph->prepare_frame_pair(ctx->id_, first_, second_))
+        operating_message error;
+        if (!graph->prepare_frame_pair_impl(ctx->id_, first_, second_, error))
         {
-            result_ = errc::invalid_argument;
+            result_ = om_err_invalid_argument.code;
             return false;
         }
         return true;
     }
 
-    errc await_resume() const noexcept
+    uint32_t await_resume() const noexcept
     {
         return result_;
     }
@@ -162,7 +165,7 @@ struct frame_sync_awaitable
 
 inline frame_sync_awaitable frame_sync(thread::role first, thread::role second) noexcept
 {
-    return frame_sync_awaitable{first, second, errc::ok};
+    return frame_sync_awaitable{first, second, 0};
 }
 
 // ---------------------------------------------------------------------------
@@ -172,7 +175,7 @@ inline frame_sync_awaitable frame_sync(thread::role first, thread::role second) 
 struct join_awaitable
 {
     task_id child_{};
-    errc result_{errc::ok};
+    uint32_t result_{0};
 
     bool await_ready() const noexcept
     {
@@ -185,24 +188,25 @@ struct join_awaitable
         task_context* ctx = current_task_context();
         if (graph == nullptr || ctx == nullptr)
         {
-            result_ = errc::invariant_broken;
+            result_ = om_err_internal_invariant.code;
             return false;
         }
-        if (!graph->prepare_join(ctx->id_, child_))
+        operating_message error;
+        if (!graph->prepare_join_impl(ctx->id_, child_, error))
         {
-            result_ = errc::task_identity_invalid;
+            result_ = om_err_invalid_argument.code;
             return false;
         }
         return true;
     }
 
-    errc await_resume() const noexcept
+    uint32_t await_resume() const noexcept
     {
         task_graph* graph = current_graph();
         const task_context* ctx = current_task_context();
         if (ctx != nullptr && ctx->cancelled())
         {
-            return errc::cancelled;
+            return om_err_cancelled.code;
         }
         if (graph == nullptr || !child_.valid())
         {
@@ -211,11 +215,11 @@ struct join_awaitable
         const task_state state = graph->state_of(child_);
         if (state == task_state::faulted)
         {
-            return errc::task_body_faulted;
+            return om_err_task_body_faulted.code;
         }
         if (state == task_state::cancelled)
         {
-            return errc::cancelled;
+            return om_err_cancelled.code;
         }
         return result_;
     }
@@ -223,14 +227,14 @@ struct join_awaitable
 
 inline join_awaitable join(task_id child) noexcept
 {
-    return join_awaitable{child, errc::ok};
+    return join_awaitable{child, 0};
 }
 
 struct when_all_awaitable
 {
     std::span<const task_id> children_{};
-    std::span<errc> errors_{};
-    errc result_{errc::ok};
+    std::span<uint32_t> errors_{};
+    uint32_t result_{0};
     std::size_t armed_{0};
 
     bool await_ready() const noexcept
@@ -244,14 +248,15 @@ struct when_all_awaitable
         task_context* ctx = current_task_context();
         if (graph == nullptr || ctx == nullptr)
         {
-            result_ = errc::invariant_broken;
+            result_ = om_err_internal_invariant.code;
             return false;
         }
         for (std::size_t i = 0; i < children_.size(); ++i)
         {
-            if (!graph->prepare_join(ctx->id_, children_[i]))
+            operating_message error;
+            if (!graph->prepare_join_impl(ctx->id_, children_[i], error))
             {
-                result_ = errc::task_identity_invalid;
+                result_ = om_err_invalid_argument.code;
                 break;
             }
             ++armed_;
@@ -259,26 +264,26 @@ struct when_all_awaitable
         return armed_ != 0;
     }
 
-    errc await_resume() noexcept
+    uint32_t await_resume() noexcept
     {
         task_graph* graph = current_graph();
         for (std::size_t i = 0; i < children_.size() && i < errors_.size(); ++i)
         {
-            errc value = errc::ok;
+            uint32_t value = 0;
             if (graph != nullptr)
             {
                 const task_state state = graph->state_of(children_[i]);
                 if (state == task_state::faulted)
                 {
-                    value = errc::task_body_faulted;
+                    value = om_err_task_body_faulted.code;
                 }
                 else if (state == task_state::cancelled)
                 {
-                    value = errc::cancelled;
+                    value = om_err_cancelled.code;
                 }
                 else if (state != task_state::completed)
                 {
-                    value = errc::task_state_conflict;
+                    value = om_err_invalid_argument.code;
                 }
             }
             errors_[i] = value;
@@ -288,15 +293,15 @@ struct when_all_awaitable
 };
 
 inline when_all_awaitable when_all(std::span<const task_id> children,
-                                   std::span<errc> errors) noexcept
+                                   std::span<uint32_t> errors) noexcept
 {
-    return when_all_awaitable{children, errors, errc::ok, 0};
+    return when_all_awaitable{children, errors, 0, 0};
 }
 
 struct when_any_awaitable
 {
     std::span<const task_id> children_{};
-    errc result_{errc::ok};
+    uint32_t result_{0};
     task_id completed_{};
 
     bool await_ready() const noexcept
@@ -310,12 +315,13 @@ struct when_any_awaitable
         task_context* ctx = current_task_context();
         if (graph == nullptr || ctx == nullptr)
         {
-            result_ = errc::invariant_broken;
+            result_ = om_err_internal_invariant.code;
             return false;
         }
-        if (!graph->prepare_join_any(ctx->id_, children_))
+        operating_message error;
+        if (!graph->prepare_join_any_impl(ctx->id_, children_, error))
         {
-            result_ = errc::task_identity_invalid;
+            result_ = om_err_invalid_argument.code;
             return false;
         }
         return true;
@@ -349,7 +355,7 @@ struct when_any_awaitable
 
 inline when_any_awaitable when_any(std::span<const task_id> children) noexcept
 {
-    return when_any_awaitable{children, errc::ok, invalid_task};
+    return when_any_awaitable{children, 0, invalid_task};
 }
 
 // ---------------------------------------------------------------------------
@@ -359,7 +365,7 @@ inline when_any_awaitable when_any(std::span<const task_id> children) noexcept
 struct sleep_awaitable
 {
     std::uint64_t delay_ns_{0};
-    errc result_{errc::ok};
+    uint32_t result_{0};
 
     bool await_ready() const noexcept
     {
@@ -372,28 +378,29 @@ struct sleep_awaitable
         task_context* ctx = current_task_context();
         if (graph == nullptr || ctx == nullptr)
         {
-            result_ = errc::invariant_broken;
+            result_ = om_err_internal_invariant.code;
             return false;
         }
         if (ctx->cancelled())
         {
-            result_ = errc::cancelled;
+            result_ = om_err_cancelled.code;
             return false;
         }
-        if (!graph->prepare_timed(ctx->id_, delay_ns_))
+        operating_message error;
+        if (!graph->prepare_timed_impl(ctx->id_, delay_ns_, error))
         {
-            result_ = errc::invariant_broken;
+            result_ = om_err_internal_invariant.code;
             return false;
         }
         return true;
     }
 
-    errc await_resume() const noexcept
+    uint32_t await_resume() const noexcept
     {
         const task_context* ctx = current_task_context();
         if (ctx != nullptr && ctx->cancelled())
         {
-            return errc::cancelled;
+            return om_err_cancelled.code;
         }
         return result_;
     }
@@ -402,7 +409,7 @@ struct sleep_awaitable
 inline sleep_awaitable sleep_for(std::chrono::nanoseconds duration) noexcept
 {
     const auto count = std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count();
-    return sleep_awaitable{count > 0 ? static_cast<std::uint64_t>(count) : 0ull, errc::ok};
+    return sleep_awaitable{count > 0 ? static_cast<std::uint64_t>(count) : 0ull, 0};
 }
 
 inline sleep_awaitable sleep_until(std::chrono::steady_clock::time_point deadline) noexcept
@@ -410,7 +417,7 @@ inline sleep_awaitable sleep_until(std::chrono::steady_clock::time_point deadlin
     const std::uint64_t now = monotonic_now_ns();
     const std::uint64_t target = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(deadline.time_since_epoch()).count());
-    return sleep_awaitable{target > now ? target - now : 0ull, errc::ok};
+    return sleep_awaitable{target > now ? target - now : 0ull, 0};
 }
 
 // ---------------------------------------------------------------------------
@@ -432,7 +439,8 @@ struct parallel_join_waiter
         auto* holder = reinterpret_cast<parallel_join_waiter*>(self);
         if (holder->graph_ != nullptr)
         {
-            (void)holder->graph_->wake_waiting(holder->task_);
+            operating_message error;
+            (void)holder->graph_->wake_waiting_impl(holder->task_, error);
         }
     }
 
@@ -452,7 +460,7 @@ struct parallel_for_awaitable
     Body body_{};
     counter counter_{};
     parallel_join_waiter waiter_{};
-    errc result_{errc::ok};
+    uint32_t result_{0};
 
     bool await_ready() const noexcept
     {
@@ -506,7 +514,8 @@ struct parallel_for_awaitable
                 }
                 counter_.complete_one();
             });
-            if (!graph->submit_work(target))
+            operating_message error;
+            if (!graph->submit_work_impl(target, error))
             {
                 // 无提交通道：就地执行，保证语义
                 for (std::size_t i = first; i < last; ++i)
@@ -531,7 +540,8 @@ struct parallel_for_awaitable
             }
             return false;
         }
-        if (!graph->prepare_external_wait(ctx->id_))
+        operating_message error;
+        if (!graph->prepare_external_wait_impl(ctx->id_, error))
         {
             while (!counter_.ready())
             {
@@ -547,12 +557,12 @@ struct parallel_for_awaitable
         return true;
     }
 
-    errc await_resume() noexcept
+    uint32_t await_resume() noexcept
     {
         const task_context* ctx = current_task_context();
         if (ctx != nullptr && ctx->cancelled())
         {
-            return errc::cancelled;
+            return om_err_cancelled.code;
         }
         return result_;
     }
@@ -568,6 +578,6 @@ struct parallel_for_awaitable
 template <typename Body>
 parallel_for_awaitable<Body> parallel_for(std::size_t begin, std::size_t end, Body body) noexcept
 {
-    return parallel_for_awaitable<Body>{begin, end, std::move(body), {}, {}, errc::ok};
+    return parallel_for_awaitable<Body>{begin, end, std::move(body), {}, {}, 0};
 }
 } // namespace thread

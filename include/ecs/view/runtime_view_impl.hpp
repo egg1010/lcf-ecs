@@ -50,14 +50,14 @@ inline runtime_query::runtime_query(manager* mgr, std::span<const int> required_
     required_ids_.increase_capacity(required_ids.size());
     for (int tid : required_ids)
     {
-        required_ids_.push_back(tid);
+        required_ids_.emplace_back(tid);
     }
 
     for (int tid : excluded_ids)
     {
         uint32_t b = type_id::mask_block_of(tid);
         if (b > max_block_) max_block_ = b;
-        exc_sets_.push_back(mgr->get_single_class_set_by_id(tid));
+        exc_sets_.emplace_back(mgr->get_single_class_set_by_id(tid));
     }
 
     for (int tid : required_ids_)
@@ -65,7 +65,7 @@ inline runtime_query::runtime_query(manager* mgr, std::span<const int> required_
         uint32_t b = type_id::mask_block_of(tid);
         if (b > max_block_) max_block_ = b;
         auto* set = mgr->get_single_class_set_by_id(tid);
-        req_sets_.push_back(set);
+        req_sets_.emplace_back(set);
     }
     primary_set_ = single_class_set::select_primary_set(req_sets_.data(), req_sets_.size());
 
@@ -111,9 +111,9 @@ inline runtime_query::runtime_query(manager* mgr, std::span<const runtime_term> 
         // op=0 AND
         [](term_ctx& c, const runtime_term& t, single_class_set* set) noexcept
         {
-            c.self->required_ids_.push_back(t.type_id);
-            c.self->req_sets_.push_back(set);
-            c.self->req_access_.push_back(t.access);
+            c.self->required_ids_.emplace_back(t.type_id);
+            c.self->req_sets_.emplace_back(set);
+            c.self->req_access_.emplace_back(t.access);
             c.self->req_masks_[type_id::mask_block_of(t.type_id)]
                 |= 1ULL << type_id::mask_offset_of(t.type_id);
         },
@@ -121,12 +121,12 @@ inline runtime_query::runtime_query(manager* mgr, std::span<const runtime_term> 
         [](term_ctx& c, const runtime_term&, single_class_set* set) noexcept
         {
             c.self->has_or_ = true;
-            c.self->or_sets_.push_back(set);
+            c.self->or_sets_.emplace_back(set);
         },
         // op=2 NOT
         [](term_ctx& c, const runtime_term& t, single_class_set* set) noexcept
         {
-            c.self->exc_sets_.push_back(set);
+            c.self->exc_sets_.emplace_back(set);
             c.self->exc_masks_[type_id::mask_block_of(t.type_id)]
                 |= 1ULL << type_id::mask_offset_of(t.type_id);
         },
@@ -134,13 +134,13 @@ inline runtime_query::runtime_query(manager* mgr, std::span<const runtime_term> 
         [](term_ctx& c, const runtime_term&, single_class_set* set) noexcept
         {
             c.self->has_optional_ = true;
-            c.self->opt_sets_.push_back(set);
+            c.self->opt_sets_.emplace_back(set);
         }
     };
 
     for (const auto& term : terms)
     {
-        terms_.push_back(term);
+        terms_.emplace_back(term);
         auto* set = mgr->get_single_class_set_by_id(term.type_id);
 
         if (term.op < 4) [[likely]]
@@ -253,7 +253,7 @@ inline void runtime_view::rebuild() noexcept
     query_.req_sets_.increase_capacity(n);
     for (int tid : query_.required_ids_)
     {
-        query_.req_sets_.push_back(mgr_->get_single_class_set_by_id(tid));
+        query_.req_sets_.emplace_back(mgr_->get_single_class_set_by_id(tid));
     }
     query_.primary_set_ = single_class_set::select_primary_set(query_.req_sets_.data(),
                                                               query_.req_sets_.size());
@@ -278,7 +278,7 @@ inline void runtime_view::build_cached_hits() noexcept
     auto* primary = query_.primary_set_;
     auto& indices = primary->get_entity_indices();
     const size_t n = indices.size();
-    cached_hits_.reserve_exact(n);
+    cached_hits_.increase_capacity(n);
 
     if (query_.use_mask_path_ && !query_.has_or_)
     {
@@ -601,7 +601,7 @@ inline void runtime_view::reset_change_tracking() noexcept
     for (size_t k = 0; k < query_.req_sets_.size(); ++k)
     {
         auto* set = query_.req_sets_[k];
-        baseline_versions_.push_back(set ? set->get_pool_version() : 0);
+        baseline_versions_.emplace_back(set ? set->get_pool_version() : 0);
     }
 }
 
@@ -639,8 +639,8 @@ inline void runtime_view::sort_by_component(Compare&& cmp) noexcept
         const cached_hit* hits = cached_hits_.data();
         for (size_t i = 0; i < n; ++i)
         {
-            sorted_entities_.push_back(hits[i].e);
-            components.push_back((*sort_pool)[hits[i].primary_dense]);
+            sorted_entities_.emplace_back(hits[i].e);
+            components.emplace_back((*sort_pool)[hits[i].primary_dense]);
         }
     }
     else
@@ -654,8 +654,8 @@ inline void runtime_view::sort_by_component(Compare&& cmp) noexcept
             uint32_t ver = sort_set->sparse_version_at(idx);
             if (dense == 0xFFFFFFFFu || ver != e.parts_.version_) return;
             if (!sort_pool || dense >= sort_pool->size()) return;
-            sorted_entities_.push_back(e);
-            components.push_back((*sort_pool)[dense]);
+            sorted_entities_.emplace_back(e);
+            components.emplace_back((*sort_pool)[dense]);
         });
     }
 
@@ -670,7 +670,7 @@ inline void runtime_view::sort_by_component(Compare&& cmp) noexcept
     indices.increase_capacity(n);
     for (size_t i = 0; i < n; ++i)
     {
-        indices.push_back(i);
+        indices.emplace_back(i);
     }
 
     // MinGW+AVX2 下 std::sort+lambda 会崩溃, 使用 pdqsort 替代
@@ -683,7 +683,7 @@ inline void runtime_view::sort_by_component(Compare&& cmp) noexcept
     temp.increase_capacity(n);
     for (size_t i = 0; i < n; ++i)
     {
-        temp.push_back(sorted_entities_[indices[i]]);
+        temp.emplace_back(sorted_entities_[indices[i]]);
     }
     sorted_entities_ = std::move(temp);
     sorted_valid_ = true;

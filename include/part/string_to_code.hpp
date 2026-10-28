@@ -53,7 +53,7 @@ public:
             // 长串: 堆分配, 缓存前8字节供快速失败
             size_t array_length = (n + 7) / 8;
             size_t byte_size = array_length * sizeof(uint64_t);
-            heap_array_ = static_cast<uint64_t*>(allocator().allocate(byte_size));
+            heap_array_ = static_cast<uint64_t*>(allocator().acquire(byte_size));
             if (!heap_array_) [[unlikely]]
             {
                 std::abort();
@@ -85,7 +85,7 @@ public:
         {
             if (heap_array_)
             {
-                allocator().deallocate(heap_array_, allocator_byte_size_());
+                allocator().soft_delete(heap_array_);
             }
             inline_value_ = other.inline_value_;
             heap_array_ = other.heap_array_;
@@ -104,7 +104,7 @@ public:
     {
         if (heap_array_)
         {
-            allocator().deallocate(heap_array_, allocator_byte_size_());
+            allocator().soft_delete(heap_array_);
         }
     }
 

@@ -123,7 +123,7 @@ class protobuf_archive_writer final : public archive_writer
 
 public:
     protobuf_archive_writer() noexcept {
-        stack_.push_back(frame{});
+        stack_.emplace_back(frame{});
     }
 
     void begin_object() noexcept override {
@@ -134,7 +134,7 @@ public:
         }
         frame child;
         child.field = emit_field();
-        stack_.push_back(std::move(child));
+        stack_.emplace_back(std::move(child));
     }
 
     void end_object() noexcept override {
@@ -154,7 +154,7 @@ public:
         frame child;
         child.field = emit_field();
         child.is_array = true;
-        stack_.push_back(std::move(child));
+        stack_.emplace_back(std::move(child));
     }
 
     void end_array() noexcept override {
@@ -256,7 +256,7 @@ class protobuf_archive_reader final : public archive_reader
         sub.p = cur.p;
         sub.end = cur.p + len;
         cur.p += len;
-        stack_.push_back(sub);
+        stack_.emplace_back(sub);
         return true;
     }
 
@@ -266,7 +266,7 @@ public:
         frame root;
         root.p = data.data();
         root.end = data.data() + data.size();
-        stack_.push_back(root);
+        stack_.emplace_back(root);
     }
 
     bool enter_object() noexcept override {
@@ -467,7 +467,7 @@ public:
         operating_message m;
         if (err_)
         {
-            m.write(false, "protobuf: wire format 解析错误");
+            m.write(false, om_err_decode_failed, "protobuf: wire format 解析错误", msg::warn, msg::here());
         }
         return m;
     }
@@ -552,12 +552,12 @@ struct protobuf_codec final : archive_codec
         return fields > 0;
     }
 
-    [[nodiscard]] operating_message validate(std::string_view data) const noexcept override {
-        operating_message m;
+    [[nodiscard]] bool validate(std::string_view data, operating_message& error) const noexcept override {
         if (!matches(data))
         {
-            m.write(false, "protobuf wire format 校验失败");
+            error.write_failure(om_err_checksum_failed.code, msg_level::warn, msg::here());
+            return false;
         }
-        return m;
+        return true;
     }
 };

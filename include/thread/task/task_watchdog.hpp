@@ -133,19 +133,20 @@ struct task_watchdog
                 const std::uint64_t run_ns = now_ns > start ? now_ns - start : 0;
                 watchdog_note_max(metrics_.max_run_ns_, run_ns);
 
+                operating_message error;
                 if (deadline != 0 && run_ns >= deadline)
                 {
                     if (!graph_->cancelled(id))
                     {
-                        (void)graph_->cancel(id);
-                        graph_->raise(error_severity::error, errc::task_timeout, id,
+                        (void)graph_->cancel_impl(id, error);
+                        graph_->raise(msg_level::error, om_err_timeout.code, id,
                                       "task deadline exceeded");
                         metrics_.deadline_misses_.fetch_add(1, std::memory_order_relaxed);
                         ++actions;
                     }
-                    else if (grace != 0 && run_ns >= deadline + grace && graph_->mark_hung(id))
+                    else if (grace != 0 && run_ns >= deadline + grace && graph_->mark_hung_impl(id, error))
                     {
-                        graph_->raise(error_severity::error, errc::task_hung, id,
+                        graph_->raise(msg_level::error, om_err_timeout.code, id,
                                       "task hung after deadline");
                         metrics_.hung_tasks_.fetch_add(1, std::memory_order_relaxed);
                         ++actions;
@@ -157,8 +158,8 @@ struct task_watchdog
                     watchdog_note_max(metrics_.heartbeat_age_ns_, now_ns - last);
                     if (!graph_->cancelled(id))
                     {
-                        (void)graph_->cancel(id);
-                        graph_->raise(error_severity::warning, errc::task_timeout, id,
+                        (void)graph_->cancel_impl(id, error);
+                        graph_->raise(msg_level::warn, om_err_timeout.code, id,
                                       "task heartbeat timeout");
                         metrics_.heartbeat_misses_.fetch_add(1, std::memory_order_relaxed);
                         ++actions;
@@ -172,6 +173,7 @@ struct task_watchdog
             {
                 continue;
             }
+            operating_message error;
             const std::uint64_t since = graph_->wait_since_of(id);
             if (since == 0)
             {
@@ -182,8 +184,8 @@ struct task_watchdog
             if (config_.queue_timeout_ns_ != 0 && wait_ns > config_.queue_timeout_ns_ &&
                 !graph_->cancelled(id))
             {
-                (void)graph_->cancel(id);
-                graph_->raise(error_severity::warning, errc::task_timeout, id, "task queue timeout");
+                (void)graph_->cancel_impl(id, error);
+                graph_->raise(msg_level::warn, om_err_timeout.code, id, "task queue timeout");
                 metrics_.queue_timeouts_.fetch_add(1, std::memory_order_relaxed);
                 ++actions;
             }

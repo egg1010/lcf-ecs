@@ -120,18 +120,19 @@ struct manager_group
         }
         std::size_t handled = 0;
         group_message message{};
+        operating_message error;
         while (handled < budget && slot.inbox_.try_pop(message))
         {
             switch (message.kind_)
             {
             case group_message_kind::activate:
-                (void)slot.target_->activate(message.task_);
+                (void)slot.target_->activate_impl(message.task_, error);
                 break;
             case group_message_kind::deactivate:
-                (void)slot.target_->deactivate(message.task_);
+                (void)slot.target_->deactivate_impl(message.task_, error);
                 break;
             case group_message_kind::cancel:
-                (void)slot.target_->cancel(message.task_);
+                (void)slot.target_->cancel_impl(message.task_, error);
                 break;
             }
             ++handled;

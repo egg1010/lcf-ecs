@@ -426,7 +426,7 @@
                 for (size_t i = 0; i < n; ++i)
                 {
                     if (tomb && !base_.set_->is_dense_slot_live(i)) [[unlikely]] continue;
-                    sorted_indices_.push_back(i);
+                    sorted_indices_.emplace_back(i);
                 }
                 const size_t m = sorted_indices_.size();
 
@@ -457,8 +457,8 @@
                     for (size_t i = 0; i < m; ++i)
                     {
                         size_t idx = sorted_indices_[i];
-                        sorted_pool_copy_.push_back(pool_data[idx]);
-                        sorted_entities_.push_back(entity(idx_src[idx], ver_data[idx]));
+                        sorted_pool_copy_.emplace_back(pool_data[idx]);
+                        sorted_entities_.emplace_back(entity(idx_src[idx], ver_data[idx]));
                     }
                 }
                 else
@@ -466,10 +466,10 @@
                     for (size_t i = 0; i < m; ++i)
                     {
                         size_t idx = sorted_indices_[i];
-                        sorted_pool_copy_.push_back(pool_data[idx]);
+                        sorted_pool_copy_.emplace_back(pool_data[idx]);
                         uint32_t eid = indices[idx];
                         uint32_t ver = base_.set_->sparse_version_at(eid);
-                        sorted_entities_.push_back(entity(eid, ver));
+                        sorted_entities_.emplace_back(entity(eid, ver));
                     }
                 }
 
@@ -566,7 +566,7 @@
                 for (size_t i = 0; i < n; ++i)
                 {
                     if (tomb && !base_.set_->is_dense_slot_live(i)) [[unlikely]] continue;
-                    entries.push_back(sort_entry{key_func_(pool_data[i]), i});
+                    entries.emplace_back(sort_entry{key_func_(pool_data[i]), i});
                 }
                 const size_t m = entries.size();
                 if (m == 0) [[unlikely]]
@@ -596,11 +596,11 @@
                     group_keys_[i] = entries[i].key;
                 }
 
-                group_starts_.push_back(0);
+                group_starts_.emplace_back(0);
                 for (size_t i = 1; i < m; ++i)
                 {
                     if (group_keys_[i] != group_keys_[i - 1])
-                        group_starts_.push_back(i);
+                        group_starts_.emplace_back(i);
                 }
 
                 last_version_ = base_.set_->get_pool_version();
@@ -898,13 +898,13 @@
 
                 // 仅扩展，不覆盖已追踪的版本号
                 while (last_observed_versions_.size() < n)
-                    last_observed_versions_.push_back(0);
+                    last_observed_versions_.emplace_back(0);
 
                 // entity_change_tracking_ 是 dense 数组, 顺序访问 + 预取
                 const auto* trk = base_.set_->get_entity_change_tracking_data();
                 uint64_t* obs = last_observed_versions_.data();
                 const bool tomb = base_.set_->has_tombstones();
-                changed_indices_.reserve_exact(n);
+                changed_indices_.increase_capacity(n);
                 const size_t n8 = n & ~size_t{7};
                 size_t i = 0;
                 for (; i < n8; i += 8)
@@ -918,7 +918,7 @@
                         if (cur != obs[ii])
                         {
                             obs[ii] = cur;
-                            changed_indices_.push_back(ii);
+                            changed_indices_.emplace_back(ii);
                         }
                     }
                 }
@@ -929,7 +929,7 @@
                     if (cur != obs[i])
                     {
                         obs[i] = cur;
-                        changed_indices_.push_back(i);
+                        changed_indices_.emplace_back(i);
                     }
                 }
                 last_pool_version_ = base_.set_->get_pool_version();
@@ -1037,13 +1037,13 @@
                 }
 
                 while (last_observed_added_.size() < n)
-                    last_observed_added_.push_back(0);
+                    last_observed_added_.emplace_back(0);
 
                 // entity_change_tracking_ 顺序访问 + 预取
                 const auto* trk = base_.set_->get_entity_change_tracking_data();
                 uint64_t* obs = last_observed_added_.data();
                 const bool tomb = base_.set_->has_tombstones();
-                added_indices_.reserve_exact(n);
+                added_indices_.increase_capacity(n);
                 // 环回安全序数比较: added_version 为 32 位截断, 跨度 < 2^31 时判定正确
                 const uint32_t base32 = static_cast<uint32_t>(baseline_added_counter_);
                 const size_t n8 = n & ~size_t{7};
@@ -1061,7 +1061,7 @@
                         if (added_after_base && cur != obs[ii])
                         {
                             obs[ii] = cur;
-                            added_indices_.push_back(ii);
+                            added_indices_.emplace_back(ii);
                         }
                     }
                 }
@@ -1074,7 +1074,7 @@
                     if (added_after_base && cur != obs[i])
                     {
                         obs[i] = cur;
-                        added_indices_.push_back(i);
+                        added_indices_.emplace_back(i);
                     }
                 }
                 last_pool_version_ = base_.set_->get_pool_version();

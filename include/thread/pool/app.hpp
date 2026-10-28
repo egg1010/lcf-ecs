@@ -40,9 +40,9 @@ struct task_handle
     task_handle& timeout(std::uint64_t timeout_ns) noexcept;
     task_handle& on(thread::role target) noexcept;
 
-    bool activate() noexcept;
-    bool disable() noexcept;
-    bool enable() noexcept;
+    operating_message activate() noexcept;
+    operating_message disable() noexcept;
+    operating_message enable() noexcept;
 };
 
 namespace app_detail
@@ -71,6 +71,7 @@ template <typename T, typename M> struct member_body
 } // namespace app_detail
 
 // 开箱即用入口：默认布局、自动启停、内置帧循环
+// 应用骨架: manager 加一层默认设置 (server 布局 / 单 general 并行域 / 帧率驱动 / 关闭流程)
 class app
 {
   public:
@@ -80,6 +81,11 @@ class app
 
     app(const app&) = delete;
     app& operator=(const app&) = delete;
+
+    const operating_message& config_error() const noexcept
+    {
+        return config_error_;
+    }
 
     bool valid() const noexcept
     {
@@ -136,24 +142,27 @@ class app
     }
 
     // 一次性工作项：不建立任务身份，执行后归还槽位
-    template <typename F> bool post(F&& fn) noexcept
+    template <typename F> bool post_impl(F&& fn, operating_message& error) noexcept
     {
         if (!valid_)
         {
+            error.write_failure(om_err_not_running.code, msg_level::warn, msg::here());
             return false;
         }
         std::uint32_t slot = slot_index_none;
         job* target = kernel_.take_job(slot);
         if (target == nullptr)
         {
+            error.write_failure(om_err_capacity_exceeded.code, msg_level::warn, msg::here());
             return false;
         }
         if (!fill_job(target, std::forward<F>(fn)))
         {
             kernel_.release_job_local(target);
+            error.write_failure(om_err_capacity_exceeded.code, msg_level::warn, msg::here());
             return false;
         }
-        if (kernel_.submit(target) == slot_index_none)
+        if (kernel_.submit(target, error) == slot_index_none)
         {
             kernel_.release_job_local(target);
             return false;
@@ -161,9 +170,33 @@ class app
         return true;
     }
 
-    bool spawn(task<void>&& work) noexcept
+    bool spawn_impl(task<void>&& work, operating_message& error) noexcept
     {
-        return valid_ && thread::spawn(kernel_, std::move(work));
+        if (!valid_)
+        {
+            error.write_failure(om_err_not_running.code, msg_level::warn, msg::here());
+            return false;
+        }
+        if (!thread::spawn(kernel_, std::move(work)))
+        {
+            error.write_failure(om_err_capacity_exceeded.code, msg_level::warn, msg::here());
+            return false;
+        }
+        return true;
+    }
+
+    template <typename F> operating_message post(F&& fn) noexcept
+    {
+        operating_message error;
+        (void)post_impl(std::forward<F>(fn), error);
+        return error;
+    }
+
+    operating_message spawn(task<void>&& work) noexcept
+    {
+        operating_message error;
+        (void)spawn_impl(std::move(work), error);
+        return error;
     }
 
     // 驱动
@@ -209,10 +242,6 @@ class app
         return kernel_.task_stats();
     }
 
-    error_state last_error() const noexcept
-    {
-        return kernel_.last_error();
-    }
 
     shutdown_phase phase() const noexcept
     {
@@ -232,16 +261,17 @@ class app
         const route_word route = route_word::make(main_role_, mode, affinity_kind::none,
                                                   priority::normal, task_worker_none);
         task_graph& graph = kernel_.tasks();
-        const task_id id = graph.declare_full(name, thread::make_task_body(std::forward<F>(fn)),
-                                              route, parent_word{}, invalid_order_key, 0u);
+        operating_message error;
+        const task_id id = graph.declare_full_impl(name, thread::make_task_body(std::forward<F>(fn)),
+                                              route, parent_word{}, invalid_order_key, 0u, error);
         if (!id.valid())
         {
             return task_handle{};
         }
-        (void)graph.set_activation(id, policy, period, activation_overlap::drop);
+        (void)graph.set_activation(id, policy, period, activation_overlap::drop, error);
         if (policy == activation_policy::once)
         {
-            (void)graph.activate(id);
+            (void)graph.activate_impl(id, error);
         }
         return task_handle{this, id};
     }
@@ -257,6 +287,7 @@ class app
     std::uint32_t frame_rate_{60};
     bool valid_{false};
     bool started_{false};
+    operating_message config_error_{};
 };
 
 inline app::app(app_config config) noexcept : config_(config)
@@ -274,7 +305,8 @@ inline app::app(app_config config) noexcept : config_(config)
     }
     frame_rate_ = config_.frame_rate;
     main_role_ = thread::role::general;
-    valid_ = kernel_.configure(config_.manager);
+    config_error_ = kernel_.configure(config_.manager);
+    valid_ = static_cast<bool>(config_error_);
     if (!valid_)
     {
         return;
@@ -411,7 +443,8 @@ inline task_handle& task_handle::after(task_handle predecessor) noexcept
 {
     if (owner_ != nullptr && predecessor.valid())
     {
-        (void)owner_->kernel().tasks().add_dependency(predecessor.id_, id_);
+        operating_message error;
+        (void)owner_->kernel().tasks().add_dependency_impl(predecessor.id_, id_, error);
     }
     return *this;
 }
@@ -420,7 +453,8 @@ inline task_handle& task_handle::priority(thread::priority value) noexcept
 {
     if (owner_ != nullptr)
     {
-        (void)owner_->kernel().tasks().set_priority(id_, value);
+        operating_message error;
+        (void)owner_->kernel().tasks().set_priority_impl(id_, value, error);
     }
     return *this;
 }
@@ -429,7 +463,8 @@ inline task_handle& task_handle::timeout(std::uint64_t timeout_ns) noexcept
 {
     if (owner_ != nullptr)
     {
-        (void)owner_->kernel().tasks().set_deadline(id_, timeout_ns);
+        operating_message error;
+        (void)owner_->kernel().tasks().set_deadline_impl(id_, timeout_ns, error);
     }
     return *this;
 }
@@ -438,24 +473,49 @@ inline task_handle& task_handle::on(thread::role target) noexcept
 {
     if (owner_ != nullptr)
     {
-        (void)owner_->kernel().tasks().migrate(id_, target);
+        operating_message error;
+        (void)owner_->kernel().tasks().migrate_impl(id_, target, error);
     }
     return *this;
 }
 
-inline bool task_handle::activate() noexcept
+inline operating_message task_handle::activate() noexcept
 {
-    return owner_ != nullptr && owner_->kernel().tasks().activate(id_);
+    if (owner_ == nullptr)
+    {
+        operating_message error;
+        error.write_failure(om_err_not_running.code, msg_level::warn, msg::here());
+        return error;
+    }
+    operating_message error;
+    (void)owner_->kernel().tasks().activate_impl(id_, error);
+    return error;
 }
 
-inline bool task_handle::disable() noexcept
+inline operating_message task_handle::disable() noexcept
 {
-    return owner_ != nullptr && owner_->kernel().tasks().disable(id_);
+    if (owner_ == nullptr)
+    {
+        operating_message error;
+        error.write_failure(om_err_not_running.code, msg_level::warn, msg::here());
+        return error;
+    }
+    operating_message error;
+    (void)owner_->kernel().tasks().disable_impl(id_, error);
+    return error;
 }
 
-inline bool task_handle::enable() noexcept
+inline operating_message task_handle::enable() noexcept
 {
-    return owner_ != nullptr && owner_->kernel().tasks().enable(id_);
+    if (owner_ == nullptr)
+    {
+        operating_message error;
+        error.write_failure(om_err_not_running.code, msg_level::warn, msg::here());
+        return error;
+    }
+    operating_message error;
+    (void)owner_->kernel().tasks().enable_impl(id_, error);
+    return error;
 }
 
 } // namespace thread

@@ -8,6 +8,35 @@
 #include <cstdint>
 #include <cstring>
 #include "force_inline.hpp"
+#include <type_traits>
+
+// 容器特征: 稀疏/稠密判定与存活计数, 由特化提供, 不要求容器公开同名接口
+template <typename C>
+struct container_traits
+{
+    static constexpr bool always_dense = false;
+    static constexpr bool is_dense(const C& c) noexcept { return c.is_dense(); }
+    static constexpr size_t count(const C& c) noexcept { return c.count(); }
+    static constexpr bool is_constructed_at(const C& c, size_t i) noexcept { return c.is_constructed_at(i); }
+};
+
+template <typename C>
+[[nodiscard]] constexpr bool container_is_dense(const C& c) noexcept
+{
+    return container_traits<std::remove_cvref_t<C>>::is_dense(c);
+}
+
+template <typename C>
+[[nodiscard]] constexpr size_t container_count(const C& c) noexcept
+{
+    return container_traits<std::remove_cvref_t<C>>::count(c);
+}
+
+template <typename C>
+[[nodiscard]] constexpr bool container_is_constructed_at(const C& c, size_t i) noexcept
+{
+    return container_traits<std::remove_cvref_t<C>>::is_constructed_at(c, i);
+}
 
 // 容器视图概念: 约束 data/size/is_dense/is_constructed_at/begin/end
 // 及算法体内实际使用的 operator[]/count/span/rbegin/rend
@@ -16,12 +45,12 @@ concept viewable_container = requires(C& c, const C& cc, size_t i) {
     typename C::value_type;
     { c.data() };
     { c.size() } -> std::convertible_to<size_t>;
-    { c.is_dense() } -> std::convertible_to<bool>;
-    { c.is_constructed_at(i) } -> std::convertible_to<bool>;
+    { container_is_dense(c) } -> std::convertible_to<bool>;
+    { container_is_constructed_at(c, i) } -> std::convertible_to<bool>;
     { c.begin() };
     { c.end() };
     { c[i] };
-    { c.count() } -> std::convertible_to<size_t>;
+    { container_count(c) } -> std::convertible_to<size_t>;
     { c.span() };
     { c.rbegin() };
     { c.rend() };
@@ -47,6 +76,20 @@ LCF_FLATTEN inline void for_each(const C& c, F&& f) noexcept
 	for (auto it = c.cbegin(); it != c.cend(); ++it)
 	{
 		f(*it);
+	}
+}
+
+template <viewable_container C, typename Dst, typename Pred>
+    requires std::predicate<Pred, const typename C::value_type&>
+inline void filter_indices_to(const C& c, Dst& dst, Pred pred) noexcept
+{
+	for (auto it = c.cbegin(); it != c.cend(); ++it)
+	{
+		if (pred(*it)) [[likely]]
+		{
+			const size_t idx = static_cast<size_t>(&(*it) - c.data());
+			dst.emplace_back(idx);
+		}
 	}
 }
 
@@ -133,40 +176,6 @@ template <viewable_container C>
 }
 
 // 动态长度 span: 容器不足 N 时截断, 避免 span<T,N>(ptr, count<N) 违反前置条件
-template <size_t N, viewable_container C>
-[[nodiscard]] inline std::span<typename C::value_type> first_fixed(C& c) noexcept
-{
-	using V = typename C::value_type;
-	const size_t sz = c.size();
-	return std::span<V>(c.data(), N < sz ? N : sz);
-}
-
-template <size_t N, viewable_container C>
-[[nodiscard]] inline std::span<const typename C::value_type> first_fixed(const C& c) noexcept
-{
-	using V = typename C::value_type;
-	const size_t sz = c.size();
-	return std::span<const V>(c.data(), N < sz ? N : sz);
-}
-
-template <size_t N, viewable_container C>
-[[nodiscard]] inline std::span<typename C::value_type> last_fixed(C& c) noexcept
-{
-	using V = typename C::value_type;
-	const size_t sz = c.size();
-	const size_t use = N >= sz ? sz : N;
-	return std::span<V>(c.data() + (sz - use), use);
-}
-
-template <size_t N, viewable_container C>
-[[nodiscard]] inline std::span<const typename C::value_type> last_fixed(const C& c) noexcept
-{
-	using V = typename C::value_type;
-	const size_t sz = c.size();
-	const size_t use = N >= sz ? sz : N;
-	return std::span<const V>(c.data() + (sz - use), use);
-}
-
 template <viewable_container C, typename F>
 LCF_FLATTEN inline void reverse_for_each(C& c, F&& f) noexcept
 {
@@ -190,11 +199,11 @@ template <viewable_container C, typename F>
 LCF_FLATTEN inline void strided_for_each(C& c, size_t start, size_t step, F&& f) noexcept
 {
 	using V = typename C::value_type;
-	if (c.is_dense()) [[likely]]
+	if (container_is_dense(c)) [[likely]]
 	{
 		V* LCF_RESTRICT p = c.data() + start;
 		const size_t avail = c.size() > start ? c.size() - start : 0;
-		const size_t cnt = avail / step;
+		const size_t cnt = (avail + step - 1) / step;
 		for (size_t i = 0; i < cnt; ++i)
 		{
 			if constexpr (sizeof(V) >= 16)
@@ -211,11 +220,11 @@ LCF_FLATTEN inline void strided_for_each(C& c, size_t start, size_t step, F&& f)
 	else
 	{
 		const size_t avail = c.size() > start ? c.size() - start : 0;
-		const size_t cnt = avail / step;
+		const size_t cnt = (avail + step - 1) / step;
 		for (size_t i = 0; i < cnt; ++i)
 		{
 			const size_t slot = start + i * step;
-			if (c.is_constructed_at(slot)) [[likely]]
+			if (container_is_constructed_at(c, slot)) [[likely]]
 			{
 				f(c[slot]);
 			}
@@ -227,11 +236,11 @@ template <viewable_container C, typename F>
 LCF_FLATTEN inline void strided_for_each(const C& c, size_t start, size_t step, F&& f) noexcept
 {
 	using V = typename C::value_type;
-	if (c.is_dense()) [[likely]]
+	if (container_is_dense(c)) [[likely]]
 	{
 		const V* LCF_RESTRICT p = c.data() + start;
 		const size_t avail = c.size() > start ? c.size() - start : 0;
-		const size_t cnt = avail / step;
+		const size_t cnt = (avail + step - 1) / step;
 		for (size_t i = 0; i < cnt; ++i)
 		{
 			if constexpr (sizeof(V) >= 16)
@@ -248,11 +257,11 @@ LCF_FLATTEN inline void strided_for_each(const C& c, size_t start, size_t step, 
 	else
 	{
 		const size_t avail = c.size() > start ? c.size() - start : 0;
-		const size_t cnt = avail / step;
+		const size_t cnt = (avail + step - 1) / step;
 		for (size_t i = 0; i < cnt; ++i)
 		{
 			const size_t slot = start + i * step;
-			if (c.is_constructed_at(slot)) [[likely]]
+			if (container_is_constructed_at(c, slot)) [[likely]]
 			{
 				f(c[slot]);
 			}
@@ -323,7 +332,7 @@ inline void transform_to(const C& c, R* dst, size_t count, F&& tr) noexcept
 {
 	using V = typename C::value_type;
 	const size_t n = count < c.size() ? count : c.size();
-	if (c.is_dense()) [[likely]]
+	if (container_is_dense(c)) [[likely]]
 	{
 		const V* LCF_RESTRICT src = c.data();
 		for (size_t i = 0; i < n; ++i)
@@ -423,19 +432,6 @@ template <viewable_container C, typename Pred>
 	return nullptr;
 }
 
-template <viewable_container C>
-[[nodiscard]] inline bool contains(const C& c, const typename C::value_type& value) noexcept
-{
-	for (auto it = c.cbegin(); it != c.cend(); ++it)
-	{
-		if (*it == value) [[unlikely]]
-		{
-			return true;
-		}
-	}
-	return false;
-}
-
 template <viewable_container C, typename Pred>
     requires std::predicate<Pred, const typename C::value_type&>
 [[nodiscard]] inline size_t count_if(const C& c, Pred pred) noexcept
@@ -486,28 +482,6 @@ template <viewable_container C, typename F, typename U = typename C::value_type>
 		init = f(std::move(init), *it);
 	}
 	return init;
-}
-
-template <viewable_container C, typename F, typename U = typename C::value_type>
-    requires std::invocable<F, U, const typename C::value_type&>
-[[nodiscard]] inline U reduce_pairwise(const C& c, F&& f, U init) noexcept
-{
-	using V = typename C::value_type;
-	if (c.is_dense()) [[likely]]
-	{
-		const V* LCF_RESTRICT p = c.data();
-		const size_t n = c.size();
-		U acc = init;
-		for (size_t i = 0; i < n; ++i)
-		{
-			acc = f(std::move(acc), p[i]);
-		}
-		return acc;
-	}
-	else
-	{
-		return reduce(c, std::forward<F>(f), std::move(init));
-	}
 }
 
 template <viewable_container C>
@@ -651,7 +625,7 @@ template <viewable_container C>
 [[nodiscard]] inline typename C::value_type sum(const C& c) noexcept
 {
 	using V = typename C::value_type;
-	if (c.is_dense()) [[likely]]
+	if (container_is_dense(c)) [[likely]]
 	{
 		const V* LCF_RESTRICT p = c.data();
 		const size_t n = c.size();
@@ -682,7 +656,7 @@ template <viewable_container C>
 {
 	using V = typename C::value_type;
 	const size_t n = count < c.size() ? count : c.size();
-	if (c.is_dense()) [[likely]]
+	if (container_is_dense(c)) [[likely]]
 	{
 		const V* LCF_RESTRICT p = c.data();
 		V acc = V{};
@@ -716,7 +690,7 @@ LCF_FLATTEN inline void for_each_window(C& c, F&& f) noexcept
 	{
 		return;
 	}
-	if (c.is_dense()) [[likely]]
+	if (container_is_dense(c)) [[likely]]
 	{
 		V* p = c.data();
 		const size_t end = c.size() - N + 1;
@@ -732,7 +706,7 @@ LCF_FLATTEN inline void for_each_window(C& c, F&& f) noexcept
 			bool valid = true;
 			for (size_t j = 0; j < N; ++j)
 			{
-				if (!c.is_constructed_at(i + j))
+				if (!container_is_constructed_at(c, i + j))
 				{
 					valid = false;
 					break;
@@ -755,7 +729,7 @@ LCF_FLATTEN inline void for_each_window(const C& c, F&& f) noexcept
 	{
 		return;
 	}
-	if (c.is_dense()) [[likely]]
+	if (container_is_dense(c)) [[likely]]
 	{
 		const V* p = c.data();
 		const size_t end = c.size() - N + 1;
@@ -771,7 +745,7 @@ LCF_FLATTEN inline void for_each_window(const C& c, F&& f) noexcept
 			bool valid = true;
 			for (size_t j = 0; j < N; ++j)
 			{
-				if (!c.is_constructed_at(i + j))
+				if (!container_is_constructed_at(c, i + j))
 				{
 					valid = false;
 					break;
@@ -790,7 +764,7 @@ template <size_t N, viewable_container C, typename F>
 LCF_FLATTEN inline void for_each_chunk(C& c, F&& f) noexcept
 {
 	using V = typename C::value_type;
-	if (c.is_dense()) [[likely]]
+	if (container_is_dense(c)) [[likely]]
 	{
 		V* p = c.data();
 		const size_t full_chunks = c.size() / N;
@@ -807,7 +781,7 @@ LCF_FLATTEN inline void for_each_chunk(C& c, F&& f) noexcept
 			bool valid = true;
 			for (size_t j = 0; j < N; ++j)
 			{
-				if (!c.is_constructed_at(i * N + j))
+				if (!container_is_constructed_at(c, i * N + j))
 				{
 					valid = false;
 					break;
@@ -826,7 +800,7 @@ template <size_t N, viewable_container C, typename F>
 LCF_FLATTEN inline void for_each_chunk(const C& c, F&& f) noexcept
 {
 	using V = typename C::value_type;
-	if (c.is_dense()) [[likely]]
+	if (container_is_dense(c)) [[likely]]
 	{
 		const V* p = c.data();
 		const size_t full_chunks = c.size() / N;
@@ -843,7 +817,7 @@ LCF_FLATTEN inline void for_each_chunk(const C& c, F&& f) noexcept
 			bool valid = true;
 			for (size_t j = 0; j < N; ++j)
 			{
-				if (!c.is_constructed_at(i * N + j))
+				if (!container_is_constructed_at(c, i * N + j))
 				{
 					valid = false;
 					break;
@@ -872,28 +846,6 @@ template <size_t N, viewable_container C>
 [[nodiscard]] inline std::span<const typename C::value_type> window_span(const C& c, size_t offset) noexcept
 {
 	using V = typename C::value_type;
-	const size_t sz = c.size();
-	const size_t use = (offset < sz && offset + N <= sz) ? N : (offset < sz ? sz - offset : 0);
-	return std::span<const V>(c.data() + offset, use);
-}
-
-template <size_t N, viewable_container C>
-    requires (N > 0)
-[[nodiscard]] inline std::span<typename C::value_type> chunk_span(C& c, size_t chunk_idx) noexcept
-{
-	using V = typename C::value_type;
-	const size_t offset = chunk_idx * N;
-	const size_t sz = c.size();
-	const size_t use = (offset < sz && offset + N <= sz) ? N : (offset < sz ? sz - offset : 0);
-	return std::span<V>(c.data() + offset, use);
-}
-
-template <size_t N, viewable_container C>
-    requires (N > 0)
-[[nodiscard]] inline std::span<const typename C::value_type> chunk_span(const C& c, size_t chunk_idx) noexcept
-{
-	using V = typename C::value_type;
-	const size_t offset = chunk_idx * N;
 	const size_t sz = c.size();
 	const size_t use = (offset < sz && offset + N <= sz) ? N : (offset < sz ? sz - offset : 0);
 	return std::span<const V>(c.data() + offset, use);
@@ -959,7 +911,7 @@ LCF_FLATTEN inline void for_each_zip(C& a, U* b, size_t count, F&& f) noexcept
 {
 	using V = typename C::value_type;
 	const size_t n = count < a.size() ? count : a.size();
-	if (a.is_dense()) [[likely]]
+	if (container_is_dense(a)) [[likely]]
 	{
 		V* LCF_RESTRICT pa = a.data();
 #if defined(__GNUC__) && !defined(__clang__)
@@ -986,7 +938,7 @@ LCF_FLATTEN inline void for_each_zip(const C& a, const U* b, size_t count, F&& f
 {
 	using V = typename C::value_type;
 	const size_t n = count < a.size() ? count : a.size();
-	if (a.is_dense()) [[likely]]
+	if (container_is_dense(a)) [[likely]]
 	{
 		const V* LCF_RESTRICT pa = a.data();
 #if defined(__GNUC__) && !defined(__clang__)
@@ -1014,7 +966,7 @@ inline void zip_with_to(const C& a, const U* b, R* dst, size_t count, F&& f) noe
 {
 	using V = typename C::value_type;
 	const size_t n = count < a.size() ? count : a.size();
-	if (a.is_dense()) [[likely]]
+	if (container_is_dense(a)) [[likely]]
 	{
 		const V* LCF_RESTRICT pa = a.data();
 #if defined(__GNUC__) && !defined(__clang__)
@@ -1038,7 +990,7 @@ inline void zip_with_to(const C& a, const U* b, R* dst, size_t count, F&& f) noe
 template <viewable_container C, viewable_container D>
 [[nodiscard]] inline bool equal(const C& a, const D& b) noexcept
 {
-	if (a.count() != b.count()) [[unlikely]]
+	if (container_count(a) != container_count(b)) [[unlikely]]
 	{
 		return false;
 	}
@@ -1062,15 +1014,15 @@ template <viewable_container C>
 [[nodiscard]] inline bool equal(const C& a, const typename C::value_type* other, size_t count) noexcept
 {
 	using V = typename C::value_type;
-	if (a.count() != count) [[unlikely]]
+	if (container_count(a) != count) [[unlikely]]
 	{
 		return false;
 	}
 	if constexpr (std::is_trivially_copyable_v<V>)
 	{
-		if (a.is_dense()) [[likely]]
+		if (container_is_dense(a)) [[likely]]
 		{
-			return std::memcmp(a.data(), other, a.count() * sizeof(V)) == 0;
+			return std::memcmp(a.data(), other, container_count(a) * sizeof(V)) == 0;
 		}
 	}
 	auto ia = a.cbegin();
@@ -1094,37 +1046,13 @@ template <viewable_container C>
 	return equal(a, b.data(), b.size());
 }
 
-template <viewable_container C>
-[[nodiscard]] inline typename C::value_type* aligned_data(C& c) noexcept
-{
-	return c.data();
-}
-
-template <viewable_container C>
-[[nodiscard]] inline const typename C::value_type* aligned_data(const C& c) noexcept
-{
-	return c.data();
-}
-
-template <viewable_container C>
-[[nodiscard]] inline std::span<typename C::value_type> aligned_span(C& c) noexcept
-{
-	return c.span();
-}
-
-template <viewable_container C>
-[[nodiscard]] inline std::span<const typename C::value_type> aligned_span(const C& c) noexcept
-{
-	return c.span();
-}
-
 // 向量化遍历: 要求 trivially copyable 且 sizeof <= 32, 稀疏模式退化为 for_each
 template <viewable_container C, typename F>
     requires std::is_trivially_copyable_v<typename C::value_type> && std::invocable<F, typename C::value_type&>
 LCF_FLATTEN inline void simd_for_each(C& c, F&& f) noexcept
 {
 	using V = typename C::value_type;
-	if (c.is_dense() && sizeof(V) <= 32) [[likely]]
+	if (container_is_dense(c) && sizeof(V) <= 32) [[likely]]
 	{
 		V* LCF_RESTRICT p = c.data();
 		const size_t n = c.size();
@@ -1151,7 +1079,7 @@ template <viewable_container C, typename F>
 LCF_FLATTEN inline void simd_for_each(const C& c, F&& f) noexcept
 {
 	using V = typename C::value_type;
-	if (c.is_dense() && sizeof(V) <= 32) [[likely]]
+	if (container_is_dense(c) && sizeof(V) <= 32) [[likely]]
 	{
 		const V* LCF_RESTRICT p = c.data();
 		const size_t n = c.size();
@@ -1193,7 +1121,7 @@ inline void copy_to(const C& c, typename C::value_type* dst, size_t count) noexc
 {
 	using V = typename C::value_type;
 	const size_t n = count < c.size() ? count : c.size();
-	if (c.is_dense()) [[likely]]
+	if (container_is_dense(c)) [[likely]]
 	{
 		if constexpr (std::is_trivially_copyable_v<V>)
 		{
@@ -1232,7 +1160,7 @@ inline void move_to(C& c, typename C::value_type* dst, size_t count) noexcept
 {
 	using V = typename C::value_type;
 	const size_t n = count < c.size() ? count : c.size();
-	if (c.is_dense()) [[likely]]
+	if (container_is_dense(c)) [[likely]]
 	{
 		if constexpr (std::is_trivially_copyable_v<V>)
 		{
@@ -1270,7 +1198,7 @@ inline void reverse_copy_to(const C& c, typename C::value_type* dst, size_t coun
 {
 	using V = typename C::value_type;
 	const size_t n = count < c.size() ? count : c.size();
-	if (c.is_dense()) [[likely]]
+	if (container_is_dense(c)) [[likely]]
 	{
 		if constexpr (std::is_trivially_copyable_v<V>)
 		{
@@ -1303,4 +1231,125 @@ template <viewable_container C>
 inline void reverse_copy_to(const C& c, std::span<typename C::value_type> dst) noexcept
 {
 	reverse_copy_to(c, dst.data(), dst.size());
+}
+
+// 步进视图: 持有容器指针与 {start, step, count}, 两容器共用
+template <typename C>
+struct container_strided_span
+{
+	using bare_type = std::remove_const_t<C>;
+	using value_type = typename bare_type::value_type;
+	using element_pointer = decltype(std::declval<C&>().data());
+	using element_reference = std::remove_pointer_t<element_pointer>&;
+
+	class iterator
+	{
+		element_pointer ptr_{nullptr};
+		size_t step_{0};
+	public:
+		using iterator_category = std::forward_iterator_tag;
+		using value_type = typename bare_type::value_type;
+		using difference_type = std::ptrdiff_t;
+		using pointer = element_pointer;
+		using reference = element_reference;
+
+		constexpr iterator() noexcept = default;
+		constexpr iterator(element_pointer p, size_t step) noexcept : ptr_(p), step_(step) {}
+
+		[[nodiscard]] constexpr reference operator*() const noexcept { return *ptr_; }
+		[[nodiscard]] constexpr pointer operator->() const noexcept { return ptr_; }
+
+		constexpr iterator& operator++() noexcept
+		{
+			ptr_ += step_;
+			return *this;
+		}
+
+		constexpr iterator operator++(int) noexcept
+		{
+			iterator tmp = *this;
+			ptr_ += step_;
+			return tmp;
+		}
+
+		[[nodiscard]] friend constexpr bool operator==(const iterator& a, const iterator& b) noexcept
+		{
+			return a.ptr_ == b.ptr_;
+		}
+
+		[[nodiscard]] friend constexpr bool operator!=(const iterator& a, const iterator& b) noexcept
+		{
+			return a.ptr_ != b.ptr_;
+		}
+	};
+
+	C* container_{nullptr};
+	size_t start_{0};
+	size_t step_{0};
+	size_t count_{0};
+
+	constexpr container_strided_span(C* c, size_t start, size_t step, size_t count) noexcept
+		: container_(c), start_(start), step_(step), count_(count) {}
+
+	[[nodiscard]] constexpr size_t size() const noexcept { return count_; }
+	[[nodiscard]] constexpr bool empty() const noexcept { return count_ == 0; }
+	[[nodiscard]] constexpr size_t step() const noexcept { return step_; }
+
+	[[nodiscard]] constexpr element_pointer data() const noexcept
+	{
+		return container_->data() + start_;
+	}
+
+	[[nodiscard]] constexpr element_reference operator[](size_t i) const noexcept
+	{
+		return (*container_)[start_ + i * step_];
+	}
+
+	[[nodiscard]] constexpr iterator begin() const noexcept { return iterator(data(), step_); }
+	[[nodiscard]] constexpr iterator end() const noexcept { return iterator(data() + count_ * step_, step_); }
+
+	template <typename F>
+	LCF_FLATTEN void for_each(F&& f) const noexcept
+	{
+		if constexpr (container_traits<bare_type>::always_dense)
+		{
+			auto* p = data();
+			const size_t step = step_;
+			const size_t n = count_;
+			// 预取距离 8 (与项目 PREFETCH_R pd=8 规则一致)
+			for (size_t i = 0; i < n; ++i)
+			{
+				if constexpr (sizeof(value_type) >= 16)
+				{
+					if (i + 8 < n) [[likely]] { DENSE_PREFETCH_R(p + 8 * step); }
+				}
+				f(*p);
+				p += step;
+			}
+		}
+		else
+		{
+			::strided_for_each(*container_, start_, step_, std::forward<F>(f));
+		}
+	}
+};
+
+template <viewable_container C>
+[[nodiscard]] inline container_strided_span<C> strided_span_view(C& c, size_t start, size_t step, size_t count) noexcept
+{
+	const size_t size = c.size();
+	const size_t s = start > size ? size : start;
+	const size_t max_cnt = (step > 0) ? (size - s + step - 1) / step : 0;
+	const size_t cnt = count > max_cnt ? max_cnt : count;
+	return container_strided_span<C>(&c, s, step ? step : 1, cnt);
+}
+
+template <viewable_container C>
+[[nodiscard]] inline container_strided_span<const C> strided_span_view(const C& c, size_t start, size_t step, size_t count) noexcept
+{
+	const size_t size = c.size();
+	const size_t s = start > size ? size : start;
+	const size_t max_cnt = (step > 0) ? (size - s + step - 1) / step : 0;
+	const size_t cnt = count > max_cnt ? max_cnt : count;
+	return container_strided_span<const C>(&c, s, step ? step : 1, cnt);
 }

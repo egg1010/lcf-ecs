@@ -222,18 +222,6 @@ public:
 		overflows_.increase_capacity(new_slot_capacity);
 	}
 
-	void reserve_exact(size_t new_slot_capacity) noexcept
-	{
-		inline_bits_.reserve_exact(new_slot_capacity);
-		overflows_.reserve_exact(new_slot_capacity);
-	}
-
-	void shrink_to_fit() noexcept
-	{
-		inline_bits_.shrink_to_fit();
-		overflows_.shrink_to_fit();
-	}
-
 	void reduce_capacity(size_t new_slot_capacity) noexcept
 	{
 		if (new_slot_capacity < overflows_.size())

@@ -106,7 +106,7 @@
         {
             size_t found = find(old_str, pos);
             if (found == npos) break;
-            match_cp_starts.push_back(found);
+            match_cp_starts.emplace_back(found);
             pos = found + old_str.cp_count_;
         }
         if (match_cp_starts.size() == 0) return *this;
@@ -510,13 +510,13 @@
             uint32_t cp = static_cast<uint32_t>(detail_utf8::utf8_decode_unchecked(p));
             if (char32_t(cp) == delim)
             {
-                result.push_back(substr(start_cp, cp_idx - start_cp));
+                result.emplace_back(substr(start_cp, cp_idx - start_cp));
                 start_cp = cp_idx + 1;
             }
             p += step ? step : 1;
             ++cp_idx;
         }
-        result.push_back(substr(start_cp));
+        result.emplace_back(substr(start_cp));
         return result;
     }
 
@@ -528,7 +528,7 @@
         if (cp_count_ == 0) return result;
         if (delim.cp_count_ == 0)
         {
-            result.push_back(*this);
+            result.emplace_back(*this);
             return result;
         }
         size_t start = 0;
@@ -537,11 +537,11 @@
         {
             size_t found = find(delim, pos);
             if (found == npos) break;
-            result.push_back(substr(start, found - start));
+            result.emplace_back(substr(start, found - start));
             pos = found + delim.cp_count_;
             start = pos;
         }
-        result.push_back(substr(start));
+        result.emplace_back(substr(start));
         return result;
     }
 
@@ -559,11 +559,11 @@
         {
             if (char32_t(cp_at_byte(cp_byte_offset(i))) == delim)
             {
-                result.push_back(utf8_view(data_ + cp_byte_offset(start), cp_byte_offset(i) - cp_byte_offset(start)));
+                result.emplace_back(utf8_view(data_ + cp_byte_offset(start), cp_byte_offset(i) - cp_byte_offset(start)));
                 start = i + 1;
             }
         }
-        result.push_back(utf8_view(data_ + cp_byte_offset(start), byte_size_ - cp_byte_offset(start)));
+        result.emplace_back(utf8_view(data_ + cp_byte_offset(start), byte_size_ - cp_byte_offset(start)));
         return result;
     }
 
@@ -575,7 +575,7 @@
         if (cp_count_ == 0) return result;
         if (delim.cp_count_ == 0)
         {
-            result.push_back(utf8_view(data_, byte_size_));
+            result.emplace_back(utf8_view(data_, byte_size_));
             return result;
         }
         size_t start = 0;
@@ -584,11 +584,11 @@
         {
             size_t found = find(delim, pos);
             if (found == npos) break;
-            result.push_back(utf8_view(data_ + cp_byte_offset(start), cp_byte_offset(found) - cp_byte_offset(start)));
+            result.emplace_back(utf8_view(data_ + cp_byte_offset(start), cp_byte_offset(found) - cp_byte_offset(start)));
             pos = found + delim.cp_count_;
             start = pos;
         }
-        result.push_back(utf8_view(data_ + cp_byte_offset(start), byte_size_ - cp_byte_offset(start)));
+        result.emplace_back(utf8_view(data_ + cp_byte_offset(start), byte_size_ - cp_byte_offset(start)));
         return result;
     }
 

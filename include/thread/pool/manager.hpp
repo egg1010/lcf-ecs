@@ -11,7 +11,7 @@
 #include "part/dense.hpp"
 #include "thread/pool/detail/frame_clock.hpp"
 #include "thread/pool/detail/job_router.hpp"
-#include "thread/base/error.hpp"
+#include "part/operating_message.hpp"
 #include "thread/base/job.hpp"
 #include "thread/execution/lane.hpp"
 #include "thread/queue/mpmc_queue.hpp"
@@ -199,38 +199,37 @@ struct manager
         teardown();
     }
 
-    bool configure(manager_config config, runtime_context* runtime = nullptr) noexcept
+    bool configure_impl(manager_config config, operating_message& error,
+                   runtime_context* runtime = nullptr) noexcept
     {
         if (!workers_.empty())
         {
+            error.write_failure(om_err_already_exists.code, msg_level::warn, msg::here());
             return false;
         }
         if (!platform_check_required())
         {
-            FRAMEWORK_REPORT(error_severity::fatal, errc::invariant_broken);
+            error.write_failure(om_err_unsupported_operation.code, msg_level::error, msg::here());
             return false;
         }
         rt_ = runtime != nullptr ? runtime : default_runtime();
         bind_runtime(rt_);
         if (!rt_->create(config.job_slot_capacity, config.frame_pool_blocks))
         {
-            FRAMEWORK_REPORT(error_severity::fatal, errc::invariant_broken);
             teardown();
+            error.write_failure(om_err_capacity_exceeded.code, msg_level::error, msg::here());
             return false;
         }
         if (!inject_.create(config.inject_capacity))
         {
-            FRAMEWORK_REPORT(error_severity::fatal, errc::invariant_broken);
             teardown();
+            error.write_failure(om_err_capacity_exceeded.code, msg_level::error, msg::here());
             return false;
         }
         config_ = config;
         const std::size_t count = config.worker_count;
         const unsigned hardware = std::thread::hardware_concurrency();
-        if (hardware != 0 && count > hardware)
-        {
-            FRAMEWORK_REPORT(error_severity::warning, errc::invalid_argument);
-        }
+        (void)hardware;
         if (config.task_capacity != 0)
         {
             task_graph_config task_config{};
@@ -245,7 +244,7 @@ struct manager
             task_config.context_capacity = config.context_capacity;
             task_config.resource_capacity = config.resource_capacity;
             task_config.access_capacity = config.access_capacity;
-            if (!tasks_.create(task_config))
+            if (!tasks_.create_impl(task_config, error))
             {
                 teardown();
                 return false;
@@ -258,8 +257,8 @@ struct manager
                 policy.policy_ = config.admission_policy;
                 if (!admission_.create(policy))
                 {
-                    FRAMEWORK_REPORT(error_severity::fatal, errc::invariant_broken);
                     teardown();
+                    error.write_failure(om_err_capacity_exceeded.code, msg_level::error, msg::here());
                     return false;
                 }
                 tasks_.set_admission(&admission_);
@@ -268,6 +267,7 @@ struct manager
                                                        config.trace_capacity))
             {
                 teardown();
+                error.write_failure(om_err_capacity_exceeded.code, msg_level::error, msg::here());
                 return false;
             }
             if (config.trace_enabled)
@@ -285,7 +285,7 @@ struct manager
         lane_registry_.init(config.lane_capacity);
         suspended_.init(0);
         dispatch_.init(count);
-        workers_.reserve_exact(count);
+        workers_.increase_capacity(count);
         spawned_worker_count_ = 0;
         for (std::size_t i = 0; i < count; ++i)
         {
@@ -298,8 +298,8 @@ struct manager
                 ::operator new(sizeof(worker), std::align_val_t(alignof(worker)), std::nothrow);
             if (memory == nullptr)
             {
-                FRAMEWORK_REPORT(error_severity::fatal, errc::thread_spawn_failed);
                 teardown();
+                error.write_failure(om_err_out_of_memory.code, msg_level::error, msg::here());
                 return false;
             }
             auto* w = new (memory) worker{};
@@ -317,13 +317,14 @@ struct manager
                 w->~worker();
                 ::operator delete(memory, std::align_val_t(alignof(worker)));
                 teardown();
+                error.write_failure(om_err_spawn_failed.code, msg_level::error, msg::here());
                 return false;
             }
-            workers_.push_back(w);
+            workers_.emplace_back(w);
         }
         // 通用工作项只路由到可执行 job 循环的槽位：外部接入槽位无线程，
         // 顺序且自动帧的槽位不会回落到 job 循环
-        job_workers_.reserve_exact(count);
+        job_workers_.increase_capacity(count);
         job_capable_.resize_fill(count, 0);
         for (std::size_t i = 0; i < count; ++i)
         {
@@ -342,7 +343,7 @@ struct manager
             }
             if (capable)
             {
-                job_workers_.push_back(static_cast<std::uint32_t>(i));
+                job_workers_.emplace_back(static_cast<std::uint32_t>(i));
                 job_capable_[i] = 1;
             }
         }
@@ -400,7 +401,6 @@ struct manager
     {
         if (!suspended_.add(node))
         {
-            FRAMEWORK_REPORT(error_severity::error, errc::invariant_broken);
             return false;
         }
         return true;
@@ -425,14 +425,12 @@ struct manager
     {
         if (lane_registry_.size() >= lane_registry_.capacity())
         {
-            FRAMEWORK_REPORT(error_severity::error, errc::invariant_broken);
             return nullptr;
         }
         const std::uint32_t id = static_cast<std::uint32_t>(lane_registry_.size());
         lane* created = new (std::nothrow) lane{};
         if (created == nullptr)
         {
-            FRAMEWORK_REPORT(error_severity::fatal, errc::invariant_broken);
             return nullptr;
         }
         if (!created->create(id, config, rt_))
@@ -486,92 +484,99 @@ struct manager
 
     task_builder declare(const char* name) noexcept
     {
-        return task_builder{&tasks_, tasks_.declare(name)};
+        operating_message error;
+        return task_builder{&tasks_, tasks_.declare_impl(name, thread::task_body{}, error)};
     }
 
-    task_id declare(const char* name, task_body body) noexcept
+    task_id declare_task_impl(const char* name, task_body body, operating_message& error) noexcept
     {
-        return tasks_.declare(name, body);
+        return tasks_.declare_impl(name, body, error);
     }
 
-    bool declare_all(const task_decl* decls, std::size_t count) noexcept
+    task_id declare_task(const char* name, task_body body) noexcept
+    {
+        operating_message error;
+        return declare_task_impl(name, body, error);
+    }
+
+    operating_message declare_all(const task_decl* decls, std::size_t count) noexcept
     {
         return thread::declare_all(tasks_, decls, count);
     }
 
-    bool activate(task_id id) noexcept
+    bool activate_impl(task_id id, operating_message& error) noexcept
     {
-        return tasks_.activate(id);
+        return tasks_.activate_impl(id, error);
     }
 
-    bool activate(task_id id, activate_options options) noexcept
+    bool activate_impl(task_id id, activate_options options, operating_message& error) noexcept
     {
-        return tasks_.activate(id, options);
+        return tasks_.activate_impl(id, options, error);
     }
 
-    bool deactivate(task_id id) noexcept
+    bool deactivate_impl(task_id id, operating_message& error) noexcept
     {
-        return tasks_.deactivate(id);
+        return tasks_.deactivate_impl(id, error);
     }
 
-    bool migrate(task_id id, thread::role target) noexcept
+    bool migrate_impl(task_id id, thread::role target, operating_message& error) noexcept
     {
-        return tasks_.migrate(id, target);
+        return tasks_.migrate_impl(id, target, error);
     }
 
-    bool rebind(task_id id, thread::role target) noexcept
+    bool rebind_impl(task_id id, thread::role target, operating_message& error) noexcept
     {
-        return tasks_.rebind(id, target);
+        return tasks_.rebind_impl(id, target, error);
     }
 
-    bool pin(task_id id, std::uint32_t worker) noexcept
+    bool pin_impl(task_id id, std::uint32_t worker, operating_message& error) noexcept
     {
-        return tasks_.pin(id, worker);
+        return tasks_.pin_impl(id, worker, error);
     }
 
-    bool set_stealable(task_id id, bool value) noexcept
+    bool set_stealable_impl(task_id id, bool value, operating_message& error) noexcept
     {
-        return tasks_.set_stealable(id, value);
+        return tasks_.set_stealable_impl(id, value, error);
     }
 
-    bool set_order_mode(task_id id, order_mode mode) noexcept
+    bool set_order_mode_impl(task_id id, order_mode mode, operating_message& error) noexcept
     {
-        return tasks_.set_order_mode(id, mode);
+        return tasks_.set_order_mode_impl(id, mode, error);
     }
 
-    bool set_priority(task_id id, priority value) noexcept
+    bool set_priority_impl(task_id id, priority value, operating_message& error) noexcept
     {
-        return tasks_.set_priority(id, value);
+        return tasks_.set_priority_impl(id, value, error);
     }
 
-    bool reorder(task_id id, order_key key) noexcept
+    bool reorder_impl(task_id id, order_key key, operating_message& error) noexcept
     {
-        return tasks_.reorder(id, key);
+        return tasks_.reorder_impl(id, key, error);
     }
 
-    bool reparent(task_id id, task_id parent) noexcept
+    bool reparent_impl(task_id id, task_id parent, operating_message& error) noexcept
     {
-        return tasks_.reparent(id, parent);
+        return tasks_.reparent_impl(id, parent, error);
     }
 
-    bool disable(task_id id) noexcept
+    bool disable_impl(task_id id, operating_message& error) noexcept
     {
-        return tasks_.disable(id);
+        return tasks_.disable_impl(id, error);
     }
 
-    bool enable(task_id id) noexcept
+    bool enable_impl(task_id id, operating_message& error) noexcept
     {
-        return tasks_.enable(id);
+        return tasks_.enable_impl(id, error);
     }
 
-    bool cancel(task_id scope) noexcept
+    bool cancel_impl(task_id scope, operating_message& error) noexcept
     {
-        return tasks_.cancel(scope);
+        return tasks_.cancel_impl(scope, error);
     }
 
-    bool clear_cancel(task_id scope) noexcept
+    bool clear_cancel_impl(task_id scope, operating_message& error) noexcept
     {
-        return tasks_.clear_cancel(scope);
+        return tasks_.clear_cancel_impl(scope, error);
     }
 
     bool cancelled(task_id id) const noexcept
@@ -579,9 +584,9 @@ struct manager
         return tasks_.cancelled(id);
     }
 
-    bool set_deadline(task_id id, std::uint64_t timeout_ns) noexcept
+    bool set_deadline_impl(task_id id, std::uint64_t timeout_ns, operating_message& error) noexcept
     {
-        return tasks_.set_deadline(id, timeout_ns);
+        return tasks_.set_deadline_impl(id, timeout_ns, error);
     }
 
     context_id create_context(std::uint64_t request_id, std::uint64_t trace_id,
@@ -590,9 +595,9 @@ struct manager
         return tasks_.create_context(request_id, trace_id, tenant_id);
     }
 
-    bool set_context(task_id id, context_id ctx) noexcept
+    bool set_context_impl(task_id id, context_id ctx, operating_message& error) noexcept
     {
-        return tasks_.set_context(id, ctx);
+        return tasks_.set_context_impl(id, ctx, error);
     }
 
     context_id context_of(task_id id) const noexcept
@@ -600,9 +605,9 @@ struct manager
         return tasks_.context_of(id);
     }
 
-    bool add_access(task_id id, resource_id resource, access_mode mode) noexcept
+    bool add_access_impl(task_id id, resource_id resource, access_mode mode, operating_message& error) noexcept
     {
-        return tasks_.add_access(id, resource, mode);
+        return tasks_.add_access_impl(id, resource, mode, error);
     }
 
     resource_table& resources() noexcept
@@ -630,10 +635,11 @@ struct manager
         tasks_.set_error_sink(sink, user);
     }
 
-    error_state last_error() const noexcept
+    void set_completion_error(om_completion_error_fn fn, void* user) noexcept
     {
-        return tasks_.last_error();
+        tasks_.set_completion_error(fn, user);
     }
+
 
     const task_metrics& task_stats() const noexcept
     {
@@ -665,9 +671,10 @@ struct manager
         return watchdog_.scan(now_ns);
     }
 
-    bool attach_thread(thread::role target, const char* label = nullptr) noexcept
+    bool attach_thread_impl(thread::role target, const char* label,
+                       operating_message& error) noexcept
     {
-        return tasks_.attach_thread(target, label);
+        return tasks_.attach_thread_impl(target, label, error);
     }
 
     void detach_thread(thread::role target) noexcept
@@ -849,6 +856,29 @@ struct manager
         return index;
     }
 
+    std::uint32_t try_submit(job* target, operating_message& error,
+                             std::int32_t preferred_worker = -1) noexcept
+    {
+        const std::uint32_t index = try_submit(target, preferred_worker);
+        if (index != slot_index_none)
+        {
+            return index;
+        }
+        if (target == nullptr)
+        {
+            error.write_failure(om_err_null_pointer.code, msg_level::warn, msg::here());
+        }
+        else if (stopping())
+        {
+            error.write_failure(om_err_shutting_down.code, msg_level::warn, msg::here());
+        }
+        else
+        {
+            error.write_failure(om_err_queue_full.code, msg_level::warn, msg::here());
+        }
+        return slot_index_none;
+    }
+
     std::uint32_t submit(job* target, std::int32_t preferred_worker = -1) noexcept
     {
         if (target == nullptr || stopping())
@@ -889,6 +919,29 @@ struct manager
         stats_.submitted_.fetch_add(1, std::memory_order_relaxed);
         wake_worker(routed);
         return index;
+    }
+
+    std::uint32_t submit(job* target, operating_message& error,
+                         std::int32_t preferred_worker = -1) noexcept
+    {
+        const std::uint32_t index = submit(target, preferred_worker);
+        if (index != slot_index_none)
+        {
+            return index;
+        }
+        if (target == nullptr)
+        {
+            error.write_failure(om_err_null_pointer.code, msg_level::warn, msg::here());
+        }
+        else if (stopping())
+        {
+            error.write_failure(om_err_shutting_down.code, msg_level::warn, msg::here());
+        }
+        else
+        {
+            error.write_failure(om_err_queue_full.code, msg_level::warn, msg::here());
+        }
+        return slot_index_none;
     }
 
     void start() noexcept
@@ -1402,5 +1455,139 @@ struct manager
     job_router router_{};
     frame_clock clock_{};
     std::size_t spawned_worker_count_{0};
+public:
+    operating_message activate(task_id id) noexcept
+    {
+        operating_message error;
+        (void)activate_impl(id, error);
+        return error;
+    }
+
+    operating_message add_access(task_id id, resource_id resource, access_mode mode) noexcept
+    {
+        operating_message error;
+        (void)add_access_impl(id, resource, mode, error);
+        return error;
+    }
+
+    operating_message attach_thread(thread::role target, const char* label) noexcept
+    {
+        operating_message error;
+        (void)attach_thread_impl(target, label, error);
+        return error;
+    }
+
+    operating_message cancel(task_id scope) noexcept
+    {
+        operating_message error;
+        (void)cancel_impl(scope, error);
+        return error;
+    }
+
+    operating_message clear_cancel(task_id scope) noexcept
+    {
+        operating_message error;
+        (void)clear_cancel_impl(scope, error);
+        return error;
+    }
+
+    operating_message configure(manager_config config, runtime_context* runtime = nullptr) noexcept
+    {
+        operating_message error;
+        (void)configure_impl(config, error, runtime);
+        return error;
+    }
+
+    operating_message deactivate(task_id id) noexcept
+    {
+        operating_message error;
+        (void)deactivate_impl(id, error);
+        return error;
+    }
+
+    operating_message disable(task_id id) noexcept
+    {
+        operating_message error;
+        (void)disable_impl(id, error);
+        return error;
+    }
+
+    operating_message enable(task_id id) noexcept
+    {
+        operating_message error;
+        (void)enable_impl(id, error);
+        return error;
+    }
+
+    operating_message migrate(task_id id, thread::role target) noexcept
+    {
+        operating_message error;
+        (void)migrate_impl(id, target, error);
+        return error;
+    }
+
+    operating_message pin(task_id id, std::uint32_t worker) noexcept
+    {
+        operating_message error;
+        (void)pin_impl(id, worker, error);
+        return error;
+    }
+
+    operating_message rebind(task_id id, thread::role target) noexcept
+    {
+        operating_message error;
+        (void)rebind_impl(id, target, error);
+        return error;
+    }
+
+    operating_message reorder(task_id id, order_key key) noexcept
+    {
+        operating_message error;
+        (void)reorder_impl(id, key, error);
+        return error;
+    }
+
+    operating_message reparent(task_id id, task_id parent) noexcept
+    {
+        operating_message error;
+        (void)reparent_impl(id, parent, error);
+        return error;
+    }
+
+    operating_message set_context(task_id id, context_id ctx) noexcept
+    {
+        operating_message error;
+        (void)set_context_impl(id, ctx, error);
+        return error;
+    }
+
+    operating_message set_deadline(task_id id, std::uint64_t timeout_ns) noexcept
+    {
+        operating_message error;
+        (void)set_deadline_impl(id, timeout_ns, error);
+        return error;
+    }
+
+    operating_message set_order_mode(task_id id, order_mode mode) noexcept
+    {
+        operating_message error;
+        (void)set_order_mode_impl(id, mode, error);
+        return error;
+    }
+
+    operating_message set_priority(task_id id, priority value) noexcept
+    {
+        operating_message error;
+        (void)set_priority_impl(id, value, error);
+        return error;
+    }
+
+    operating_message set_stealable(task_id id, bool value) noexcept
+    {
+        operating_message error;
+        (void)set_stealable_impl(id, value, error);
+        return error;
+    }
+
 };
 } // namespace thread

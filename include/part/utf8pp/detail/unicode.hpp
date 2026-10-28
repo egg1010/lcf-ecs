@@ -181,7 +181,7 @@ private:
         uint32_t hg[3] = {0, 0, 0};
         if (unicode_data::hangul_decompose(cp, hg) > 0)
         {
-            for (uint32_t i = 0; i < 3 && hg[i] != 0; ++i) out.push_back(hg[i]);
+            for (uint32_t i = 0; i < 3 && hg[i] != 0; ++i) out.emplace_back(hg[i]);
             return;
         }
         // 兼容性分解 (NFKD 表 + 全角算法)
@@ -190,14 +190,14 @@ private:
             uint32_t fw = 0;
             if (unicode_data::nfkd_fullwidth_decompose(cp, fw))
             {
-                out.push_back(fw);
+                out.emplace_back(fw);
                 return;
             }
             uint32_t dt[4] = {0, 0, 0, 0};
             uint8_t dl = 0;
             if (unicode_data::nfkd_lookup(cp, dt, dl))
             {
-                for (uint8_t i = 0; i < dl; ++i) out.push_back(dt[i]);
+                for (uint8_t i = 0; i < dl; ++i) out.emplace_back(dt[i]);
                 return;
             }
         }
@@ -206,10 +206,10 @@ private:
         if (unicode_data::nfc_decompose_lookup(cp, base, combining))
         {
             decompose_cp(base, out, compat);
-            out.push_back(combining);
+            out.emplace_back(combining);
             return;
         }
-        out.push_back(cp);
+        out.emplace_back(cp);
     }
 
     // 规范排序: 对每段连续 CCC>0 码点按 CCC 升序稳定排序
@@ -305,7 +305,7 @@ private:
         if (cp_count_ == 0) return *this;
         // 分解
         dense<uint32_t> decomp;
-        decomp.reserve_exact(cp_count_ * 2);
+        decomp.increase_capacity(cp_count_ * 2);
         for (size_t i = 0; i < cp_count_; ++i)
         {
             decompose_cp(cp_at_byte(cp_byte_offset(i)), decomp, compat);
