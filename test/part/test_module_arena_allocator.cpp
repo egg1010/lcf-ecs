@@ -68,7 +68,9 @@ void test_basic()
 void test_alignment()
 {
     t_section(2, "对齐分配");
-    arena_allocator arena(4096);
+    // 容量需容纳对齐填充: 4KiB 对齐最坏要从 base 推进近 4KiB,
+    // 与 base 的偶然对齐无关, 小容量 arena 不保证大对齐
+    arena_allocator arena(16384);
 
     void* p64 = arena.acquire_aligned(100, 64);
     void* p4096 = arena.acquire_aligned(64, 4096);

@@ -905,7 +905,7 @@ struct task_graph
 
         const std::uint64_t start = monotonic_now_ns();
         node->heartbeat_ns_.store(start, std::memory_order_relaxed);
-        waits_.start_ns_[index] = start;
+        std::atomic_ref<std::uint64_t>(waits_.start_ns_[index]).store(start, std::memory_order_relaxed);
         ctx.start_ns_ = start;
         if (trace_ != nullptr)
         {

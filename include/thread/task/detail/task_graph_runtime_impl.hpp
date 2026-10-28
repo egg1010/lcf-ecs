@@ -188,7 +188,12 @@ inline std::uint64_t task_graph::heartbeat_of(task_id id) const noexcept
 
 inline std::uint64_t task_graph::start_ns_of(task_id id) const noexcept
     {
-    return id.valid() && id.index_ < waits_.start_ns_.size() ? waits_.start_ns_[id.index_] : 0;
+    if (!id.valid() || id.index_ >= waits_.start_ns_.size())
+    {
+        return 0;
+    }
+    auto& slot = const_cast<std::uint64_t&>(waits_.start_ns_[id.index_]);
+    return std::atomic_ref<std::uint64_t>(slot).load(std::memory_order_relaxed);
     }
 
 inline std::uint64_t task_graph::wait_since_of(task_id id) const noexcept
@@ -1312,8 +1317,9 @@ inline void task_graph::finish(task_node* node, uint32_t error, std::source_loca
     node->state_.store(static_cast<std::uint32_t>(task_state::completed),
                        std::memory_order_release);
     node->flags_.fetch_and(~flag_identity_pending, std::memory_order_release);
-    waits_.start_ns_[finished_index] = 0;
-    waits_.since_[finished_index] = 0;
+    // 与守护线程的扫描并发: 原子写消除数据竞争
+    std::atomic_ref<std::uint64_t>(waits_.start_ns_[finished_index]).store(0, std::memory_order_relaxed);
+    std::atomic_ref<std::uint64_t>(waits_.since_[finished_index]).store(0, std::memory_order_relaxed);
     metrics_.completions_.fetch_add(1, std::memory_order_release);
 
     const std::uint32_t index = static_cast<std::uint32_t>(node - table_.nodes_);

@@ -266,7 +266,9 @@ public:
     [[nodiscard]] inline cache_report measure_hits(
         const void* base, size_t count, size_t stride) const noexcept
     {
+        std::fprintf(stderr, "[mh] make_addrs begin\n");
         auto addrs = make_sequential_addresses(base, count, stride);
+        std::fprintf(stderr, "[mh] make_addrs end n=%zu\n", addrs.size());
         address_view av{addrs.data(), addrs.size()};
         return measure_hits(av);
     }
@@ -283,6 +285,7 @@ public:
         }
 
         // 基线 (rdtscp 配对开销, 多次取最小)
+        std::fprintf(stderr, "[mh] baseline begin\n");
         uint64_t baseline = static_cast<uint64_t>(-1);
         for (size_t i = 0; i < 100; ++i)
         {
@@ -293,10 +296,14 @@ public:
             }
         }
 
+        std::fprintf(stderr, "[mh] baseline end\n");
         dense<double> samples;
+        std::fprintf(stderr, "[mh] samples alloc begin n=%zu\n", addrs.count);
         samples.increase_capacity(addrs.count);
+        std::fprintf(stderr, "[mh] samples alloc end\n");
 
         double sum = 0;
+        std::fprintf(stderr, "[mh] loop begin\n");
         for (size_t i = 0; i < addrs.count; ++i)
         {
             uint64_t raw = measure_one_access_(addrs[i]);
@@ -315,6 +322,7 @@ public:
             }
         }
 
+        std::fprintf(stderr, "[mh] loop end\n");
         double n = static_cast<double>(addrs.count);
         r.avg_cycles = sum / n;
         r.l1_hit_rate = static_cast<double>(r.l1_hits) / n;
@@ -324,8 +332,11 @@ public:
         r.miss_rate = static_cast<double>(r.misses) / n;
 
         double* p = samples.data();
+        std::fprintf(stderr, "[mh] sort begin\n");
         sort(p, samples.size());
+        std::fprintf(stderr, "[mh] sort end\n");
         compute_pct_(p, samples.size(), r);
+        std::fprintf(stderr, "[mh] done\n");
         return r;
     }
 
