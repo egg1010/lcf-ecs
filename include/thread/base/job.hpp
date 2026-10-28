@@ -1,3 +1,13 @@
+// job.hpp - 任务对象与 job 池
+//
+// 已知限制 (2026-10-28, TSan 实测 38 处竞争):
+//   job 的跨线程交接依赖池索引栈的 acquire/release 语义, 但 set_slot_backed /
+//   set_overflow_capture 读写 flags_ 时未走原子, 且 release_job 在归还索引前
+//   先 destroy_job 清理字段, 执行方可能已重新 claim 同一槽位。
+//   同源问题还出现在帧池(operator new align_val_t 所有权传递)与 IO 请求字段
+//   (task_id/buffer_ 直接赋值)。这些属于并发协议未完成, 不是单点漏改;
+//   CI 的 thread-sanitize 作业目前排除 test_perf / task_graph / thread_app,
+//   待协议重做后逐步放开。
 #pragma once
 
 #include <atomic>
