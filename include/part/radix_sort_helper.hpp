@@ -340,12 +340,14 @@ inline void scatter_large(Entry* dst, const Entry* src, size_t n,
         {
             PREFETCH_R(&dst[pos + 1]);
         }
-        if constexpr (sizeof(Entry) == 16 && LCF_HAS_SSE2)
+#if LCF_HAS_SSE2
+        if constexpr (sizeof(Entry) == 16)
         {
             __m128i v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(&src[i]));
             _mm_stream_si128(reinterpret_cast<__m128i*>(&dst[pos]), v);
         }
         else
+#endif
         {
             new (&dst[pos]) Entry(std::move(src[i]));
         }
