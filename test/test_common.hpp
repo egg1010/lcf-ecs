@@ -109,6 +109,8 @@ inline void t_rule(char ch, size_t n) noexcept
 // ==== 套件头 ====
 inline void t_begin(const char* suite) noexcept
 {
+    // 关闭输出缓冲: 崩溃时保留已打印的分节信息, 便于定位挂在哪一节
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     t_console_utf8();
     std::printf("\n");
     t_rule('=', 64);
