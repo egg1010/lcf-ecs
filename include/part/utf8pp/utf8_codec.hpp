@@ -570,6 +570,26 @@ size_t count_codepoints_and_ascii(const uint8_t* p, const uint8_t* end, bool& al
     }
     return count;
 }
+
+// 非 SSE 平台的融合扫描+拷贝: 逐字节完成计数 + ASCII 检测 + 拷贝
+[[nodiscard]] LCF_FORCE_INLINE
+size_t fused_count_copy_and_ascii(const uint8_t* src, uint8_t* dst, size_t len, bool& all_ascii) noexcept
+{
+    size_t count = 0;
+    all_ascii = true;
+    const uint8_t* p = src;
+    uint8_t* d = dst;
+    const uint8_t* end = src + len;
+    while (p < end)
+    {
+        *d = *p;
+        if ((*p & 0xC0) != 0x80) ++count;
+        if (*p & 0x80) all_ascii = false;
+        ++p;
+        ++d;
+    }
+    return count;
+}
 #endif
 
 [[nodiscard]] LCF_FORCE_INLINE
