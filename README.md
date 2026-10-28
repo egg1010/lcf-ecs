@@ -47,7 +47,7 @@ int main()
 
 | 编译器 / Compiler | 最低版本 / Minimum |
 |---|---|
-| GCC | 11 |
+| GCC | 13 |
 | Clang（libstdc++ / with libstdc++） | 14 |
 | Clang（libc++ / with libc++） | 16 |
 | MSVC | 19.30（VS 2022 17.0） |
