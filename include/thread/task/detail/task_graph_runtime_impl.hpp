@@ -349,7 +349,7 @@ inline bool task_graph::acquire_all(std::uint32_t index) noexcept
         resources_.note_waiting_writer_locked(resource_id{conflict}, true);
     }
     resources_.enqueue_wait_locked(resource_id{conflict}, index);
-    waits_.since_[index] = monotonic_now_ns();
+    std::atomic_ref<std::uint64_t>(waits_.since_[index]).store(monotonic_now_ns(), std::memory_order_relaxed);
     resources_.unlock_mask(stripes);
     return false;
     }
@@ -531,7 +531,7 @@ inline void task_graph::suspend_bookkeeping(task_node* node, std::uint32_t index
     {
         register_waiter(index);
     }
-    waits_.since_[index] = monotonic_now_ns();
+    std::atomic_ref<std::uint64_t>(waits_.since_[index]).store(monotonic_now_ns(), std::memory_order_relaxed);
     if (trace_ != nullptr)
     {
         trace_->record(trace_kind::wait_begin, task_id{index}, worker_of(node),
@@ -581,7 +581,7 @@ inline bool task_graph::wake_waiting_index(std::uint32_t index) noexcept
         return false;
     }
     clear_wait(index);
-    waits_.since_[index] = monotonic_now_ns();
+    std::atomic_ref<std::uint64_t>(waits_.since_[index]).store(monotonic_now_ns(), std::memory_order_relaxed);
     if (trace_ != nullptr)
     {
         trace_->record(trace_kind::wait_end, task_id{index}, worker_of(node),
