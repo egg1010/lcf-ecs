@@ -251,6 +251,19 @@ struct task_graph
                               parent_word parent, std::uint64_t key, std::uint32_t flags,
                               operating_message& error) noexcept
     {
+        // 多线程并发声明时串行化: 节点表与 deadline_/body_destroy_ 均为普通数组
+        struct declare_guard
+        {
+            std::atomic_flag& flag;
+            explicit declare_guard(std::atomic_flag& f) noexcept : flag(f)
+            {
+                while (flag.test_and_set(std::memory_order_acquire)) {}
+            }
+            ~declare_guard() noexcept { flag.clear(std::memory_order_release); }
+            declare_guard(const declare_guard&) = delete;
+            declare_guard& operator=(const declare_guard&) = delete;
+        } guard{declare_lock_};
+
         if (!created_)
         {
             error.write_failure(om_err_not_running.code, msg_level::error, msg::here());
@@ -1078,6 +1091,9 @@ struct task_graph
     dense<std::uint32_t> body_version_count_{};
     std::size_t body_version_capacity_{8};
     task_wait_tables waits_{};
+
+    // 并发声明保护: declare 属构建期冷路径, 自旋锁成本可忽略
+    std::atomic_flag declare_lock_{};
     task_access_tables access_{};
     std::atomic<std::uint64_t> default_deadline_ns_{0};
     task_context* views_{nullptr};

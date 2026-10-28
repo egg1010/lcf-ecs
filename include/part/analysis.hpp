@@ -570,11 +570,11 @@ private:
         uint64_t c0, c1;
         #if defined(_MSC_VER)
             _mm_lfence();
-            c0 = __rdtscp(nullptr);
+            c0 = __rdtsc();
             volatile uint8_t v = *static_cast<const volatile uint8_t*>(p);
             (void)v;
             _mm_lfence();
-            c1 = __rdtscp(nullptr);
+            c1 = __rdtsc();
         #else
             __asm__ __volatile__("lfence" ::: "memory");
             uint32_t lo, hi;
@@ -600,9 +600,9 @@ private:
         uint64_t c0, c1;
         #if defined(_MSC_VER)
             _mm_lfence();
-            c0 = __rdtscp(nullptr);
+            c0 = __rdtsc();
             _mm_lfence();
-            c1 = __rdtscp(nullptr);
+            c1 = __rdtsc();
         #else
             __asm__ __volatile__("lfence" ::: "memory");
             uint32_t lo, hi;
