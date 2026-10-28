@@ -148,28 +148,11 @@
 #define LCF_STORE_FENCE() ((void)0)
 #endif
 
-// 运行时 AVX2 检测: MSVC 走 CPUID + XGETBV, GCC/Clang 用 __builtin_cpu_supports
-#if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
-#include <intrin.h>
-[[nodiscard]] inline bool lcf_cpu_has_avx2() noexcept
-{
-    int info[4] = {0, 0, 0, 0};
-    __cpuid(info, 1);
-    const bool osxsave = (info[2] & (1 << 27)) != 0;
-    const bool avx = (info[2] & (1 << 28)) != 0;
-    if (!osxsave || !avx)
-    {
-        return false;
-    }
-    if ((_xgetbv(0) & 0x6) != 0x6)
-    {
-        return false;
-    }
-    __cpuidex(info, 7, 0);
-    return (info[1] & (1 << 5)) != 0;
-}
-#define LCF_CPU_HAS_AVX2() (::lcf_cpu_has_avx2())
-#elif defined(__GNUC__) || defined(__clang__)
+// 运行时 AVX2 检测
+//   MSVC 没有函数级 target 属性, AVX2 intrinsic 需要全局 /arch:AVX2 才安全;
+//   在未启用该选项的构建上会生成非法指令 (0xC000001D), 因此 MSVC 一律走标量路径。
+//   GCC/Clang 用 gnu::target 做函数级隔离, 运行时检测后才进入。
+#if (defined(__GNUC__) || defined(__clang__)) && LCF_HAS_X86_SIMD
 #define LCF_CPU_HAS_AVX2() (__builtin_cpu_supports("avx2") != 0)
 #else
 #define LCF_CPU_HAS_AVX2() false
