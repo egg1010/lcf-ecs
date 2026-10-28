@@ -29,15 +29,17 @@ struct tag
 using pa = tag<320>;
 using pb = tag<321>;
 
-template <int... Is>
+template <int Offset, int... Is>
 void touch_tags_impl(std::integer_sequence<int, Is...>)
 {
-    ((void)type_id::get_type_id<tag<Is>>(), ...);
+    ((void)type_id::get_type_id<tag<Is + Offset>>(), ...);
 }
 
 void touch_tags()
 {
-    touch_tags_impl(std::make_integer_sequence<int, 320>{});
+    // 分两批展开: clang 的 fold 表达式上限为 256 个操作数
+    touch_tags_impl<0>(std::make_integer_sequence<int, 160>{});
+    touch_tags_impl<160>(std::make_integer_sequence<int, 160>{});
 }
 
 std::vector<ecs::entity> sorted_handles(std::vector<ecs::entity> v)

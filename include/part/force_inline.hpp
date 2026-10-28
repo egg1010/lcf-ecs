@@ -103,3 +103,67 @@
 #ifndef DENSE_RESTRICT
 #define DENSE_RESTRICT LCF_RESTRICT
 #endif
+
+// 编译器假设: 告知优化器条件恒真, 用于边界检查之后消去冗余分支
+#if defined(_MSC_VER) && !defined(__clang__)
+#define LCF_ASSUME(cond) __assume(cond)
+#elif defined(__clang__)
+#define LCF_ASSUME(cond) __builtin_assume(cond)
+#elif defined(__GNUC__)
+#define LCF_ASSUME(cond) do { if (!(cond)) { __builtin_unreachable(); } } while (false)
+#else
+#define LCF_ASSUME(cond) ((void)0)
+#endif
+
+// 空成员优化: MSVC 需显式命名空间属性, 标准写法会被静默忽略
+#if defined(_MSC_VER) && !defined(__clang__)
+#define LCF_NO_UNIQUE_ADDRESS [[msvc::no_unique_address]]
+#else
+#define LCF_NO_UNIQUE_ADDRESS [[no_unique_address]]
+#endif
+
+// 内存栅栏: MSVC 用 intrin, GCC/Clang 用内联汇编
+#if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
+#include <intrin.h>
+#define LCF_COMPILER_FENCE() _ReadWriteBarrier()
+#define LCF_MEMORY_FENCE() _mm_mfence()
+#define LCF_LOAD_FENCE() _mm_lfence()
+#define LCF_STORE_FENCE() _mm_sfence()
+#elif defined(__GNUC__) || defined(__clang__)
+#define LCF_COMPILER_FENCE() __asm__ __volatile__("" ::: "memory")
+#define LCF_MEMORY_FENCE() __asm__ __volatile__("mfence" ::: "memory")
+#define LCF_LOAD_FENCE() __asm__ __volatile__("lfence" ::: "memory")
+#define LCF_STORE_FENCE() __asm__ __volatile__("sfence" ::: "memory")
+#else
+#define LCF_COMPILER_FENCE() ((void)0)
+#define LCF_MEMORY_FENCE() ((void)0)
+#define LCF_LOAD_FENCE() ((void)0)
+#define LCF_STORE_FENCE() ((void)0)
+#endif
+
+// 运行时 AVX2 检测: MSVC 走 CPUID + XGETBV, GCC/Clang 用 __builtin_cpu_supports
+#if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
+#include <intrin.h>
+[[nodiscard]] inline bool lcf_cpu_has_avx2() noexcept
+{
+    int info[4] = {0, 0, 0, 0};
+    __cpuid(info, 1);
+    const bool osxsave = (info[2] & (1 << 27)) != 0;
+    const bool avx = (info[2] & (1 << 28)) != 0;
+    if (!osxsave || !avx)
+    {
+        return false;
+    }
+    if ((_xgetbv(0) & 0x6) != 0x6)
+    {
+        return false;
+    }
+    __cpuidex(info, 7, 0);
+    return (info[1] & (1 << 5)) != 0;
+}
+#define LCF_CPU_HAS_AVX2() (::lcf_cpu_has_avx2())
+#elif defined(__GNUC__) || defined(__clang__)
+#define LCF_CPU_HAS_AVX2() (__builtin_cpu_supports("avx2") != 0)
+#else
+#define LCF_CPU_HAS_AVX2() false
+#endif

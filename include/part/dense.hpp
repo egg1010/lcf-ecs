@@ -344,7 +344,7 @@ private:
 			return;
 		}
 #if !defined(__AVX2__) && (defined(__GNUC__) || defined(__clang__))
-	if (count < 8192 && __builtin_cpu_supports("avx2"))
+	if (count < 8192 && LCF_CPU_HAS_AVX2())
 	{
 		fill_small_trivial_avx2(dst, value, count);
 		return;
@@ -440,7 +440,7 @@ private:
 		                         reinterpret_cast<const char&>(value),
 		                         count * sizeof(U), sizeof(U));
 #elif defined(__GNUC__) && !defined(__clang__)
-		if (__builtin_cpu_supports("avx2"))
+		if (LCF_CPU_HAS_AVX2())
 		{
 			fill_medium_trivial_avx2(reinterpret_cast<char*>(dst),
 			                         reinterpret_cast<const char&>(value),
@@ -537,7 +537,7 @@ private:
 #endif
 #elif defined(__GNUC__) && defined(__x86_64__) && !defined(__clang__)
 		// 运行时检测 AVX2 (MinGW), 仅用非对齐指令 (vmovdqu), 规避 32B 栈对齐问题
-		if (bytes >= 2048 && __builtin_cpu_supports("avx2"))
+		if (bytes >= 2048 && LCF_CPU_HAS_AVX2())
 		{
 			copy_trivial_data_avx2(reinterpret_cast<char*>(dst),
 			                       reinterpret_cast<const char*>(src), bytes);
@@ -592,7 +592,7 @@ private:
 			return;
 		}
 #elif defined(__GNUC__) && defined(__x86_64__) && !defined(__clang__)
-		if (bytes >= 2048 && __builtin_cpu_supports("avx2"))
+		if (bytes >= 2048 && LCF_CPU_HAS_AVX2())
 		{
 			move_trivial_forward_avx2_helper(dst, src, bytes);
 			return;
@@ -663,7 +663,7 @@ private:
 #elif defined(__GNUC__) && defined(__x86_64__) && !defined(__clang__)
 		constexpr size_t avx2_threshold =
 			(sizeof(T) <= 8) ? 65536 : ((sizeof(T) <= 16) ? 32768 : 2048);
-		if (bytes >= avx2_threshold && __builtin_cpu_supports("avx2"))
+		if (bytes >= avx2_threshold && LCF_CPU_HAS_AVX2())
 		{
 			move_trivial_backward_avx2_helper(dst, src, bytes);
 			return;

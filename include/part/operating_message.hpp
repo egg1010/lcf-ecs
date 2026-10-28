@@ -407,7 +407,7 @@ namespace msg
 #if defined(_MSC_VER)
         __debugbreak();
 #else
-        __builtin_trap();
+        LCF_TRAP();
 #endif
     }
 }

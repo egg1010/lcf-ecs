@@ -103,7 +103,7 @@ public:
         __asm__ __volatile__("mfence" ::: "memory");
     #endif
 #else
-        asm volatile("" ::: "memory");
+        LCF_COMPILER_FENCE();
 #endif
     }
 
@@ -116,7 +116,7 @@ public:
         __asm__ __volatile__("lfence" ::: "memory");
     #endif
 #else
-        asm volatile("" ::: "memory");
+        LCF_COMPILER_FENCE();
 #endif
     }
 
@@ -129,7 +129,7 @@ public:
         __asm__ __volatile__("sfence" ::: "memory");
     #endif
 #else
-        asm volatile("" ::: "memory");
+        LCF_COMPILER_FENCE();
 #endif
     }
 
