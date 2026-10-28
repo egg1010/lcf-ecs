@@ -1316,12 +1316,12 @@ struct container_strided_span
 			auto* p = data();
 			const size_t step = step_;
 			const size_t n = count_;
-			// 预取距离 8 (与项目 PREFETCH_R pd=8 规则一致)
+			// 预取距离 8 (与项目 LCF_PREFETCH_R pd=8 规则一致)
 			for (size_t i = 0; i < n; ++i)
 			{
 				if constexpr (sizeof(value_type) >= 16)
 				{
-					if (i + 8 < n) [[likely]] { DENSE_PREFETCH_R(p + 8 * step); }
+					if (i + 8 < n) [[likely]] { LCF_PREFETCH_R(p + 8 * step); }
 				}
 				f(*p);
 				p += step;

@@ -94,7 +94,7 @@ public:
     [[nodiscard]] bool empty() const noexcept { return commands_.empty(); }
 
     // 按录入顺序回放全部命令,完成后清空
-    // for_each 内部 DENSE_FLATTEN + ivdep, 去掉 apply_fn 空检查 (录制时一定设置)
+    // for_each 内部 LCF_FLATTEN + ivdep, 去掉 apply_fn 空检查 (录制时一定设置)
     void flush() noexcept
     {
         commands_.for_each([&](command& cmd) noexcept {

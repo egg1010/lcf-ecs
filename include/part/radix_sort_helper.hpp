@@ -149,7 +149,7 @@ inline void radix_count_pass(size_t* count, const U* keys, size_t n,
             size_t i = 0;
             for (; i + 3 < n; i += 4)
             {
-                if (i + prefetch_dist < n) [[likely]] { PREFETCH_R(&keys[i + prefetch_dist]); }
+                if (i + prefetch_dist < n) [[likely]] { LCF_PREFETCH_R(&keys[i + prefetch_dist]); }
                 ++count[(keys[i]     >> shift) & mask];
                 ++count[(keys[i + 1] >> shift) & mask];
                 ++count[(keys[i + 2] >> shift) & mask];
@@ -168,7 +168,7 @@ inline void radix_count_pass(size_t* count, const U* keys, size_t n,
         {
             if (i + prefetch_dist < n) [[likely]]
             {
-                PREFETCH_R(&keys[i + prefetch_dist]);
+                LCF_PREFETCH_R(&keys[i + prefetch_dist]);
             }
             ++h0[(keys[i]     >> shift) & mask];
             ++h1[(keys[i + 1] >> shift) & mask];
@@ -196,7 +196,7 @@ inline void radix_count_pass(size_t* count, const U* keys, size_t n,
             size_t i = 0;
             for (; i + 1 < n; i += 2)
             {
-                if (i + prefetch_dist < n) [[likely]] { PREFETCH_R(&keys[i + prefetch_dist]); }
+                if (i + prefetch_dist < n) [[likely]] { LCF_PREFETCH_R(&keys[i + prefetch_dist]); }
                 ++count[(keys[i]     >> shift) & mask];
                 ++count[(keys[i + 1] >> shift) & mask];
             }
@@ -213,7 +213,7 @@ inline void radix_count_pass(size_t* count, const U* keys, size_t n,
         {
             if (i + prefetch_dist < n) [[likely]]
             {
-                PREFETCH_R(&keys[i + prefetch_dist]);
+                LCF_PREFETCH_R(&keys[i + prefetch_dist]);
             }
             ++h0[(keys[i]     >> shift) & mask];
             ++h1[(keys[i + 1] >> shift) & mask];
@@ -237,7 +237,7 @@ inline void radix_count_pass(size_t* count, const U* keys, size_t n,
         {
             if (i + prefetch_dist < n) [[likely]]
             {
-                PREFETCH_R(&keys[i + prefetch_dist]);
+                LCF_PREFETCH_R(&keys[i + prefetch_dist]);
             }
             ++count[(keys[i]     >> shift) & mask];
             ++count[(keys[i + 1] >> shift) & mask];
@@ -267,7 +267,7 @@ inline void radix_count_pass_large(size_t* count, const U* keys, size_t n,
     {
         if (i + prefetch_dist < n) [[likely]]
         {
-            PREFETCH_R(&keys[i + prefetch_dist]);
+            LCF_PREFETCH_R(&keys[i + prefetch_dist]);
         }
         ++sub_hists[0 * max_buckets_large + ((keys[i]     >> shift) & mask)];
         ++sub_hists[1 * max_buckets_large + ((keys[i + 1] >> shift) & mask)];
@@ -305,14 +305,14 @@ inline void scatter_small(Entry* dst, const Entry* src, size_t n,
     {
         if (i + prefetch_dist < n) [[likely]]
         {
-            PREFETCH_R(&src[i + prefetch_dist]);
+            LCF_PREFETCH_R(&src[i + prefetch_dist]);
         }
         U k = k_src[i];
         size_t bucket = (k >> shift) & mask;
         size_t pos = count[bucket];
         if (pos + 1 < n) [[likely]]
         {
-            PREFETCH_R(&dst[pos + 1]);
+            LCF_PREFETCH_R(&dst[pos + 1]);
         }
         new (&dst[pos]) Entry(std::move(src[i]));
         k_dst[pos] = k;
@@ -331,14 +331,14 @@ inline void scatter_large(Entry* dst, const Entry* src, size_t n,
     {
         if (i + prefetch_dist < n) [[likely]]
         {
-            PREFETCH_R(&src[i + prefetch_dist]);
+            LCF_PREFETCH_R(&src[i + prefetch_dist]);
         }
         U k = k_src[i];
         size_t bucket = (k >> shift) & mask;
         size_t pos = count[bucket];
         if (pos + 1 < n) [[likely]]
         {
-            PREFETCH_R(&dst[pos + 1]);
+            LCF_PREFETCH_R(&dst[pos + 1]);
         }
 #if LCF_HAS_SSE2
         if constexpr (sizeof(Entry) == 16)
@@ -581,14 +581,14 @@ void radix_sort_indices_with_cfg(size_t* indices, const KeyType* keys, size_t n,
             {
                 if (i + prefetch_dist < n) [[likely]]
                 {
-                    PREFETCH_R(&src[i + prefetch_dist]);
+                    LCF_PREFETCH_R(&src[i + prefetch_dist]);
                 }
                 U k = k_src[i];
                 size_t bucket = (k >> shift) & mask;
                 size_t pos = count[bucket];
                 if (pos + 1 < n) [[likely]]
                 {
-                    PREFETCH_R(&dst[pos + 1]);
+                    LCF_PREFETCH_R(&dst[pos + 1]);
                 }
                 dst[pos] = src[i];
                 k_dst[pos] = k;
@@ -602,14 +602,14 @@ void radix_sort_indices_with_cfg(size_t* indices, const KeyType* keys, size_t n,
             {
                 if (i + prefetch_dist < n) [[likely]]
                 {
-                    PREFETCH_R(&src[i + prefetch_dist]);
+                    LCF_PREFETCH_R(&src[i + prefetch_dist]);
                 }
                 U k = k_src[i];
                 size_t bucket = (k >> shift) & mask;
                 size_t pos = count[bucket];
                 if (pos + 1 < n) [[likely]]
                 {
-                    PREFETCH_R(&dst[pos + 1]);
+                    LCF_PREFETCH_R(&dst[pos + 1]);
                 }
                 dst[pos] = src[i];
                 ++count[bucket];

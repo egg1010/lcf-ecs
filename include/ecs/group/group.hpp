@@ -224,8 +224,8 @@ private:
             if (i + 12 < n) [[likely]]
             {
                 auto& next = mappings[i + 12];
-                PREFETCH_R(&d0[next[0]]);
-                PREFETCH_R(&d1[next[1]]);
+                LCF_PREFETCH_R(&d0[next[0]]);
+                LCF_PREFETCH_R(&d1[next[1]]);
             }
 
             auto& m0 = mappings[i];
@@ -296,7 +296,7 @@ private:
             if (i + 16 < n) [[likely]]
             {
                 auto& next = mappings[i + 16];
-                ((void)PREFETCH_R(&std::get<Is>(data_ptrs)[next[Is]]), ...);
+                ((void)LCF_PREFETCH_R(&std::get<Is>(data_ptrs)[next[Is]]), ...);
             }
 
             auto& m0 = mappings[i];

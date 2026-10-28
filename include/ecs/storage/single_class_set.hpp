@@ -520,7 +520,7 @@ private:
                 uint32_t pf_idx = entries[i + pf_dist].key;
                 if (pf_idx != UINT32_MAX && pf_idx < sparse_cap_)
                 {
-                    PREFETCH_R(&sparse_[pf_idx]);
+                    LCF_PREFETCH_R(&sparse_[pf_idx]);
                 }
             }
 
@@ -1068,7 +1068,7 @@ private:
                 {
                     for (size_t i = 0; i < count; ++i)
                     {
-                        if (i + 16 < count) [[likely]] PREFETCH_R(&entities[i + 16]);
+                        if (i + 16 < count) [[likely]] LCF_PREFETCH_R(&entities[i + 16]);
                         sparse_[append_pos + i] = (sparse_entry{static_cast<uint32_t>(dense_start + i), entities[i].parts_.version_});
                     }
                 }
@@ -1076,7 +1076,7 @@ private:
                 {
                     for (size_t i = 0; i < count; ++i)
                     {
-                        if (i + 16 < count) [[likely]] PREFETCH_R(&entities[i + 16]);
+                        if (i + 16 < count) [[likely]] LCF_PREFETCH_R(&entities[i + 16]);
                         uint32_t idx = entities[i].parts_.index_;
                         sparse_set_unchecked(idx, entities[i].parts_.version_, static_cast<uint32_t>(dense_start + i));
                     }
@@ -1091,7 +1091,7 @@ private:
                 {
                     for (size_t i = 0; i < count; ++i)
                     {
-                        if (i + 16 < count) [[likely]] PREFETCH_R(&entities[i + 16]);
+                        if (i + 16 < count) [[likely]] LCF_PREFETCH_R(&entities[i + 16]);
                         sparse_[append_pos + i] = (sparse_entry{static_cast<uint32_t>(dense_start + i), entities[i].parts_.version_});
                         temp_components.emplace_back_unchecked(get_component(i));
                     }
@@ -1100,7 +1100,7 @@ private:
                 {
                     for (size_t i = 0; i < count; ++i)
                     {
-                        if (i + 16 < count) [[likely]] PREFETCH_R(&entities[i + 16]);
+                        if (i + 16 < count) [[likely]] LCF_PREFETCH_R(&entities[i + 16]);
                         uint32_t idx = entities[i].parts_.index_;
                         sparse_set_unchecked(idx, entities[i].parts_.version_, static_cast<uint32_t>(dense_start + i));
                         temp_components.emplace_back_unchecked(get_component(i));
@@ -1758,7 +1758,7 @@ public:
         {
             const uint32_t idx = entities[i].parts_.index_;
             if (idx < sparse_cap_)
-                PREFETCH_R(&sparse_[idx]);
+                LCF_PREFETCH_R(&sparse_[idx]);
         }
     }
 
@@ -1770,7 +1770,7 @@ public:
         const uint32_t dense = sparse_dense_at(e.parts_.index_);
         if (dense == dense_invalid) [[unlikely]]
             return;
-        PREFETCH_R(&(*get_typed_pool<T>())[dense]);
+        LCF_PREFETCH_R(&(*get_typed_pool<T>())[dense]);
     }
 
     template <typename T>
@@ -1808,7 +1808,7 @@ public:
                 {
                     const uint32_t pf_idx = entities[i + 8].parts_.index_;
                     if (pf_idx < sparse_cap_)
-                        PREFETCH_R(&sparse_[pf_idx]);
+                        LCF_PREFETCH_R(&sparse_[pf_idx]);
                 }
 
                 if (!e.is_valid() || e.parts_.index_ >= sparse_size_) [[unlikely]]
@@ -1823,7 +1823,7 @@ public:
                     continue;
                 }
                 dense_buf[j] = se->dense;
-                PREFETCH_R(&(*pool)[se->dense]);
+                LCF_PREFETCH_R(&(*pool)[se->dense]);
             }
 
             for (size_t j = 0; j < n; ++j)
@@ -2387,7 +2387,7 @@ public:
     void prefetch_sparse_entry(uint32_t idx) const noexcept
     {
         if (idx < sparse_size_) [[likely]]
-            PREFETCH_R(&sparse_[idx]);
+            LCF_PREFETCH_R(&sparse_[idx]);
     }
 
     [[nodiscard]] size_t get_sparse_size() const noexcept

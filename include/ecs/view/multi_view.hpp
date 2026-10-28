@@ -279,7 +279,7 @@
                                 if constexpr (needs_pf)
                                 {
                                     if (i + pd_pf + 7 < n) [[likely]]
-                                        (PREFETCH_R(&std::get<Is>(data_ptrs)[i + pd_pf]), ...);
+                                        (LCF_PREFETCH_R(&std::get<Is>(data_ptrs)[i + pd_pf]), ...);
                                 }
                                 entity e0(indices[i], ver_data[i]);
                                 entity e1(indices[i + 1], ver_data[i + 1]);
@@ -380,7 +380,7 @@
                             size_t i = 0;
                             for (; i < main_count; ++i)
                             {
-                                (PREFETCH_R(&std::get<Is>(data_ptrs)[i + pd]), ...);
+                                (LCF_PREFETCH_R(&std::get<Is>(data_ptrs)[i + pd]), ...);
                                 entity e(indices[i], ver_data[i]);
                                 func(e, std::get<Is>(data_ptrs)[i]...);
                             }
@@ -397,7 +397,7 @@
                         size_t i = 0;
                         for (; i < main_count; ++i)
                         {
-                            (PREFETCH_R(&std::get<Is>(data_ptrs)[i + pd]), ...);
+                            (LCF_PREFETCH_R(&std::get<Is>(data_ptrs)[i + pd]), ...);
                             primary->prefetch_sparse_entry(indices[i + pd]);
                             uint32_t eid = indices[i];
                             uint32_t ver = primary->sparse_version_at(eid);
@@ -428,7 +428,7 @@
                                 if constexpr (needs_pf)
                                 {
                                     if (i + pd_pf + 7 < n) [[likely]]
-                                        (PREFETCH_R(&std::get<Is>(data_ptrs)[i + pd_pf]), ...);
+                                        (LCF_PREFETCH_R(&std::get<Is>(data_ptrs)[i + pd_pf]), ...);
                                 }
                                 func(std::get<Is>(data_ptrs)[i]...);
                                 func(std::get<Is>(data_ptrs)[i + 1]...);
@@ -499,7 +499,7 @@
                         size_t i = 0;
                         for (; i < main_count; ++i)
                         {
-                            (PREFETCH_R(&std::get<Is>(data_ptrs)[i + pd]), ...);
+                            (LCF_PREFETCH_R(&std::get<Is>(data_ptrs)[i + pd]), ...);
                             func(std::get<Is>(data_ptrs)[i]...);
                         }
                         for (; i < n; ++i)
@@ -529,8 +529,8 @@
                     size_t i = 0;
                     for (; p < p_main_end; p += stride, ++i)
                     {
-                        (PREFETCH_R(&std::get<Is>(data_ptrs)[p[pd_off + Is]]), ...);
-                        PREFETCH_R(&versions[i + pd]);
+                        (LCF_PREFETCH_R(&std::get<Is>(data_ptrs)[p[pd_off + Is]]), ...);
+                        LCF_PREFETCH_R(&versions[i + pd]);
                         entity e(indices[i], versions[i]);
                         func(e, std::get<Is>(data_ptrs)[p[Is]]...);
                     }
@@ -545,7 +545,7 @@
                     const uint32_t* p = raw;
                     for (; p < p_main_end; p += stride)
                     {
-                        (PREFETCH_R(&std::get<Is>(data_ptrs)[p[pd_off + Is]]), ...);
+                        (LCF_PREFETCH_R(&std::get<Is>(data_ptrs)[p[pd_off + Is]]), ...);
                         func(std::get<Is>(data_ptrs)[p[Is]]...);
                     }
                     for (; p < raw_end; p += stride)
@@ -574,7 +574,7 @@
                 size_t i = 0;
                 for (; p < cp_main_end; p += cstride, ++i)
                 {
-                    (PREFETCH_R(&std::get<Is>(data_ptrs)[p[cpd_off + Is]]), ...);
+                    (LCF_PREFETCH_R(&std::get<Is>(data_ptrs)[p[cpd_off + Is]]), ...);
                     uint32_t prim = p[primary_idx_];
                     entity e(indices[prim], versions[prim]);
                     func(e, std::get<Is>(data_ptrs)[p[Is]]...);
@@ -591,7 +591,7 @@
                 const uint32_t* p = craw;
                 for (; p < cp_main_end; p += cstride)
                 {
-                    (PREFETCH_R(&std::get<Is>(data_ptrs)[p[cpd_off + Is]]), ...);
+                    (LCF_PREFETCH_R(&std::get<Is>(data_ptrs)[p[cpd_off + Is]]), ...);
                     func(std::get<Is>(data_ptrs)[p[Is]]...);
                 }
                 for (; p < craw_end; p += cstride)
@@ -988,8 +988,8 @@
                 {
                     if (i + prefetch_distance_ < n) [[likely]]
                     {
-                        (PREFETCH_R(&std::get<Is>(data_ptrs)[i + prefetch_distance_]), ...);
-                        PREFETCH_R(&ents[i + prefetch_distance_]);
+                        (LCF_PREFETCH_R(&std::get<Is>(data_ptrs)[i + prefetch_distance_]), ...);
+                        LCF_PREFETCH_R(&ents[i + prefetch_distance_]);
                     }
                     if constexpr (std::is_invocable_v<Func, entity, First&, Rest&...>)
                         func(ents[i], std::get<Is>(data_ptrs)[i]...);
@@ -1144,7 +1144,7 @@
                         if (i + 32 < n) [[likely]]
                         {
                             size_t next_pi = sorted_indices_[i + 32];
-                            (PREFETCH_R(&(*std::get<Is>(pools))[next_pi]), ...);
+                            (LCF_PREFETCH_R(&(*std::get<Is>(pools))[next_pi]), ...);
                             primary->prefetch_sparse_entry(indices[next_pi]);
                         }
                         size_t primary_i = sorted_indices_[i];
@@ -1171,7 +1171,7 @@
                         {
                             size_t next_pi = sorted_indices_[i + 32];
                             const uint32_t* next_m = raw + next_pi * stride;
-                            (PREFETCH_R(&(*std::get<Is>(pools))[next_m[Is]]), ...);
+                            (LCF_PREFETCH_R(&(*std::get<Is>(pools))[next_m[Is]]), ...);
                             primary->prefetch_sparse_entry(indices[next_pi]);
                         }
                         size_t primary_i = sorted_indices_[i];

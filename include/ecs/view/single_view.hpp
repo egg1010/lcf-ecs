@@ -509,8 +509,8 @@
                     {
                         if (i + prefetch_distance_ < n) [[likely]]
                         {
-                            PREFETCH_R(&data[i + prefetch_distance_]);
-                            PREFETCH_R(&ents[i + prefetch_distance_]);
+                            LCF_PREFETCH_R(&data[i + prefetch_distance_]);
+                            LCF_PREFETCH_R(&ents[i + prefetch_distance_]);
                         }
                         func(ents[i], data[i]);
                     }
@@ -520,7 +520,7 @@
                     for (size_t i = 0; i < n; ++i)
                     {
                         if (i + prefetch_distance_ < n) [[likely]]
-                            PREFETCH_R(&data[i + prefetch_distance_]);
+                            LCF_PREFETCH_R(&data[i + prefetch_distance_]);
                         func(data[i]);
                     }
                 }
@@ -647,7 +647,7 @@
                         for (size_t i = 0; i < n; ++i)
                         {
                             if (i + 32 < n) [[likely]]
-                                PREFETCH_R(&data[sorted[i + 32]]);
+                                LCF_PREFETCH_R(&data[sorted[i + 32]]);
                             size_t idx = sorted[i];
                             entity e(idx_data[idx], ver_data[idx]);
                             func(e, data[idx]);
@@ -658,7 +658,7 @@
                         for (size_t i = 0; i < n; ++i)
                         {
                             if (i + 32 < n) [[likely]]
-                                PREFETCH_R(&data[sorted_indices_[i + 32]]);
+                                LCF_PREFETCH_R(&data[sorted_indices_[i + 32]]);
                             size_t idx = sorted_indices_[i];
                             uint32_t eid = indices[idx];
                             uint32_t ver = base_.set_->sparse_version_at(eid);
@@ -673,7 +673,7 @@
                     for (size_t i = 0; i < n; ++i)
                     {
                         if (i + 32 < n) [[likely]]
-                            PREFETCH_R(&data[sorted[i + 32]]);
+                            LCF_PREFETCH_R(&data[sorted[i + 32]]);
                         func(data[sorted[i]]);
                     }
                 }
@@ -909,7 +909,7 @@
                 size_t i = 0;
                 for (; i < n8; i += 8)
                 {
-                    if (i + 32 < n) [[likely]] PREFETCH_R(&trk[i + 32]);
+                    if (i + 32 < n) [[likely]] LCF_PREFETCH_R(&trk[i + 32]);
                     for (size_t k = 0; k < 8; ++k)
                     {
                         size_t ii = i + k;
@@ -1050,7 +1050,7 @@
                 size_t i = 0;
                 for (; i < n8; i += 8)
                 {
-                    if (i + 32 < n) [[likely]] PREFETCH_R(&trk[i + 32]);
+                    if (i + 32 < n) [[likely]] LCF_PREFETCH_R(&trk[i + 32]);
                     for (size_t k = 0; k < 8; ++k)
                     {
                         size_t ii = i + k;

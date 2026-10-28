@@ -113,7 +113,7 @@
                 {
                     if (i + 32 < n) [[likely]]
                     {
-                        PREFETCH_R(&(*pool)[i + 32]);
+                        LCF_PREFETCH_R(&(*pool)[i + 32]);
                     }
                     if constexpr (Filter)
                     {
@@ -131,7 +131,7 @@
                 for (size_t i = 0; i < n; ++i)
                 {
                     if (i + 32 < n) [[likely]]
-                        PREFETCH_R(&(*pool)[i + 32]);
+                        LCF_PREFETCH_R(&(*pool)[i + 32]);
                     if constexpr (Filter)
                     {
                         if (!set_->is_dense_slot_live(i)) [[unlikely]] continue;
@@ -217,7 +217,7 @@
             {
                 if (i + 32 < n) [[likely]]
                 {
-                    PREFETCH_R(&(*pool)[i + 32]);
+                    LCF_PREFETCH_R(&(*pool)[i + 32]);
                 }
                 if constexpr (Filter)
                 {
@@ -633,7 +633,7 @@
                 if (i + 32 < n) [[likely]]
                 {
                     size_t next_idx = filtered_data[i + 32];
-                    PREFETCH_R(&(*pool)[next_idx]);
+                    LCF_PREFETCH_R(&(*pool)[next_idx]);
                 }
                 size_t dense_index = filtered_data[i];
                 if constexpr (std::is_invocable_v<Func, entity, T&>)

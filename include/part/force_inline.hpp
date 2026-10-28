@@ -83,26 +83,6 @@
 #define LCF_PREFETCH_NTA(ptr) ((void)0)
 #endif
 
-// 历史别名: 各模块原用名 (PREFETCH_R / DENSE_*) 统一映射到 LCF_ 前缀,
-// 避免大量使用点改动. 新代码应直接用 LCF_ 前缀宏.
-#ifndef PREFETCH_R
-#define PREFETCH_R(ptr) LCF_PREFETCH_R(ptr)
-#endif
-#ifndef PREFETCH_NTA
-#define PREFETCH_NTA(ptr) LCF_PREFETCH_NTA(ptr)
-#endif
-#ifndef DENSE_PREFETCH_R
-#define DENSE_PREFETCH_R(ptr) LCF_PREFETCH_R(ptr)
-#endif
-#ifndef DENSE_ALWAYS_INLINE
-#define DENSE_ALWAYS_INLINE FORCE_INLINE
-#endif
-#ifndef DENSE_FLATTEN
-#define DENSE_FLATTEN LCF_FLATTEN
-#endif
-#ifndef DENSE_RESTRICT
-#define DENSE_RESTRICT LCF_RESTRICT
-#endif
 
 // x86/x64 架构判定: SIMD intrinsic 只在 x86 族可用, arm64 上整段不参与编译
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)

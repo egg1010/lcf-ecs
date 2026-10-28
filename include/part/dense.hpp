@@ -22,7 +22,7 @@
 #endif
 
 #include "force_inline.hpp"
-// 跨平台宏 (DENSE_PREFETCH_R / DENSE_ALWAYS_INLINE / DENSE_FLATTEN / DENSE_RESTRICT):
+// 跨平台宏 (LCF_PREFETCH_R / FORCE_INLINE / LCF_FLATTEN / LCF_RESTRICT):
 // 集中定义于 force_inline.hpp, 此处通过别名宏直接可用
 #include "container_views.hpp"
 
@@ -89,7 +89,7 @@ private:
 
 	// 内存分配用 throwing new: 成功路径无 EH 开销, 比 malloc 快
 	// 用 assume_aligned 使 GCC 生成对齐 SIMD 指令 (vmovdqa 而非 vmovdqu)
-	[[nodiscard]] DENSE_ALWAYS_INLINE static T* allocate_data(size_t count) noexcept {
+	[[nodiscard]] FORCE_INLINE static T* allocate_data(size_t count) noexcept {
 		if (count == 0) { return nullptr; }
 		if (count > static_cast<size_t>(-1) / sizeof(T)) [[unlikely]] {
 			LCF_TRAP();   // 字节数溢出: 终止而非静默小分配
@@ -498,7 +498,7 @@ private:
 	}
 #endif
 
-	static void copy_trivial_data(T* DENSE_RESTRICT dst, const T* DENSE_RESTRICT src, size_t count) noexcept {
+	static void copy_trivial_data(T* LCF_RESTRICT dst, const T* LCF_RESTRICT src, size_t count) noexcept {
 		const size_t bytes = count * sizeof(T);
 #ifdef __AVX2__
 #if defined(__GNUC__) && !defined(__clang__)
@@ -704,7 +704,7 @@ private:
 				// 预取新数据区域, 减少 memcpy 的 cache miss
 				// 仅对大容量 (>= 64KB) 有效, 小容量预取无意义
 				if (new_capacity * sizeof(T) >= 65536) {
-					DENSE_PREFETCH_R(new_data);
+					LCF_PREFETCH_R(new_data);
 				}
 				// std::memcpy: GCC/Clang 内联小拷贝, 大块走 ERMS
 				std::memcpy(std::assume_aligned<alloc_align>(new_data),
@@ -878,24 +878,24 @@ public:
 		deallocate_data(data_ptr_, maximum_quantity_);
 	}
 
-	[[nodiscard]] DENSE_ALWAYS_INLINE constexpr T& operator[](size_t index) noexcept {
+	[[nodiscard]] FORCE_INLINE constexpr T& operator[](size_t index) noexcept {
 		return std::assume_aligned<alloc_align>(data_ptr_)[index];
 	}
 
-	[[nodiscard]] DENSE_ALWAYS_INLINE constexpr const T& operator[](size_t index) const noexcept {
+	[[nodiscard]] FORCE_INLINE constexpr const T& operator[](size_t index) const noexcept {
 		return std::assume_aligned<alloc_align>(data_ptr_)[index];
 	}
 
-	[[nodiscard]] DENSE_ALWAYS_INLINE constexpr T* get(size_t index) noexcept {
+	[[nodiscard]] FORCE_INLINE constexpr T* get(size_t index) noexcept {
 		return index < index_ ? std::assume_aligned<alloc_align>(data_ptr_) + index : nullptr;
 	}
 
-	[[nodiscard]] DENSE_ALWAYS_INLINE constexpr const T* get(size_t index) const noexcept {
+	[[nodiscard]] FORCE_INLINE constexpr const T* get(size_t index) const noexcept {
 		return index < index_ ? std::assume_aligned<alloc_align>(data_ptr_) + index : nullptr;
 	}
 
 	// 越界保护访问: index 越界时改访问 error_index, error_index 也越界时回落到 0
-	[[nodiscard]] DENSE_ALWAYS_INLINE constexpr T& get(size_t index, size_t error_index) noexcept {
+	[[nodiscard]] FORCE_INLINE constexpr T& get(size_t index, size_t error_index) noexcept {
 		if (index_ == 0) [[unlikely]] {
 			LCF_TRAP();   // 空容器无合法元素
 		}
@@ -903,7 +903,7 @@ public:
 		return data_ptr_[i];
 	}
 
-	[[nodiscard]] DENSE_ALWAYS_INLINE constexpr const T& get(size_t index, size_t error_index) const noexcept {
+	[[nodiscard]] FORCE_INLINE constexpr const T& get(size_t index, size_t error_index) const noexcept {
 		if (index_ == 0) [[unlikely]] {
 			LCF_TRAP();
 		}
@@ -911,21 +911,21 @@ public:
 		return data_ptr_[i];
 	}
 
-	[[nodiscard]] DENSE_ALWAYS_INLINE constexpr T& front() noexcept { return std::assume_aligned<alloc_align>(data_ptr_)[0]; }
-	[[nodiscard]] DENSE_ALWAYS_INLINE constexpr const T& front() const noexcept { return std::assume_aligned<alloc_align>(data_ptr_)[0]; }
-	[[nodiscard]] DENSE_ALWAYS_INLINE constexpr T& back() noexcept { return std::assume_aligned<alloc_align>(data_ptr_)[index_ - 1]; }
-	[[nodiscard]] DENSE_ALWAYS_INLINE constexpr const T& back() const noexcept { return std::assume_aligned<alloc_align>(data_ptr_)[index_ - 1]; }
+	[[nodiscard]] FORCE_INLINE constexpr T& front() noexcept { return std::assume_aligned<alloc_align>(data_ptr_)[0]; }
+	[[nodiscard]] FORCE_INLINE constexpr const T& front() const noexcept { return std::assume_aligned<alloc_align>(data_ptr_)[0]; }
+	[[nodiscard]] FORCE_INLINE constexpr T& back() noexcept { return std::assume_aligned<alloc_align>(data_ptr_)[index_ - 1]; }
+	[[nodiscard]] FORCE_INLINE constexpr const T& back() const noexcept { return std::assume_aligned<alloc_align>(data_ptr_)[index_ - 1]; }
 
-	[[nodiscard]] DENSE_ALWAYS_INLINE constexpr pointer data() noexcept { return std::assume_aligned<alloc_align>(data_ptr_); }
-	[[nodiscard]] DENSE_ALWAYS_INLINE constexpr const_pointer data() const noexcept { return std::assume_aligned<alloc_align>(data_ptr_); }
+	[[nodiscard]] FORCE_INLINE constexpr pointer data() noexcept { return std::assume_aligned<alloc_align>(data_ptr_); }
+	[[nodiscard]] FORCE_INLINE constexpr const_pointer data() const noexcept { return std::assume_aligned<alloc_align>(data_ptr_); }
 
-	[[nodiscard]] DENSE_ALWAYS_INLINE constexpr iterator begin() noexcept { return std::assume_aligned<alloc_align>(data_ptr_); }
-	[[nodiscard]] DENSE_ALWAYS_INLINE constexpr const_iterator begin() const noexcept { return std::assume_aligned<alloc_align>(data_ptr_); }
-	[[nodiscard]] DENSE_ALWAYS_INLINE constexpr const_iterator cbegin() const noexcept { return std::assume_aligned<alloc_align>(data_ptr_); }
+	[[nodiscard]] FORCE_INLINE constexpr iterator begin() noexcept { return std::assume_aligned<alloc_align>(data_ptr_); }
+	[[nodiscard]] FORCE_INLINE constexpr const_iterator begin() const noexcept { return std::assume_aligned<alloc_align>(data_ptr_); }
+	[[nodiscard]] FORCE_INLINE constexpr const_iterator cbegin() const noexcept { return std::assume_aligned<alloc_align>(data_ptr_); }
 	// 不用 assume_aligned: 使编译器可见 end()-data_ptr_==index_, 否则 erase(end-1) 无法向量化
-	[[nodiscard]] DENSE_ALWAYS_INLINE constexpr iterator end() noexcept { return data_ptr_ + index_; }
-	[[nodiscard]] DENSE_ALWAYS_INLINE constexpr const_iterator end() const noexcept { return data_ptr_ + index_; }
-	[[nodiscard]] DENSE_ALWAYS_INLINE constexpr const_iterator cend() const noexcept { return data_ptr_ + index_; }
+	[[nodiscard]] FORCE_INLINE constexpr iterator end() noexcept { return data_ptr_ + index_; }
+	[[nodiscard]] FORCE_INLINE constexpr const_iterator end() const noexcept { return data_ptr_ + index_; }
+	[[nodiscard]] FORCE_INLINE constexpr const_iterator cend() const noexcept { return data_ptr_ + index_; }
 
 	[[nodiscard]] constexpr size_type capacity() const noexcept { return maximum_quantity_; }
 	[[nodiscard]] constexpr size_type size() const noexcept { return index_; }
@@ -943,7 +943,7 @@ public:
 		index_ = 0;
 	}
 
-	DENSE_ALWAYS_INLINE void increase_capacity(size_t new_capacity) noexcept {
+	FORCE_INLINE void increase_capacity(size_t new_capacity) noexcept {
 		if (new_capacity > maximum_quantity_) [[unlikely]] {
 			size_t new_cap = calculate_new_capacity(maximum_quantity_);
 			if (new_cap < new_capacity) { new_cap = new_capacity; }
@@ -1049,7 +1049,7 @@ public:
 	}
 
 	template <typename... Args>
-	DENSE_ALWAYS_INLINE void emplace_back(Args&&... args) noexcept {
+	FORCE_INLINE void emplace_back(Args&&... args) noexcept {
 		if (index_ >= maximum_quantity_) [[unlikely]] {
 			grow_data(calculate_new_capacity(maximum_quantity_));
 		}
@@ -1059,7 +1059,7 @@ public:
 
 	// 无容量检查的追加 (unchecked), 调用方需确保 capacity 足够
 	template <typename... Args>
-	DENSE_ALWAYS_INLINE void emplace_back_unchecked(Args&&... args) noexcept {
+	FORCE_INLINE void emplace_back_unchecked(Args&&... args) noexcept {
 		if constexpr (sizeof(T) > 128) {
 			if (index_ >= maximum_quantity_) { LCF_UNREACHABLE(); }
 		}
@@ -1067,11 +1067,11 @@ public:
 		++index_;
 	}
 
-	DENSE_ALWAYS_INLINE void append_bulk(const T* src, size_t count) noexcept {
+	FORCE_INLINE void append_bulk(const T* src, size_t count) noexcept {
 		append_bulk_impl<false>(src, count);
 	}
 
-	DENSE_ALWAYS_INLINE void append_bulk_move(T* src, size_t count) noexcept {
+	FORCE_INLINE void append_bulk_move(T* src, size_t count) noexcept {
 		append_bulk_impl<true>(src, count);
 	}
 
@@ -1147,7 +1147,7 @@ public:
 	}
 
 	// 强制 always_inline: 非 inline 时 GCC 不内联, POD32 比 vector 慢 7%
-	DENSE_ALWAYS_INLINE void pop_back() noexcept {
+	FORCE_INLINE void pop_back() noexcept {
 		if constexpr (!std::is_trivially_destructible_v<T>) {
 			data_ptr_[--index_].~T();
 		}
@@ -1157,7 +1157,7 @@ public:
 	}
 
 	template <typename... Args>
-	DENSE_FLATTEN iterator emplace(const_iterator pos, Args&&... args) noexcept {
+	LCF_FLATTEN iterator emplace(const_iterator pos, Args&&... args) noexcept {
 		const size_t index = static_cast<size_t>(pos - data_ptr_);
 
 		// 重新分配路径: 直接在 新缓冲区 中放置元素到最终位置
@@ -1234,7 +1234,7 @@ public:
 
 	// 无序删除: 末尾元素移到 index 后弹出末尾, 返回被移动元素的原下标
 	// index 越界时不做修改, 返回当前 size
-	DENSE_ALWAYS_INLINE size_t erase_unordered(size_t index) noexcept {
+	FORCE_INLINE size_t erase_unordered(size_t index) noexcept {
 		if (index >= index_) [[unlikely]] {
 			return index_;
 		}
@@ -1247,7 +1247,7 @@ public:
 	}
 
 	// 末尾快路径等价 pop_back, 可批量优化为 index_ -= n
-	DENSE_FLATTEN iterator erase(const_iterator first, const_iterator last) noexcept {
+	LCF_FLATTEN iterator erase(const_iterator first, const_iterator last) noexcept {
 		const size_t start_index = static_cast<size_t>(first - data_ptr_);
 		const size_t end_index = static_cast<size_t>(last - data_ptr_);
 
@@ -1677,7 +1677,7 @@ public:
 
 private:
 	template <bool Move>
-	DENSE_ALWAYS_INLINE void append_bulk_impl(const T* src, size_t count) noexcept
+	FORCE_INLINE void append_bulk_impl(const T* src, size_t count) noexcept
 	{
 		if (count == 0) { return; }
 		if (count > static_cast<size_t>(-1) - index_) [[unlikely]] {

@@ -1463,7 +1463,7 @@ public:
         if (!set_ || e.parts_.index_ >= set_->sparse_size_) [[unlikely]]
             return;
         if (e.parts_.index_ < set_->sparse_cap_)
-            PREFETCH_R(&set_->sparse_[e.parts_.index_]);
+            LCF_PREFETCH_R(&set_->sparse_[e.parts_.index_]);
     }
 
     void prefetch_data(entity e) const noexcept
@@ -1475,7 +1475,7 @@ public:
         const sparse_entry* se = set_->sparse_entry_checked_(e.parts_.index_);
         if (se && se->version == e.parts_.version_ && se->dense != single_class_set::dense_invalid)
         {
-            PREFETCH_R(&pool_data_[se->dense]);
+            LCF_PREFETCH_R(&pool_data_[se->dense]);
         }
     }
 

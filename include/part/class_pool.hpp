@@ -355,7 +355,7 @@ public:
 			if (ptr_ != end_)
 			{
 				constexpr size_t pf_dist = (sizeof(T) < 64) ? (64 / sizeof(T)) : 1;
-				PREFETCH_R(ptr_ + pf_dist);
+				LCF_PREFETCH_R(ptr_ + pf_dist);
 				const size_t idx = static_cast<size_t>(ptr_ - origin_);
 				// 同 word 内快路径: 免函数调用; miss 时跳过已判空的首字, 直接整字扫描
 				const size_t word_idx = idx / BITS_PER_WORD;

@@ -268,7 +268,7 @@ void class_pool<T>::destroy_sparse_range(size_t first, size_t last) noexcept {
 
 	for (size_t w = start_word + (start_bit != 0 ? 1 : 0); w < end_word; ++w) {
 		if (w + 4 < end_word) {
-			PREFETCH_R(&live_bits_[w + 4]);
+			LCF_PREFETCH_R(&live_bits_[w + 4]);
 		}
 		uint64_t word = live_bits_[w];
 		while (word != 0) {
@@ -327,11 +327,11 @@ void class_pool<T>::relocate_sparse(T* dst, const T* src, const uint64_t* src_bi
 	const size_t num_full_words = count / BITS_PER_WORD;
 	for (size_t w = 0; w < num_full_words; ++w) {
 		if (w + 4 < num_full_words) {
-			PREFETCH_R(&src_bits[w + 4]);
+			LCF_PREFETCH_R(&src_bits[w + 4]);
 			const size_t pf_idx = (w + 4) * BITS_PER_WORD;
 			if (pf_idx < count) {
-				PREFETCH_R(&src[pf_idx]);
-				PREFETCH_R(&dst[pf_idx]);
+				LCF_PREFETCH_R(&src[pf_idx]);
+				LCF_PREFETCH_R(&dst[pf_idx]);
 			}
 		}
 		uint64_t word = src_bits[w];
