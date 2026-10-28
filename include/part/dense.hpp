@@ -113,7 +113,7 @@ private:
 				// 分配器无需查找块大小, 直接用 size hint
 				// clang MinGW target 默认不定义 __cpp_sized_deallocation, 回退 unsized
 #if defined(__cpp_sized_deallocation)
-				::operator delete(ptr, count * sizeof(T));
+				::operator delete(ptr);
 #else
 				::operator delete(ptr);
 #endif

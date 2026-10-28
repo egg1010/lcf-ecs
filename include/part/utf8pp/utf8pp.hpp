@@ -196,7 +196,7 @@ inline std::istream& operator>>(std::istream& is, utf8pp& s)
         {
             s.append(buf, static_cast<size_t>(is.gcount()));
         }
-        ::operator delete(buf, 4096);
+        ::operator delete(buf);
         return is;
     }
     char small[256];

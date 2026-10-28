@@ -71,7 +71,7 @@ private:
         if (sparse_) [[likely]]
         {
             std::memcpy(p, sparse_, sparse_size_ * sizeof(sparse_entry));
-            ::operator delete(sparse_, sparse_cap_ * sizeof(sparse_entry));
+            ::operator delete(sparse_);
         }
         for (size_t i = sparse_size_; i < new_cap; ++i)
         {
@@ -246,7 +246,7 @@ private:
             }
             else
             {
-                ::operator delete(p, bytes);
+                ::operator delete(p);
             }
         }
 
@@ -422,7 +422,7 @@ private:
         free_dense_.clear();
         if (tomb_bitmap) [[likely]]
         {
-            ::operator delete(tomb_bitmap, bitmap_words * sizeof(uint64_t));
+            ::operator delete(tomb_bitmap);
         }
         if (write != n)
         {
@@ -743,7 +743,7 @@ private:
                     std::memcpy(temp, data + i * comp_size, comp_size);
                     std::memcpy(data + i * comp_size, data + j * comp_size, comp_size);
                     std::memcpy(data + j * comp_size, temp, comp_size);
-                    ::operator delete(temp, comp_size);
+                    ::operator delete(temp);
                     return;
                 }
                 // 堆失败退化: 小栈块分块交换
@@ -2126,7 +2126,7 @@ public:
             if (typed_pool_ && ops_.destroy_pool) ops_.destroy_pool(typed_pool_);
             if (sparse_) [[likely]]
             {
-                ::operator delete(sparse_, sparse_cap_ * sizeof(sparse_entry));
+                ::operator delete(sparse_);
             }
 
             sparse_ = other.sparse_;
@@ -2434,7 +2434,7 @@ public:
         hot_set_release_();
         if (sparse_) [[likely]]
         {
-            ::operator delete(sparse_, sparse_cap_ * sizeof(sparse_entry));
+            ::operator delete(sparse_);
         }
     }
 
