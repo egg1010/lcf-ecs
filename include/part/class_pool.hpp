@@ -96,8 +96,7 @@ private:
 
 	static void deallocate_bitmap(uint64_t* ptr, size_t num_bits) noexcept {
 		if (ptr != nullptr) {
-			::operator delete(ptr, bitmap_word_count(num_bits) * sizeof(uint64_t),
-			                  std::align_val_t{bitmap_align});
+			::operator delete(ptr, std::align_val_t{bitmap_align});
 		}
 	}
 
@@ -181,7 +180,7 @@ private:
 	static void deallocate_data(T* ptr, size_t count) noexcept {
 		if (ptr != nullptr) {
 			constexpr size_t align = alignof(T) > cache_line ? alignof(T) : cache_line;
-			::operator delete(ptr, count * sizeof(T), std::align_val_t{align});
+			::operator delete(ptr, std::align_val_t{align});
 		}
 	}
 

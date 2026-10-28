@@ -102,7 +102,7 @@ public:
         if (this != &o) [[likely]]
         {
             clear();
-            ::operator delete(slots_, CAP * sizeof(T), std::align_val_t{ALIGN});
+            ::operator delete(slots_, std::align_val_t{ALIGN});
             slots_ = o.slots_;
             head_ = o.head_;
             tail_ = o.tail_;
@@ -125,7 +125,7 @@ public:
         clear();
         if (slots_) [[likely]]
         {
-            ::operator delete(slots_, CAP * sizeof(T), std::align_val_t{ALIGN});
+            ::operator delete(slots_, std::align_val_t{ALIGN});
         }
     }
 

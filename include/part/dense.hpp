@@ -120,7 +120,7 @@ private:
 			}
 			else {
 				constexpr size_t align = alignof(T);
-				::operator delete(ptr, count * sizeof(T), std::align_val_t{align});
+				::operator delete(ptr, std::align_val_t{align});
 			}
 		}
 	}

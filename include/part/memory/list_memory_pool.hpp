@@ -771,7 +771,7 @@ private:
         {
             const size_t total = bh->total_size;
             reserved_bytes_ -= total;
-            ::operator delete(bh, total, std::align_val_t{ CHUNK_ALIGN });
+            ::operator delete(bh, std::align_val_t{ CHUNK_ALIGN });
         }
     }
 
@@ -1201,7 +1201,7 @@ public:
             {
                 const size_t total = bh->total_size;
                 reserved_bytes_ -= total;
-                ::operator delete(bh, total, std::align_val_t{ CHUNK_ALIGN });
+                ::operator delete(bh, std::align_val_t{ CHUNK_ALIGN });
             }
             bh = next;
         }
@@ -1235,7 +1235,7 @@ public:
         while (cwild)
         {
             chunk_wilderness* next = cwild->next;
-            ::operator delete(cwild->base, CHUNK_WILD_SIZE, std::align_val_t{ CHUNK_ALIGN });
+            ::operator delete(cwild->base, std::align_val_t{ CHUNK_ALIGN });
             cwild = next;
         }
         chunk_wild_head_ = nullptr;
@@ -1247,7 +1247,7 @@ public:
             if (!bh->from_wilderness)
             {
                 const size_t total = bh->total_size;
-                ::operator delete(bh, total, std::align_val_t{ CHUNK_ALIGN });
+                ::operator delete(bh, std::align_val_t{ CHUNK_ALIGN });
             }
             bh = next;
         }
@@ -1257,7 +1257,7 @@ public:
         while (bwild)
         {
             big_wilderness_header* next = bwild->next;
-            ::operator delete(bwild->base, BIG_WILDERNESS_SIZE, std::align_val_t{ CHUNK_ALIGN });
+            ::operator delete(bwild->base, std::align_val_t{ CHUNK_ALIGN });
             bwild = next;
         }
         big_wild_head_ = nullptr;
@@ -1309,7 +1309,7 @@ public:
                 --big_block_count_;
                 const size_t total = bh->total_size;
                 reserved_bytes_ -= total;
-                ::operator delete(bh, total, std::align_val_t{ CHUNK_ALIGN });
+                ::operator delete(bh, std::align_val_t{ CHUNK_ALIGN });
             }
             bh = next;
         }
@@ -1322,7 +1322,7 @@ public:
             {
                 *cp = w->next;
                 reserved_bytes_ -= w->total_size;
-                ::operator delete(w->base, CHUNK_WILD_SIZE, std::align_val_t{ CHUNK_ALIGN });
+                ::operator delete(w->base, std::align_val_t{ CHUNK_ALIGN });
             }
             else
             {
@@ -1338,7 +1338,7 @@ public:
             {
                 *bp = w->next;
                 reserved_bytes_ -= w->total_size;
-                ::operator delete(w->base, BIG_WILDERNESS_SIZE, std::align_val_t{ CHUNK_ALIGN });
+                ::operator delete(w->base, std::align_val_t{ CHUNK_ALIGN });
             }
             else
             {

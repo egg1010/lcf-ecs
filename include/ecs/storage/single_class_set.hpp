@@ -242,7 +242,7 @@ private:
             if (!p) return;
             if (alignment > __STDCPP_DEFAULT_NEW_ALIGNMENT__)
             {
-                ::operator delete(p, bytes, std::align_val_t(alignment));
+                ::operator delete(p, std::align_val_t(alignment));
             }
             else
             {
@@ -543,7 +543,7 @@ private:
             results[orig_i] = &(*pool)[se->dense];
         }
 
-        ::operator delete(entries, count * sizeof(batch_sort_entry), std::align_val_t{align});
+        ::operator delete(entries, std::align_val_t{align});
         return true;
     }
 
