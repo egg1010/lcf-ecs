@@ -198,7 +198,9 @@ inline std::uint64_t task_graph::wait_since_of(task_id id) const noexcept
         return 0;
     }
     // 守护线程读取, 与 activate 的写入并发: relaxed 原子访问消除数据竞争
-    return std::atomic_ref<const std::uint64_t>(waits_.since_[id.index_]).load(std::memory_order_relaxed);
+    //   libc++ 不支持 atomic_ref<const T>, 用非 const 引用读取 (load 本身不修改对象)
+    auto& slot = const_cast<std::uint64_t&>(waits_.since_[id.index_]);
+    return std::atomic_ref<std::uint64_t>(slot).load(std::memory_order_relaxed);
     }
 
 inline std::size_t task_graph::wake_timed(std::uint64_t now_ns) noexcept
