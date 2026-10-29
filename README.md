@@ -41,6 +41,24 @@ int main()
 }
 ```
 
+## 接入 / Integration
+
+直接加入头文件路径 / Add the include path directly:
+
+```cmake
+target_include_directories(app PRIVATE lcf-ecs/include)
+target_compile_features(app PRIVATE cxx_std_20)
+```
+
+作为子目录接入 / As a subdirectory:
+
+```cmake
+add_subdirectory(lcf-ecs)
+target_link_libraries(app PRIVATE lcf-ecs)
+```
+
+线程模块在 POSIX 平台可能需要系统线程运行时（CMake 中为 `Threads::Threads`）。
+
 ## 环境 / Requirements
 
 最低支持版本 / Minimum supported versions:

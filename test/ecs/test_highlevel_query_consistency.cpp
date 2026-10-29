@@ -353,6 +353,5 @@ int main()
             same_set(sorted_handles(via_group), sorted_handles(via_owned)));
     }
 
-    t_end("test_highlevel_query_consistency");
-    return 0;
+    return t_end("test_highlevel_query_consistency");
 }

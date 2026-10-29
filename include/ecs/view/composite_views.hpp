@@ -494,14 +494,12 @@
                     if constexpr (std::is_invocable_v<decltype(func), entity, type_at<Is>*...>)
                     {
                         func(e, [&]() -> type_at<Is>* {
-                            if (Is == set_idx) return nullptr;
                             return sets_[Is] ? sets_[Is]->template get_ptr_fast<type_at<Is>>(e) : nullptr;
                         }()...);
                     }
                     else
                     {
                         func([&]() -> type_at<Is>* {
-                            if (Is == set_idx) return nullptr;
                             return sets_[Is] ? sets_[Is]->template get_ptr_fast<type_at<Is>>(e) : nullptr;
                         }()...);
                     }

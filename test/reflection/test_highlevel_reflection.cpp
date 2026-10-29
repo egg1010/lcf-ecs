@@ -44,6 +44,17 @@ struct ord_component
     int m() { return 3; }
 };
 
+struct padded_equal
+{
+    std::uint8_t tag;
+    int value;
+
+    bool operator==(const padded_equal& other) const noexcept
+    {
+        return tag == other.tag && value == other.value;
+    }
+};
+
 static int register_method_first() noexcept
 {
     reflect::global().register_method<&ord_component::m>("m");
@@ -195,6 +206,12 @@ int main()
         vec3 b{neg, 1.0f, 2.0f};
         t_check("+0/-0 字段相等", cv.equal(&a, &b));
         t_check("+0/-0 哈希一致", hv.hash(&a) == hv.hash(&b));
+
+        auto table = reflect::detail::type_ops<padded_equal>::make_table();
+        padded_equal pa{1, 7};
+        padded_equal pb{1, 7};
+        t_check("含 padding 类型相等语义", table.equal_fn(&pa, &pb));
+        t_check("含 padding 类型哈希契约", table.hash_fn(&pa) == table.hash_fn(&pb));
 
         person_component src;
         src.name = std::string(64, 'x');

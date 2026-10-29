@@ -13,6 +13,7 @@
 #include <new>
 #include <optional>
 #include <source_location>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -97,19 +98,8 @@ constexpr std::string_view type_name_of() noexcept
 template<typename T>
 [[nodiscard]] const char* type_name_cstr() noexcept
 {
-    static const auto buffer = []() constexpr
-    {
-        constexpr size_t cap = 256;
-        std::array<char, cap> out{};
-        constexpr std::string_view n = type_name_of<T>();
-        constexpr size_t limit = n.size() < (cap - 1) ? n.size() : (cap - 1);
-        for (size_t i = 0; i < limit; ++i)
-        {
-            out[i] = n[i];
-        }
-        return out;
-    }();
-    return buffer.data();
+    static const std::string buffer(type_name_of<T>());
+    return buffer.c_str();
 }
 
 } // namespace detail

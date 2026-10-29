@@ -53,12 +53,16 @@ private:
         double period_ns;          // 周期 (0 = 一次性)
         t_fun<void()> task;        // 回调 (CTAD: 用户传 void(*)() 自动构造)
         bool active;               // 惰性删除标记
+        uint64_t generation;       // 重入校验
 
-        timer_entry(double trigger, double period, t_fun<void()> t, bool act) noexcept
-            : next_trigger_ns(trigger), period_ns(period), task(t), active(act) {}
+        timer_entry(double trigger, double period, t_fun<void()> t, bool act,
+                    uint64_t gen) noexcept
+            : next_trigger_ns(trigger), period_ns(period), task(t), active(act),
+              generation(gen) {}
     };
 
     dense<timer_entry> timers_;
+    uint64_t next_generation_{1};
 
 public:
     scheduler() noexcept = default;
@@ -69,7 +73,7 @@ public:
     {
         double now = timer::now_nanoseconds();
         timers_.increase_capacity(timers_.size() + 1);
-        timers_.emplace_back(timer_entry(now + delay_ns, 0.0, task, true));
+        timers_.emplace_back(timer_entry(now + delay_ns, 0.0, task, true, next_generation_++));
         return timers_.size() - 1;
     }
 
@@ -79,7 +83,8 @@ public:
     {
         double now = timer::now_nanoseconds();
         timers_.increase_capacity(timers_.size() + 1);
-        timers_.emplace_back(timer_entry(now + period_ns, period_ns, task, true));
+        timers_.emplace_back(timer_entry(now + period_ns, period_ns, task, true,
+                                         next_generation_++));
         return timers_.size() - 1;
     }
 
@@ -105,11 +110,21 @@ public:
             }
             if (now >= timers_[i].next_trigger_ns)
             {
+                const uint64_t generation = timers_[i].generation;
+                const double period = timers_[i].period_ns;
                 timers_[i].task();
-                if (timers_[i].period_ns > 0.0)
+
+                // 回调可能改变槽位
+                if (i >= timers_.size()
+                    || timers_[i].generation != generation
+                    || !timers_[i].active)
+                {
+                    continue;
+                }
+                if (period > 0.0)
                 {
                     // 周期性: 累加下次触发 (避免漂移)
-                    timers_[i].next_trigger_ns += timers_[i].period_ns;
+                    timers_[i].next_trigger_ns += period;
                 }
                 else
                 {

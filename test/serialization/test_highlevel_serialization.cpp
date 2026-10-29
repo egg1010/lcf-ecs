@@ -91,6 +91,11 @@ struct vec_record
     std::vector<int>   xs;
 };
 
+struct opaque_payload
+{
+    std::string value;
+};
+
 static int register_all_types() noexcept
 {
     auto& s = reflect::global();
@@ -467,6 +472,12 @@ int main()
         const operating_message rv = m.save_object(vs, v);
         t_check("不支持字段类型显式报错", !rv && vs.empty()
                 && rv.is_code(om_err_unsupported_operation));
+
+        opaque_payload opaque{"must-not-disappear"};
+        std::string os;
+        const operating_message ro = m.save_object(os, opaque);
+        t_check("非平凡未反射对象显式报错", !ro && os.empty()
+                && ro.is_code(om_err_unsupported_operation));
     }
 
 
@@ -509,7 +520,42 @@ int main()
         t_check("超范围旧 id 丢弃", remap.size() == 2 && !remap.find(0xFFFFFFFFu, out));
     }
 
-    t_section(20, "统一错误对象");
+    t_section(22, "replace 在非空 world 上保持索引");
+    {
+        ecs::manager source;
+        auto e1 = source.create_entity();
+        auto e2 = source.create_entity();
+        auto e3 = source.create_entity();
+        (void)source.add(e1, position{1.0f, 1.0f, 1.0f});
+        (void)source.add(e3, position{3.0f, 3.0f, 3.0f});
+        source.get_entity_state(e3.parts_.index_).tag = 9;
+        source.delete_entity(e2);
+
+        serialize::manager writer(source);
+        writer.world()->register_components<position>();
+        writer.set_checksum(false);
+        std::string data;
+        t_check("稀疏索引存档成功", writer.save_world(data));
+
+        ecs::manager target;
+        target.preallocate_entities(8);
+        for (int i = 0; i < 5; ++i)
+        {
+            (void)target.create_entity();
+        }
+        serialize::manager reader(target);
+        reader.world()->register_components<position>();
+        t_check("非空 world replace 成功", reader.load_world(data));
+
+        const ecs::entity_manager& em = target.get_entity_manager();
+        auto* set = target.get_single_class_set<position>();
+        t_check("replace 保留存档索引和空洞", em.is_alive(1) && !em.is_alive(2)
+            && em.is_alive(3));
+        t_check("replace 恢复实体状态", target.get_entity_state(3).tag == 9);
+        t_check("replace 恢复组件数量", set != nullptr && set->size() == 2);
+    }
+
+    t_section(23, "统一错误对象");
     {
         serialize::manager m;
         m.set_format(archive_format::json);

@@ -38,6 +38,12 @@ public:
         recycled_ids_.emplace_back(id);
     }
 
+    void clear() noexcept
+    {
+        next_id_ = 0;
+        recycled_ids_.clear();
+    }
+
     [[nodiscard]] LCF_FORCE_INLINE
     T total_number_of_ids() const noexcept
     {

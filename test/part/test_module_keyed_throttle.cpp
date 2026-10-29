@@ -2,7 +2,9 @@
 #include "test_common.hpp"
 #include "include/part/keyed_throttle.hpp"
 
+#include <atomic>
 #include <cstdint>
+#include <thread>
 
 int main()
 {
@@ -47,6 +49,30 @@ int main()
         t_check("清零前拒绝", !throttle.allow(9, 1, 1));
         throttle.clear();
         t_check("清零后允许", throttle.allow(9, 1, 1));
+    }
+
+    t_section(6, "并发限流不超限");
+    {
+        keyed_throttle<8> throttle;
+        std::atomic<int> allowed{0};
+        auto worker = [&]() {
+            for (int i = 0; i < 100; ++i)
+            {
+                if (throttle.allow(42, 1, 10))
+                {
+                    allowed.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+        };
+        std::thread t1(worker);
+        std::thread t2(worker);
+        std::thread t3(worker);
+        std::thread t4(worker);
+        t1.join();
+        t2.join();
+        t3.join();
+        t4.join();
+        t_check("并发窗口允许次数等于上限", allowed.load(std::memory_order_relaxed) == 10);
     }
 
     return t_end("test_module_keyed_throttle");

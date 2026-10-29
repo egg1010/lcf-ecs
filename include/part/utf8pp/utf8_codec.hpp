@@ -53,8 +53,18 @@ inline constexpr uint8_t k_utf8_seq_len[256] = {
 bool utf8_decode_one(const uint8_t* p, const uint8_t* end,
                      uint32_t* out_cp, size_t* out_len) noexcept
 {
-    uint8_t lead = *p;
+    if (out_cp == nullptr || out_len == nullptr) [[unlikely]]
+    {
+        return false;
+    }
     *out_cp = 0xFFFD;
+    *out_len = 0;
+    if (p == nullptr || end == nullptr || p >= end) [[unlikely]]
+    {
+        return false;
+    }
+
+    uint8_t lead = *p;
     *out_len = 1;
 
     // ASCII 快速路径

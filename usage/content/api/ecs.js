@@ -17,8 +17,8 @@ window.DOCS_DATA['entity'] = {
 | \`entity()\` | 默认构造，\`handle_=0\`，无效实体 |
 | \`entity(uint32_t idx, uint32_t ver)\` | 指定索引和版本号构造 |
 | \`is_valid()\` | 判断实体是否有效（\`handle_ != 0\`） |
-| \`index_\` | 实体索引（32 位） |
-| \`version_\` | 实体版本号（32 位） |
+| \`parts_.index_\` | 实体索引（32 位） |
+| \`parts_.version_\` | 实体版本号（32 位） |
 | \`handle_\` | 64 位句柄（与 index_ + version_ 共用联合体） |
 | \`operator==\` | 判断两个实体是否相等（比较 handle_） |
 | \`operator!=\` | 判断两个实体是否不等 |
@@ -30,8 +30,8 @@ window.DOCS_DATA['entity'] = {
 entity e1;                    // 默认构造，无效实体
 entity e2(3, 1);              // index=3, version=1
 e2.is_valid();                // true
-e2.index_;                    // 3
-e2.version_;                  // 1
+e2.parts_.index_;             // 3
+e2.parts_.version_;           // 1
 
 std::unordered_map<entity, int> map;
 map[e2] = 42;                 // 可用作哈希键
@@ -41,9 +41,9 @@ map[e2] = 42;                 // 可用作哈希键
 
 | 错误做法 | 问题 | 正确做法 |
 |---------|------|---------|
-| 手动构造 entity 的 index_ 和 version_ | 版本号不匹配会导致 ECS 管理器认为实体无效 | 始终通过 \`manager::create_entity()\` 创建实体 |
+| 手动构造 entity 的 parts_.index_ 和 parts_.version_ | 版本号不匹配会导致 ECS 管理器认为实体无效 | 始终通过 \`manager::create_entity()\` 创建实体 |
 | 复用已删除的 entity 句柄 | 版本号已递增，旧句柄失效 | 删除后丢弃句柄，重新创建 |
-| 将 entity 成员当作普通整数运算 | \`index_\` 和 \`version_\` 不应直接操作 | 仅通过公开接口操作 entity |
+| 将 entity 内部字段当作普通整数运算 | \`parts_.index_\` 和 \`parts_.version_\` 不应直接操作 | 仅通过公开接口操作 entity |
 
 ---
 `
@@ -150,7 +150,7 @@ window.DOCS_DATA['single_class_set'] = {
 
 | 接口 | 说明 |
 |------|------|
-| \`add_def(entity, def_id, const type_def&, const void* data)\` | 添加 def 组件（数据按字节拷入，长度为注册时的 \`type_def::size\`；首次调用惰性初始化 def 池） |
+| \`add_def(entity, def_id, const type_def&, const void* data)\` | 添加 def 组件（平凡类型按字节复制；非平凡类型调用注册的 \`copy_construct\`；首次调用惰性初始化 def 池） |
 | \`get_def_ptr(entity)\` | 获取 def 组件指针（hot set 快速路径） |
 | \`get_def_ptr(entity) const\` | const 版本 |
 | \`get_def_element(dense_index)\` | 按 dense 索引直接访问（遍历用） |
@@ -308,7 +308,7 @@ mgr.preallocate_component_signals(4096);
 
 ### 运行期 def 组件
 
-配合 \`type_id::register_type_def\` 注册的类型使用（\`type_def\` 见 type_id 页），数据按字节存取，与模板组件共用掩码/视图/信号机制。
+配合 \`type_id::register_type_def\` 注册的类型使用（\`type_def\` 见 type_id 页）。平凡类型按字节复制；非平凡类型必须提供 \`copy_construct\` 与 \`destruct\`。def 组件与模板组件共用掩码/视图/信号机制。
 
 | 接口 | 说明 |
 |------|------|
@@ -1285,7 +1285,7 @@ av4.for_each([](Position* p, Velocity* v, Health* h, Name* n) {
 
 ### 5.18 exactly_one — 精确获取单个实体
 
-通过 \`exactly_one()\` 获取恰好一个实体的组件引用。若实体数量不为 1，行为未定义。
+通过 \`exactly_one()\` 获取恰好一个实体的组件引用。匹配实体数量必须为 1，否则终止。
 
 **返回值：**
 - \`single_view<T>::exactly_one()\` → \`T&\`
@@ -1306,7 +1306,7 @@ auto [p2, v2, h] = mgr.view<Position, Velocity, Health>().exactly_one();
 h.hp -= 10;
 \`\`\`
 
-> **注意：** 视图内实体数量不为 1 时行为未定义，调用者需自行保证。适用于单例实体、玩家实体等场景。
+> **注意：** \`single_view\` 与 \`multi_view\` 都要求视图内实体数量恰好为 1；不满足时终止。适用于单例实体、玩家实体等场景。
 
 ### 5.19 find_one — 查询指定实体
 
@@ -1535,7 +1535,7 @@ window.DOCS_DATA['runtime_view'] = {
 
 ### 7.1 实体掩码
 
-每个实体在添加/删除组件时自动维护组件位掩码（仅覆盖 type_id ≤ 64 的组件类型）：
+每个实体在添加/删除组件时自动维护多块组件位掩码；\`get_entity_mask\` 返回首块，其他块通过 \`get_entity_block\` 读取：
 
 \`\`\`cpp
 ecs::manager mgr;
@@ -1608,7 +1608,7 @@ rv.for_each([](entity e) {
 
 ### 7.5 组件类型无上限
 
-组件类型数量不受 64 限制。type_id ≤ 64 的组件参与实体位掩码；type_id > 64 的组件 \`get_component_bit<T>()\` 返回 0，但仍可正常添加、查询，并参与所有视图/分组（\`view\` / \`group\` / \`owning_group\` / \`reorder_group\` / \`runtime_view\` / \`view(without)\`）的匹配。无需任何特殊处理。
+组件类型数量不受 64 限制。\`get_component_bit<T>()\` 只用于首块掩码，type_id > 64 时返回 0；这类组件仍可正常添加、查询，并参与所有视图/分组（\`view\` / \`group\` / \`owning_group\` / \`reorder_group\` / \`runtime_view\` / \`view(without)\`）的匹配。需要读取其他掩码块时使用 \`get_entity_block(entity, block)\`。
 
 \`\`\`cpp
 ecs::manager mgr;

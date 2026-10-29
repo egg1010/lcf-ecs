@@ -20,6 +20,18 @@ struct health
     int hp;
 };
 
+template <size_t I>
+struct filler_component
+{
+    int value;
+};
+
+template <size_t... Is>
+static void reserve_filler_components(ecs::manager& mgr, std::index_sequence<Is...>)
+{
+    (mgr.preallocate_components<filler_component<Is>>(1), ...);
+}
+
 int main()
 {
     t_begin("test_highlevel_views — 高层封装测试: 视图系统");
@@ -143,13 +155,53 @@ int main()
         (void)c;
 
         int cnt = 0;
+        int position_only = 0;
+        int velocity_only = 0;
+        int invalid = 0;
+        float position_sum = 0.0f;
+        float velocity_sum = 0.0f;
         mgr.view_any_of<position, velocity>().for_each([&](ecs::entity e, position* p, velocity* v) {
             (void)e;
-            (void)p;
-            (void)v;
             ++cnt;
+            if (p != nullptr && v == nullptr)
+            {
+                ++position_only;
+                position_sum += p->x;
+            }
+            else if (p == nullptr && v != nullptr)
+            {
+                ++velocity_only;
+                velocity_sum += v->vx;
+            }
+            else
+            {
+                ++invalid;
+            }
         });
         t_check("view_any_of 命中并集", cnt == 2);
+        t_check("view_any_of 指针配对正确", position_only == 1 && velocity_only == 1
+            && invalid == 0);
+        t_check("view_any_of 指针取值正确", position_sum == 1.0f && velocity_sum == 2.0f);
+    }
+
+    t_section(7, "组件类型扩容后旧视图仍有效");
+    {
+        ecs::manager mgr;
+        auto e = mgr.create_entity();
+        mgr.add(e, position{4.0f, 5.0f});
+        auto view = mgr.view<position>();
+        auto runtime = mgr.runtime_view_create(std::array<int, 1>{
+            type_id::get_type_id<position>()
+        });
+
+        reserve_filler_components(mgr, std::make_index_sequence<96>{});
+
+        float sum = 0.0f;
+        view.for_each([&](position& p) { sum += p.x; });
+        size_t runtime_count = 0;
+        runtime.for_each([&](ecs::entity) { ++runtime_count; });
+        t_check("扩容后 single_view 仍可遍历", sum == 4.0f);
+        t_check("扩容后 runtime_view 仍可遍历", runtime_count == 1);
     }
 
     return t_end("views ");

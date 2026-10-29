@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <initializer_list>
 #include <memory>
 #include <new>
@@ -242,9 +243,15 @@ struct type_ops
             }
             return h;
         }
-        else if constexpr (std::is_trivially_copyable_v<T>)
+        else if constexpr (requires(const T& value) {
+            { std::hash<T>{}(value) } -> std::convertible_to<size_t>;
+        })
         {
-            // trivially copyable 类型用字节级 FNV-1a
+            return static_cast<uint64_t>(std::hash<T>{}(*static_cast<const T*>(obj)));
+        }
+        else if constexpr (std::has_unique_object_representations_v<T>)
+        {
+            // 无 padding，字节哈希与相等一致
             const uint8_t* p = static_cast<const uint8_t*>(obj);
             uint64_t h = FNV_OFFSET_BASIS_64;
             for (size_t i = 0; i < sizeof(T); ++i)
@@ -256,7 +263,7 @@ struct type_ops
         }
         else
         {
-            // 非 trivial 类型回退到 0, 用户可特化
+            // 无哈希语义时保持 equal 相同则 hash 相同
             (void)obj;
             return 0;
         }

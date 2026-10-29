@@ -1,8 +1,21 @@
 // test_module_time.cpp - 模块功能测试: timer
 #include "test_common.hpp"
 #include "include/part/time/timer.hpp"
+#include "include/part/time/timer_scheduler.hpp"
 
 static volatile uint64_t g_work = 0;
+static timer::scheduler* g_scheduler = nullptr;
+static bool g_nested_fired = false;
+
+static void timer_noop()
+{
+}
+
+static void timer_reentrant()
+{
+    g_nested_fired = true;
+    (void)g_scheduler->schedule_after(0.0, timer_noop);
+}
 
 static void do_some_work()
 {
@@ -81,6 +94,17 @@ int main()
         t_check("纳秒值非零", first > 0);
         t_check("单调非递减", second >= first);
         t_check("量级为纳秒", second - first < 1000000000ull);
+    }
+
+    t_section(7, "调度器回调重入");
+    {
+        timer::scheduler scheduler;
+        g_scheduler = &scheduler;
+        g_nested_fired = false;
+        (void)scheduler.schedule_after(0.0, timer_reentrant);
+        scheduler.tick();
+        t_check("重入回调成功执行", g_nested_fired);
+        t_check("重入新增定时器保留", scheduler.pending_count() == 2);
     }
 
     return t_end("time ");

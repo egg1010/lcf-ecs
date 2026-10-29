@@ -631,7 +631,7 @@
 
         [[nodiscard]] bool empty() const noexcept
         {
-            return !all_sets_valid() || sets_[primary_idx_]->empty();
+            return size() == 0;
         }
 
         [[nodiscard]] bool contains(entity e) const noexcept
@@ -849,7 +849,7 @@
 
                 const size_t n = sorted_indices_.size();
                 sorted_entities_.increase_capacity(n);
-                std::apply([n](auto&... pools) { (pools.resize_fill(n), ...); }, sorted_pool_copies_);
+                std::apply([n](auto&... pools) { (pools.increase_capacity(n), ...); }, sorted_pool_copies_);
 
                 if (base_.pools_aligned_)
                 {
@@ -1094,11 +1094,14 @@
                     group_keys_[i] = entries[i].key;
                 }
 
-                group_starts_.emplace_back(0);
-                for (size_t i = 1; i < n; ++i)
+                if (n > 0)
                 {
-                    if (group_keys_[i] != group_keys_[i - 1])
-                        group_starts_.emplace_back(i);
+                    group_starts_.emplace_back(0);
+                    for (size_t i = 1; i < n; ++i)
+                    {
+                        if (group_keys_[i] != group_keys_[i - 1])
+                            group_starts_.emplace_back(i);
+                    }
                 }
 
                 for (size_t i = 0; i < N; ++i)
@@ -1593,7 +1596,11 @@
         // ======================== multi_view::exactly_one ========================
         [[nodiscard]] std::tuple<First&, Rest&...> exactly_one() noexcept
         {
-            assert(all_sets_valid() && "exactly_one(): sets not valid");
+            if (!all_sets_valid()) [[unlikely]]
+            {
+                assert(false && "exactly_one(): sets not valid");
+                LCF_TRAP();
+            }
             auto* primary = sets_[primary_idx_];
             auto& indices = primary->get_entity_indices();
             size_t match_count = 0;
@@ -1611,7 +1618,11 @@
                     if (match_count > 1) break;
                 }
             }
-            assert(match_count == 1 && "exactly_one(): expected exactly 1 matching entity");
+            if (match_count != 1) [[unlikely]]
+            {
+                assert(false && "exactly_one(): expected exactly 1 matching entity");
+                LCF_TRAP();
+            }
 
             entity e(indices[last_match], primary->get_version_unchecked(indices[last_match]));
             return std::forward_as_tuple(

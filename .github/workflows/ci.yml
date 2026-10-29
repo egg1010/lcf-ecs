@@ -26,28 +26,79 @@ jobs:
           - os: windows-latest
             toolchain: msvc
             cxx: ""
+          - os: windows-latest
+            toolchain: mingw
+            cxx: ""
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
+      - uses: msys2/setup-msys2@v2
+        if: matrix.toolchain == 'mingw'
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-make
+
       - name: configure (gcc / clang)
-        if: matrix.toolchain != 'msvc'
+        if: matrix.toolchain != 'msvc' && matrix.toolchain != 'mingw'
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
 
       - name: configure (msvc)
         if: matrix.toolchain == 'msvc'
         run: cmake -B build -A x64
 
-      - name: build
+      - name: configure (mingw)
+        if: matrix.toolchain == 'mingw'
+        shell: msys2 {0}
+        run: cmake -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+
+      - name: build (native)
+        if: matrix.toolchain != 'mingw'
         run: cmake --build build --parallel --config Release
+
+      - name: build (mingw)
+        if: matrix.toolchain == 'mingw'
+        shell: msys2 {0}
+        run: cmake --build build --parallel
 
       - name: smoke (msvc crash context)
         if: matrix.toolchain == 'msvc'
         continue-on-error: true
         run: build/Release/test_module_analysis.exe
 
-      - name: test
+      - name: test (native)
+        if: matrix.toolchain != 'mingw'
         run: ctest --test-dir build -C Release --output-on-failure --timeout 600
+
+      - name: test (mingw)
+        if: matrix.toolchain == 'mingw'
+        shell: msys2 {0}
+        run: ctest --test-dir build --output-on-failure --timeout 600
+
+  config-matrix:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: debug-no-lto
+            cmake_flags: "-DCMAKE_BUILD_TYPE=Debug -DLCF_ENABLE_LTO=OFF"
+          - name: no-isa-minimal-stack
+            cmake_flags: "-DCMAKE_BUILD_TYPE=Release -DLCF_NO_ISA=ON -DLCF_STACK_MINIMAL=ON -DLCF_ENABLE_LTO=OFF"
+    steps:
+      - uses: actions/checkout@v4
+      - name: configure
+        run: >
+          cmake -B build -DCMAKE_CXX_COMPILER=g++
+          ${{ matrix.cmake_flags }}
+      - name: build
+        run: cmake --build build --parallel
+      - name: test
+        run: ctest --test-dir build --output-on-failure --timeout 600
 
   sanitize:
     runs-on: ubuntu-latest
@@ -57,7 +108,7 @@ jobs:
       - name: configure
         run: >
           cmake -B build-asan -DCMAKE_BUILD_TYPE=Debug
-          -DCMAKE_CXX_COMPILER=clang++
+          -DCMAKE_CXX_COMPILER=clang++ -DLCF_ENABLE_LTO=OFF
           -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
 
       - name: build
@@ -68,20 +119,38 @@ jobs:
 
   thread-sanitize:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
       - name: configure
         run: >
           cmake -B build-tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo
-          -DCMAKE_CXX_COMPILER=clang++
-          -DCMAKE_CXX_FLAGS="-fsanitize=thread"
+          -DCMAKE_CXX_COMPILER=clang++ -DLCF_ENABLE_LTO=OFF
+          -DCMAKE_CXX_FLAGS="-fsanitize=thread -fno-omit-frame-pointer"
+          -DBUILD_PERF_TESTS=OFF
 
       - name: build
         run: cmake --build build-tsan --parallel
 
       - name: test
-        # 并发路径(job 池/帧池/任务图)的同步协议尚未完成, 已知竞争见 thread/base/job.hpp 顶部说明;
-        # TSan 仍覆盖 part/ecs/reflection/serialization 与 thread 的同步原语测试
-        run: ctest --test-dir build-tsan -E "test_perf|task_graph|thread_app" --output-on-failure --timeout 900
+        # 排除未参与并发门禁的性能基准, 其余线程/任务图/应用路径全部纳入
+        run: ctest --test-dir build-tsan -E "test_perf" --output-on-failure --timeout 900
+
+  performance-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++
+
+      - name: build
+        run: cmake --build build --parallel
+
+      - name: gate
+        run: python3 tools/perf_gate.py --build-dir build --save-baseline perf-baseline.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: perf-baseline
+          path: perf-baseline.json

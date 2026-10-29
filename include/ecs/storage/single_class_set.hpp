@@ -215,6 +215,7 @@ private:
         size_t alignment{0};
         bool trivially_copyable{false};
         void (*construct)(void*) noexcept{nullptr};
+        void (*copy_construct)(void*, const void*) noexcept{nullptr};
         void (*destruct)(void*) noexcept{nullptr};
 
         [[nodiscard]] void* element(size_t i) noexcept
@@ -224,6 +225,26 @@ private:
         [[nodiscard]] const void* element(size_t i) const noexcept
         {
             return data + i * component_size;
+        }
+
+        void copy_construct_element(size_t dst, const void* src) noexcept
+        {
+            if (trivially_copyable)
+            {
+                std::memcpy(element(dst), src, component_size);
+            }
+            else
+            {
+                copy_construct(element(dst), src);
+            }
+        }
+
+        void destroy_element(size_t index) noexcept
+        {
+            if (!trivially_copyable && destruct != nullptr)
+            {
+                destruct(element(index));
+            }
         }
 
         [[nodiscard]] static char* allocate_bytes(size_t bytes, size_t alignment) noexcept
@@ -257,7 +278,21 @@ private:
             if (!nd) [[unlikely]] return false;
             if (data)
             {
-                std::memcpy(nd, data, size * component_size);
+                if (trivially_copyable)
+                {
+                    std::memcpy(nd, data, size * component_size);
+                }
+                else
+                {
+                    for (size_t i = 0; i < size; ++i)
+                    {
+                        copy_construct(nd + i * component_size, data + i * component_size);
+                    }
+                    for (size_t i = 0; i < size; ++i)
+                    {
+                        destruct(data + i * component_size);
+                    }
+                }
                 release_bytes(data, capacity * component_size, alignment);
             }
             data = nd;
@@ -782,12 +817,19 @@ private:
     [[nodiscard]] bool init_def_pool(int def_id, const type_def& def) noexcept
     {
         if (typed_pool_) [[unlikely]] return false;
+        if (def.size == 0 || def.alignment == 0
+            || (def.size % def.alignment) != 0
+            || (!def.trivially_copyable && (!def.copy_construct || !def.destruct))) [[unlikely]]
+        {
+            return false;
+        }
         auto* p = new (std::nothrow) def_pool_t();
         if (!p) [[unlikely]] return false;
         p->component_size = def.size;
         p->alignment = def.alignment;
         p->trivially_copyable = def.trivially_copyable;
         p->construct = def.construct;
+        p->copy_construct = def.copy_construct;
         p->destruct = def.destruct;
         component_size_ = def.size;
         if (pending_increase_capacity_ > 0)
@@ -809,28 +851,24 @@ private:
         ops_ = {
             /*.destroy_pool =*/[](void* q) noexcept {
                 auto* dp = static_cast<def_pool_t*>(q);
-                if (!dp->trivially_copyable && dp->destruct)
-                {
-                    for (size_t i = 0; i < dp->size; ++i) dp->destruct(dp->element(i));
-                }
+                for (size_t i = 0; i < dp->size; ++i) dp->destroy_element(i);
                 def_pool_t::release_bytes(dp->data, dp->capacity * dp->component_size, dp->alignment);
                 delete dp;
             },
             /*.swap_pop =*/[](void* q, size_t index) noexcept {
                 auto* dp = static_cast<def_pool_t*>(q);
-                if (!dp->trivially_copyable && dp->destruct) dp->destruct(dp->element(index));
-                if (index + 1 != dp->size)
+                dp->destroy_element(index);
+                const size_t last = dp->size - 1;
+                if (index != last)
                 {
-                    std::memcpy(dp->element(index), dp->element(dp->size - 1), dp->component_size);
+                    dp->copy_construct_element(index, dp->element(last));
+                    dp->destroy_element(last);
                 }
                 --dp->size;
             },
             /*.clear_pool =*/[](void* q) noexcept {
                 auto* dp = static_cast<def_pool_t*>(q);
-                if (!dp->trivially_copyable && dp->destruct)
-                {
-                    for (size_t i = 0; i < dp->size; ++i) dp->destruct(dp->element(i));
-                }
+                for (size_t i = 0; i < dp->size; ++i) dp->destroy_element(i);
                 dp->size = 0;
             },
             /*.increase_capacity_pool =*/[](void* q, size_t cap) noexcept {
@@ -839,14 +877,30 @@ private:
             },
             /*.swap_pool =*/[](void* q, size_t i, size_t j) noexcept {
                 auto* dp = static_cast<def_pool_t*>(q);
-                char* temp = def_pool_t::allocate_bytes(dp->component_size, dp->alignment);
-                if (temp) [[likely]]
+                if (dp->trivially_copyable)
                 {
-                    std::memcpy(temp, dp->element(i), dp->component_size);
-                    std::memcpy(dp->element(i), dp->element(j), dp->component_size);
-                    std::memcpy(dp->element(j), temp, dp->component_size);
-                    def_pool_t::release_bytes(temp, dp->component_size, dp->alignment);
+                    char* temp = def_pool_t::allocate_bytes(dp->component_size, dp->alignment);
+                    if (temp) [[likely]]
+                    {
+                        std::memcpy(temp, dp->element(i), dp->component_size);
+                        std::memcpy(dp->element(i), dp->element(j), dp->component_size);
+                        std::memcpy(dp->element(j), temp, dp->component_size);
+                        def_pool_t::release_bytes(temp, dp->component_size, dp->alignment);
+                    }
+                    return;
                 }
+                char* temp = def_pool_t::allocate_bytes(dp->component_size, dp->alignment);
+                if (temp == nullptr) [[unlikely]]
+                {
+                    std::abort();
+                }
+                dp->copy_construct(temp, dp->element(i));
+                dp->destruct(dp->element(i));
+                dp->copy_construct(dp->element(i), dp->element(j));
+                dp->destruct(dp->element(j));
+                dp->copy_construct(dp->element(j), temp);
+                dp->destruct(temp);
+                def_pool_t::release_bytes(temp, dp->component_size, dp->alignment);
             },
             /*.get_pool_data =*/[](void* q) noexcept -> void* {
                 return static_cast<def_pool_t*>(q)->data;
@@ -879,13 +933,13 @@ private:
             },
             /*.pool_pop_back =*/[](void* q) noexcept {
                 auto* dp = static_cast<def_pool_t*>(q);
-                if (!dp->trivially_copyable && dp->destruct) dp->destruct(dp->element(dp->size - 1));
+                dp->destroy_element(dp->size - 1);
                 --dp->size;
             },
             /*.move_assign_element =*/[](void* q, size_t d, size_t s) noexcept {
                 auto* dp = static_cast<def_pool_t*>(q);
-                if (!dp->trivially_copyable && dp->destruct) dp->destruct(dp->element(d));
-                std::memcpy(dp->element(d), dp->element(s), dp->component_size);
+                dp->destroy_element(d);
+                dp->copy_construct_element(d, dp->element(s));
             },
         };
         return true;
@@ -935,7 +989,11 @@ private:
 
     template <typename T, typename Entities, typename F>
     bool add_batch_impl(Entities& entities, size_t count, F&& get_component, operating_message& error) noexcept
-{
+    {
+        if (count == 0) [[unlikely]]
+        {
+            return true;
+        }
         operating_message result;
         using DT = std::decay_t<T>;
         const int tid = type_id::get_type_id<DT>();
@@ -1109,10 +1167,15 @@ private:
                 pool->append_bulk_move(temp_components.data(), count);
             }
 
-            entity_change_tracking_.increase_capacity(entity_change_tracking_.size() + count);
-            for (size_t i = 0; i < count; ++i)
+            if (track_changes_enabled_) [[likely]]
             {
-                entity_change_tracking_.emplace_back_unchecked(change_tracking_entry{(uint32_t)++global_change_counter_, (uint32_t)++global_added_counter_});
+                entity_change_tracking_.increase_capacity(entity_change_tracking_.size() + count);
+                for (size_t i = 0; i < count; ++i)
+                {
+                    entity_change_tracking_.emplace_back_unchecked(change_tracking_entry{
+                        static_cast<uint32_t>(++global_change_counter_),
+                        static_cast<uint32_t>(++global_added_counter_)});
+                }
             }
         }
         else
@@ -1172,10 +1235,15 @@ private:
                     sparse_set_unchecked(static_cast<uint32_t>(idx), entities[i].parts_.version_, static_cast<uint32_t>(dense_old + j));
                 }
 
-                entity_change_tracking_.increase_capacity(entity_change_tracking_.size() + new_count);
-                for (size_t i = 0; i < new_count; ++i)
+                if (track_changes_enabled_) [[likely]]
                 {
-                    entity_change_tracking_.emplace_back_unchecked(change_tracking_entry{(uint32_t)++global_change_counter_, (uint32_t)++global_added_counter_});
+                    entity_change_tracking_.increase_capacity(entity_change_tracking_.size() + new_count);
+                    for (size_t i = 0; i < new_count; ++i)
+                    {
+                        entity_change_tracking_.emplace_back_unchecked(change_tracking_entry{
+                            static_cast<uint32_t>(++global_change_counter_),
+                            static_cast<uint32_t>(++global_added_counter_)});
+                    }
                 }
             }
 
@@ -1186,7 +1254,12 @@ private:
                 uint32_t dense_idx = sparse_dense_at(e.parts_.index_);
                 (*pool)[dense_idx].~DT();
                 new (&(*pool)[dense_idx]) DT(get_component(i));
-                entity_change_tracking_[dense_idx] = change_tracking_entry{(uint32_t)++global_change_counter_, entity_change_tracking_[dense_idx].added_version};
+                if (track_changes_enabled_ && dense_idx < entity_change_tracking_.size()) [[likely]]
+                {
+                    const uint32_t added = entity_change_tracking_[dense_idx].added_version;
+                    entity_change_tracking_[dense_idx] = change_tracking_entry{
+                        static_cast<uint32_t>(++global_change_counter_), added};
+                }
             }
         }
 
@@ -1212,6 +1285,7 @@ public:
         versions_.clear();
         entity_change_tracking_.clear();
         if (typed_pool_ && ops_.clear_pool) ops_.clear_pool(typed_pool_);
+        bump_pool_version();
     }
 
     // #E 运行时类型擦除访问 (供序列化模块运行时路径使用)
@@ -1515,7 +1589,7 @@ public:
             sparse_size_ = static_cast<size_t>(e.parts_.index_) + 1;
             dense_.emplace_back_unchecked(e.parts_.index_);
             versions_.emplace_back_unchecked(e.parts_.version_);
-            std::memcpy(dp->element(dense_idx), data, dp->component_size);
+            dp->copy_construct_element(dense_idx, data);
             ++dp->size;  // 与 dense_ 同步 (不变量: dp->size == dense_.size())
             ++version_;
             if (track_changes_enabled_) [[likely]] {
@@ -1549,8 +1623,8 @@ public:
             {
                 if (on_remove_) [[unlikely]] on_remove_(e, old_ptr, on_remove_data_);
             }
-            if (!dp->trivially_copyable && dp->destruct) dp->destruct(old_ptr);
-            std::memcpy(old_ptr, data, dp->component_size);
+            dp->destroy_element(dense_idx);
+            dp->copy_construct_element(dense_idx, data);
             if (!on_modify_ && on_add_) [[unlikely]] on_add_(e, old_ptr, on_add_data_);
         }
         else
@@ -1573,11 +1647,8 @@ public:
                 {
                     sparse_set_at(e.parts_.index_, reuse, ver);
                 }
-                if (!dp->trivially_copyable && dp->destruct) [[unlikely]]
-                {
-                    dp->destruct(dp->element(reuse));
-                }
-                std::memcpy(dp->element(reuse), data, dp->component_size);
+                dp->destroy_element(reuse);
+                dp->copy_construct_element(reuse, data);
                 if (reuse < entity_change_tracking_.size())
                 {
                     entity_change_tracking_[reuse] =
@@ -1619,7 +1690,7 @@ public:
                 typed_pool_data_ = dp->data;
                 bump_pool_version();
             }
-            std::memcpy(dp->element(dense_idx), data, dp->component_size);
+            dp->copy_construct_element(dense_idx, data);
             ++dp->size;  // 与 dense_ 同步 (不变量: dp->size == dense_.size())
             if (on_add_) [[unlikely]] on_add_(e, dp->element(dense_idx), on_add_data_);
         }
@@ -2077,7 +2148,11 @@ public:
     , sparse_cap_(other.sparse_cap_)
     , sparse_size_(other.sparse_size_)
     , hot_(std::move(other.hot_))
+    , batch_keys_(std::move(other.batch_keys_))
+    , batch_order_(std::move(other.batch_order_))
+    , batch_order_tmp_(std::move(other.batch_order_tmp_))
     , dense_(std::move(other.dense_))
+    , versions_(std::move(other.versions_))
     , type_id_(other.type_id_)
     , typed_pool_(other.typed_pool_)
     , typed_pool_data_(other.typed_pool_data_)
@@ -2134,8 +2209,12 @@ public:
             sparse_size_ = other.sparse_size_;
             hot_set_release_();
             hot_ = std::move(other.hot_);
+            batch_keys_ = std::move(other.batch_keys_);
+            batch_order_ = std::move(other.batch_order_);
+            batch_order_tmp_ = std::move(other.batch_order_tmp_);
             position_epoch_ = other.position_epoch_;
             dense_ = std::move(other.dense_);
+            versions_ = std::move(other.versions_);
             typed_pool_ = other.typed_pool_;
             typed_pool_data_ = other.typed_pool_data_;
             ops_ = other.ops_;
@@ -2375,7 +2454,13 @@ public:
         }
 
         for (size_t i = 0; i < n; ++i)
-            sparse_[new_dense[i]].dense = static_cast<uint32_t>(i);
+        {
+            const uint32_t entity_index = new_dense[i];
+            if (sparse_[entity_index].dense == static_cast<uint32_t>(sorted_indices[i])) [[likely]]
+            {
+                sparse_[entity_index].dense = static_cast<uint32_t>(i);
+            }
+        }
 
         dense_ = std::move(new_dense);
         if (new_versions.size() > 0)

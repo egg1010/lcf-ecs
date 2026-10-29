@@ -90,5 +90,21 @@ int main()
         t_check("65 位 → 2 块", multi_block_bitmask::block_count_for_bits(65) == 2);
     }
 
+    t_section(7, "assign_slot 短输入边界");
+    {
+        multi_block_bitmask bm;
+        bm.resize_entities(2);
+        bm.reserve_blocks(4);
+        uint64_t data[] = {1ULL << 1, 1ULL << 2};
+        bm.assign_slot(1, std::span<const uint64_t>(data, 2));
+        t_check("短输入写入 block 0", bm.get_block(1, 0) == (1ULL << 1));
+        t_check("短输入写入 block 1", bm.get_block(1, 1) == (1ULL << 2));
+        t_check("短输入未覆盖其余块", bm.get_block(1, 2) == 0 && bm.get_block(1, 3) == 0);
+        uint64_t check[] = {0, 0, 0, 0};
+        bm.copy_slot_to(1, std::span<uint64_t>(check, 4));
+        t_check("短输入不越界且其余块清零", check[0] == (1ULL << 1)
+            && check[1] == (1ULL << 2) && check[2] == 0 && check[3] == 0);
+    }
+
     return t_end("multi_block_bitmask ");
 }

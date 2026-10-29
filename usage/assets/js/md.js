@@ -148,10 +148,22 @@
     return code;
   }
 
+  function slugifyHeading(text) {
+    return text
+      .replace(/`/g, '')
+      .replace(/<[^>]*>/g, '')
+      .replace(/\./g, '')
+      .replace(/[^\w\u4e00-\u9fff-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .toLowerCase();
+  }
+
   function parse(md) {
     var lines = md.split('\n');
     var html = '';
     var i = 0;
+    var headingIds = {};
+    var headingIdBase = 'section';
 
     while (i < lines.length) {
       var line = lines[i];
@@ -180,7 +192,15 @@
       var h = line.match(/^(#{1,6})\s+(.*)/);
       if (h) {
         var level = h[1].length;
-        html += '<h' + level + '>' + inline(h[2]) + '</h' + level + '>';
+        var headingText = h[2];
+        var id = slugifyHeading(headingText) || headingIdBase;
+        if (headingIds[id]) {
+          headingIds[id] += 1;
+          id = id + '-' + headingIds[id];
+        } else {
+          headingIds[id] = 1;
+        }
+        html += '<h' + level + ' id="' + escapeHtml(id) + '">' + inline(headingText) + '</h' + level + '>';
         i++;
         continue;
       }

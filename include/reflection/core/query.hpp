@@ -129,10 +129,15 @@ inline R call_method(const method_meta* m, void* obj, Args&&... args) noexcept
 class query_view
 {
     const type_meta* meta_{nullptr};
+    storage* store_{nullptr};
 
 public:
     query_view() noexcept = default;
-    explicit query_view(const type_meta* m) noexcept : meta_(m) {}
+    explicit query_view(const type_meta* m, storage* s = nullptr) noexcept
+        : meta_(m)
+        , store_(s)
+    {
+    }
 
     [[nodiscard]] bool valid() const noexcept { return meta_ != nullptr; }
 
@@ -503,13 +508,15 @@ public:
         {
             return next;
         }
-        // 递归: 根据 found->type_id 查子类型
-        const type_meta* sub = global().get_type(found->type_id);
+        // 优先当前 manager 存储
+        const type_meta* sub = store_ != nullptr
+            ? store_->get_type(found->type_id)
+            : global().get_type(found->type_id);
         if (!sub)
         {
             return nullptr;
         }
-        return query_view(sub).get_by_path(next, dot + 1);
+        return query_view(sub, store_).get_by_path(next, dot + 1);
     }
 
     [[nodiscard]] const void* get_by_path(const void* obj, const char* path) const noexcept

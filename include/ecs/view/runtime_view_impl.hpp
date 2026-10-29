@@ -58,6 +58,7 @@ inline runtime_query::runtime_query(manager* mgr, std::span<const int> required_
         uint32_t b = type_id::mask_block_of(tid);
         if (b > max_block_) max_block_ = b;
         exc_sets_.emplace_back(mgr->get_single_class_set_by_id(tid));
+        exc_ids_.emplace_back(tid);
     }
 
     for (int tid : required_ids_)
@@ -118,23 +119,26 @@ inline runtime_query::runtime_query(manager* mgr, std::span<const runtime_term> 
                 |= 1ULL << type_id::mask_offset_of(t.type_id);
         },
         // op=1 OR
-        [](term_ctx& c, const runtime_term&, single_class_set* set) noexcept
+        [](term_ctx& c, const runtime_term& t, single_class_set* set) noexcept
         {
             c.self->has_or_ = true;
             c.self->or_sets_.emplace_back(set);
+            c.self->or_ids_.emplace_back(t.type_id);
         },
         // op=2 NOT
         [](term_ctx& c, const runtime_term& t, single_class_set* set) noexcept
         {
             c.self->exc_sets_.emplace_back(set);
+            c.self->exc_ids_.emplace_back(t.type_id);
             c.self->exc_masks_[type_id::mask_block_of(t.type_id)]
                 |= 1ULL << type_id::mask_offset_of(t.type_id);
         },
         // op=3 OPTIONAL
-        [](term_ctx& c, const runtime_term&, single_class_set* set) noexcept
+        [](term_ctx& c, const runtime_term& t, single_class_set* set) noexcept
         {
             c.self->has_optional_ = true;
             c.self->opt_sets_.emplace_back(set);
+            c.self->opt_ids_.emplace_back(t.type_id);
         }
     };
 
@@ -215,8 +219,11 @@ inline bool runtime_view::contains(entity e) noexcept
 
 inline entity runtime_view::get_first_entity() noexcept
 {
-    ensure_fresh();
-    if (query_.primary_set_ == nullptr || !all_sets_valid()) [[unlikely]] return entity{};
+    ensure_hits_fresh();
+    if (query_.primary_set_ == nullptr || !all_sets_valid()) [[unlikely]]
+    {
+        return cached_hits_.empty() ? entity{} : cached_hits_[0].e;
+    }
 
     auto* primary = query_.primary_set_;
     auto& indices = primary->get_entity_indices();
@@ -248,12 +255,46 @@ inline entity runtime_view::get_first_entity() noexcept
 inline void runtime_view::rebuild() noexcept
 {
     query_.primary_set_ = nullptr;
-    const size_t n = query_.required_ids_.size();
     query_.req_sets_.clear();
-    query_.req_sets_.increase_capacity(n);
-    for (int tid : query_.required_ids_)
+    query_.exc_sets_.clear();
+    query_.or_sets_.clear();
+    query_.opt_sets_.clear();
+    if (!query_.terms_.empty())
     {
-        query_.req_sets_.emplace_back(mgr_->get_single_class_set_by_id(tid));
+        for (const runtime_term& term : query_.terms_)
+        {
+            single_class_set* set = mgr_->get_single_class_set_by_id(term.type_id);
+            switch (term.op)
+            {
+            case 0:
+                query_.req_sets_.emplace_back(set);
+                break;
+            case 1:
+                query_.or_sets_.emplace_back(set);
+                break;
+            case 2:
+                query_.exc_sets_.emplace_back(set);
+                break;
+            case 3:
+                query_.opt_sets_.emplace_back(set);
+                break;
+            default:
+                break;
+            }
+        }
+    }
+    else
+    {
+        query_.req_sets_.increase_capacity(query_.required_ids_.size());
+        for (int tid : query_.required_ids_)
+        {
+            query_.req_sets_.emplace_back(mgr_->get_single_class_set_by_id(tid));
+        }
+        query_.exc_sets_.increase_capacity(query_.exc_ids_.size());
+        for (int tid : query_.exc_ids_)
+        {
+            query_.exc_sets_.emplace_back(mgr_->get_single_class_set_by_id(tid));
+        }
     }
     query_.primary_set_ = single_class_set::select_primary_set(query_.req_sets_.data(),
                                                               query_.req_sets_.size());
@@ -292,7 +333,7 @@ inline void runtime_view::snapshot_versions() noexcept
     track_overflow_ = false;
 
     const auto push = [&](const single_class_set* set, int tid) {
-        if (set == query_.primary_set_)
+        if (set != nullptr && set == query_.primary_set_)
         {
             return;
         }
@@ -332,23 +373,23 @@ inline void runtime_view::snapshot_versions() noexcept
     }
     for (size_t i = 0; i < query_.exc_sets_.size(); ++i)
     {
-        if (query_.exc_sets_[i] != nullptr)
-        {
-            push(query_.exc_sets_[i], 0);
-        }
+        const int tid = i < query_.exc_ids_.size() ? query_.exc_ids_[i] : 0;
+        push(query_.exc_sets_[i], tid);
     }
     if (query_.has_or_)
     {
         for (size_t i = 0; i < query_.or_sets_.size(); ++i)
         {
-            if (query_.or_sets_[i] != nullptr) push(query_.or_sets_[i], 0);
+            const int tid = i < query_.or_ids_.size() ? query_.or_ids_[i] : 0;
+            push(query_.or_sets_[i], tid);
         }
     }
     if (query_.has_optional_)
     {
         for (size_t i = 0; i < query_.opt_sets_.size(); ++i)
         {
-            if (query_.opt_sets_[i] != nullptr) push(query_.opt_sets_[i], 0);
+            const int tid = i < query_.opt_ids_.size() ? query_.opt_ids_[i] : 0;
+            push(query_.opt_sets_[i], tid);
         }
     }
 }
@@ -357,8 +398,19 @@ inline void runtime_view::snapshot_versions() noexcept
 inline void runtime_view::build_cached_hits() noexcept
 {
     cached_hits_.clear();
-    if (!all_sets_valid() || query_.primary_set_ == nullptr) [[unlikely]]
+    if (!all_sets_valid()) [[unlikely]]
     {
+        cached_hits_valid_ = true;
+        return;
+    }
+    if (query_.primary_set_ == nullptr) [[unlikely]]
+    {
+        if (query_.has_or_)
+        {
+            for_each_hit_impl([&](entity e, size_t) {
+                cached_hits_.emplace_back(e, 0);
+            });
+        }
         cached_hits_valid_ = true;
         return;
     }
@@ -643,8 +695,25 @@ inline void runtime_view::for_each_typed_impl(Func&& func, std::index_sequence<I
 template <typename Func>
 inline void runtime_view::for_each_paged(size_t offset, size_t limit, Func&& func) noexcept
 {
-    ensure_fresh();
-    if (query_.primary_set_ == nullptr) return;
+    ensure_hits_fresh();
+    if (query_.primary_set_ == nullptr)
+    {
+        const size_t total = cached_hits_.size();
+        if (offset >= total) return;
+        const size_t stop = (offset + limit < total) ? (offset + limit) : total;
+        for (size_t i = offset; i < stop; ++i)
+        {
+            if constexpr (std::is_invocable_v<Func, entity>)
+            {
+                func(cached_hits_[i].e);
+            }
+            else
+            {
+                func();
+            }
+        }
+        return;
+    }
 
     size_t n = query_.primary_set_->get_entity_indices().size();
     if (offset >= n) return;

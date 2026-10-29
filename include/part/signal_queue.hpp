@@ -64,6 +64,14 @@ public:
         flushing_ = false;
     }
 
+    void clear() noexcept
+    {
+        buffer_.clear();
+        overflow_.clear();
+        overflow_read_ = 0;
+        flushing_ = false;
+    }
+
 private:
     ring_buffer<Event, Capacity> buffer_;
     dense<Event> overflow_;

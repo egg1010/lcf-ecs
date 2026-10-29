@@ -45,5 +45,26 @@ int main()
         t_check("单字符长度", one.size() == 1 && one.length() == 1);
     }
 
+    t_section(5, "游标空区间与截断边界");
+    {
+        size_t consumed = 99;
+        char32_t cp = utf8_next_cp(nullptr, nullptr, &consumed);
+        t_check("空游标返回替换字符", cp == static_cast<char32_t>(0xFFFD));
+        t_check("空游标消耗 0 字节", consumed == 0);
+
+        const char* empty = "";
+        cp = utf8_next_cp(empty, empty, &consumed);
+        t_check("空区间安全返回", cp == static_cast<char32_t>(0xFFFD) && consumed == 0);
+
+        const char truncated[] = "\xE4";
+        cp = utf8_next_cp(truncated, truncated + 1, &consumed);
+        t_check("截断序列安全返回", cp == static_cast<char32_t>(0xFFFD) && consumed == 1);
+
+        uint32_t raw_cp = 0;
+        size_t raw_len = 99;
+        bool ok = detail_utf8::utf8_decode_one(nullptr, nullptr, &raw_cp, &raw_len);
+        t_check("底层解码拒绝空指针", !ok && raw_cp == 0xFFFD && raw_len == 0);
+    }
+
     return t_end("utf8pp ");
 }

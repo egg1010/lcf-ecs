@@ -47,13 +47,25 @@ public:
         }
         next_ = static_cast<std::uint32_t*>(
             ::operator new(sizeof(std::uint32_t) * capacity, std::nothrow));
-        if (next_ == nullptr)
+        live_words_ = (static_cast<size_t>(capacity) + 63u) >> 6;
+        live_ = static_cast<std::atomic<std::uint64_t>*>(
+            ::operator new(sizeof(std::atomic<std::uint64_t>) * live_words_, std::nothrow));
+        if (next_ == nullptr || live_ == nullptr)
         {
+            ::operator delete(static_cast<void*>(next_));
+            ::operator delete(static_cast<void*>(live_));
+            next_ = nullptr;
+            live_ = nullptr;
+            live_words_ = 0;
             return false;
         }
         for (std::uint32_t i = 0; i < capacity; ++i)
         {
             next_[i] = (i + 1u < capacity) ? i + 1u : none;
+        }
+        for (size_t i = 0; i < live_words_; ++i)
+        {
+            new (&live_[i]) std::atomic<std::uint64_t>(0);
         }
         capacity_ = capacity;
         count_.store(static_cast<std::int64_t>(capacity), std::memory_order_release);
@@ -64,13 +76,25 @@ public:
     void destroy() noexcept
     {
         std::uint32_t* memory = next_;
+        auto* live = live_;
+        const size_t live_words = live_words_;
         next_ = nullptr;
+        live_ = nullptr;
         capacity_ = 0;
+        live_words_ = 0;
         count_.store(0, std::memory_order_relaxed);
         head_.store(pack(none, 0), std::memory_order_relaxed);
         if (memory != nullptr)
         {
             ::operator delete(static_cast<void*>(memory));
+        }
+        if (live != nullptr)
+        {
+            for (size_t i = 0; i < live_words; ++i)
+            {
+                live[i].~atomic();
+            }
+            ::operator delete(static_cast<void*>(live));
         }
     }
 
@@ -97,6 +121,7 @@ public:
                 continue;
             }
             out_index = index;
+            live_[index >> 6].fetch_or(1ull << (index & 63), std::memory_order_release);
             count_.fetch_sub(1, std::memory_order_relaxed);
             return true;
         }
@@ -106,6 +131,12 @@ public:
     {
         if (index >= capacity_)
         {
+            return;
+        }
+        const std::uint64_t bit = 1ull << (index & 63);
+        if ((live_[index >> 6].fetch_and(~bit, std::memory_order_acq_rel) & bit) == 0)
+        {
+            // 防重复释放
             return;
         }
         std::uint64_t head = head_.load(std::memory_order_acquire);
@@ -135,6 +166,8 @@ public:
 
 private:
     std::uint32_t* next_{nullptr};
+    std::atomic<std::uint64_t>* live_{nullptr};
+    size_t live_words_{0};
     std::uint32_t capacity_{0};
     std::atomic<std::uint64_t> head_{pack(none, 0)};
     std::atomic<std::int64_t> count_{0};

@@ -96,21 +96,35 @@ inline bool task_graph::prepare_join_impl(task_id parent, task_id child, operati
         error.write_failure(om_err_invalid_argument.code, msg_level::error, msg::here());
         return false;
     }
-    if (!activate_impl(child, error))
+    if (child.index_ >= waits_.join_parent_.size())
     {
-        const task_state state = target->state();
-        if (state == task_state::disabled || state == task_state::faulted)
-        {
-            return false;
-        }
+        error.write_failure(om_err_invalid_argument.code, msg_level::error, msg::here());
+        return false;
     }
-    const parent_word declared{target->parent_.load(std::memory_order_acquire)};
-    if (declared.parent() != parent.index_ && child.index_ < waits_.join_parent_.size())
+
+    const std::uint32_t existing = waits_.join_parent_[child.index_];
+    if (existing == parent.index_)
     {
-        waits_.join_parent_[child.index_] = parent.index_;
+        return true;
     }
+    if (existing != invalid_task_index)
+    {
+        error.write_failure(om_err_invalid_argument.code, msg_level::error, msg::here());
+        return false;
+    }
+
+    waits_.join_parent_[child.index_] = parent.index_;
     node->pending_children_.fetch_add(1, std::memory_order_acq_rel);
     set_wait(parent.index_, wait_kind::join, child.index_);
+    if (!activate_impl(child, error))
+    {
+        if (waits_.join_parent_[child.index_] == parent.index_)
+        {
+            waits_.join_parent_[child.index_] = invalid_task_index;
+        }
+        node->pending_children_.fetch_sub(1, std::memory_order_acq_rel);
+        return false;
+    }
     return true;
     }
 
@@ -756,6 +770,10 @@ inline bool task_graph::activate_impl(task_id id, activate_options options, oper
         if (!route_to(node, epoch))
         {
             release_all(id.index_);
+            if (admission_ != nullptr)
+            {
+                admission_->on_complete(0);
+            }
             node->state_.store(static_cast<std::uint32_t>(task_state::dormant),
                                std::memory_order_release);
             error.write_failure(om_err_queue_full.code, msg_level::warn, msg::here());
@@ -1245,43 +1263,77 @@ inline bool task_graph::arm_delay(task_id id, std::uint32_t frames) noexcept
     }
     const std::uint64_t target =
         slot->frame_.load(std::memory_order_acquire) + static_cast<std::uint64_t>(frames);
+    while (delay_lock_.test_and_set(std::memory_order_acquire))
+    {
+    }
     delay_frame_[id.index_] = target;
+    bool accepted = true;
     const std::uint32_t previous =
         node->flags_.fetch_or(flag_delay_armed, std::memory_order_acq_rel);
-    if ((previous & flag_delay_armed) != 0)
+    if ((previous & flag_delay_armed) == 0)
     {
-        return true;
+        if (delayed_.size() >= delayed_.capacity())
+        {
+            node->flags_.fetch_and(~flag_delay_armed, std::memory_order_acq_rel);
+            accepted = false;
+        }
+        else
+        {
+            delayed_.emplace_back(id.index_);
+        }
     }
-    if (delayed_.size() >= delayed_.capacity())
+    delay_lock_.clear(std::memory_order_release);
+    if (!accepted)
     {
-        node->flags_.fetch_and(~flag_delay_armed, std::memory_order_acq_rel);
         report(msg_level::warn, om_err_queue_full.code, "delayed activate table full", id);
         return false;
     }
-    delayed_.emplace_back(id.index_);
     return true;
+    }
+
+inline void task_graph::finish_fault(task_node* node, uint32_t error,
+                                     std::source_location site) noexcept
+    {
+    const std::uint32_t index = static_cast<std::uint32_t>(node - table_.nodes_);
+    if (error == 0)
+    {
+        error = om_err_task_body_faulted.code;
+    }
+    node->flags_.fetch_or(flag_faulted, std::memory_order_acq_rel);
+    clear_wait(index);
+    release_all(index);
+    if (admission_ != nullptr)
+    {
+        admission_->on_complete(0);
+    }
+    node->state_.store(static_cast<std::uint32_t>(task_state::faulted),
+                       std::memory_order_release);
+    node->flags_.fetch_and(~flag_identity_pending, std::memory_order_release);
+    std::atomic_ref<std::uint64_t>(waits_.start_ns_[index]).store(0, std::memory_order_relaxed);
+    std::atomic_ref<std::uint64_t>(waits_.since_[index]).store(0, std::memory_order_relaxed);
+    metrics_.faults_.fetch_add(1, std::memory_order_relaxed);
+    metrics_.completions_.fetch_add(1, std::memory_order_release);
+    if (completion_fn_ != nullptr)
+    {
+        operating_message failure;
+        failure.write_failure(error, msg_level::error, site);
+        completion_fn_(failure, completion_user_);
+    }
+    notify_dependents(index);
+    notify_parent(node);
+    notify_join_waiter(index);
     }
 
 inline void task_graph::finish(task_node* node, uint32_t error, std::source_location site) noexcept
     {
     if (error != 0)
     {
-        node->flags_.fetch_or(flag_faulted, std::memory_order_acq_rel);
-        metrics_.faults_.fetch_add(1, std::memory_order_relaxed);
-        release_all(static_cast<std::uint32_t>(node - table_.nodes_));
-        if (admission_ != nullptr)
-        {
-            admission_->on_complete(0);
-        }
-        node->state_.store(static_cast<std::uint32_t>(task_state::faulted),
-                           std::memory_order_release);
-        metrics_.completions_.fetch_add(1, std::memory_order_release);
-        if (completion_fn_ != nullptr)
-        {
-            operating_message failure;
-            failure.write_failure(error, msg_level::error, site);
-            completion_fn_(failure, completion_user_);
-        }
+        finish_fault(node, error, site);
+        return;
+    }
+    if ((node->flags_.load(std::memory_order_acquire) & flag_body_failed) != 0) [[unlikely]]
+    {
+        finish_fault(node, om_err_task_body_faulted.code, site);
         return;
     }
 
@@ -1425,8 +1477,15 @@ inline void task_graph::notify_parent(task_node* node) noexcept
     {
         return;
     }
+    const bool child_failed =
+        (node->flags_.load(std::memory_order_acquire) & flag_faulted) != 0;
+    const std::uint32_t parent_flags = parent->flags_.load(std::memory_order_acquire);
+    if (child_failed && (parent_flags & flag_join_any) == 0)
+    {
+        parent->flags_.fetch_or(flag_body_failed, std::memory_order_acq_rel);
+    }
     const std::uint32_t previous = parent->pending_children_.fetch_sub(1, std::memory_order_acq_rel);
-    if ((parent->flags_.load(std::memory_order_acquire) & flag_join_any) != 0 &&
+    if ((parent_flags & flag_join_any) != 0 &&
         parent->state_.load(std::memory_order_acquire) ==
             static_cast<std::uint32_t>(task_state::waiting))
     {
@@ -1439,28 +1498,46 @@ inline void task_graph::notify_parent(task_node* node) noexcept
         parent->pending_children_.store(0, std::memory_order_release);
         return;
     }
-    if (previous == 1 &&
-        parent->state_.load(std::memory_order_acquire) ==
-            static_cast<std::uint32_t>(task_state::waiting) &&
-        (parent->flags_.load(std::memory_order_acquire) & flag_body_done) != 0)
+    if (previous != 1 ||
+        parent->state_.load(std::memory_order_acquire) !=
+            static_cast<std::uint32_t>(task_state::waiting))
     {
-        parent->state_.store(static_cast<std::uint32_t>(task_state::completed),
-                             std::memory_order_release);
-        parent->flags_.fetch_and(~flag_body_done, std::memory_order_release);
-        metrics_.completions_.fetch_add(1, std::memory_order_release);
-        const std::uint32_t parent_index = static_cast<std::uint32_t>(parent - table_.nodes_);
-        notify_dependents(parent_index);
-        notify_parent(parent);
         return;
     }
-    if (previous == 1 &&
-        parent->state_.load(std::memory_order_acquire) ==
-            static_cast<std::uint32_t>(task_state::waiting) &&
-        (parent->flags_.load(std::memory_order_acquire) & flag_body_done) == 0)
+
+    const std::uint32_t current_flags = parent->flags_.load(std::memory_order_acquire);
+    if ((current_flags & (flag_body_failed | flag_faulted)) != 0)
     {
-        const std::uint32_t parent_index = static_cast<std::uint32_t>(parent - table_.nodes_);
-        (void)wake_waiting_index(parent_index);
+        std::uint32_t expected = static_cast<std::uint32_t>(task_state::waiting);
+        if (parent->state_.compare_exchange_strong(expected,
+                                                   static_cast<std::uint32_t>(task_state::faulted),
+                                                   std::memory_order_acq_rel,
+                                                   std::memory_order_acquire))
+        {
+            parent->flags_.fetch_and(~flag_body_done, std::memory_order_release);
+            finish_fault(parent, om_err_task_body_faulted.code, std::source_location::current());
+        }
+        return;
     }
+    if ((current_flags & flag_body_done) != 0)
+    {
+        std::uint32_t expected = static_cast<std::uint32_t>(task_state::waiting);
+        if (parent->state_.compare_exchange_strong(expected,
+                                                   static_cast<std::uint32_t>(task_state::completed),
+                                                   std::memory_order_acq_rel,
+                                                   std::memory_order_acquire))
+        {
+            parent->flags_.fetch_and(~flag_body_done, std::memory_order_release);
+            metrics_.completions_.fetch_add(1, std::memory_order_release);
+            const std::uint32_t parent_index = static_cast<std::uint32_t>(parent - table_.nodes_);
+            notify_dependents(parent_index);
+            notify_parent(parent);
+            notify_join_waiter(parent_index);
+        }
+        return;
+    }
+    const std::uint32_t parent_index = static_cast<std::uint32_t>(parent - table_.nodes_);
+    (void)wake_waiting_index(parent_index);
     }
 
 inline void task_graph::start_children(task_id parent_id) noexcept

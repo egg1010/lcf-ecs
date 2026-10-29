@@ -558,6 +558,8 @@ struct io_awaitable
         {
             domain_->cancel(request);
         }
+        // 与 complete() 的 release 发布配对
+        (void)request->state_.load(std::memory_order_acquire);
         io_result result = request->result_;
         if (result.status_ == io_status::error && result.error_ == 0)
         {

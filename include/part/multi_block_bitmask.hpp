@@ -479,16 +479,23 @@ public:
 		if (data.size() > num_blocks()) [[unlikely]]
 			reserve_blocks(static_cast<uint32_t>(data.size()));
 		inline_bits_[slot] = data[0];
-		if (data.size() > 1)
+		if (overflow_block_count_ == 0) return;
+		const uint32_t available = data.size() > 1 ? static_cast<uint32_t>(data.size() - 1) : 0;
+		const uint32_t copy_blocks = available < overflow_block_count_ ? available : overflow_block_count_;
+		uint64_t*& ovf = overflows_[slot];
+		if (copy_blocks > 0)
 		{
-			uint64_t*& ovf = overflows_[slot];
 			if (ovf == nullptr) [[unlikely]]
 			{
 				ovf = alloc_overflow(overflow_block_count_);
 				++overflow_entity_count_;
 			}
-			std::memcpy(ovf, data.data() + 1,
-			            static_cast<size_t>(overflow_block_count_) * sizeof(uint64_t));
+			std::memcpy(ovf, data.data() + 1, static_cast<size_t>(copy_blocks) * sizeof(uint64_t));
+		}
+		if (ovf != nullptr && copy_blocks < overflow_block_count_)
+		{
+			std::memset(ovf + copy_blocks, 0,
+			            static_cast<size_t>(overflow_block_count_ - copy_blocks) * sizeof(uint64_t));
 		}
 	}
 

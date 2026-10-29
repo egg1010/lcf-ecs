@@ -12,8 +12,9 @@ struct type_def
     size_t size{0};                     // 元素字节大小 (>0)
     size_t alignment{0};                // 对齐 (2 的幂)
     bool trivially_copyable{false};    // true: memcpy 搬运, 不调构造析构
-    void (*construct)(void* p) noexcept{nullptr};  // 非平凡时必填
-    void (*destruct)(void* p) noexcept{nullptr};    // 非平凡时必填
+    void (*construct)(void* p) noexcept{nullptr};                  // 可选
+    void (*copy_construct)(void* dst, const void* src) noexcept{nullptr};  // 非平凡必填
+    void (*destruct)(void* p) noexcept{nullptr};                   // 非平凡必填
 };
 
 class type_id
@@ -87,7 +88,9 @@ private:
     {
         return a.size == b.size && a.alignment == b.alignment
             && a.trivially_copyable == b.trivially_copyable
-            && a.construct == b.construct && a.destruct == b.destruct;
+            && a.construct == b.construct
+            && a.copy_construct == b.copy_construct
+            && a.destruct == b.destruct;
     }
 
 public:
@@ -206,11 +209,13 @@ public:
     static int register_type_def(std::string_view name, const type_def& def) noexcept
     {
         if (def.size == 0 || def.alignment == 0
-            || (def.alignment & (def.alignment - 1)) != 0) [[unlikely]]
+            || (def.alignment & (def.alignment - 1)) != 0
+            || (def.size % def.alignment) != 0) [[unlikely]]
         {
             return -1;
         }
-        if (!def.trivially_copyable && (!def.construct || !def.destruct)) [[unlikely]]
+        if (!def.trivially_copyable
+            && (!def.copy_construct || !def.destruct)) [[unlikely]]
         {
             return -1;
         }
@@ -255,10 +260,7 @@ public:
             {
                 result = id;
             }
-            else
-            {
-                type_id_counter_.fetch_sub(1, std::memory_order_relaxed);
-            }
+            // 发布失败时保留 ID 空洞: 并发分配器不能安全回滚计数器
         }
 
         def_lock_.clear(std::memory_order_release);

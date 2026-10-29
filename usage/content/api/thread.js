@@ -12,6 +12,8 @@ window.DOCS_DATA['thread_manager'] = {
 
 入口 \`thread/manager.hpp\`；帧循环场景用 \`thread::app\`（§57），开箱即用的应用骨架，在 manager 外面加了一层默认设置。
 
+> **并发边界：** 共享同一个 manager 时，只通过已提供的提交与任务接口并发操作；任务体捕获对象的同步由调用方负责。线程与任务图路径由 CI 的 TSan 作业持续检查。
+
 ### 47.1 配置 manager_config
 
 | 字段 | 默认值 | 说明 |
@@ -93,10 +95,10 @@ window.DOCS_DATA['thread_manager'] = {
 \`\`\`cpp
 
 thread::manager mgr;
-operating_message error;
-if (!mgr.configure(thread::profile::server(4)))
+const operating_message config_error = mgr.configure(thread::profile::server(4));
+if (!config_error)
 {
-    std::fprintf(stderr, "configure failed: %u\n", error.code());
+    std::fprintf(stderr, "configure failed: %u\n", config_error.code());
     return 1;
 }
 mgr.start();
@@ -454,7 +456,7 @@ window.DOCS_DATA['thread_error'] = {
 
 | 接口 | 说明 |
 |------|------|
-| \`configure(config, error, runtime = nullptr)\` | 配置失败写调用方错误对象 |
+| \`configure(config, runtime = nullptr)\` | 返回 \`operating_message\`，失败时携带错误码 |
 | \`create(config)\` | 建图失败时返回带错误码的对象 |
 | \`submit(job*, error, preferred)\` / \`try_submit(job*, error, preferred)\` | 提交失败写错误码 |
 | \`set_error_sink(sink, user)\` | 同步失败出口，\`void(const operating_message&, void*)\` |
@@ -466,10 +468,11 @@ window.DOCS_DATA['thread_error'] = {
 ### 53.4 示例
 
 \`\`\`cpp
-const operating_message error = thread::manager mgr;
-if (!mgr.configure(thread::profile::server(4)))
+thread::manager mgr;
+const operating_message config_error = mgr.configure(thread::profile::server(4));
+if (!config_error)
 {
-    std::fprintf(stderr, "configure failed: %u\n", error.code());
+    std::fprintf(stderr, "configure failed: %u\n", config_error.code());
     return 1;
 }
 
@@ -862,10 +865,10 @@ int main()
     config.role_count = 3;
 
     thread::manager mgr;
-    operating_message error;
-    if (!mgr.configure(config))
+    const operating_message config_error = mgr.configure(config);
+    if (!config_error)
     {
-        std::fprintf(stderr, "configure failed: %u\n", error.code());
+        std::fprintf(stderr, "configure failed: %u\n", config_error.code());
         return 1;
     }
     if (!mgr.attach_thread(thread::role::renderer, "render-main"))

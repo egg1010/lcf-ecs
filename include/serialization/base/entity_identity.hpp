@@ -137,17 +137,17 @@ inline bool rebuild_entities(ecs::manager& mgr, const saved_entity_set& saved,
                              detail::entity_remap& remap) noexcept
 {
     const uint32_t max_idx = saved.max_index;
+    ecs::entity_manager& em = mgr.get_entity_manager();
+    em.reset();
     if (max_idx == 0)
     {
         return true;
     }
     mgr.preallocate_entities(max_idx);
 
-    dense<ecs::entity> created;
-    created.resize_fill(static_cast<size_t>(max_idx) + 1, ecs::entity{});
     for (uint32_t i = 1; i <= max_idx; ++i)
     {
-        created[i] = mgr.create_entity();
+        (void)mgr.create_entity();
     }
 
     for (size_t k = 0; k < saved.entries.size(); ++k)
@@ -157,7 +157,8 @@ inline bool rebuild_entities(ecs::manager& mgr, const saved_entity_set& saved,
         {
             continue;
         }
-        remap.set(s.index, created[s.index], s.version);
+        em.set_version_at(s.index, s.version);
+        remap.set(s.index, ecs::entity(s.index, s.version), s.version);
         ecs::entity_state& st = mgr.get_entity_state(s.index);
         st.flags = s.flags;
         st.tag = s.tag;
@@ -171,7 +172,7 @@ inline bool rebuild_entities(ecs::manager& mgr, const saved_entity_set& saved,
         {
             continue;
         }
-        ecs::entity e = created[i];
+        ecs::entity e(i, em.get_version_at(i));
         mgr.delete_entity(e);
     }
     return true;

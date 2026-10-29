@@ -148,10 +148,10 @@ class manager
 {
 public:
     manager() noexcept = default;
-    manager(manager&&) noexcept = default;
+    manager(manager&&) noexcept = delete;
     manager(const manager&) = delete;
     manager& operator=(const manager&) = delete;
-    manager& operator=(manager&&) noexcept = default;
+    manager& operator=(manager&&) noexcept = delete;
     ~manager() = default;
 
     // 底层存储: 序列化与 ops 只依赖这一层
@@ -627,12 +627,12 @@ public:
     template<typename T>
     [[nodiscard]] query_view get() noexcept
     {
-        return query_view(store_.get_type(type_id::get_type_id<T>()));
+        return query_view(store_.get_type(type_id::get_type_id<T>()), &store_);
     }
 
     [[nodiscard]] query_view find(const char* type_name) noexcept
     {
-        return query_view(store_.find_type(type_name));
+        return query_view(store_.find_type(type_name), &store_);
     }
 
     template<typename T>

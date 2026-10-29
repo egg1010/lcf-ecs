@@ -212,6 +212,28 @@
       });
     }
 
+    DOM.content.querySelectorAll('.doc-content a[href^="#"]').forEach(function (link) {
+      link.addEventListener('click', function (event) {
+        var href = link.getAttribute('href');
+        if (!href || href.indexOf('#/') === 0) return;
+        var targetId = decodeURIComponent(href.slice(1));
+        var target = document.getElementById(targetId);
+        if (!target) {
+          var compact = function (value) {
+            return value.replace(/[^0-9a-zA-Z\u4e00-\u9fff]/g, '').toLowerCase();
+          };
+          var wanted = compact(targetId);
+          target = Array.prototype.find.call(
+            DOM.content.querySelectorAll('.doc-content [id]'),
+            function (el) { return compact(el.id) === wanted; }
+          );
+        }
+        if (!target) return;
+        event.preventDefault();
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    });
+
     updateSidebarActive();
   }
 

@@ -680,6 +680,10 @@ public:
             return error;
         }
         f.write(data.data(), static_cast<std::streamsize>(data.size()));
+        if (!f)
+        {
+            error.write_failure(om_err_io_failed.code, msg_level::warn, msg::here());
+        }
         return error;
     }
 
@@ -731,7 +735,15 @@ public:
         f.seekg(0, std::ios::beg);
         std::string content;
         content.resize(static_cast<size_t>(sz));
-        f.read(content.data(), sz);
+        if (sz > 0)
+        {
+            f.read(content.data(), sz);
+            if (!f || f.gcount() != sz)
+            {
+                error.write_failure(om_err_io_failed.code, msg_level::warn, msg::here());
+                return error;
+            }
+        }
         return load_from_string(content);
     }
 

@@ -8,6 +8,8 @@
 #include <limits>
 #include <type_traits>
 #include <cstring>
+#include <cstdlib>
+#include <new>
 #include "ecs/storage/single_class_set.hpp"
 #include "part/type/type_id.hpp"
 #include "ecs/entity/entity_manager.hpp"
@@ -82,10 +84,82 @@ concept range_container = requires(const C& c) {
     { c.size() } -> std::convertible_to<size_t>;
 } && not_dense<C>;
 
+// 地址稳定，扩容不搬移
+class component_storage
+{
+    dense<single_class_set*> sets_;
+
+    void release_() noexcept
+    {
+        for (size_t i = 0; i < sets_.size(); ++i)
+        {
+            delete sets_[i];
+        }
+        sets_.clear();
+    }
+
+public:
+    component_storage() noexcept = default;
+
+    component_storage(component_storage&& other) noexcept
+        : sets_(std::move(other.sets_))
+    {
+    }
+
+    component_storage& operator=(component_storage&& other) noexcept
+    {
+        if (this != &other) [[likely]]
+        {
+            release_();
+            sets_ = std::move(other.sets_);
+        }
+        return *this;
+    }
+
+    component_storage(const component_storage&) = delete;
+    component_storage& operator=(const component_storage&) = delete;
+
+    ~component_storage()
+    {
+        release_();
+    }
+
+    [[nodiscard]] size_t size() const noexcept
+    {
+        return sets_.size();
+    }
+
+    single_class_set& emplace_back() noexcept
+    {
+        auto* set = new (std::nothrow) single_class_set();
+        if (set == nullptr) [[unlikely]]
+        {
+            std::abort();
+        }
+        sets_.emplace_back(set);
+        return *set;
+    }
+
+    [[nodiscard]] single_class_set& back() noexcept
+    {
+        return *sets_.back();
+    }
+
+    [[nodiscard]] single_class_set& operator[](size_t index) noexcept
+    {
+        return *sets_[index];
+    }
+
+    [[nodiscard]] const single_class_set& operator[](size_t index) const noexcept
+    {
+        return *sets_[index];
+    }
+};
+
 class manager
 {
 private:
-    dense<single_class_set> components_c_;
+    component_storage components_c_;
     dense<component_meta> component_metas_;
     entity_manager entity_manager_;
     size_t default_component_capacity_{0};

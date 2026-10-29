@@ -258,7 +258,7 @@ window.DOCS_DATA['type_id'] = {
   order: 18,
   content: `## 17. type_id — 类型ID
 
-为每种类型分配唯一整数 ID（编译时确定，线程安全）。
+为每种类型分配进程内唯一整数 ID（首次查询时确定，线程安全）。
 另支持运行期按名字注册自定义类型，注册 ID 与模板类型 ID 互不冲突。
 
 ### 接口
@@ -280,10 +280,11 @@ window.DOCS_DATA['type_id'] = {
 
 | 字段 | 说明 |
 |------|------|
-| \`size\` | 元素字节大小（必须 > 0） |
+| \`size\` | 元素字节大小（必须 > 0，且为 \`alignment\` 的整数倍） |
 | \`alignment\` | 对齐要求（必须为 2 的幂） |
 | \`trivially_copyable\` | true 时按 memcpy 方式搬运数据 |
-| \`construct\` / \`destruct\` | 非平凡类型的构造/析构函数指针（\`void(*)(void*) noexcept\`） |
+| \`construct\` | 非平凡类型的默认构造（可选，\`void(*)(void*) noexcept\`） |
+| \`copy_construct\` / \`destruct\` | 非平凡类型必填；复制构造签名为 \`void(*)(void*, const void*) noexcept\`，析构签名为 \`void(*)(void*) noexcept\` |
 
 ### 使用
 
@@ -307,13 +308,14 @@ int id = type_id::register_type_def("Velocity", def);
 assert(type_id::get_def_type_id("Velocity") == id);        // 按名查询
 assert(type_id::register_type_def("Velocity", def) == id); // 重复注册幂等
 
-// 非平凡类型需提供构造/析构
+// 非平凡类型需提供复制构造/析构
 type_def nontrivial;
 nontrivial.size = 16;
 nontrivial.alignment = 8;
 nontrivial.trivially_copyable = false;
-nontrivial.construct = my_construct;  // void(*)(void*) noexcept
-nontrivial.destruct = my_destruct;    // void(*)(void*) noexcept
+nontrivial.construct = my_construct;            // 可选
+nontrivial.copy_construct = my_copy_construct;  // 非平凡必填
+nontrivial.destruct = my_destruct;              // 非平凡必填
 int id2x = type_id::register_type_def("Matrix", nontrivial);
 
 // 按 ID 反查

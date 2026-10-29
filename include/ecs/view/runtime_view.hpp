@@ -44,6 +44,7 @@ public:
     bool use_mask_path_{true};
     dense<single_class_set*> req_sets_;
     dense<single_class_set*> exc_sets_;
+    dense<int> exc_ids_;
 
     // term 支持(OR/OPTIONAL)
     dense<runtime_term> terms_;
@@ -52,6 +53,8 @@ public:
     dense<access_mode> req_access_;
     dense<single_class_set*> or_sets_;
     dense<single_class_set*> opt_sets_;
+    dense<int> or_ids_;
+    dense<int> opt_ids_;
 
     runtime_query() noexcept = default;
 

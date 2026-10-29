@@ -20,29 +20,43 @@ public:
             return false;
         }
         slot& target = slots_[key % SlotCount];
+        while (target.lock_.test_and_set(std::memory_order_acquire))
+        {
+        }
+        bool allowed = false;
         if (target.window_.load(std::memory_order_relaxed) != window)
         {
             target.window_.store(window, std::memory_order_relaxed);
             target.key_.store(key, std::memory_order_relaxed);
             target.count_.store(1, std::memory_order_relaxed);
-            return true;
+            allowed = true;
         }
-        if (target.key_.load(std::memory_order_relaxed) != key)
+        else if (target.key_.load(std::memory_order_relaxed) != key)
         {
             target.key_.store(key, std::memory_order_relaxed);
             target.count_.store(1, std::memory_order_relaxed);
-            return true;
+            allowed = true;
         }
-        return target.count_.fetch_add(1, std::memory_order_relaxed) < limit;
+        else
+        {
+            allowed = target.count_.fetch_add(1, std::memory_order_relaxed) < limit;
+        }
+        target.lock_.clear(std::memory_order_release);
+        return allowed;
     }
 
     void clear() noexcept
     {
         for (std::size_t i = 0; i < SlotCount; ++i)
         {
-            slots_[i].key_.store(0, std::memory_order_relaxed);
-            slots_[i].window_.store(0, std::memory_order_relaxed);
-            slots_[i].count_.store(0, std::memory_order_relaxed);
+            slot& target = slots_[i];
+            while (target.lock_.test_and_set(std::memory_order_acquire))
+            {
+            }
+            target.key_.store(0, std::memory_order_relaxed);
+            target.window_.store(0, std::memory_order_relaxed);
+            target.count_.store(0, std::memory_order_relaxed);
+            target.lock_.clear(std::memory_order_release);
         }
     }
 
@@ -52,6 +66,7 @@ private:
         std::atomic<std::uint64_t> key_{0};
         std::atomic<std::uint64_t> window_{0};
         std::atomic<std::uint32_t> count_{0};
+        std::atomic_flag lock_{};
     };
 
     slot slots_[SlotCount]{};

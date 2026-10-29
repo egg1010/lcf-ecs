@@ -235,7 +235,7 @@ src.reduce_capacity(2, dst);              // src: {1, 2}, dst: {3, 4, 5}
 
 \`\`\`cpp
 
-dense<float> d(1000);
+dense<float> d(1000, 0.0f);
 for (size_t i = 0; i < 1000; ++i) d[i] = static_cast<float>(i);
 
 // 子范围视图
@@ -280,7 +280,7 @@ d.for_each_chunk<4>([](std::span<float, 4> c) { /* 不重叠分块 */ });
 d.for_each_enumerated([](size_t i, float& v) { v += static_cast<float>(i); });
 
 // 双容器同步
-dense<float> other(1000);
+dense<float> other(1000, 0.0f);
 d.for_each_zip(other, [](float& a, float& b) { a += b; });
 bool same = d.equal(other);
 
@@ -289,7 +289,7 @@ d.simd_for_each([](float& v) { v *= 2.0f; });
 size_t tail_off = d.unaligned_tail_offset();
 
 // 拷贝/移动
-dense<float> dst2(1000);
+dense<float> dst2(1000, 0.0f);
 d.copy_to(dst2.data(), 1000);
 d.reverse_copy_to(dst2.span());
 \`\`\`
@@ -782,7 +782,7 @@ copy_to(pool, compact, pool.size());
 // compact[0..pool.count()) 为连续活跃元素
 
 // dense 同样适用
-dense<float> d(1000);
+dense<float> d(1000, 0.0f);
 for (size_t i = 0; i < 1000; ++i) d[i] = static_cast<float>(i);
 d.for_each([](float& v) { v *= 2.0f; });
 strided_for_each<4>(d, [](float& v) { /* ... */ });

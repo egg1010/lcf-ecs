@@ -68,6 +68,7 @@ std::atomic<int> g_ctx_request{0};
 std::atomic<int> g_ctx_trace{0};
 std::atomic<int> g_sleep_done{0};
 std::atomic<int> g_fault_seen{0};
+std::atomic<int> g_join_fault_handled{0};
 std::atomic<int> g_io_done{0};
 std::atomic<int> g_blocking_done{0};
 std::atomic<int> g_det_done{0};
@@ -111,6 +112,16 @@ thread::task<void> parent_body(thread::task_context&)
 {
     co_await thread::join(thread::task_id{0});
     g_join_parent.fetch_add(1);
+    co_return;
+}
+
+thread::task<void> join_fault_parent_body(thread::task_context&)
+{
+    const uint32_t result = co_await thread::join(thread::task_id{0});
+    if (result != 0)
+    {
+        g_join_fault_handled.fetch_add(1);
+    }
     co_return;
 }
 
@@ -2053,6 +2064,112 @@ int main()
         const operating_message bad_budget = graph.set_budget(bad, 100);
         t_check("非法任务设置预算失败", !bad_budget);
         t_check("预算失败码非零", bad_budget.code() != 0);
+    }
+
+    t_section(46, "子任务失败传播到父任务");
+    {
+        thread::task_graph graph;
+        thread::task_graph_config config{};
+        config.worker_count = 0;
+        config.task_capacity = 16;
+        t_check("创建故障传播任务图", graph.create(config));
+
+        probe p{};
+        auto parent_body_fn = [&p](thread::task_context&) noexcept { record(p); };
+        const thread::task_id parent =
+            builder_of(graph, "fault.parent") | thread::on(thread::role::general)
+            | thread::run(parent_body_fn);
+        thread::task_node* parent_node = graph.node_at(parent);
+        if (parent_node != nullptr)
+        {
+            parent_node->flags_.fetch_or(thread::flag_auto_start_children |
+                                         thread::flag_join_children,
+                                         std::memory_order_acq_rel);
+        }
+
+        const thread::route_word route = thread::route_word::make(
+            thread::role::general, thread::order_mode::parallel,
+            thread::affinity_kind::none, thread::priority::normal,
+            thread::task_worker_none);
+        const thread::parent_word parent_word =
+            thread::parent_word::make(parent.index_, 1, thread::parent_word::flag_join_counted);
+        const thread::task_id child =
+            graph.declare_full("fault.child", thread::task_body{}, route, parent_word,
+                               thread::invalid_order_key, 0);
+        thread::task_body child_body{};
+        child_body.kind_ = thread::task_body_plain_ctx;
+        child_body.invoke_.plain_ctx_ = &fault_body;
+        (void)graph.set_body(child, child_body);
+
+        g_fault_seen.store(0, std::memory_order_relaxed);
+        t_check("激活故障父任务", graph.activate(parent));
+        for (int i = 0; i < 16; ++i)
+        {
+            (void)graph.pump_role(thread::role::general, 16);
+        }
+        t_check("故障子任务执行", g_fault_seen.load(std::memory_order_relaxed) == 1);
+        t_check("子任务状态为 faulted",
+                graph.state_of(child) == thread::task_state::faulted);
+        t_check("父任务传播为 faulted",
+                graph.state_of(parent) == thread::task_state::faulted);
+    }
+
+    t_section(47, "join 子任务失败唤醒父协程");
+    {
+        thread::task_graph graph;
+        thread::task_graph_config config{};
+        config.worker_count = 0;
+        config.task_capacity = 16;
+        t_check("创建 join 故障任务图", graph.create(config));
+
+        thread::task_body child_body{};
+        child_body.kind_ = thread::task_body_plain_ctx;
+        child_body.invoke_.plain_ctx_ = &fault_body;
+        const thread::task_id child = graph.declare("join.fault.child", child_body);
+
+        thread::task_body parent_body_value{};
+        parent_body_value.kind_ = thread::task_body_coroutine_ctx;
+        parent_body_value.invoke_.coro_ctx_ = &join_fault_parent_body;
+        const thread::task_id parent = graph.declare("join.fault.parent", parent_body_value);
+
+        g_fault_seen.store(0, std::memory_order_relaxed);
+        g_join_fault_handled.store(0, std::memory_order_relaxed);
+        t_check("激活 join 父协程", graph.activate(parent));
+        for (int i = 0; i < 16; ++i)
+        {
+            (void)graph.pump_role(thread::role::general, 16);
+        }
+        t_check("join 子任务 faulted",
+                graph.state_of(child) == thread::task_state::faulted);
+        t_check("join 父协程被唤醒并取得错误",
+                g_join_fault_handled.load(std::memory_order_relaxed) == 1);
+        t_check("join 父协程完成",
+                graph.state_of(parent) == thread::task_state::completed);
+    }
+
+    t_section(48, "延迟激活重复登记");
+    {
+        thread::task_graph graph;
+        thread::task_graph_config config{};
+        config.worker_count = 0;
+        config.task_capacity = 8;
+        t_check("创建延迟任务图", graph.create(config));
+
+        probe p{};
+        auto body = [&p](thread::task_context&) noexcept { record(p); };
+        const thread::task_id delayed =
+            builder_of(graph, "delay.rearm") | thread::on(thread::role::general)
+            | thread::run(body);
+        thread::activate_options options{};
+        options.delay_frames_ = 2;
+        t_check("首次延迟登记", graph.activate(delayed, options));
+        t_check("重复延迟登记合并", graph.activate(delayed, options));
+        (void)graph.begin_frame(thread::role::general);
+        (void)graph.pump_role(thread::role::general, 8);
+        t_check("延迟第 1 帧不执行", p.total.load() == 0);
+        (void)graph.begin_frame(thread::role::general);
+        (void)graph.pump_role(thread::role::general, 8);
+        t_check("延迟到期只执行一次", p.total.load() == 1);
     }
 
     return t_end("test_module_task_graph");

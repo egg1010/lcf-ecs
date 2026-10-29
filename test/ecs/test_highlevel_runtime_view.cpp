@@ -128,5 +128,55 @@ int main()
         t_check("删非主组件后 for_each 一致", cnt == 0);
     }
 
+    t_section(5, "纯 OR 查询各接口一致");
+    {
+        ecs::manager mgr;
+        auto a = mgr.create_entity();
+        mgr.add(a, position{1.0f, 0.0f});
+
+        ecs::runtime_term term{};
+        term.type_id = type_id::get_type_id<velocity>();
+        term.op = 1;
+        auto rv = mgr.runtime_view_create_from_terms(&term, 1);
+        t_check("后注册 OR 类型前 count == 0", rv.count() == 0);
+
+        mgr.add(a, velocity{2.0f, 0.0f});
+        t_check("后注册 OR 类型后 count == 1", rv.count() == 1);
+        t_check("纯 OR size 一致", rv.size() == 1 && !rv.empty());
+        t_check("纯 OR get_first_entity 有效", rv.get_first_entity().is_valid());
+        t_check("纯 OR contains 命中", rv.contains(a));
+
+        size_t visited = 0;
+        for (ecs::entity e : rv)
+        {
+            (void)e;
+            ++visited;
+        }
+        t_check("纯 OR begin/end 遍历一致", visited == 1);
+
+        size_t paged = 0;
+        rv.for_each_paged(0, 4, [&](ecs::entity) { ++paged; });
+        t_check("纯 OR 分页遍历一致", paged == 1);
+    }
+
+    t_section(6, "后注册 NOT 类型触发刷新");
+    {
+        ecs::manager mgr;
+        auto a = mgr.create_entity();
+        mgr.add(a, position{1.0f, 0.0f});
+
+        ecs::runtime_term terms[2]{};
+        terms[0].type_id = type_id::get_type_id<position>();
+        terms[0].op = 0;
+        terms[1].type_id = type_id::get_type_id<health>();
+        terms[1].op = 2;
+        auto rv = mgr.runtime_view_create_from_terms(terms, 2);
+        t_check("NOT 类型注册前命中", rv.count() == 1);
+
+        mgr.add(a, health{5});
+        t_check("NOT 类型注册后排除", rv.count() == 0);
+        t_check("NOT 类型注册后 empty", rv.empty());
+    }
+
     return t_end("runtime_view ");
 }

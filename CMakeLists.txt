@@ -2,10 +2,12 @@ cmake_minimum_required(VERSION 3.20)
 
 project(lcf-ecs LANGUAGES CXX VERSION 1.0.9)
 
+find_package(Threads REQUIRED)
+
 # 编译器检测: LCF_IS_GCC / LCF_IS_CLANG / LCF_IS_MSVC / LCF_IS_MINGW
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     set(LCF_IS_GCC ON)
-    if(WIN32 AND CMAKE_CXX_COMPILER MATCHES "mingw|MINGW")
+    if(WIN32)
         set(LCF_IS_MINGW ON)
     endif()
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
@@ -22,25 +24,20 @@ endif()
 #   add_subdirectory(lcf-ecs)
 #   add_executable(app main.cpp)
 #   target_link_libraries(app lcf-ecs)
-# 消费者环境保持纯净: 纯 -O2 无指令集 flags, 无需显式链接任何库文件,
-# 必需选项 (C++20 / MSVC 预处理器与编码 / clang builtins) 由本 target 注入,
-# SIMD 路径经运行时检测自动回退标量
+# 消费者保持 -O2、无指令集 flags；仅传递 C++20、系统线程和 MSVC 必需选项。
+# SIMD 路径经运行时检测回退标量。
 # ====================================================================
 add_library(lcf-ecs INTERFACE)
+add_library(lcf::lcf-ecs ALIAS lcf-ecs)
 target_compile_features(lcf-ecs INTERFACE cxx_std_20)
 target_include_directories(lcf-ecs INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+target_link_libraries(lcf-ecs INTERFACE Threads::Threads)
 if(LCF_IS_MSVC OR LCF_IS_CLANG_CL)
     # /Zc:preprocessor: 传统 MSVC 预处理器把 __VA_ARGS__ 视为单一参数, 破坏反射宏
     # /utf-8: 头文件含 UTF-8 中文注释, 无 BOM 源码需显式指定编码
     target_compile_options(lcf-ecs INTERFACE /Zc:preprocessor /utf-8)
 endif()
-if(WIN32 AND LCF_IS_CLANG AND NOT LCF_IS_CLANG_CL)
-    # clang (MSVC ABI, GNU 前端): __builtin_cpu_supports 引用 __cpu_model 符号,
-    # Windows 下不自动链接 clang builtins runtime, 由 INTERFACE 注入 (消费者零感知)
-    target_link_options(lcf-ecs INTERFACE -lclang_rt.builtins-x86_64)
-endif()
-
 # 被其他项目 add_subdirectory 引入时: 只导出 INTERFACE target, 立即返回,
 # 不设置任何全局选项/构建类型/测试目标, 消费者编译环境完全由其自身控制
 if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
@@ -59,9 +56,9 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-# 移植性基线: 禁用全部指令集 flags 与 LTO, 验证纯 -O0 (Debug) 无额外命令下
-#   所有模块可编译运行, SIMD 路径经运行时检测回退标量
-option(LCF_NO_ISA "禁用指令集 flags (纯 -O0 移植性基线) / Disable ISA flags for portability baseline" OFF)
+# 移植性基线: 禁用全部指令集 flags 与 LTO, 优化级别仍由 CMAKE_BUILD_TYPE 决定;
+#   SIMD 路径经运行时检测回退标量
+option(LCF_NO_ISA "禁用指令集 flags 与 LTO / Disable ISA flags and LTO" OFF)
 if(LCF_NO_ISA)
     set(LCF_ENABLE_LTO OFF CACHE BOOL "LTO disabled by LCF_NO_ISA" FORCE)
 endif()
@@ -89,6 +86,7 @@ endif()
 include(CheckIPOSupported)
 check_ipo_supported(RESULT lcf_ipo_supported OUTPUT lcf_ipo_error)
 option(LCF_ENABLE_LTO "启用链接时优化 (LTO/IPO) / Enable LTO" ON)
+option(LCF_MINGW_MAKE_COMPAT "修改 MinGW 工具链目录以启用并行 LTRANS / Install make.exe alias into toolchain" OFF)
 
 if(lcf_ipo_supported AND LCF_ENABLE_LTO)
     include(ProcessorCount)
@@ -111,7 +109,7 @@ if(lcf_ipo_supported AND LCF_ENABLE_LTO)
         endif()
         if(LCF_IS_MINGW)
             find_program(LCF_MAKE_EXE make)
-            if(NOT LCF_MAKE_EXE)
+            if(NOT LCF_MAKE_EXE AND LCF_MINGW_MAKE_COMPAT)
                 get_filename_component(LCF_GCC_BIN_DIR "${CMAKE_CXX_COMPILER}" DIRECTORY)
                 find_program(LCF_MINGW_MAKE_EXE mingw32-make HINTS "${LCF_GCC_BIN_DIR}")
                 if(LCF_MINGW_MAKE_EXE)
@@ -127,6 +125,8 @@ if(lcf_ipo_supported AND LCF_ENABLE_LTO)
                         endif()
                     endif()
                 endif()
+            elseif(NOT LCF_MAKE_EXE)
+                message(STATUS "LTO: 未找到 make.exe, 使用串行 LTRANS (可选 LCF_MINGW_MAKE_COMPAT=ON)")
             endif()
         endif()
         set(LCF_LTO_FLAG_DESC "-flto=${LCF_LTO_JOBS}")
@@ -157,6 +157,7 @@ if(WIN32)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX)
 endif()
 
+option(LCF_STACK_MINIMAL "LCF_MINIMAL_STACK=1 全模块最低栈占用 (大缓冲堆化) / Minimal stack" OFF)
 if(LCF_STACK_MINIMAL)
     add_compile_definitions(LCF_MINIMAL_STACK=1)
     message(STATUS "Stack: LCF_MINIMAL_STACK=1 (大栈缓冲堆化)")
@@ -177,10 +178,10 @@ else()
 endif()
 
 # 构建选项: 3 类测试 (规范第 11 条: 模块功能 / 高层封装 / ECS 性能)
-option(LCF_STACK_MINIMAL     "LCF_MINIMAL_STACK=1 全模块最低栈占用 (大缓冲堆化) / Minimal stack"  OFF)
 option(BUILD_MODULE_TESTS    "构建模块功能测试 (test_module_*) / Module functional tests"        ON)
 option(BUILD_HIGHLEVEL_TESTS "构建高层封装测试 (test_highlevel_*) / High-level wrapper tests"     ON)
 option(BUILD_PERF_TESTS      "构建 ECS 性能测试 (test_perf_*, 百万为单位) / ECS performance tests" ON)
+option(LCF_KILL_RUNNING_TESTS "构建前终止同名测试进程 (Windows) / Kill same-named test processes before build" OFF)
 
 message(STATUS "Build options:")
 message(STATUS "  BUILD_MODULE_TESTS    : ${BUILD_MODULE_TESTS}")
@@ -196,7 +197,7 @@ function(lcf_add_executable target_name source_file)
     if(LCF_IS_MSVC OR LCF_IS_CLANG_CL)
         target_compile_options(${target_name} PRIVATE /utf-8)
     endif()
-    if(WIN32)
+    if(WIN32 AND LCF_KILL_RUNNING_TESTS)
         file(WRITE "${CMAKE_BINARY_DIR}/kill_${target_name}.bat"
              "@taskkill /F /IM ${target_name}.exe /T >nul 2>&1\n@exit /b 0\n")
         add_custom_command(

@@ -1,13 +1,6 @@
 // job.hpp - 任务对象与 job 池
 //
-// 已知限制 (2026-10-28, TSan 实测 38 处竞争):
-//   job 的跨线程交接依赖池索引栈的 acquire/release 语义, 但 set_slot_backed /
-//   set_overflow_capture 读写 flags_ 时未走原子, 且 release_job 在归还索引前
-//   先 destroy_job 清理字段, 执行方可能已重新 claim 同一槽位。
-//   同源问题还出现在帧池(operator new align_val_t 所有权传递)与 IO 请求字段
-//   (task_id/buffer_ 直接赋值)。这些属于并发协议未完成, 不是单点漏改;
-//   CI 的 thread-sanitize 作业目前排除 test_perf / task_graph / thread_app,
-//   待协议重做后逐步放开。
+// 并发交接：槽位与状态原子化，执行完成后销毁并归还。
 #pragma once
 
 #include <atomic>
@@ -59,6 +52,10 @@ struct alignas(job_align) job
     static constexpr std::uint8_t flag_slot_backed = 1u << 1;
     static constexpr std::uint8_t flag_overflow_capture = 1u << 2;
 
+    static constexpr std::uint8_t lifecycle_free = 0;
+    static constexpr std::uint8_t lifecycle_allocated = 1;
+    static constexpr std::uint8_t lifecycle_retiring = 2;
+
     job_invoke_fn invoke_{nullptr};
     job_destroy_fn destroy_{nullptr};
     unsigned char storage_[job_storage_size] = {};
@@ -72,8 +69,9 @@ struct alignas(job_align) job
     std::uint32_t slot_index_{0xFFFFFFFFu};
     std::uint32_t aux_{0};
 
-    std::uint8_t flags_{0};
-    std::uint8_t reserved_[3] = {};
+    std::atomic<std::uint8_t> flags_{0};
+    std::atomic<std::uint8_t> lifecycle_{0};
+    std::uint8_t reserved_[2] = {};
 
     unsigned char trailing_pad_[8] = {};
 
@@ -90,35 +88,37 @@ struct alignas(job_align) job
 
     bool is_coroutine_resume() const noexcept
     {
-        return (flags_ & flag_coroutine) != 0;
+        return (flags_.load(std::memory_order_acquire) & flag_coroutine) != 0;
     }
 
     void set_coroutine_resume(bool value) noexcept
     {
         if (value)
         {
-            flags_ |= flag_coroutine;
+            flags_.fetch_or(flag_coroutine, std::memory_order_release);
         }
         else
         {
-            flags_ = static_cast<std::uint8_t>(flags_ & ~flag_coroutine);
+            flags_.fetch_and(static_cast<std::uint8_t>(~flag_coroutine),
+                             std::memory_order_release);
         }
     }
 
     bool is_slot_backed() const noexcept
     {
-        return (flags_ & flag_slot_backed) != 0;
+        return (flags_.load(std::memory_order_acquire) & flag_slot_backed) != 0;
     }
 
     void set_slot_backed(bool value) noexcept
     {
         if (value)
         {
-            flags_ |= flag_slot_backed;
+            flags_.fetch_or(flag_slot_backed, std::memory_order_release);
         }
         else
         {
-            flags_ = static_cast<std::uint8_t>(flags_ & ~flag_slot_backed);
+            flags_.fetch_and(static_cast<std::uint8_t>(~flag_slot_backed),
+                             std::memory_order_release);
         }
     }
 
@@ -126,18 +126,19 @@ struct alignas(job_align) job
 
     bool is_overflow_capture() const noexcept
     {
-        return (flags_ & flag_overflow_capture) != 0;
+        return (flags_.load(std::memory_order_acquire) & flag_overflow_capture) != 0;
     }
 
     void set_overflow_capture(bool value) noexcept
     {
         if (value)
         {
-            flags_ |= flag_overflow_capture;
+            flags_.fetch_or(flag_overflow_capture, std::memory_order_release);
         }
         else
         {
-            flags_ = static_cast<std::uint8_t>(flags_ & ~flag_overflow_capture);
+            flags_.fetch_and(static_cast<std::uint8_t>(~flag_overflow_capture),
+                             std::memory_order_release);
         }
     }
 };
@@ -322,6 +323,7 @@ struct job_pool
         stats_.allocs_.fetch_add(1, std::memory_order_relaxed);
         job_slot& slot = slots_[index];
         slot.data_.generation_ = 0;
+        slot.data_.lifecycle_.store(job::lifecycle_allocated, std::memory_order_release);
         return &slot.data_;
     }
 
@@ -417,13 +419,22 @@ inline void release_job(job* target) noexcept
     {
         return;
     }
-    destroy_job(target);
     if (target->is_slot_backed())
     {
+        const std::uint8_t previous =
+            target->lifecycle_.exchange(job::lifecycle_retiring, std::memory_order_acq_rel);
+        if (previous == job::lifecycle_free || previous == job::lifecycle_retiring)
+        {
+            return;
+        }
         const std::uint32_t index = target->slot_index_;
         target->set_slot_backed(false);
+        destroy_job(target);
+        target->lifecycle_.store(job::lifecycle_free, std::memory_order_release);
         current_job_pool().release(index);
+        return;
     }
+    destroy_job(target);
 }
 
 inline void reset_job_metadata(job* target) noexcept

@@ -58,8 +58,7 @@ bool write_object_value(archive_writer& w, const T& v) noexcept
         {
             return field_codec::to_archive(w, v);
         }
-        w.write_bytes(nullptr, 0);
-        return true;
+        return false;
     }
 }
 
@@ -163,7 +162,14 @@ class object_archive
         }
         f.seekg(0, std::ios::beg);
         content.resize(static_cast<size_t>(sz));
-        f.read(content.data(), sz);
+        if (sz > 0)
+        {
+            f.read(content.data(), sz);
+            if (!f || f.gcount() != sz)
+            {
+                return false;
+            }
+        }
         return true;
     }
 
@@ -288,6 +294,10 @@ public:
             return error;
         }
         f.write(data.data(), static_cast<std::streamsize>(data.size()));
+        if (!f)
+        {
+            error.write_failure(om_err_io_failed.code, msg_level::warn, msg::here());
+        }
         return error;
     }
 
@@ -414,8 +424,7 @@ inline bool write_payload(archive_writer& w, const detail::type_factory_entry& e
         w.write_bytes(data, entry.type_size);
         return true;
     }
-    w.write_bytes(nullptr, 0);
-    return true;
+    return false;
 }
 
 inline void write_raw_payload(archive_writer& w, const void* data, size_t size) noexcept
@@ -432,7 +441,10 @@ bool construct_component(load_context& ctx, ecs::entity e, std::string_view data
         comp.from_json(data_str);
         remap_component_refs<T>(comp, *ctx.remap);
         operating_message error;
-        (void)ctx.mgr->add_impl<T>(e, std::move(comp), error);
+        if (!ctx.mgr->add_impl<T>(e, std::move(comp), error))
+        {
+            return false;
+        }
         return true;
     }
     else if constexpr (std::is_trivially_copyable_v<T>)
@@ -448,7 +460,10 @@ bool construct_component(load_context& ctx, ecs::entity e, std::string_view data
             }
             remap_component_refs<T>(comp, *ctx.remap);
             operating_message error;
-        (void)ctx.mgr->add_impl<T>(e, std::move(comp), error);
+            if (!ctx.mgr->add_impl<T>(e, std::move(comp), error))
+            {
+                return false;
+            }
             return true;
         }
         else
@@ -466,7 +481,10 @@ bool construct_component(load_context& ctx, ecs::entity e, std::string_view data
             std::memcpy(&comp, decoded.data(), sizeof(T));
             remap_component_refs<T>(comp, *ctx.remap);
             operating_message error;
-        (void)ctx.mgr->add_impl<T>(e, std::move(comp), error);
+            if (!ctx.mgr->add_impl<T>(e, std::move(comp), error))
+            {
+                return false;
+            }
             return true;
         }
     }
@@ -483,7 +501,10 @@ bool construct_component(load_context& ctx, ecs::entity e, std::string_view data
             }
             remap_component_refs<T>(comp, *ctx.remap);
             operating_message error;
-        (void)ctx.mgr->add_impl<T>(e, std::move(comp), error);
+            if (!ctx.mgr->add_impl<T>(e, std::move(comp), error))
+            {
+                return false;
+            }
             return true;
         }
         return false;
@@ -504,8 +525,7 @@ bool load_typed_component(archive_reader& r, load_context& ctx, ecs::entity e, i
     }
     remap_component_refs<T>(comp, *ctx.remap);
     operating_message error;
-    (void)ctx.mgr->add_impl<T>(e, std::move(comp), error);
-    return true;
+    return ctx.mgr->add_impl<T>(e, std::move(comp), error);
 }
 
 template<typename T>
@@ -610,8 +630,21 @@ bool load_one_type(load_context& ctx, archive_reader& r, uint32_t saved_ver) noe
                     std::memcpy(&comp, bytes.data(), sizeof(T));
                     remap_component_refs<T>(comp, remap);
                     operating_message error;
-        (void)ctx.mgr->add_impl<T>(e, std::move(comp), error);
-                    ++comp_count;
+                    if (!ctx.mgr->add_impl<T>(e, std::move(comp), error))
+                    {
+                        if (!ctx.skip_errors())
+                        {
+                            return false;
+                        }
+                        if (ctx.stats != nullptr)
+                        {
+                            ++ctx.stats->skipped_count;
+                        }
+                    }
+                    else
+                    {
+                        ++comp_count;
+                    }
                 }
             }
         }
@@ -752,6 +785,12 @@ inline bool write_components(archive_writer& w, ecs::manager& mgr,
     });
 
     entity_source::for_each_def_type([&](int tid) {
+        const type_def* def = type_id::get_type_def(tid);
+        if (def != nullptr && !def->trivially_copyable)
+        {
+            ok = false;
+            return;
+        }
         std::string_view nm = type_id::get_def_type_name(tid);
         w.key(nm);
         const ecs::single_class_set* set = entity_source::active_set(mgr, tid);
@@ -789,7 +828,7 @@ inline bool load_def_block(archive_reader& r, ecs::manager& mgr, int tid,
         return false;
     }
     const type_def* d = type_id::get_type_def(tid);
-    if (d == nullptr || d->size == 0)
+    if (d == nullptr || d->size == 0 || !d->trivially_copyable)
     {
         return false;
     }

@@ -94,6 +94,17 @@ int main()
         auto rg = mgr.group(ecs::reorder<position>);
         t_check("reorder_group size == 2", rg.size() == 2);
         t_check("reorder_group contains(a)", rg.contains(a));
+        t_check("reorder_group front/back 有效", rg.front().is_valid() && rg.back().is_valid());
+    }
+
+    t_section(5, "reorder_group 空集守卫");
+    {
+        ecs::manager mgr;
+        mgr.preallocate_components<position>(4);
+        auto rg = mgr.group(ecs::reorder<position>);
+        t_check("空 reorder_group size == 0", rg.size() == 0);
+        t_check("空 reorder_group front 无效", !rg.front().is_valid());
+        t_check("空 reorder_group back 无效", !rg.back().is_valid());
     }
 
     return t_end("group ");

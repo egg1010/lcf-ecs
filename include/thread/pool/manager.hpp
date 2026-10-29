@@ -724,13 +724,23 @@ struct manager
         {
             return;
         }
-        destroy_job(target);
         if (target->is_slot_backed())
         {
+            const std::uint8_t previous =
+                target->lifecycle_.exchange(job::lifecycle_retiring,
+                                            std::memory_order_acq_rel);
+            if (previous == job::lifecycle_free || previous == job::lifecycle_retiring)
+            {
+                return;
+            }
             const std::uint32_t index = target->slot_index_;
             target->set_slot_backed(false);
+            destroy_job(target);
+            target->lifecycle_.store(job::lifecycle_free, std::memory_order_release);
             rt_->jobs_.release(index);
+            return;
         }
+        destroy_job(target);
     }
 
     std::uint32_t submit_to_lane(lane* target_lane, job* target) noexcept
@@ -1349,12 +1359,23 @@ struct manager
             return;
         }
 
+        if (target->is_slot_backed())
+        {
+            const std::uint8_t previous =
+                target->lifecycle_.exchange(job::lifecycle_retiring,
+                                            std::memory_order_acq_rel);
+            if (previous == job::lifecycle_free || previous == job::lifecycle_retiring)
+            {
+                return;
+            }
+        }
         target->invoke_ = nullptr;
         target->destroy_ = nullptr;
         if (target->is_slot_backed())
         {
             const std::uint32_t slot = target->slot_index_;
             target->set_slot_backed(false);
+            target->lifecycle_.store(job::lifecycle_free, std::memory_order_release);
             rt_->jobs_.release(slot);
         }
     }

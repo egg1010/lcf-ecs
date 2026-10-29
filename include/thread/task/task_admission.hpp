@@ -114,28 +114,44 @@ struct admission_controller
             return true;
         }
         const std::uint32_t index = tenant % tenant_count_;
-        const std::uint32_t inflight =
-            total_inflight_.load(std::memory_order_acquire);
-        if (config_.max_inflight_ != 0 && inflight >= config_.max_inflight_)
+        if (config_.max_inflight_ != 0 && config_.policy_ != overload_policy::degrade)
         {
+            std::uint32_t inflight = total_inflight_.load(std::memory_order_acquire);
+            while (inflight < config_.max_inflight_)
+            {
+                if (total_inflight_.compare_exchange_weak(inflight, inflight + 1,
+                                                          std::memory_order_acq_rel,
+                                                          std::memory_order_acquire))
+                {
+                    tenants_[index].inflight_.fetch_add(1, std::memory_order_acq_rel);
+                    metrics_.admitted_.fetch_add(1, std::memory_order_relaxed);
+                    return true;
+                }
+            }
             switch (config_.policy_)
             {
             case overload_policy::reject:
                 metrics_.rejected_.fetch_add(1, std::memory_order_relaxed);
-                return false;
+                break;
             case overload_policy::drop_oldest:
                 metrics_.dropped_.fetch_add(1, std::memory_order_relaxed);
-                return false;
+                break;
             case overload_policy::coalesce:
                 metrics_.coalesced_.fetch_add(1, std::memory_order_relaxed);
-                return false;
-            case overload_policy::degrade:
-                metrics_.degraded_.fetch_add(1, std::memory_order_relaxed);
+                break;
+            default:
                 break;
             }
+            return false;
+        }
+
+        const std::uint32_t previous =
+            total_inflight_.fetch_add(1, std::memory_order_acq_rel);
+        if (config_.max_inflight_ != 0 && previous >= config_.max_inflight_)
+        {
+            metrics_.degraded_.fetch_add(1, std::memory_order_relaxed);
         }
         tenants_[index].inflight_.fetch_add(1, std::memory_order_acq_rel);
-        total_inflight_.fetch_add(1, std::memory_order_acq_rel);
         metrics_.admitted_.fetch_add(1, std::memory_order_relaxed);
         return true;
     }

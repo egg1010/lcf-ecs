@@ -57,6 +57,11 @@ int main()
 
         pool.release(99);
         t_check("越界释放不影响计数", pool.available() == 1);
+
+        pool.release(second);
+        t_check("重复释放被忽略", pool.available() == 1);
+        std::uint32_t again = index_pool::none;
+        t_check("重复释放后仍可正确分配", pool.allocate(again) && again == second);
     }
 
     t_section(4, "销毁");

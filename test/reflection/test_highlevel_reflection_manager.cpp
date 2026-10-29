@@ -19,6 +19,16 @@ struct path4
     int points[4];
 };
 
+struct path_leaf
+{
+    int value;
+};
+
+struct path_root
+{
+    path_leaf leaf;
+};
+
 struct calc
 {
     int base;
@@ -229,6 +239,16 @@ int main()
         p.points[3] = 42;
         int* elem = static_cast<int*>(m.get<path4>().array_element_ptr_by_name(&p, "points", 3));
         t_check("数组元素访问", elem != nullptr && *elem == 42);
+
+        reflect::manager nested;
+        (void)nested.add_type<path_leaf>();
+        (void)nested.add_field<path_leaf>("value", &path_leaf::value);
+        (void)nested.add_type<path_root>();
+        (void)nested.add_field<path_root>("leaf", &path_root::leaf);
+        path_root root{};
+        root.leaf.value = 77;
+        int* leaf_value = nested.get<path_root>().get_by_path_as<int>(&root, "leaf.value");
+        t_check("实例存储的嵌套路径访问", leaf_value != nullptr && *leaf_value == 77);
     }
 
     t_section(2, "manager 增: 私有字段 / 方法 / 枚举 / 继承");

@@ -180,7 +180,12 @@ public:
     [[nodiscard]] entity front() noexcept
     {
         ensure_fresh();
+        auto* s = st();
         auto* primary = sets_[primary_idx_];
+        if (primary == nullptr || s == nullptr || s->owned_size == 0) [[unlikely]]
+        {
+            return entity{};
+        }
         auto& indices = primary->get_entity_indices();
         return entity(indices[0], primary->get_version_unchecked(indices[0]));
     }
@@ -188,9 +193,13 @@ public:
     [[nodiscard]] entity back() noexcept
     {
         ensure_fresh();
-        auto* primary = sets_[primary_idx_];
-        auto& indices = primary->get_entity_indices();
         auto* s = st();
+        auto* primary = sets_[primary_idx_];
+        if (primary == nullptr || s == nullptr || s->owned_size == 0) [[unlikely]]
+        {
+            return entity{};
+        }
+        auto& indices = primary->get_entity_indices();
         return entity(indices[s->owned_size - 1], primary->get_version_unchecked(indices[s->owned_size - 1]));
     }
 

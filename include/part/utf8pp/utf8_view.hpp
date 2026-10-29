@@ -868,6 +868,11 @@ struct hash<utf8_view>
 // 游标式解码: 从 p 解码一个码点, 返回码点值; *consumed 写入消耗字节数
 [[nodiscard]] inline char32_t utf8_next_cp(const char* p, const char* end, size_t* consumed = nullptr) noexcept
 {
+    if (p == nullptr || end == nullptr || p >= end) [[unlikely]]
+    {
+        if (consumed != nullptr) *consumed = 0;
+        return static_cast<char32_t>(0xFFFD);
+    }
     uint32_t cp = 0; size_t len = 0;
     (void)detail_utf8::utf8_decode_one(
         reinterpret_cast<const uint8_t*>(p),
@@ -879,7 +884,7 @@ struct hash<utf8_view>
 // 游标式回溯: 从 p 往前解码一个码点, 返回码点值; *consumed 写入回退字节数
 [[nodiscard]] inline char32_t utf8_prev_cp(const char* begin, const char* p, size_t* consumed = nullptr) noexcept
 {
-    if (p <= begin)
+    if (begin == nullptr || p == nullptr || p <= begin)
     {
         if (consumed) *consumed = 0;
         return 0;

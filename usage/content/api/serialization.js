@@ -10,7 +10,7 @@ window.DOCS_DATA['serialization'] = {
 
 命名空间 \`ecs\`。\`noexcept\`。
 
-模块分两部分。**对象与数组序列化**不依赖 ECS，可序列化任意数据类型；**整存档**在绑定 `ecs::manager` 后枚举实体与组件。两者共用同一份字段层与编解码原语，统一经 `serialize::manager` 调用。
+模块分两部分。**对象与数组序列化**不依赖 ECS，可序列化任意数据类型；**整存档**在绑定 \`ecs::manager\` 后枚举实体与组件。两者共用同一份字段层与编解码原语，统一经 \`serialize::manager\` 调用。
 
 | 能力 | 说明 |
 |------|------|
@@ -65,6 +65,8 @@ window.DOCS_DATA['serialization'] = {
 \`fmt\` 为 \`archive_format::json\`（默认）/ \`binary\` / \`protobuf\` / \`flatbuffer\`；加载自动检测格式。
 
 ### 12.3 使用示例
+
+序列化读取 \`reflect::global()\` 的注册信息。需要参与序列化的类型和字段必须注册到全局注册表；仅注册到独立的 \`reflect::manager\` 实例不会被序列化读取。
 
 \`\`\`cpp
 
@@ -192,7 +194,7 @@ JSON 格式的根结构：
 | \`protobuf_codec\` | 无（按 wire 结构判定） | 字段编号 = 写入顺序 |
 | \`flatbuffer_codec\` | file_identifier \`LCFB\` | 字段编号 = 写入顺序 |
 
-JSON / 二进制按字段名读写；Protobuf / FlatBuffers 不依赖键名，按写入顺序分配字段编号，读取按同样顺序推进，因此任意键名（含非 ECS 数据）均可正确往返。
+JSON / 二进制按字段名读写；Protobuf / FlatBuffers 不依赖键名，按写入顺序分配字段编号，读取按同样顺序推进，因此任意键名（含非 ECS 数据）均可正确往返。用于长期存档时不要重排或删除既有字段，新增字段应追加在末尾。
 
 ### 12.8 json_writer 接口
 
@@ -385,11 +387,11 @@ JSON 格式的根结构：
 - \`d\`：组件载荷（同 12.14）
 - 官方 JSON 值：\`NaN\` / \`Infinity\` 映射为 \`null\`，读回取默认值
 
-覆盖范围：存活实体（含无组件实体）、实体状态全部字段、全部已注册模板组件、运行期 def 组件、元数据与组件版本表；瞬态队列与系统表不在范围内。
+覆盖范围：存活实体（含无组件实体）、实体状态全部字段、全部已注册模板组件、平凡运行期 def 组件、元数据与组件版本表；瞬态队列与系统表不在范围内。非平凡 def 组件的对象表示不可直接按字节持久化，保存时会显式返回不支持错误。
 
 ### 12.18 安全限制
 
-`safety_limits` 控制加载上限，经 `m.world()->limits()` 或 `m.objects().limits` 修改。
+\`safety_limits\` 控制加载上限，经 \`m.world()->limits()\` 或 \`m.objects().limits\` 修改。
 
 | 字段 | 默认值 | 说明 |
 |------|--------|------|
@@ -422,7 +424,7 @@ JSON 格式的根结构：
 | \`serialize_filter::by_flags(mask, value)\` | \`(flags & mask) == value\` |
 | \`serialize_filter::by_entities(ids)\` | 仅保留白名单索引；收窄到单个实体即单实体保存 |
 
-多条件为 AND 关系，经 `m.world()->set_filter(&filter)` 应用。
+多条件为 AND 关系，经 \`m.world()->set_filter(&filter)\` 应用。
 
 ### 12.21 加载模式
 

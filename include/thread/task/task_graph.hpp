@@ -973,7 +973,8 @@ struct task_graph
         }
         clear_wait(index);
         const bool failed =
-            (node->flags_.load(std::memory_order_acquire) & flag_body_failed) != 0;
+            (node->flags_.load(std::memory_order_acquire) &
+             (flag_body_failed | flag_faulted)) != 0;
         if (!failed)
         {
             finish(node, 0);
@@ -1004,6 +1005,10 @@ struct task_graph
 
     void finish(task_node* node, uint32_t error,
                 std::source_location site = std::source_location::current()) noexcept;
+
+    // 故障收敛并通知依赖/父任务/join
+    void finish_fault(task_node* node, uint32_t error,
+                      std::source_location site) noexcept;
 
     void rearm(task_node* node, bool new_activation = false) noexcept
     {
@@ -1086,6 +1091,7 @@ struct task_graph
     dense<task_body_destroy> body_destroy_{};
     dense<std::uint64_t> delay_frame_{};
     dense<std::uint32_t> delayed_{};
+    std::atomic_flag delay_lock_{};
     context_store contexts_{};
     resource_table resources_{};
     dense<std::uint32_t> body_version_count_{};

@@ -70,7 +70,26 @@ int main()
         t_check("hard_remove 成功", static_cast<bool>(rh_err));
     }
 
-    t_section(4, "capacity / pool version");
+    t_section(4, "墓碑不因重排复活");
+    {
+        single_class_set set;
+        ecs::entity e1(0, 1);
+        ecs::entity e2(1, 1);
+        set.add(e1, pos{1.0f, 1.0f});
+        set.add(e2, pos{2.0f, 2.0f});
+        set.soft_remove(e1);
+
+        dense<size_t> order;
+        order.emplace_back(1);
+        order.emplace_back(0);
+        set.reorder_dense_by_indices<pos>(order);
+
+        t_check("重排后墓碑仍不可访问", set.get_ptr<pos>(e1) == nullptr);
+        t_check("重排后活条目仍可访问", set.get_ptr<pos>(e2) != nullptr);
+        t_check("重排后活条目计数不变", set.live_count() == 1);
+    }
+
+    t_section(5, "capacity / pool version");
     {
         single_class_set set;
         set.increase_capacity(256);
@@ -82,15 +101,45 @@ int main()
         t_check("get_version 可读", set.get_version(0) == 1);
     }
 
-    t_section(5, "clear");
+    t_section(6, "移动保留实体版本");
+    {
+        single_class_set source;
+        ecs::entity e(4, 7);
+        source.add(e, pos{3.0f, 4.0f});
+
+        single_class_set moved(std::move(source));
+        t_check("移动后实体索引保留", moved.get_entity_indices().size() == 1
+            && moved.get_entity_indices()[0] == 4);
+        t_check("移动后实体版本保留", moved.get_entity_versions().size() == 1
+            && moved.get_entity_versions()[0] == 7);
+
+        single_class_set assigned;
+        assigned = std::move(moved);
+        t_check("移动赋值后实体版本保留", assigned.get_entity_versions().size() == 1
+            && assigned.get_entity_versions()[0] == 7);
+    }
+
+    t_section(7, "clear 使缓存版本失效");
     {
         single_class_set set;
         ecs::entity e1(0, 1);
         ecs::entity e2(1, 1);
         set.add(e1, pos{1.0f, 1.0f});
         set.add(e2, pos{2.0f, 2.0f});
+        const uint64_t before = set.get_pool_version();
         set.clear();
         t_check("clear 后为空", set.empty() && set.size() == 0);
+        t_check("clear 后 pool_version 变化", set.get_pool_version() != before);
+    }
+
+    t_section(8, "空批处理");
+    {
+        single_class_set set;
+        std::span<const ecs::entity> entities;
+        std::span<const pos> components;
+        operating_message error = set.add_batch(entities, components);
+        t_check("空批处理成功", static_cast<bool>(error));
+        t_check("空批处理不改变容量", set.size() == 0);
     }
 
     return t_end("single_class_set ");

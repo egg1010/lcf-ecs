@@ -98,16 +98,24 @@ struct frame_scope
 
     bool wait(std::uint32_t timeout_ms = infinite_park_ms) noexcept
     {
-        std::uint32_t spins = 0;
+        if (timeout_ms == infinite_park_ms)
+        {
+            while (!counter_.ready())
+            {
+                platform_yield();
+            }
+            return true;
+        }
+        const std::uint64_t deadline =
+            monotonic_now_ns() + static_cast<std::uint64_t>(timeout_ms) * 1'000'000ull;
         while (!counter_.ready())
         {
-            platform_yield();
-            if (++spins > 2000000u)
+            if (monotonic_now_ns() >= deadline)
             {
                 return counter_.ready();
             }
+            platform_yield();
         }
-        (void)timeout_ms;
         return true;
     }
 

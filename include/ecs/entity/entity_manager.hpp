@@ -278,6 +278,26 @@ public:
         return e;
     }
 
+    // 清空分配状态，供存档重建
+    void reset() noexcept
+    {
+        id_manager_.clear();
+        version_v_.clear();
+        masks_.clear();
+        entity_states_.clear();
+        alive_.clear();
+        preallocated_entities_.clear();
+        current_preallocated_index_ = 0;
+        signals_.clear();
+        entity_reentrancy_depth_ = 0;
+    }
+
+    void set_version_at(uint32_t entity_index, uint32_t version) noexcept
+    {
+        ensure_version_capacity(entity_index);
+        version_v_[entity_index] = version;
+    }
+
     template <typename Func>
     void flush_signals(Func&& handler) noexcept
     {

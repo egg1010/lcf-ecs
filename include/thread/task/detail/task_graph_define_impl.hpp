@@ -48,9 +48,10 @@ inline bool task_graph::create_impl(const task_graph_config& config, operating_m
     access_.wait_task_.resize_fill(config.task_capacity, invalid_resource_index);
     access_.wait_write_.resize_fill(config.task_capacity, 0);
     waits_.pending_.resize_fill(config.task_capacity, 0);
-    body_versions_.increase_capacity(config.task_capacity);
-    body_version_count_.resize_fill(config.task_capacity, 0);
     body_version_capacity_ = config.body_version_capacity == 0 ? 1 : config.body_version_capacity;
+    body_versions_.increase_capacity(static_cast<std::size_t>(config.task_capacity) *
+                                     body_version_capacity_);
+    body_version_count_.resize_fill(config.task_capacity, 0);
     hot_bodies_ = static_cast<std::atomic<void*>*>(
         ::operator new(sizeof(std::atomic<void*>) * config.task_capacity,
                       std::align_val_t(alignof(std::atomic<void*>)), std::nothrow));
@@ -219,26 +220,42 @@ inline std::uint64_t task_graph::begin_frame(thread::role id) noexcept
         return frame;
     }
     operating_message activate_error;
+    static thread_local dense<std::uint32_t> delayed_ready;
+    delayed_ready.clear();
+    while (delay_lock_.test_and_set(std::memory_order_acquire))
+    {
+    }
     // 延迟激活：本角色到帧后转入正常激活
+    std::size_t write = 0;
     for (std::size_t i = 0; i < delayed_.size(); ++i)
     {
         const std::uint32_t index = delayed_[i];
         task_node* node = table_.at_index(index);
-        if (node == nullptr ||
-            (node->flags_.load(std::memory_order_acquire) & flag_delay_armed) == 0)
+        const bool due =
+            node != nullptr
+            && (node->flags_.load(std::memory_order_acquire) & flag_delay_armed) != 0
+            && role_index(node->route().role_value()) == role_index(id)
+            && index < delay_frame_.size()
+            && frame >= delay_frame_[index];
+        if (due)
         {
-            continue;
+            node->flags_.fetch_and(~flag_delay_armed, std::memory_order_acq_rel);
+            delayed_ready.emplace_back(index);
         }
-        if (role_index(node->route().role_value()) != role_index(id))
+        else
         {
-            continue;
+            delayed_[write] = index;
+            ++write;
         }
-        if (index >= delay_frame_.size() || frame < delay_frame_[index])
-        {
-            continue;
-        }
-        node->flags_.fetch_and(~flag_delay_armed, std::memory_order_acq_rel);
-        (void)activate_impl(task_id{index}, activate_error);
+    }
+    while (delayed_.size() > write)
+    {
+        delayed_.pop_back();
+    }
+    delay_lock_.clear(std::memory_order_release);
+    for (std::size_t i = 0; i < delayed_ready.size(); ++i)
+    {
+        (void)activate_impl(task_id{delayed_ready[i]}, activate_error);
     }
     for (std::size_t i = 0; i < periodic_.size(); ++i)
     {
@@ -493,13 +510,26 @@ inline bool task_graph::set_body_impl(task_id id, task_body body, operating_mess
         error.write_failure(om_err_invalid_argument.code, msg_level::error, msg::here());
         return false;
     }
+    const task_state state = node->state();
+    if (state == task_state::ready || state == task_state::running ||
+        state == task_state::waiting)
+    {
+        error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
+        return false;
+    }
+    if (id.index_ < body_destroy_.size())
+    {
+        task_body_destroy old_destroy = body_destroy_[id.index_];
+        if (old_destroy != nullptr && node->body_object_ != nullptr &&
+            node->body_object_ != body.object_)
+        {
+            old_destroy(node->body_object_);
+        }
+        body_destroy_[id.index_] = body.destroy_;
+    }
     node->body_kind_ = body.kind_;
     node->invoke_ = body.invoke_;
     node->body_object_ = body.object_;
-    if (id.index_ < body_destroy_.size())
-    {
-        body_destroy_[id.index_] = body.destroy_;
-    }
     return true;
     }
 
@@ -973,6 +1003,11 @@ inline bool task_graph::replace_body_impl(task_id id, task_body body,
         error.write_failure(om_err_queue_full.code, msg_level::warn, msg::here());
         return false;
     }
+    if (body_versions_.size() >= body_versions_.capacity())
+    {
+        error.write_failure(om_err_queue_full.code, msg_level::warn, msg::here());
+        return false;
+    }
     auto* entry = new (std::nothrow) body_entry{body, ++body_version_counter_};
     if (entry == nullptr)
     {
@@ -980,10 +1015,7 @@ inline bool task_graph::replace_body_impl(task_id id, task_body body,
         return false;
     }
     hot_bodies_[id.index_].store(static_cast<void*>(entry), std::memory_order_release);
-    if (body_versions_.size() < body_versions_.capacity())
-    {
-        body_versions_.emplace_back(entry);
-    }
+    body_versions_.emplace_back(entry);
     if (body_version_count_.size() != 0)
     {
         ++body_version_count_[id.index_];
