@@ -73,7 +73,8 @@ enum class io_request_state : std::uint8_t
 
 struct io_request
 {
-    task_id task_{};
+    // 完成线程与发起线程并发访问, 需原子读写
+    std::atomic<task_id> task_{invalid_task};
     std::uint32_t epoch_{0};
     data_source* source_{nullptr};
     std::byte* buffer_{nullptr};
@@ -236,7 +237,7 @@ struct io_domain
         }
         slots_[index].in_use_.store(true, std::memory_order_release);
         io_request& request = slots_[index].request_;
-        request.task_ = invalid_task;
+        request.task_.store(invalid_task, std::memory_order_relaxed);
         request.slot_ = index;
         request.source_ = nullptr;
         request.buffer_ = nullptr;
@@ -284,7 +285,8 @@ struct io_domain
         {
             if (trace_recorder* tracer = graph_->trace(); tracer != nullptr)
             {
-                tracer->record(trace_kind::io_submit, request->task_, task_worker_none,
+                tracer->record(trace_kind::io_submit,
+                               request->task_.load(std::memory_order_relaxed), task_worker_none,
                                thread::role::general, 0);
             }
         }
@@ -337,7 +339,8 @@ struct io_domain
         {
             if (trace_recorder* tracer = graph_->trace(); tracer != nullptr)
             {
-                tracer->record(trace_kind::io_complete, request->task_, task_worker_none,
+                tracer->record(trace_kind::io_complete,
+                               request->task_.load(std::memory_order_relaxed), task_worker_none,
                                thread::role::general, 0);
             }
         }
@@ -380,10 +383,11 @@ struct io_domain
                 return;
             }
         }
-        if (graph_ != nullptr && request->task_.valid())
+        const task_id owner = request->task_.load(std::memory_order_acquire);
+        if (graph_ != nullptr && owner.valid())
         {
             operating_message error;
-            if (!graph_->wake_waiting_impl(request->task_, error))
+            if (!graph_->wake_waiting_impl(owner, error))
             {
                 metrics_.wake_failures_.fetch_add(1, std::memory_order_relaxed);
             }
@@ -409,7 +413,8 @@ struct io_domain
             {
                 continue;
             }
-            if (!request.task_.valid() || !graph_->cancelled(request.task_))
+            const task_id owner = request.task_.load(std::memory_order_acquire);
+            if (!owner.valid() || !graph_->cancelled(owner))
             {
                 continue;
             }
@@ -441,14 +446,15 @@ struct io_domain
             {
                 continue;
             }
-            if (request.task_.valid())
+            const task_id owner = request.task_.load(std::memory_order_acquire);
+            if (owner.valid())
             {
                 // 只补唤醒仍在等待的任务：运行中的任务已由 complete 记录延迟唤醒，
                 // 此时再唤醒会污染下一次等待
-                if (graph_->waiting(request.task_))
+                if (graph_->waiting(owner))
                 {
                     operating_message error;
-                    (void)graph_->wake_waiting_impl(request.task_, error);
+                    (void)graph_->wake_waiting_impl(owner, error);
                 }
             }
         }
@@ -531,7 +537,7 @@ struct io_awaitable
         }
         operating_message error;
         (void)ctx->graph_->prepare_external_wait_impl(ctx->id_, error);
-        request->task_ = ctx->id_;
+        request->task_.store(ctx->id_, std::memory_order_relaxed);
         request->source_ = source_;
         request->buffer_ = buffer_.data();
         request->capacity_ = buffer_.size();

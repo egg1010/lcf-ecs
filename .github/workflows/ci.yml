@@ -72,7 +72,24 @@ jobs:
 
       - name: test (native)
         if: matrix.toolchain != 'mingw'
-        run: ctest --test-dir build -C Release --output-on-failure --timeout 600
+        shell: bash
+        run: |
+          set +e
+          ctest --test-dir build -C Release --output-on-failure --timeout 600
+          rc=$?
+          log=build/Testing/Temporary
+          if [ "$rc" -ne 0 ] && [ -f "$log/LastTestsFailed.log" ]; then
+            while IFS= read -r line; do
+              echo "::error title=Failed test::$line"
+            done < "$log/LastTestsFailed.log"
+          fi
+          if [ "$rc" -ne 0 ] && [ -f "$log/LastTest.log" ]; then
+            grep -n -E "Assertion|Access violation|Exception|CHECK|FAILED|Segmentation|abort" "$log/LastTest.log" | head -40 | while IFS= read -r line; do
+              line="${line//'%'/'%25'}"
+              echo "::error title=Test detail::$line"
+            done
+          fi
+          exit "$rc"
 
       - name: test (mingw)
         if: matrix.toolchain == 'mingw'
