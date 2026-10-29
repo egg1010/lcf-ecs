@@ -68,6 +68,7 @@ enum class io_request_state : std::uint8_t
     free = 0,
     submitted = 1,
     completing = 2,
+    preparing = 3,
 };
 
 struct io_request
@@ -244,7 +245,7 @@ struct io_domain
         request.write_ = false;
         request.result_ = io_result{};
         request.cancel_requested_.store(false, std::memory_order_relaxed);
-        request.state_.store(static_cast<std::uint8_t>(io_request_state::submitted),
+        request.state_.store(static_cast<std::uint8_t>(io_request_state::preparing),
                              std::memory_order_release);
         return &request;
     }
@@ -535,6 +536,8 @@ struct io_awaitable
         request->buffer_ = buffer_.data();
         request->capacity_ = buffer_.size();
         request->write_ = write_;
+        request->state_.store(static_cast<std::uint8_t>(io_request_state::submitted),
+                              std::memory_order_release);
         if (!domain_->submit(request))
         {
             domain_->release(request);
