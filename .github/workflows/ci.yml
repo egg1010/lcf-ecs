@@ -115,7 +115,22 @@ jobs:
         run: cmake --build build-asan --parallel
 
       - name: test
-        run: ctest --test-dir build-asan --output-on-failure --timeout 900
+        run: |
+          set +e
+          ctest --test-dir build-asan --output-on-failure --timeout 900
+          rc=$?
+          if [ "$rc" -ne 0 ] && [ -f build-asan/Testing/Temporary/LastTestsFailed.log ]; then
+            while IFS= read -r line; do
+              echo "::error title=Sanitizer failed test::$line"
+            done < build-asan/Testing/Temporary/LastTestsFailed.log
+          fi
+          if [ "$rc" -ne 0 ] && [ -f build-asan/Testing/Temporary/LastTest.log ]; then
+            grep -n -E "ERROR: AddressSanitizer|ERROR: LeakSanitizer|SUMMARY: (Address|Leak)Sanitizer|runtime error:" build-asan/Testing/Temporary/LastTest.log | head -40 | while IFS= read -r line; do
+              line="${line//'%'/'%25'}"
+              echo "::error title=Sanitizer detail::$line"
+            done
+          fi
+          exit "$rc"
 
   thread-sanitize:
     runs-on: ubuntu-latest

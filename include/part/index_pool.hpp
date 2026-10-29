@@ -113,7 +113,8 @@ public:
             {
                 return false;
             }
-            const std::uint32_t next = next_[index];
+            const std::uint32_t next =
+                std::atomic_ref<std::uint32_t>(next_[index]).load(std::memory_order_acquire);
             const std::uint64_t wanted = pack(next, generation_of(head) + 1u);
             if (!head_.compare_exchange_weak(head, wanted, std::memory_order_acq_rel,
                                              std::memory_order_acquire))
@@ -143,7 +144,8 @@ public:
         for (;;)
         {
             const std::uint32_t generation = generation_of(head);
-            next_[index] = next_of(head);
+            std::atomic_ref<std::uint32_t>(next_[index])
+                .store(next_of(head), std::memory_order_relaxed);
             const std::uint64_t wanted = pack(index, generation + 1u);
             if (head_.compare_exchange_weak(head, wanted, std::memory_order_acq_rel,
                                             std::memory_order_acquire))
