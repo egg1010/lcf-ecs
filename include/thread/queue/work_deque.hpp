@@ -250,7 +250,7 @@ struct work_deque
 
     job* pop() noexcept
     {
-        std::int64_t bottom = bottom_.load(std::memory_order_relaxed);
+        std::int64_t bottom = bottom_.load(std::memory_order_acquire);
         work_deque_buffer* buffer = buffer_.load(std::memory_order_relaxed);
         bottom_.store(bottom - 1, std::memory_order_relaxed);
         std::atomic_thread_fence(std::memory_order_seq_cst);
@@ -300,7 +300,7 @@ struct work_deque
 
         std::int64_t top = top_.load(std::memory_order_acquire);
         std::atomic_thread_fence(std::memory_order_seq_cst);
-        const std::int64_t bottom = bottom_.load(std::memory_order_relaxed);
+        const std::int64_t bottom = bottom_.load(std::memory_order_acquire);
 
         if (top >= bottom)
         {
