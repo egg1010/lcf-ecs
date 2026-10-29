@@ -192,8 +192,8 @@ window.DOCS_DATA['single_class_set'] = {
 | 接口 | 说明 |
 |------|------|
 | \`size()\` | 物理槽位数（含软删除墓碑） |
-| \`live_count()\` | 活条目数（O(n) 扫描） |
-| \`tombstone_count()\` | 软删除墓碑数（O(n) 扫描） |
+| \`live_count()\` | 活条目数（O(1)，随添加/删除维护） |
+| \`tombstone_count()\` | 软删除墓碑数（O(1)） |
 | \`has_tombstones()\` | 是否存在软删除死槽（O(1)，视图分派用） |
 | \`empty()\` | 是否为空 |
 | \`increase_capacity(capacity)\` | 预留容量 |
@@ -287,7 +287,23 @@ mgr.preallocate_component_signals(4096);
 |------|------|
 | \`create_entity()\` | 创建实体（优先使用预分配池） |
 | \`is_entity_valid(entity)\` | 检查实体有效性（版本号匹配） |
-| \`delete_entity(entity&)\` | 删除实体（释放 ID，递增版本号） |
+| \`delete_entity(entity)\` | 删除实体及其全部组件（释放 ID，递增版本号），返回 \`operating_message\` |
+| \`delete_entity_batch(entities, size_t& deleted_count)\` | 批量删除实体，跳过无效句柄，返回 \`operating_message\` |
+| \`clear_entity(entity)\` | 清除实体全部组件，实体本身保留，返回 \`operating_message\` |
+| \`alive_count()\` | 当前存活实体数量 |
+| \`empty()\` | 是否没有存活实体 |
+
+\`\`\`cpp
+ecs::entity e = mgr.create_entity();
+if (!mgr.delete_entity(e))
+{
+    // 句柄无效或已删除
+}
+
+size_t removed = 0;
+std::span<const ecs::entity> targets(entities.data(), entities.size());
+mgr.delete_entity_batch(targets, removed);
+\`\`\`
 
 ### 添加组件
 
@@ -305,6 +321,24 @@ mgr.preallocate_component_signals(4096);
 | \`add_batch<T>(const std::vector<entity>&, const std::vector<T>&)\` | 批量添加（vector 入参） |
 | \`add_batch<T>(const std::array<entity, N>&, const std::array<T, N>&)\` | 批量添加（array 入参，编译期固定长度） |
 | \`add_batch<T>(const entity*, const T*, size_t)\` | 批量添加（裸指针 + 长度） |
+| \`create_with<Ts...>(entity& out, Ts&&...)\` | 创建实体并附加组件，失败回滚，返回 \`operating_message\` |
+| \`clone(entity source, entity& out)\` | 复制源实体的全部组件与用户状态，失败回滚，返回 \`operating_message\` |
+
+\`\`\`cpp
+ecs::entity e{};
+if (!mgr.create_with(e, Position{1.0f, 2.0f}, Velocity{3.0f, 4.0f}))
+{
+    // 创建失败，e 保持无效
+}
+
+ecs::entity copy{};
+if (!mgr.clone(e, copy))
+{
+    // 存在不可复制组件或容量不足，copy 保持无效
+}
+\`\`\`
+
+> \`clone\` 复制全部模板组件、运行期 def 组件、\`tag\` / \`layer\` / \`group\`，以及 \`active\` / \`disabled\` / \`static_entity\` 标志；不复制实体 index/version、组件槽位、\`pending_destroy\`、信号队列、迭代状态和变更日志。任一组件不可复制时返回 \`om_err_unsupported_operation\`，容量不足时返回 \`om_err_capacity_exceeded\`。
 
 ### 运行期 def 组件
 
@@ -350,6 +384,26 @@ mgr.preallocate_component_signals(4096);
 
 > \`get_ptr\` 与 \`get_ptr_fast\` 均可直接使用，无需额外预热或缓存。
 
+### 组件存在性查询
+
+| 接口 | 说明 |
+|------|------|
+| \`has_component<T>(entity)\` | 实体是否挂载组件（实体无效时为 \`false\`） |
+| \`has_all_components<Ts...>(entity)\` | 实体是否挂载全部指定组件 |
+| \`has_any_component<Ts...>(entity)\` | 实体是否挂载任一指定组件 |
+| \`has_component_batch<T>(span<const entity>, span<uint8_t>)\` | 批量查询，长度不足返回 \`false\` |
+| \`component_count<T>()\` | 该组件类型的存活实例数 |
+| \`component_count_by_id(int)\` | 按 type_id 统计存活实例数 |
+
+\`\`\`cpp
+if (mgr.has_all_components<Position, Velocity>(e))
+{
+    // 两个组件都在
+}
+
+const size_t positions = mgr.component_count<Position>();
+\`\`\`
+
 ### query_context 查询上下文
 
 | 接口 | 说明 |
@@ -373,7 +427,9 @@ mgr.preallocate_component_signals(4096);
 | \`hard_removec<T>(entity)\` | 链式硬删除（返回 \`manager&\`） |
 | \`hard_removec<TT...>(EEs...)\` | 变参链式硬删除：多类型 × 多实体 笛卡尔积 \`hard_removec<Comp1, Comp2>(e1, e2)\` |
 | \`soft_removec<TT...>(EEs...)\` | 变参链式软删除：多类型 × 多实体 笛卡尔积 \`soft_removec<Comp1, Comp2>(e1, e2)\` |
-| \`delete_type_container<T>()\` | 删除整个类型容器 |
+| \`soft_remove_batch<T>(span<const entity>, size_t& removed_count)\` | 批量软删除，返回 \`operating_message\` |
+| \`hard_remove_batch<T>(span<const entity>, size_t& removed_count)\` | 批量硬删除，返回 \`operating_message\` |
+| \`clear_component_type<T>()\` | 清空整个类型容器（含掩码位与实体状态），返回 \`operating_message\` |
 
 > \`hard_remove\` 和 \`swap_dense_and_pool\` 对 \`std::is_trivially_copyable\` 类型使用 \`typed_pool_data_\` + \`memcpy\` 直接操作，跳过函数指针间接调用。非 trivial 类型回退到 \`ops_.swap_pop\` / \`ops_.swap_pool\` 函数指针路径。
 
@@ -384,7 +440,7 @@ mgr.preallocate_component_signals(4096);
 | \`get_single_class_set<T>()\` | 获取单组件集合指针 |
 | \`get_single_class_set<T>() const\` | const 版本 |
 | \`get_component_container<T>()\` | 获取类型化组件池指针 |
-| \`has_component<T>()\` | 查询组件类型是否已在管理器中注册（存在组件集合，不关心是否已有实例） |
+| \`is_component_type_registered<T>()\` | 查询组件类型是否已在管理器中注册（存在组件集合，不关心是否已有实例） |
 | \`add/add_batch/hard_remove/soft_remove\` | 返回 \`operating_message\`，成功时该对象为空 |
 | \`get_component_meta(int type_id)\` | 获取组件元数据（含组件大小） |
 | \`get_single_class_set_by_id(int type_id)\` | 通过 type_id 获取组件集合（运行时视图用） |
@@ -518,7 +574,7 @@ tiered_sort_indices(indices, values, 5);
 | \`runtime_view_create_from_terms(const vector<runtime_term>&)\` | term 查询（vector 入参） |
 | \`runtime_view_create_from_terms(const array<runtime_term, N>&)\` | term 查询（array 入参） |
 | \`runtime_view_create_from_terms(const runtime_term*, size_t)\` | term 查询（裸指针 + 长度） |
-| \`get_entity_mask(entity)\` | 获取实体组件位掩码 |
+| \`get_component_mask(entity)\` | 获取实体组件位掩码 |
 | \`get_component_bit<T>()\` | 获取类型的位掩码位 |
 
 > 批量入参重载说明：\`add_batch\` / \`get_ptr_batch\` / \`prefetch_ptr_batch\` / \`runtime_view_create\` / \`runtime_view_create_from_terms\` 均支持 \`std::vector\` / \`std::array\` / 裸指针 + 长度 / \`std::span\` 入参，不持有外部容器。
@@ -624,21 +680,40 @@ mgr.delete_entity(e2);
 | 接口 | 说明 |
 |------|------|
 | \`entity_flag\` | 实体状态标志枚举：\`active\`, \`disabled\`, \`pending_destroy\`, \`static_entity\` |
-| \`get_entity_state(entity_index)\` | 获取实体状态引用（\`entity_state&\`） |
-| \`set_entity_flag(entity_index, flag)\` | 设置实体状态标志 |
-| \`clear_entity_flag(entity_index, flag)\` | 清除实体状态标志 |
-| \`has_entity_flag(entity_index, flag)\` | 检查实体是否具有某状态标志 |
+| \`get_entity_state(entity, entity_state&)\` | 按实体句柄读取状态，失败返回 \`operating_message\` |
+| \`get_entity_state_by_index(entity_index)\` | 按索引获取状态引用（\`entity_state&\`，不做有效性校验） |
+| \`set_entity_flag(entity, flag)\` | 按句柄设置状态标志，返回 \`operating_message\` |
+| \`clear_entity_flag(entity, flag)\` | 按句柄清除状态标志，返回 \`operating_message\` |
+| \`has_entity_flag(entity, flag)\` | 按句柄检查状态标志（实体无效时为 \`false\`） |
+| \`set_tag(entity, uint32_t)\` / \`get_tag(entity, uint32_t&)\` | 按句柄读写自定义标签，返回 \`operating_message\` |
+| \`set_layer(entity, uint32_t)\` / \`get_layer(entity, uint32_t&)\` | 按句柄读写渲染层，返回 \`operating_message\` |
+| \`set_group(entity, uint32_t)\` / \`get_group(entity, uint32_t&)\` | 按句柄读写分组，返回 \`operating_message\` |
+| \`set_entity_flag_by_index(entity_index, flag)\` | 按索引设置标志（不做有效性校验） |
+| \`clear_entity_flag_by_index(entity_index, flag)\` | 按索引清除标志（不做有效性校验） |
+| \`has_entity_flag_by_index(entity_index, flag)\` | 按索引检查标志（不做有效性校验） |
 
 \`\`\`cpp
-mgr.set_entity_flag(e.parts_.index_, entity_flag::disabled);
-if (mgr.has_entity_flag(e.parts_.index_, entity_flag::active))
+if (!mgr.set_entity_flag(e, ecs::entity_flag::disabled))
+{
+    // 句柄无效
+}
+
+if (mgr.has_entity_flag(e, ecs::entity_flag::active))
 {
     // 实体处于活跃状态
 }
-auto& state = mgr.get_entity_state(e.parts_.index_);
-state.tag = 1;   // 自定义标签
-state.layer = 3; // 渲染层
+
+ecs::entity_state state{};
+if (mgr.get_entity_state(e, state))
+{
+    // 读取成功
+}
+
+mgr.set_tag(e, 1);    // 自定义标签
+mgr.set_layer(e, 3);  // 渲染层
 \`\`\`
+
+> 句柄重载先校验实体是否存活，失败返回 \`om_err_invalid_entity\`；\`*_by_index\` 版本直接按索引读写，供已确认索引有效的批处理路径使用。
 
 ### 变更日志池
 
@@ -696,9 +771,9 @@ mgr.register_system(ecs::system_context{
 
 | 接口 | 说明 |
 |------|------|
-| \`get_entity_mask(entity)\` | 获取实体块 0 掩码（\`uint64_t\`，type_id 1-64；等价于 \`get_entity_block(e, 0)\`） |
-| \`get_entity_block(entity, uint32_t block_idx)\` | 获取实体指定块的掩码（\`uint64_t\`，block_idx 块对应 type_id \`block_idx*64+1\` 到 \`block_idx*64+64\`） |
-| \`get_entity_block_by_idx(uint32_t entity_index, uint32_t block_idx)\` | 同上，接受 entity_index 而非 entity 句柄 |
+| \`get_component_mask(entity)\` | 获取实体块 0 掩码（\`uint64_t\`，type_id 1-64；等价于 \`get_component_mask_block(e, 0)\`） |
+| \`get_component_mask_block(entity, uint32_t block_idx)\` | 获取实体指定块的掩码（\`uint64_t\`，block_idx 块对应 type_id \`block_idx*64+1\` 到 \`block_idx*64+64\`） |
+| \`get_component_mask_block_by_index(uint32_t entity_index, uint32_t block_idx)\` | 同上，接受 entity_index 而非 entity 句柄 |
 | \`get_component_bit<T>()\` | 获取组件 T 的掩码位（块 0 类型返回 \`1ULL<<offset\`，其余返回 0） |
 | \`get_component_meta(int type_id)\` | 获取 \`component_meta*\`（含组件大小，type_id 越界返回 nullptr） |
 | \`preallocate_mask_blocks(uint32_t num_blocks)\` | 预分配每实体掩码块数（每块 64 种组件；注册组件前调用；\`register_component_meta\` 在 type_id 超出时自动扩容） |
@@ -706,7 +781,7 @@ mgr.register_system(ecs::system_context{
 | \`get_entity_manager()\` | 获取 \`entity_manager&\`，可继续调用 \`set_mask_bit\` / \`clear_mask_bit\` / \`get_mask\` / \`get_block\` / \`set_entity_flag\` 等 |
 
 \`\`\`cpp
-uint64_t mask = mgr.get_entity_mask(e);
+uint64_t mask = mgr.get_component_mask(e);
 uint64_t pos_bit = mgr.get_component_bit<Position>();
 if ((mask & pos_bit) != 0)
 {
@@ -718,14 +793,14 @@ int vel_id = type_id::get_type_id<Velocity>();
 if (type_id::mask_block_of(vel_id) == 0)
 {
     uint64_t vel_bit = 1ULL << type_id::mask_offset_of(vel_id);
-    bool has_vel = (mgr.get_entity_mask(e) & vel_bit) != 0;
+    bool has_vel = (mgr.get_component_mask(e) & vel_bit) != 0;
 }
 
 // 启动时预分配 2 块掩码（支持 128 种组件）
 mgr.preallocate_mask_blocks(2);
 \`\`\`
 
-> 默认块数为 1（支持 64 种组件）。组件注册时 \`register_component_meta\` 自动扩容掩码块数，无需手动调用 \`preallocate_mask_blocks\`。多块掩码查询通过 \`get_entity_block(e, block_idx)\` 或 \`get_entity_block_by_idx(idx, block_idx)\` 访问任意块。详见 [§ 29. multi_block_bitmask](#29-multi_block_bitmask--多块位掩码存储)。
+> 默认块数为 1（支持 64 种组件）。组件注册时 \`register_component_meta\` 自动扩容掩码块数，无需手动调用 \`preallocate_mask_blocks\`。多块掩码查询通过 \`get_component_mask_block(e, block_idx)\` 或 \`get_component_mask_block_by_index(idx, block_idx)\` 访问任意块。详见 [§ 29. multi_block_bitmask](#29-multi_block_bitmask--多块位掩码存储)。
 
 ### 不要做什么
 
@@ -1535,7 +1610,7 @@ window.DOCS_DATA['runtime_view'] = {
 
 ### 7.1 实体掩码
 
-每个实体在添加/删除组件时自动维护多块组件位掩码；\`get_entity_mask\` 返回首块，其他块通过 \`get_entity_block\` 读取：
+每个实体在添加/删除组件时自动维护多块组件位掩码；\`get_component_mask\` 返回首块，其他块通过 \`get_component_mask_block\` 读取：
 
 \`\`\`cpp
 ecs::manager mgr;
@@ -1543,7 +1618,7 @@ auto e = mgr.create_entity();
 mgr.add(e, Position{1, 0});
 mgr.add(e, Velocity{2, 0});
 
-uint64_t mask = mgr.get_entity_mask(e);
+uint64_t mask = mgr.get_component_mask(e);
 // mask 包含 Position 和 Velocity 的位
 
 uint64_t pos_bit = mgr.get_component_bit<Position>();
@@ -1604,11 +1679,11 @@ rv.for_each([](entity e) {
 | \`begin()\` / \`end()\` | 迭代器，支持 range-for |
 | \`rebuild()\` | 重新选择最小集合（组件数量变化后调用） |
 
-> \`get_entity_mask(entity)\` 和 \`get_component_bit<T>()\` 是 \`manager\` 的方法,见 [§4](#4-ecsmanager-ecs管理器) 与 [§7.1](#71-实体掩码)。
+> \`get_component_mask(entity)\` 和 \`get_component_bit<T>()\` 是 \`manager\` 的方法,见 [§4](#4-ecsmanager-ecs管理器) 与 [§7.1](#71-实体掩码)。
 
 ### 7.5 组件类型无上限
 
-组件类型数量不受 64 限制。\`get_component_bit<T>()\` 只用于首块掩码，type_id > 64 时返回 0；这类组件仍可正常添加、查询，并参与所有视图/分组（\`view\` / \`group\` / \`owning_group\` / \`reorder_group\` / \`runtime_view\` / \`view(without)\`）的匹配。需要读取其他掩码块时使用 \`get_entity_block(entity, block)\`。
+组件类型数量不受 64 限制。\`get_component_bit<T>()\` 只用于首块掩码，type_id > 64 时返回 0；这类组件仍可正常添加、查询，并参与所有视图/分组（\`view\` / \`group\` / \`owning_group\` / \`reorder_group\` / \`runtime_view\` / \`view(without)\`）的匹配。需要读取其他掩码块时使用 \`get_component_mask_block(entity, block)\`。
 
 \`\`\`cpp
 ecs::manager mgr;
@@ -2208,7 +2283,7 @@ auto cb = mgr.create_command_buffer();
 cb.add_component<Position>(b, Position{2, 0, 0});
 cb.add_component<Velocity>(a, Velocity{10, 0, 0});
 cb.remove_component<Position>(a);
-cb.destroy_entity(c);
+cb.delete_entity(c);
 
 // flush 前状态不变
 // mgr.get_ptr<Position>(b) == nullptr
@@ -2231,7 +2306,7 @@ cb.flush();
 | \`create_command_buffer()\` | manager 工厂方法，返回绑定到该 manager 的 command_buffer |
 | \`add_component<T>(entity, T&&)\` | 录制添加组件命令 |
 | \`remove_component<T>(entity)\` | 录制移除组件命令（soft_remove 语义） |
-| \`destroy_entity(entity)\` | 录制销毁实体命令 |
+| \`delete_entity(entity)\` | 录制删除实体命令 |
 | \`preallocate(n)\` | 预留命令缓冲容量，避免录制过程中扩容 |
 | \`capacity()\` | 当前命令缓冲容量 |
 | \`flush()\` | 按录入顺序应用所有命令，应用后清空缓冲区 |
@@ -2243,7 +2318,7 @@ cb.flush();
 
 | 错误做法 | 问题 | 正确做法 |
 |---------|------|---------|
-| \`flush\` 后用 \`entity.is_valid()\` 判断实体是否被销毁 | \`destroy_entity\` 按值传入，修改的是副本 | 用 \`mgr.is_entity_valid(entity)\` 检查 |
+| \`flush\` 后用 \`entity.is_valid()\` 判断实体是否被销毁 | \`delete_entity\` 按值传入，修改的是副本 | 用 \`mgr.is_entity_valid(entity)\` 检查 |
 | \`flush\` 后继续使用已销毁实体的句柄 | version 已过期，操作无效 | \`flush\` 后重新获取有效实体 |
 | 跨 manager 使用 command_buffer | apply 函数绑定到创建时的 manager | 每个 manager 独立创建 command_buffer |
 | 在 \`flush\` 过程中向同一 command_buffer 录入新命令 | \`flush\` 结束时清空缓冲区，新命令丢失 | \`flush\` 完成后再录入新命令 |

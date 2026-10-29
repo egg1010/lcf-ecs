@@ -337,7 +337,7 @@ codec_registry::instance().register_codec(&my_codec_instance);
 ecs::manager mgr;
 auto e1 = mgr.create_entity();
 mgr.add(e1, Position{1.0f, 2.0f, 3.0f});
-mgr.get_entity_state(e1.parts_.index_).tag = 5;
+mgr.get_entity_state_by_index(e1.parts_.index_).tag = 5;
 
 serialize::manager saver(mgr);
 saver.world()->register_components<Position, Velocity>();
@@ -359,7 +359,7 @@ if (auto e = loader.load_world(data); !e)   // 自动检测格式
 }
 
 uint32_t idx = mgr2.get_single_class_set<Position>()->get_entity_indices()[0];
-// 索引与状态还原: idx == e1.parts_.index_, mgr2.get_entity_state(idx).tag == 5
+// 索引与状态还原: idx == e1.parts_.index_, mgr2.get_entity_state_by_index(idx).tag == 5
 
 std::string proto = loader.world_schema_proto();
 std::string fbs   = loader.world_schema_fbs();

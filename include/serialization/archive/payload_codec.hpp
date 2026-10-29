@@ -732,7 +732,7 @@ void register_component() noexcept
     {
         return true;
     }
-    return filter->matches_entity(sv.entity_index, mgr.get_entity_state(sv.entity_index));
+    return filter->matches_entity(sv.entity_index, mgr.get_entity_state_by_index(sv.entity_index));
 }
 
 [[nodiscard]] inline size_t count_slots(const ecs::single_class_set& set, ecs::manager& mgr,

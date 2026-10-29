@@ -42,6 +42,8 @@ class command_buffer;
 struct component_meta
 {
     size_t size{0};   // 组件字节大小; 掩码布局经 type_id::mask_block_of/mask_offset_of 计算
+    // 类型擦除单组件克隆, 供 manager::clone 使用; nullptr 表示该类型不支持克隆
+    bool (*clone_component)(manager& m, int type, entity src, entity dst) noexcept{nullptr};
 };
 
 // 系统上下文（48 bytes，内联 4 个依赖）
@@ -234,7 +236,23 @@ private:
     template <typename T>
     void register_component_meta() noexcept
     {
-        fill_component_meta(type_id::get_type_id<T>(), sizeof(T));
+        const int tid = type_id::get_type_id<T>();
+        fill_component_meta(tid, sizeof(T));
+        if (!component_metas_[tid].clone_component)
+        {
+            component_metas_[tid].clone_component =
+                [](manager& m, int, entity src, entity dst) noexcept -> bool {
+                    if constexpr (std::is_copy_constructible_v<T>)
+                    {
+                        return m.template clone_component_<T>(src, dst);
+                    }
+                    else
+                    {
+                        (void)m; (void)src; (void)dst;
+                        return false;
+                    }
+                };
+        }
     }
 
     // def 组件元数据 (懒注册, 首次 add_def 时触发)
@@ -243,6 +261,13 @@ private:
         const type_def* d = type_id::get_type_def(def_id);
         if (!d) [[unlikely]] return;
         fill_component_meta(def_id, d->size);
+        if (!component_metas_[def_id].clone_component)
+        {
+            component_metas_[def_id].clone_component =
+                [](manager& m, int t, entity src, entity dst) noexcept -> bool {
+                    return m.clone_def_component_(t, src, dst);
+                };
+        }
     }
 
     // 实体掩码位置位/清位: 布局经 type_id 算术计算, 直接落 multi_block_bitmask
@@ -329,12 +354,59 @@ private:
         return true;
     }
 
+    template <typename T>
+    bool clone_component_(entity src, entity dst) noexcept
+    {
+        using DecayedT = std::decay_t<T>;
+        single_class_set* set = get_single_class_set<DecayedT>();
+        if (!set) [[unlikely]] return false;
+        const DecayedT* value = set->template get_ptr<DecayedT>(src);
+        if (!value) [[unlikely]] return false;
+        return static_cast<bool>(add(dst, DecayedT(*value)));
+    }
+
+    bool clone_def_component_(int type, entity src, entity dst) noexcept
+    {
+        single_class_set* set = get_single_class_set_by_id(type);
+        if (!set) [[unlikely]] return false;
+        const void* value = set->get_def_ptr(src);
+        if (!value) [[unlikely]] return false;
+        return static_cast<bool>(add_def(dst, type, value));
+    }
+
+    void remove_all_components_(entity entitys) noexcept
+    {
+        entity_manager_.for_each_set_bit(entitys.parts_.index_,
+            [&](uint32_t block_idx, uint32_t bit_offset) {
+                const int type_id = type_id::mask_type_of(block_idx, bit_offset);
+                if (type_id >= static_cast<int>(components_c_.size())) [[unlikely]] return;
+                single_class_set& set = components_c_[type_id];
+                if (!set.on_remove_)
+                {
+                    push_comp_signal(1, entitys.parts_.index_, static_cast<uint32_t>(type_id));
+                }
+                operating_message error;
+                (void)set.hard_remove_impl(entitys, error);
+                clear_entity_mask_for_type(entitys, type_id);
+            });
+    }
+
 public:
     manager() noexcept { change_log_.set_enabled(false); }
 
     bool is_entity_valid(entity entitys) const noexcept
     {
         return entity_manager_.is_entity_alive(entitys);
+    }
+
+    [[nodiscard]] size_t alive_count() const noexcept
+    {
+        return entity_manager_.alive_count();
+    }
+
+    [[nodiscard]] bool empty() const noexcept
+    {
+        return entity_manager_.alive_count() == 0;
     }
 
     void preallocate_entities(size_t count) noexcept
@@ -720,25 +792,66 @@ public:
         return set ? set->get_typed_pool_ptr<T>() : nullptr;
     }
 
-    // 组件类型是否已在管理器中注册 (存在组件集合); 不关心是否已有实例
+    // 组件类型是否已在管理器中注册
     template <typename T>
-    [[nodiscard]] bool has_component() const noexcept
+    [[nodiscard]] bool is_component_type_registered() const noexcept
     {
         using DecayedT = std::decay_t<T>;
         return type_id::get_type_id<DecayedT>() < static_cast<int>(components_c_.size());
     }
 
-    [[nodiscard]] uint64_t get_entity_mask(entity entitys) const noexcept
+    template <typename T>
+    [[nodiscard]] bool has_component(entity entitys) const noexcept
+    {
+        using DecayedT = std::decay_t<T>;
+        if (!entity_manager_.is_entity_alive(entitys)) [[unlikely]]
+        {
+            return false;
+        }
+        const int tid = type_id::get_type_id<DecayedT>();
+        const uint64_t block = entity_manager_.get_block(
+            entitys.parts_.index_, static_cast<uint32_t>(type_id::mask_block_of(tid)));
+        return (block & (1ULL << type_id::mask_offset_of(tid))) != 0;
+    }
+
+    template <typename... Ts>
+    [[nodiscard]] bool has_all_components(entity entitys) const noexcept
+    {
+        return (has_component<Ts>(entitys) && ...);
+    }
+
+    template <typename... Ts>
+    [[nodiscard]] bool has_any_component(entity entitys) const noexcept
+    {
+        return (has_component<Ts>(entitys) || ...);
+    }
+
+    template <typename T>
+    [[nodiscard]] size_t component_count() const noexcept
+    {
+        using DecayedT = std::decay_t<T>;
+        const single_class_set* set = get_single_class_set<DecayedT>();
+        return set != nullptr ? set->live_count() : 0;
+    }
+
+    [[nodiscard]] size_t component_count_by_id(int type_id_value) const noexcept
+    {
+        const single_class_set* set = get_single_class_set_by_id(type_id_value);
+        return set != nullptr ? set->live_count() : 0;
+    }
+
+    [[nodiscard]] uint64_t get_component_mask(entity entitys) const noexcept
     {
         return entity_manager_.get_mask(entitys.parts_.index_);
     }
 
-    [[nodiscard]] uint64_t get_entity_block(entity entitys, uint32_t block_idx) const noexcept
+    [[nodiscard]] uint64_t get_component_mask_block(entity entitys, uint32_t block_idx) const noexcept
     {
         return entity_manager_.get_block(entitys.parts_.index_, block_idx);
     }
 
-    [[nodiscard]] uint64_t get_entity_block_by_idx(uint32_t entity_index, uint32_t block_idx) const noexcept
+    [[nodiscard]] uint64_t get_component_mask_block_by_index(uint32_t entity_index,
+                                                              uint32_t block_idx) const noexcept
     {
         return entity_manager_.get_block(entity_index, block_idx);
     }
@@ -783,33 +896,148 @@ public:
         return entity_manager_.num_mask_blocks();
     }
 
-    [[nodiscard]] entity_state& get_entity_state(uint32_t entity_index) noexcept
+    [[nodiscard]] entity_state& get_entity_state_by_index(uint32_t entity_index) noexcept
     {
         return entity_manager_.get_entity_state(entity_index);
     }
 
-    [[nodiscard]] const entity_state& get_entity_state(uint32_t entity_index) const noexcept
+    [[nodiscard]] const entity_state& get_entity_state_by_index(
+        uint32_t entity_index) const noexcept
     {
         return entity_manager_.get_entity_state(entity_index);
     }
 
-    void set_entity_flag(uint32_t entity_index, entity_flag f) noexcept
+    operating_message get_entity_state(entity entitys, entity_state& out) const noexcept
+    {
+        if (!entity_manager_.is_entity_alive(entitys)) [[unlikely]]
+        {
+            operating_message error;
+            error.write_failure(om_err_invalid_entity.code, msg_level::warn, msg::here());
+            return error;
+        }
+        out = entity_manager_.get_entity_state(entitys.parts_.index_);
+        return {};
+    }
+
+    operating_message set_entity_flag(entity entitys, entity_flag f) noexcept
+    {
+        if (!entity_manager_.is_entity_alive(entitys)) [[unlikely]]
+        {
+            operating_message error;
+            error.write_failure(om_err_invalid_entity.code, msg_level::warn, msg::here());
+            return error;
+        }
+        entity_manager_.set_entity_flag(entitys.parts_.index_, f);
+        return {};
+    }
+
+    operating_message clear_entity_flag(entity entitys, entity_flag f) noexcept
+    {
+        if (!entity_manager_.is_entity_alive(entitys)) [[unlikely]]
+        {
+            operating_message error;
+            error.write_failure(om_err_invalid_entity.code, msg_level::warn, msg::here());
+            return error;
+        }
+        entity_manager_.clear_entity_flag(entitys.parts_.index_, f);
+        return {};
+    }
+
+    [[nodiscard]] bool has_entity_flag(entity entitys, entity_flag f) const noexcept
+    {
+        return entity_manager_.is_entity_alive(entitys) &&
+               entity_manager_.has_entity_flag(entitys.parts_.index_, f);
+    }
+
+    void set_entity_flag_by_index(uint32_t entity_index, entity_flag f) noexcept
     {
         entity_manager_.set_entity_flag(entity_index, f);
     }
 
-    void clear_entity_flag(uint32_t entity_index, entity_flag f) noexcept
+    void clear_entity_flag_by_index(uint32_t entity_index, entity_flag f) noexcept
     {
         entity_manager_.clear_entity_flag(entity_index, f);
     }
 
-    [[nodiscard]] bool has_entity_flag(uint32_t entity_index, entity_flag f) const noexcept
+    [[nodiscard]] bool has_entity_flag_by_index(uint32_t entity_index, entity_flag f) const noexcept
     {
         return entity_manager_.has_entity_flag(entity_index, f);
     }
 
+    operating_message set_tag(entity entitys, uint32_t tag) noexcept
+    {
+        if (!entity_manager_.is_entity_alive(entitys)) [[unlikely]]
+        {
+            operating_message error;
+            error.write_failure(om_err_invalid_entity.code, msg_level::warn, msg::here());
+            return error;
+        }
+        entity_manager_.get_entity_state(entitys.parts_.index_).tag = tag;
+        return {};
+    }
+
+    operating_message set_layer(entity entitys, uint32_t layer) noexcept
+    {
+        if (!entity_manager_.is_entity_alive(entitys)) [[unlikely]]
+        {
+            operating_message error;
+            error.write_failure(om_err_invalid_entity.code, msg_level::warn, msg::here());
+            return error;
+        }
+        entity_manager_.get_entity_state(entitys.parts_.index_).layer = layer;
+        return {};
+    }
+
+    operating_message set_group(entity entitys, uint32_t group) noexcept
+    {
+        if (!entity_manager_.is_entity_alive(entitys)) [[unlikely]]
+        {
+            operating_message error;
+            error.write_failure(om_err_invalid_entity.code, msg_level::warn, msg::here());
+            return error;
+        }
+        entity_manager_.get_entity_state(entitys.parts_.index_).group_id = group;
+        return {};
+    }
+
+    operating_message get_tag(entity entitys, uint32_t& out) const noexcept
+    {
+        entity_state state{};
+        operating_message result = get_entity_state(entitys, state);
+        if (!result)
+        {
+            return result;
+        }
+        out = state.tag;
+        return {};
+    }
+
+    operating_message get_layer(entity entitys, uint32_t& out) const noexcept
+    {
+        entity_state state{};
+        operating_message result = get_entity_state(entitys, state);
+        if (!result)
+        {
+            return result;
+        }
+        out = state.layer;
+        return {};
+    }
+
+    operating_message get_group(entity entitys, uint32_t& out) const noexcept
+    {
+        entity_state state{};
+        operating_message result = get_entity_state(entitys, state);
+        if (!result)
+        {
+            return result;
+        }
+        out = state.group_id;
+        return {};
+    }
+
     template <typename T>
-    void delete_type_container() noexcept
+    operating_message clear_component_type() noexcept
     {
         using DecayedT = std::decay_t<T>;
         int type_id = type_id::get_type_id<DecayedT>();
@@ -827,22 +1055,47 @@ public:
             }
             set.clear();
         }
+        return {};
     }
 
-    void delete_entity(entity& entitys) noexcept
+    operating_message delete_entity(entity entitys) noexcept
     {
-        if (!entity_manager_.is_entity_alive(entitys)) [[unlikely]] return;
-        // 仅遍历实体实际拥有的组件类型 (O(实体组件数) 而非 O(类型总数))
-        // 迭代副本 block, hard_remove 修改原掩码不影响循环
-        entity_manager_.for_each_set_bit(entitys.parts_.index_, [&](uint32_t block_idx, uint32_t bit_offset) {
-            const int type_id = type_id::mask_type_of(block_idx, bit_offset);
-            if (type_id >= static_cast<int>(components_c_.size())) [[unlikely]] return;
-            single_class_set& set = components_c_[type_id];
-            if (!set.on_remove_) push_comp_signal(1, entitys.parts_.index_, static_cast<uint32_t>(type_id));
+        if (!entity_manager_.is_entity_alive(entitys)) [[unlikely]]
+        {
             operating_message error;
-            (void)set.hard_remove_impl(entitys, error);
-        });
+            error.write_failure(om_err_invalid_entity.code, msg_level::warn, msg::here());
+            return error;
+        }
+        remove_all_components_(entitys);
         entity_manager_.destroy_entity(entitys);
+        return {};
+    }
+
+    operating_message delete_entity_batch(std::span<const entity> entities,
+                                          size_t& deleted_count) noexcept
+    {
+        deleted_count = 0;
+        for (const entity e : entities)
+        {
+            if (entity_manager_.is_entity_alive(e))
+            {
+                (void)delete_entity(e);
+                ++deleted_count;
+            }
+        }
+        return {};
+    }
+
+    operating_message clear_entity(entity entitys) noexcept
+    {
+        if (!entity_manager_.is_entity_alive(entitys)) [[unlikely]]
+        {
+            operating_message error;
+            error.write_failure(om_err_invalid_entity.code, msg_level::warn, msg::here());
+            return error;
+        }
+        remove_all_components_(entitys);
+        return {};
     }
 
     // === 错误对象返回值形态 ===
@@ -896,6 +1149,98 @@ public:
         return error;
     }
 
+    template <typename... Ts>
+    operating_message create_with(entity& out, Ts&&... components) noexcept
+    {
+        out = entity{};
+        entity created = create_entity();
+        if (!created.is_valid()) [[unlikely]]
+        {
+            operating_message error;
+            error.write_failure(om_err_capacity_exceeded.code, msg_level::error, msg::here());
+            return error;
+        }
+        operating_message error;
+        bool ok = true;
+        if constexpr (sizeof...(Ts) > 0)
+        {
+            auto append = [&](auto&& component) {
+                if (!ok)
+                {
+                    return;
+                }
+                operating_message result = add(created, std::forward<decltype(component)>(component));
+                if (!result)
+                {
+                    ok = false;
+                    error = result;
+                }
+            };
+            (append(std::forward<Ts>(components)), ...);
+        }
+        if (!ok)
+        {
+            (void)delete_entity(created);
+            return error;
+        }
+        out = created;
+        return {};
+    }
+
+    // 克隆实体: 复制全部组件与用户状态, 失败回滚新建实体
+    operating_message clone(entity source, entity& out) noexcept
+    {
+        out = entity{};
+        if (!entity_manager_.is_entity_alive(source)) [[unlikely]]
+        {
+            operating_message error;
+            error.write_failure(om_err_invalid_entity.code, msg_level::warn, msg::here());
+            return error;
+        }
+        entity created = create_entity();
+        if (!created.is_valid()) [[unlikely]]
+        {
+            operating_message error;
+            error.write_failure(om_err_capacity_exceeded.code, msg_level::error, msg::here());
+            return error;
+        }
+        bool copied = true;
+        entity_manager_.for_each_set_bit(source.parts_.index_,
+            [&](uint32_t block_idx, uint32_t bit_offset) {
+                if (!copied) return;
+                const int type = type_id::mask_type_of(block_idx, bit_offset);
+                if (type < 0 || type >= static_cast<int>(component_metas_.size())) [[unlikely]]
+                {
+                    copied = false;
+                    return;
+                }
+                const auto clone_fn = component_metas_[type].clone_component;
+                if (!clone_fn || !clone_fn(*this, type, source, created))
+                {
+                    copied = false;
+                }
+            });
+        if (!copied) [[unlikely]]
+        {
+            (void)delete_entity(created);
+            operating_message error;
+            error.write_failure(om_err_unsupported_operation.code, msg_level::error, msg::here());
+            return error;
+        }
+        // 用户状态: 跳过 pending_destroy
+        const entity_state& src_state = entity_manager_.get_entity_state(source.parts_.index_);
+        entity_state& dst_state = entity_manager_.get_entity_state(created.parts_.index_);
+        dst_state.tag = src_state.tag;
+        dst_state.layer = src_state.layer;
+        dst_state.group_id = src_state.group_id;
+        const uint32_t copy_mask = static_cast<uint32_t>(entity_flag::active)
+                                 | static_cast<uint32_t>(entity_flag::disabled)
+                                 | static_cast<uint32_t>(entity_flag::static_entity);
+        dst_state.flags = (dst_state.flags & ~copy_mask) | (src_state.flags & copy_mask);
+        out = created;
+        return {};
+    }
+
     template <typename T>
     LCF_FORCE_INLINE operating_message soft_remove(entity entitys) noexcept
     {
@@ -910,6 +1255,61 @@ public:
         operating_message error;
         (void)this->template hard_remove_impl<T>(entitys, error);
         return error;
+    }
+
+    template <typename T>
+    operating_message hard_remove_batch(std::span<const entity> entities,
+                                        size_t& removed_count) noexcept
+    {
+        removed_count = 0;
+        if (!is_component_type_registered<T>())
+        {
+            return {};
+        }
+        for (const entity e : entities)
+        {
+            operating_message error;
+            if (this->template hard_remove_impl<T>(e, error))
+            {
+                ++removed_count;
+            }
+        }
+        return {};
+    }
+
+    template <typename T>
+    operating_message soft_remove_batch(std::span<const entity> entities,
+                                        size_t& removed_count) noexcept
+    {
+        removed_count = 0;
+        if (!is_component_type_registered<T>())
+        {
+            return {};
+        }
+        for (const entity e : entities)
+        {
+            operating_message error;
+            if (this->template soft_remove_impl<T>(e, error))
+            {
+                ++removed_count;
+            }
+        }
+        return {};
+    }
+
+    template <typename T>
+    bool has_component_batch(std::span<const entity> entities,
+                             std::span<uint8_t> results) const noexcept
+    {
+        if (results.size() < entities.size()) [[unlikely]]
+        {
+            return false;
+        }
+        for (size_t i = 0; i < entities.size(); ++i)
+        {
+            results[i] = has_component<T>(entities[i]) ? 1u : 0u;
+        }
+        return true;
     }
 
     LCF_FORCE_INLINE operating_message add_def(entity entitys, int def_id, const void* data) noexcept

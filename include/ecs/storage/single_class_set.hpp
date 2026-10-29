@@ -177,6 +177,7 @@ private:
     dense<uint32_t> dense_;
     // 与 dense_ 同步的 version 数组, 用于遍历时直接读连续内存, 避免 sparse_entry 间接查找
     dense<uint32_t> versions_;
+    size_t live_count_{0};
     int type_id_{-1};
 
     void* typed_pool_{nullptr};
@@ -1092,6 +1093,7 @@ private:
         if (all_new) [[likely]]
         {
             size_t dense_start = dense_.size();
+            live_count_ += count;
             dense_.increase_capacity(dense_start + count);
             versions_.increase_capacity(dense_start + count);
             pool->increase_capacity(pool->size() + count);
@@ -1199,6 +1201,7 @@ private:
 
             if (new_count > 0)
             {
+                live_count_ += new_count;
                 size_t dense_old = dense_.size();
                 dense_.increase_capacity(dense_old + new_count);
                 versions_.increase_capacity(dense_old + new_count);
@@ -1284,6 +1287,7 @@ public:
         dense_.clear();
         versions_.clear();
         entity_change_tracking_.clear();
+        live_count_ = 0;
         if (typed_pool_ && ops_.clear_pool) ops_.clear_pool(typed_pool_);
         bump_pool_version();
     }
@@ -1362,6 +1366,7 @@ public:
             dense_.emplace_back_unchecked(e.parts_.index_);
             versions_.emplace_back_unchecked(e.parts_.version_);
             pool->emplace_back_unchecked(std::forward<T>(object));
+            ++live_count_;
             ++version_;
             if (track_changes_enabled_) [[likely]] {
                 entity_change_tracking_.emplace_back_unchecked(
@@ -1431,6 +1436,7 @@ public:
                 }
                 // 赋值覆盖孤儿: 非 trivial 由赋值释放旧资源, trivial 直接覆写
                 (*pool)[reuse] = std::forward<T>(object);
+                ++live_count_;
                 if (reuse < entity_change_tracking_.size())
                 {
                     entity_change_tracking_[reuse] =
@@ -1467,6 +1473,7 @@ public:
             }
             void* old_pool_data = typed_pool_data_;
             pool->emplace_back(std::forward<T>(object));
+            ++live_count_;
             if (pool->data() != old_pool_data) [[unlikely]]
             {
                 bump_pool_version();
@@ -1591,6 +1598,7 @@ public:
             versions_.emplace_back_unchecked(e.parts_.version_);
             dp->copy_construct_element(dense_idx, data);
             ++dp->size;  // 与 dense_ 同步 (不变量: dp->size == dense_.size())
+            ++live_count_;
             ++version_;
             if (track_changes_enabled_) [[likely]] {
                 entity_change_tracking_.emplace_back_unchecked(
@@ -1649,6 +1657,7 @@ public:
                 }
                 dp->destroy_element(reuse);
                 dp->copy_construct_element(reuse, data);
+                ++live_count_;
                 if (reuse < entity_change_tracking_.size())
                 {
                     entity_change_tracking_[reuse] =
@@ -1692,6 +1701,7 @@ public:
             }
             dp->copy_construct_element(dense_idx, data);
             ++dp->size;  // 与 dense_ 同步 (不变量: dp->size == dense_.size())
+            ++live_count_;
             if (on_add_) [[unlikely]] on_add_(e, dp->element(dense_idx), on_add_data_);
         }
         ++version_;
@@ -2021,6 +2031,7 @@ public:
 
         // 登记死槽供 add 复用; 墓碑的物理移除延迟到 compact (组件数据暂留)
         const uint32_t slot = se->dense;
+        --live_count_;
         free_dense_.emplace_back(slot);
         sparse_[e.parts_.index_] = {dense_invalid, 0};
         if (slot < versions_.size())
@@ -2068,25 +2079,10 @@ public:
         return true;
     }
 
-    // 活条目数 (O(n) 扫描): size() 为物理槽位数 (含墓碑), 本接口为逻辑存活数
-    [[nodiscard]] size_t live_count() const noexcept
-    {
-        const size_t n = dense_.size();
-        size_t live = 0;
-        for (size_t i = 0; i < n; ++i)
-        {
-            if (sparse_[dense_[i]].dense == i)
-            {
-                ++live;
-            }
-        }
-        return live;
-    }
-
-    // 墓碑数 (O(n) 扫描): soft_remove 后尚未回收的死条目
+    // 墓碑数: soft_remove 后尚未回收的死条目
     [[nodiscard]] size_t tombstone_count() const noexcept
     {
-        return dense_.size() - live_count();
+        return dense_.size() - live_count_;
     }
 
     // 是否存在墓碑 (O(1), 过期登记会误报)
@@ -2153,6 +2149,7 @@ public:
     , batch_order_tmp_(std::move(other.batch_order_tmp_))
     , dense_(std::move(other.dense_))
     , versions_(std::move(other.versions_))
+    , live_count_(other.live_count_)
     , type_id_(other.type_id_)
     , typed_pool_(other.typed_pool_)
     , typed_pool_data_(other.typed_pool_data_)
@@ -2183,6 +2180,7 @@ public:
         other.type_id_ = -1;
         other.pending_increase_capacity_ = 0;
         other.component_size_ = 0;
+        other.live_count_ = 0;
         other.version_ = 0;
         other.global_change_counter_ = 0;
         other.global_added_counter_ = 0;
@@ -2215,6 +2213,7 @@ public:
             position_epoch_ = other.position_epoch_;
             dense_ = std::move(other.dense_);
             versions_ = std::move(other.versions_);
+            live_count_ = other.live_count_;
             typed_pool_ = other.typed_pool_;
             typed_pool_data_ = other.typed_pool_data_;
             ops_ = other.ops_;
@@ -2244,6 +2243,7 @@ public:
             other.type_id_ = -1;
             other.pending_increase_capacity_ = 0;
             other.component_size_ = 0;
+            other.live_count_ = 0;
             other.version_ = 0;
             other.global_change_counter_ = 0;
             other.global_added_counter_ = 0;
@@ -2263,6 +2263,11 @@ public:
     [[nodiscard]] constexpr size_t size() const noexcept
     {
         return dense_.size();
+    }
+
+    [[nodiscard]] constexpr size_t live_count() const noexcept
+    {
+        return live_count_;
     }
 
     [[nodiscard]] constexpr bool empty() const noexcept
@@ -2753,6 +2758,7 @@ inline bool single_class_set::hard_remove_impl(entity e, operating_message& erro
     }
 
     auto index = se->dense;
+    --live_count_;
 
     // 迭代期: swap_pop 前通知活跃迭代器
     if (active_iterator_) [[unlikely]]

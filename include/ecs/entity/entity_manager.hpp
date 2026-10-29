@@ -41,6 +41,7 @@ private:
     multi_block_bitmask masks_;
     dense<entity_state> entity_states_;
     dense<uint8_t> alive_;
+    size_t alive_count_{0};
 
     dense<entity> preallocated_entities_;
     size_t current_preallocated_index_ = 0;
@@ -110,6 +111,7 @@ private:
         uint32_t idx = id_manager_.get_id();
         ensure_version_capacity(idx);
         alive_[idx] = 1;
+        ++alive_count_;
         return entity(idx, version_v_[idx]);
     }
 
@@ -167,6 +169,8 @@ public:
 
     [[nodiscard]] size_t maximum_entity_index() const noexcept { return version_v_.size(); }
 
+    [[nodiscard]] size_t alive_count() const noexcept { return alive_count_; }
+
     [[nodiscard]] uint32_t get_version(uint32_t idx) const noexcept
     {
         return idx < version_v_.size() ? version_v_[idx] : 0;
@@ -176,6 +180,7 @@ public:
     {
         if(!is_entity_alive(entitys)) [[unlikely]] return;
         alive_[entitys.parts_.index_] = 0;
+        --alive_count_;
         version_v_[entitys.parts_.index_]++;
         notify_destroyed(entitys);
         id_manager_.free_id(entitys.parts_.index_);
@@ -269,11 +274,17 @@ public:
 
     [[nodiscard]] entity get_entity() noexcept
     {
-        entity e = current_preallocated_index_ < preallocated_entities_.size()
+        const bool from_preallocated =
+            current_preallocated_index_ < preallocated_entities_.size();
+        entity e = from_preallocated
             ? preallocated_entities_[current_preallocated_index_++]
             : allocate_entity();
         ensure_version_capacity(e.parts_.index_);
         alive_[e.parts_.index_] = 1;
+        if (from_preallocated)
+        {
+            ++alive_count_;
+        }
         notify_created(e);
         return e;
     }
@@ -286,6 +297,7 @@ public:
         masks_.clear();
         entity_states_.clear();
         alive_.clear();
+        alive_count_ = 0;
         preallocated_entities_.clear();
         current_preallocated_index_ = 0;
         signals_.clear();

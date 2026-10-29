@@ -297,7 +297,7 @@ int main()
             auto e1 = m.create_entity();
             (void)m.add(e1, probe_component{2.5f, 21});
             (void)m.add(e1, position{1.0f, 2.0f, 3.0f});
-            m.get_entity_state(e1.parts_.index_).tag = 5;
+            m.get_entity_state_by_index(e1.parts_.index_).tag = 5;
             auto e2 = m.create_entity();
             (void)m.add(e2, position{4.0f, 5.0f, 6.0f});
             (void)m.create_entity();
@@ -318,7 +318,7 @@ int main()
                 comp_ok = pool != nullptr && (*pool)[0].scale == 2.5f && (*pool)[0].id == 21;
             }
             return index_ok && pset != nullptr && pset->size() == 2 && comp_ok
-                   && m.get_entity_state(1).tag == 5;
+                   && m.get_entity_state_by_index(1).tag == 5;
         };
 
         const char* names[] = {"json", "binary", "protobuf", "flatbuffer"};
@@ -528,7 +528,7 @@ int main()
         auto e3 = source.create_entity();
         (void)source.add(e1, position{1.0f, 1.0f, 1.0f});
         (void)source.add(e3, position{3.0f, 3.0f, 3.0f});
-        source.get_entity_state(e3.parts_.index_).tag = 9;
+        source.get_entity_state_by_index(e3.parts_.index_).tag = 9;
         source.delete_entity(e2);
 
         serialize::manager writer(source);
@@ -551,7 +551,7 @@ int main()
         auto* set = target.get_single_class_set<position>();
         t_check("replace 保留存档索引和空洞", em.is_alive(1) && !em.is_alive(2)
             && em.is_alive(3));
-        t_check("replace 恢复实体状态", target.get_entity_state(3).tag == 9);
+        t_check("replace 恢复实体状态", target.get_entity_state_by_index(3).tag == 9);
         t_check("replace 恢复组件数量", set != nullptr && set->size() == 2);
     }
 

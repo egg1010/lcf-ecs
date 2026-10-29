@@ -54,7 +54,7 @@ int main()
         t_check("position 保留", mgr.get_ptr<position>(e) != nullptr);
 
         ecs::command_buffer cb2(&mgr);
-        cb2.destroy_entity(e);
+        cb2.delete_entity(e);
         cb2.flush();
         t_check("flush 销毁实体", !mgr.is_entity_valid(e));
     }

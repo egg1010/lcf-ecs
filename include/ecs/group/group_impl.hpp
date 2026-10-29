@@ -17,7 +17,7 @@ template <typename First, typename... Rest>
     for (uint32_t b = 0; b <= max_block_; ++b)
     {
         if (required_masks_[b] == 0) continue;
-        uint64_t mask = mgr_->get_entity_block_by_idx(entity_index, b);
+        uint64_t mask = mgr_->get_component_mask_block_by_index(entity_index, b);
         if ((mask & required_masks_[b]) != required_masks_[b])
             return false;
     }

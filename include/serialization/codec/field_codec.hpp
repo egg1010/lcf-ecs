@@ -65,7 +65,7 @@ inline void for_each_alive_entity(ecs::manager& mgr, F&& fn) noexcept
         {
             continue;
         }
-        fn(idx, em.get_version_at(idx), mgr.get_entity_state(idx));
+        fn(idx, em.get_version_at(idx), mgr.get_entity_state_by_index(idx));
     }
 }
 

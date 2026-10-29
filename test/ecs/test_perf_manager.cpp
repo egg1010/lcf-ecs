@@ -53,10 +53,10 @@ int main()
         {
             ents.emplace_back(mgr.create_entity());
         }
-        mgr.delete_type_container<position>();
+        mgr.clear_component_type<position>();
 
         double ms = t_bench_best_ms([&]() {
-            mgr.delete_type_container<position>();
+            mgr.clear_component_type<position>();
             for (uint64_t i = 0; i < N; ++i)
             {
                 mgr.add(ents[i], position{static_cast<float>(i), 0.0f, 0.0f});
@@ -71,7 +71,7 @@ int main()
             comps.emplace_back(velocity{static_cast<float>(i), 1.0f, 2.0f});
         }
         ms = t_bench_best_ms([&]() {
-            mgr.delete_type_container<velocity>();
+            mgr.clear_component_type<velocity>();
             mgr.add_batch<velocity>(ents, comps);
         }, 5);
         t_perf("add_batch<velocity>", N, ms);

@@ -48,7 +48,7 @@ private:
 
     static void apply_destroy(manager* mgr, entity e, void_any&) noexcept
     {
-        mgr->delete_entity(e);
+        (void)mgr->delete_entity(e);
     }
 
 public:
@@ -81,7 +81,7 @@ public:
             &apply_remove<T>});
     }
 
-    void destroy_entity(entity e) noexcept
+    void delete_entity(entity e) noexcept
     {
         commands_.emplace_back(command{
             e,

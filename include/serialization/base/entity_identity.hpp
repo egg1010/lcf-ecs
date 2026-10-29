@@ -159,7 +159,7 @@ inline bool rebuild_entities(ecs::manager& mgr, const saved_entity_set& saved,
         }
         em.set_version_at(s.index, s.version);
         remap.set(s.index, ecs::entity(s.index, s.version), s.version);
-        ecs::entity_state& st = mgr.get_entity_state(s.index);
+        ecs::entity_state& st = mgr.get_entity_state_by_index(s.index);
         st.flags = s.flags;
         st.tag = s.tag;
         st.layer = s.layer;
@@ -187,7 +187,7 @@ inline bool append_entities(ecs::manager& mgr, const saved_entity_set& saved,
         const saved_entity& s = saved.entries[k];
         ecs::entity e = mgr.create_entity();
         remap.set(s.index, e, s.version);
-        ecs::entity_state& st = mgr.get_entity_state(e.parts_.index_);
+        ecs::entity_state& st = mgr.get_entity_state_by_index(e.parts_.index_);
         st.flags = s.flags;
         st.tag = s.tag;
         st.layer = s.layer;
