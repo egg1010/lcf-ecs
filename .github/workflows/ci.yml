@@ -134,7 +134,16 @@ jobs:
 
       - name: test
         # 排除未参与并发门禁的性能基准, 其余线程/任务图/应用路径全部纳入
-        run: ctest --test-dir build-tsan -E "test_perf" --output-on-failure --timeout 900
+        run: |
+          set +e
+          setarch "$(uname -m)" -R ctest --test-dir build-tsan -E "test_perf" --output-on-failure --timeout 900
+          rc=$?
+          if [ "$rc" -ne 0 ] && [ -f build-tsan/Testing/Temporary/LastTestsFailed.log ]; then
+            while IFS= read -r line; do
+              echo "::error title=TSan failed test::$line"
+            done < build-tsan/Testing/Temporary/LastTestsFailed.log
+          fi
+          exit "$rc"
 
   performance-gate:
     runs-on: ubuntu-latest
