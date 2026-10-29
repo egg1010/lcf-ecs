@@ -143,6 +143,12 @@ jobs:
               echo "::error title=TSan failed test::$line"
             done < build-tsan/Testing/Temporary/LastTestsFailed.log
           fi
+          if [ "$rc" -ne 0 ] && [ -f build-tsan/Testing/Temporary/LastTest.log ]; then
+            grep -n -E "WARNING: ThreadSanitizer|SUMMARY: ThreadSanitizer|^    #[0-5] |Location is|Read of size|Write of size|Previous (read|write)|Thread T[0-9]+" build-tsan/Testing/Temporary/LastTest.log | head -160 | while IFS= read -r line; do
+              line="${line//'%'/'%25'}"
+              echo "::error title=TSan detail::$line"
+            done
+          fi
           exit "$rc"
 
   performance-gate:
