@@ -340,6 +340,7 @@ inline bool heap_entry_less(const heap_entry& a, const heap_entry& b) noexcept
 struct ready_heap
 {
     dense<heap_entry> items_{};
+    std::atomic<std::size_t> size_cache_{0};
     task_table* table_{nullptr};
 
     ready_heap() noexcept = default;
@@ -351,28 +352,31 @@ struct ready_heap
     {
         table_ = &table;
         items_.increase_capacity(capacity);
+        size_cache_.store(0, std::memory_order_relaxed);
         return true;
     }
 
     void destroy() noexcept
     {
         items_.clear();
+        size_cache_.store(0, std::memory_order_relaxed);
         table_ = nullptr;
     }
 
     std::size_t size() const noexcept
     {
-        return items_.size();
+        return size_cache_.load(std::memory_order_acquire);
     }
 
     bool empty() const noexcept
     {
-        return items_.empty();
+        return size_cache_.load(std::memory_order_acquire) == 0;
     }
 
     void clear() noexcept
     {
         items_.clear();
+        size_cache_.store(0, std::memory_order_relaxed);
     }
 
     bool push(const heap_entry& entry) noexcept
@@ -381,6 +385,7 @@ struct ready_heap
         const std::size_t position = items_.size() - 1;
         set_slot(position, entry.index_);
         sift_up(position);
+        size_cache_.fetch_add(1, std::memory_order_release);
         return true;
     }
 
@@ -408,6 +413,7 @@ struct ready_heap
         {
             items_.pop_back();
         }
+        size_cache_.fetch_sub(1, std::memory_order_release);
         return true;
     }
 
