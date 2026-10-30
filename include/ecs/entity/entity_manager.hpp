@@ -171,6 +171,11 @@ public:
 
     [[nodiscard]] size_t alive_count() const noexcept { return alive_count_; }
 
+    [[nodiscard]] size_t reserved_entity_count() const noexcept
+    {
+        return preallocated_entities_.size() - current_preallocated_index_;
+    }
+
     [[nodiscard]] uint32_t get_version(uint32_t idx) const noexcept
     {
         return idx < version_v_.size() ? version_v_[idx] : 0;

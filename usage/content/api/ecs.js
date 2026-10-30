@@ -259,6 +259,46 @@ ECS 核心管理类，管理实体和所有组件集合。
 >
 > 本章示例中的 \`error\` 均为同一作用域内复用的 \`operating_message\` 对象：\`operating_message error;\`。失败时库写码、级别与站点，成功时不读写该对象。
 
+### 最小使用
+
+\`\`\`cpp
+struct Position { float x, y; };
+struct Velocity { float dx, dy; };
+
+ecs::manager mgr;
+mgr.preallocate_entities(1024);
+
+ecs::entity e = mgr.create_entity();
+mgr.add(e, Position{1.0f, 2.0f});
+mgr.add(e, Velocity{3.0f, 4.0f});
+
+Position* p = mgr.get_ptr<Position>(e);      // 实体无效或未挂载时为 nullptr
+if (p) { p->x += 1.0f; }
+
+mgr.view<Position, Velocity>().for_each([](Position& pos, Velocity& vel) {
+    pos.x += vel.dx;
+    pos.y += vel.dy;
+});
+
+(void)mgr.delete_entity(e);
+\`\`\`
+
+### 按任务查接口
+
+| 我想… | 去看 |
+|------|------|
+| 启动阶段预留容量 | [预分配接口](#预分配接口) |
+| 创建或删除实体 | [实体管理](#实体管理) |
+| 添加组件、批量添加 | [添加组件](#添加组件) |
+| 取组件指针、批量查询 | [获取组件](#获取组件) |
+| 判断组件是否存在 | [组件存在性查询](#组件存在性查询) |
+| 遍历实体与组件 | [View系统](#view系统) |
+| 分组并连续排布 | [Group系统](#group系统) |
+| 运行期组合查询 | [runtime_view](#runtime_view) |
+| 监听增删事件 | [生命周期信号](#生命周期信号) |
+
+跨帧延迟增删实体或组件见 [command_buffer](#/command_buffer)。
+
 ### 预分配接口
 
 所有高层预分配接口统一以 \`preallocate_\` 前缀命名，在启动阶段一次性预留容量，避免运行期扩容。各项互相独立，按需调用。
@@ -288,7 +328,7 @@ mgr.preallocate_component_signals(4096);
 | \`create_entity()\` | 创建实体（优先使用预分配池） |
 | \`is_entity_valid(entity)\` | 检查实体有效性（版本号匹配） |
 | \`delete_entity(entity)\` | 删除实体及其全部组件（释放 ID，递增版本号），返回 \`operating_message\` |
-| \`delete_entity_batch(entities, size_t& deleted_count)\` | 批量删除实体，跳过无效句柄，返回 \`operating_message\` |
+| \`delete_entity_batch(entities, size_t& deleted_count)\` | 批量删除实体，跳过无效句柄并上报错误，返回 \`operating_message\` |
 | \`clear_entity(entity)\` | 清除实体全部组件，实体本身保留，返回 \`operating_message\` |
 | \`alive_count()\` | 当前存活实体数量 |
 | \`empty()\` | 是否没有存活实体 |
@@ -309,12 +349,8 @@ mgr.delete_entity_batch(targets, removed);
 
 | 接口 | 说明 |
 |------|------|
-| \`add<T>(entity, T)\` | 添加组件（实体在前） |
-| \`add<T>(T, entity)\` | 添加组件（组件在前，参数顺序可互换） |
-| \`addc<T>(entity, T)\` | 链式添加（返回 \`manager&\`） |
-| \`addc<T>(T, entity)\` | 链式添加（组件在前） |
-| \`addc<T>(T, EEs...)\` | 正向变参链式添加：单组件加到多个实体 \`addc(comp, e1, e2, e3)\` |
-| \`addc<TT...>(EE, TT&&...)\` | 反向变参链式添加：多组件加到同一实体 \`addc(e, comp1, comp2, comp3)\` |
+| \`add<T>(entity, T)\` | 添加组件，返回 \`operating_message\`（实体在前） |
+| \`add<T>(T, entity)\` | 添加组件，返回 \`operating_message\`（组件在前，参数顺序可互换） |
 | \`add_batch<T>(span<const entity>, span<const T>)\` | 批量添加（span 版本） |
 | \`add_batch<T>(const class_pool<entity>&, const class_pool<T>&)\` | 批量添加（左值引用） |
 | \`add_batch<T>(class_pool<entity>&&, class_pool<T>&&)\` | 批量添加（右值引用） |
@@ -391,7 +427,7 @@ if (!mgr.clone(e, copy))
 | \`has_component<T>(entity)\` | 实体是否挂载组件（实体无效时为 \`false\`） |
 | \`has_all_components<Ts...>(entity)\` | 实体是否挂载全部指定组件 |
 | \`has_any_component<Ts...>(entity)\` | 实体是否挂载任一指定组件 |
-| \`has_component_batch<T>(span<const entity>, span<uint8_t>)\` | 批量查询，长度不足返回 \`false\` |
+| \`has_component_batch<T>(span<const entity>, span<uint8_t>)\` | 批量查询，结果缓冲不足返回错误 |
 | \`component_count<T>()\` | 该组件类型的存活实例数 |
 | \`component_count_by_id(int)\` | 按 type_id 统计存活实例数 |
 
@@ -421,12 +457,8 @@ const size_t positions = mgr.component_count<Position>();
 
 | 接口 | 说明 |
 |------|------|
-| \`soft_remove<T>(entity)\` | 软删除组件（仅清除 sparse，留下空洞） |
-| \`hard_remove<T>(entity)\` | 硬删除组件 |
-| \`soft_removec<T>(entity)\` | 链式软删除（返回 \`manager&\`） |
-| \`hard_removec<T>(entity)\` | 链式硬删除（返回 \`manager&\`） |
-| \`hard_removec<TT...>(EEs...)\` | 变参链式硬删除：多类型 × 多实体 笛卡尔积 \`hard_removec<Comp1, Comp2>(e1, e2)\` |
-| \`soft_removec<TT...>(EEs...)\` | 变参链式软删除：多类型 × 多实体 笛卡尔积 \`soft_removec<Comp1, Comp2>(e1, e2)\` |
+| \`soft_remove<T>(entity)\` | 软删除组件，返回 \`operating_message\`（仅清除 sparse，留下空洞） |
+| \`hard_remove<T>(entity)\` | 硬删除组件，返回 \`operating_message\` |
 | \`soft_remove_batch<T>(span<const entity>, size_t& removed_count)\` | 批量软删除，返回 \`operating_message\` |
 | \`hard_remove_batch<T>(span<const entity>, size_t& removed_count)\` | 批量硬删除，返回 \`operating_message\` |
 | \`clear_component_type<T>()\` | 清空整个类型容器（含掩码位与实体状态），返回 \`operating_message\` |
@@ -446,6 +478,44 @@ const size_t positions = mgr.component_count<Position>();
 | \`get_single_class_set_by_id(int type_id)\` | 通过 type_id 获取组件集合（运行时视图用） |
 | \`get_entity_manager()\` | 获取 \`entity_manager&\` 引用（暴露掩码 / 状态 / 标志接口） |
 | \`get_entity_manager() const\` | const 版本 |
+
+### 存储维护
+
+| 接口 | 说明 |
+|------|------|
+| \`compact<T>()\` / \`compact_all()\` | 回收软删除后的空闲槽位，返回 \`operating_message\` |
+| \`tombstone_count<T>()\` / \`has_tombstones<T>()\` | 查询未回收槽位数量与是否存在 |
+| \`contains_entity<T>(entity)\` | 存储级成员判断 |
+| \`get_entity_indices<T>()\` / \`get_entity_versions<T>()\` | 返回组件对应实体索引与版本的容器指针；未注册类型返回 \`nullptr\`，不隐式注册类型 |
+| \`get_pool_version<T>()\` / \`get_version<T>(entity_index)\` | 版本查询 |
+| \`set_hot_set_capacity<T>(entries)\` / \`hot_set_capacity<T>()\` / \`clear_hot_set<T>()\` | 查询缓存容量配置 |
+| \`get_raw_pool_data<T>()\` / \`get_type_id<T>()\` | 运行时类型擦除访问 |
+| \`capacity<T>()\` / \`reserved_entities()\` / \`memory_usage()\` | 容量与内存统计 |
+| \`for_each_alive_entity(func)\` | 遍历全部存活实体 |
+| \`reset()\` | 清空实体与组件数据并重置实体分配状态 |
+
+### 扩展接口
+
+| 接口 | 说明 |
+|------|------|
+| \`create_entities(count, out)\` | 批量创建实体并追加到 \`out\` |
+| \`clone_batch(sources, out)\` / \`clone_into(dst, source)\` | 批量克隆保留成功副本；克隆到已有实体失败时可能留下部分结果 |
+| \`get_or_add(entity, component, out)\` / \`emplace<T>(entity, out, args...)\` | 获取或添加组件 |
+| \`replace<T>(entity, component)\` | 覆盖已存在组件，缺失时返回错误 |
+| \`add_batch(component, entities)\` | 同一组件值批量添加，允许部分成功 |
+| \`has_all_components_batch<Ts...>(...)\` / \`has_any_components_batch<Ts...>(...)\` | 多类型批量存在性判断 |
+| \`soft_remove_batch/hard_remove_batch\` 的 dense / 容器 / 裸指针重载 | 批量移除的其他入参形式 |
+| \`add_def_batch\` / \`hard_remove_def_batch\` / \`soft_remove_def_batch\` | def 组件批量操作，允许部分成功 |
+| \`has_def(entity, def_id/name)\` / \`has_def_batch(...)\` | def 组件存在性判断 |
+| \`set_entity_state(entity, state)\` | 整体写入实体状态 |
+| \`set_tag_by_index\` / \`set_layer_by_index\` / \`set_group_by_index\` | 按索引写 tag / layer / group |
+| \`add_entity_listener(event, fn, user_data, out_id)\` / \`remove_entity_listener(id)\` | 实体事件监听器注册与移除 |
+| \`set_on_add_def\` / \`set_on_remove_def\` / \`set_on_modify_def\` | def 类型回调 |
+| \`remove_system(index)\` / \`query_systems(phase, out)\` / \`run_systems(phase)\` | 系统移除、筛选与执行 |
+| \`swap(other)\` / \`merge(other)\` | 交换管理器状态 / 按实体部分合并，成功实体从源管理器删除 |
+| \`view<T>() const\` / const 版 \`group\` 工厂 | const 约束下的视图与分组 |
+
+> 批量操作允许部分成功：成功项保留，返回首个错误，成功数量通过出参返回；整批参数错误时不修改数据。
 
 ### single_class_set 稀疏表接口
 
@@ -606,15 +676,15 @@ entity e2 = mgr.create_entity();
 mgr.add(e1, Position{1, 2});
 mgr.add(Velocity{10, 20}, e1);  // 参数顺序可互换
 
-// 链式添加
-mgr.addc(e1, Health{100, 100})
-   .addc(e1, Name{"Alice"});
+// 同一组件添加到多个实体
+mgr.add(Position{7, 8}, e1);
+mgr.add(Position{7, 8}, e2);
+mgr.add(Position{7, 8}, e3);
 
-// 变参链式添加: 单组件 + 多实体 (comp 在前)
-mgr.addc(Position{7, 8}, e1, e2, e3);  // Position 加到 e1/e2/e3
-
-// 变参链式添加: 多组件 + 单实体 (entity 在前)
-mgr.addc(e1, Position{1, 2}, Velocity{3, 4, 5}, Health{100, 200});
+// 多个组件添加到同一实体
+mgr.add(e1, Position{1, 2});
+mgr.add(e1, Velocity{3, 4, 5});
+mgr.add(e1, Health{100, 200});
 
 // 获取组件
 Position* p = mgr.get_ptr<Position>(e1);
@@ -664,12 +734,13 @@ mgr.add_batch(ents, comps);
 mgr.soft_remove<Health>(e1);
 mgr.hard_remove<Velocity>(e2);
 
-// 链式删除
-mgr.soft_removec<Name>(e1)
-   .soft_removec<Name>(e2);
-
-// 变参链式删除: 多类型 × 多实体 笛卡尔积
-mgr.hard_removec<Position, Velocity>(e1, e2);  // 从 e1 和 e2 都移除 Position 和 Velocity
+// 多实体删除
+mgr.soft_remove<Name>(e1);
+mgr.soft_remove<Name>(e2);
+mgr.hard_remove<Position>(e1);
+mgr.hard_remove<Position>(e2);
+mgr.hard_remove<Velocity>(e1);
+mgr.hard_remove<Velocity>(e2);
 
 // 删除实体
 mgr.delete_entity(e2);
@@ -2304,13 +2375,18 @@ cb.flush();
 | 接口 | 说明 |
 |------|------|
 | \`create_command_buffer()\` | manager 工厂方法，返回绑定到该 manager 的 command_buffer |
-| \`add_component<T>(entity, T&&)\` | 录制添加组件命令 |
-| \`remove_component<T>(entity)\` | 录制移除组件命令（soft_remove 语义） |
-| \`delete_entity(entity)\` | 录制删除实体命令 |
+| \`deferred_entity create_entity()\` | 录制创建实体命令，返回占位实体 id |
+| \`entity resolve(deferred_entity)\` | 查询占位实体对应的真实实体；未回放、创建失败或实体已删除时返回无效实体 |
+| \`add_component<T>(entity/deferred_entity, T&&)\` | 录制添加组件命令 |
+| \`add_component_batch<T>(entities, components)\` | 录制批量添加组件命令 |
+| \`remove_component<T>(entity/deferred_entity)\` | 录制移除组件命令（soft_remove 语义） |
+| \`remove_component_batch<T>(entities)\` | 录制批量移除组件命令 |
+| \`add_def_component(entity/deferred_entity, def_id/name, data)\` | 录制添加 def 组件命令 |
+| \`delete_entity(entity/deferred_entity)\` | 录制删除实体命令 |
 | \`preallocate(n)\` | 预留命令缓冲容量，避免录制过程中扩容 |
 | \`capacity()\` | 当前命令缓冲容量 |
-| \`flush()\` | 按录入顺序应用所有命令，应用后清空缓冲区 |
-| \`clear()\` | 清空所有未应用命令 |
+| \`operating_message flush()\` | 按录入顺序应用所有命令，应用后清空命令；成功命令保留，失败返回首个错误 |
+| \`clear()\` | 清空所有未应用命令与占位映射，旧 \`deferred_entity\` 失效 |
 | \`size()\` | 未应用命令数 |
 | \`empty()\` | 是否为空 |
 

@@ -30,8 +30,13 @@
     // 删除线
     text = text.replace(/~~(.+?)~~/g, '<del>$1</del>');
 
-    // 链接
-    text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    // 链接: 页内锚点当前页跳转, 外部链接新窗口打开
+    text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function (_, label, href) {
+      var isAnchor = href.charAt(0) === '#';
+      return '<a href="' + href + '"'
+        + (isAnchor ? '' : ' target="_blank" rel="noopener"') + '>'
+        + label + '</a>';
+    });
 
     // 还原行内代码
     text = text.replace(/\x00CODE(\d+)\x00/g, function (_, i) {
@@ -66,7 +71,7 @@
       j++;
     }
     html += '</tbody></table>';
-    return { html: html, next: j };
+    return { html: '<div class="table-wrap">' + html + '</div>', next: j };
   }
 
   // C++ 关键字 / 类型 / 字面量 / 注释的高亮
@@ -212,14 +217,18 @@
         continue;
       }
 
-      // 引用块
+      // 引用块: 每行一段, 保持多条提示分行显示
       if (line.trim().startsWith('>')) {
-        var quote = '';
+        var quoteHtml = '<blockquote>';
         while (i < lines.length && lines[i].trim().startsWith('>')) {
-          quote += lines[i].trim().replace(/^>\s?/, '') + '\n';
+          var ql = lines[i].trim().replace(/^>\s?/, '');
+          if (ql !== '') {
+            quoteHtml += '<p>' + inline(ql) + '</p>';
+          }
           i++;
         }
-        html += '<blockquote>' + inline(quote.trim()) + '</blockquote>';
+        quoteHtml += '</blockquote>';
+        html += quoteHtml;
         continue;
       }
 

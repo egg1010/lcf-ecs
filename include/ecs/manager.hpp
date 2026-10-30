@@ -9,6 +9,8 @@
 #include <type_traits>
 #include <cstring>
 #include <cstdlib>
+#include <cstdint>
+#include <utility>
 #include <new>
 #include "ecs/storage/single_class_set.hpp"
 #include "part/type/type_id.hpp"
@@ -44,9 +46,12 @@ struct component_meta
     size_t size{0};   // 组件字节大小; 掩码布局经 type_id::mask_block_of/mask_offset_of 计算
     // 类型擦除单组件克隆, 供 manager::clone 使用; nullptr 表示该类型不支持克隆
     bool (*clone_component)(manager& m, int type, entity src, entity dst) noexcept{nullptr};
+    // 跨管理器组件转移, 供 manager::merge 使用; nullptr 表示该类型不支持转移
+    bool (*transfer_component)(manager& src_mgr, manager& dst_mgr, int type,
+                               entity src, entity dst) noexcept{nullptr};
 };
 
-// 系统上下文（48 bytes，内联 4 个依赖）
+// 系统上下文（64 bytes）
 struct system_context
 {
     uint64_t required_mask;
@@ -55,6 +60,15 @@ struct system_context
     uint16_t phase;          // 0=pre_update, 1=update, 2=post_update, 3=render
     uint32_t dependency_count;
     uint32_t dependencies[4];
+    void (*run)(manager&, void*) noexcept{nullptr};  // 系统执行函数, 可为空
+    void* user_data{nullptr};
+};
+
+// 实体事件类型（监听器注册用）
+enum class entity_event : uint8_t
+{
+    created,
+    destroyed,
 };
 
 // 变更日志记录（16 bytes）
@@ -181,6 +195,79 @@ private:
     signal_queue<change_record, change_log_capacity> change_log_;
     uint16_t current_frame_{0};
 
+    struct entity_listener_entry
+    {
+        uint32_t id;
+        entity_event event;
+        void (*fn)(entity, void*) noexcept;
+        void* user_data;
+    };
+
+    dense<entity_listener_entry> entity_listeners_;
+    uint32_t next_entity_listener_id_{1};
+    void (*single_created_fn_)(entity, void*) noexcept{nullptr};
+    void* single_created_data_{nullptr};
+    void (*single_destroyed_fn_)(entity, void*) noexcept{nullptr};
+    void* single_destroyed_data_{nullptr};
+
+    static void dispatch_entity_created(entity e, void* self) noexcept
+    {
+        auto* mgr = static_cast<manager*>(self);
+        if (mgr->single_created_fn_)
+        {
+            mgr->single_created_fn_(e, mgr->single_created_data_);
+        }
+        for (size_t i = 0; i < mgr->entity_listeners_.size(); ++i)
+        {
+            const entity_listener_entry& listener = mgr->entity_listeners_[i];
+            if (listener.event == entity_event::created && listener.fn)
+            {
+                listener.fn(e, listener.user_data);
+            }
+        }
+    }
+
+    static void dispatch_entity_destroyed(entity e, void* self) noexcept
+    {
+        auto* mgr = static_cast<manager*>(self);
+        if (mgr->single_destroyed_fn_)
+        {
+            mgr->single_destroyed_fn_(e, mgr->single_destroyed_data_);
+        }
+        for (size_t i = 0; i < mgr->entity_listeners_.size(); ++i)
+        {
+            const entity_listener_entry& listener = mgr->entity_listeners_[i];
+            if (listener.event == entity_event::destroyed && listener.fn)
+            {
+                listener.fn(e, listener.user_data);
+            }
+        }
+    }
+
+    void refresh_entity_callbacks_() noexcept
+    {
+        bool has_created = single_created_fn_ != nullptr;
+        bool has_destroyed = single_destroyed_fn_ != nullptr;
+        for (size_t i = 0; i < entity_listeners_.size(); ++i)
+        {
+            const entity_listener_entry& listener = entity_listeners_[i];
+            if (listener.event == entity_event::created) has_created = true;
+            if (listener.event == entity_event::destroyed) has_destroyed = true;
+        }
+        entity_manager_.on_entity_created_ = has_created ? &manager::dispatch_entity_created : nullptr;
+        entity_manager_.on_entity_created_data_ = has_created ? this : nullptr;
+        entity_manager_.on_entity_destroyed_ = has_destroyed ? &manager::dispatch_entity_destroyed : nullptr;
+        entity_manager_.on_entity_destroyed_data_ = has_destroyed ? this : nullptr;
+    }
+
+    static operating_message make_error_(uint32_t code,
+                                         msg_level level = msg_level::warn) noexcept
+    {
+        operating_message error;
+        error.write_failure(code, level, msg::here());
+        return error;
+    }
+
     void push_change_record(uint32_t op, uint32_t entity_idx, uint32_t type_id, uint32_t dense_index) noexcept
     {
         change_log_.push(change_record{entity_idx, type_id, static_cast<uint8_t>(op), 0, current_frame_, dense_index});
@@ -253,6 +340,25 @@ private:
                     }
                 };
         }
+        if (!component_metas_[tid].transfer_component)
+        {
+            component_metas_[tid].transfer_component =
+                [](manager& src_mgr, manager& dst_mgr, int, entity src, entity dst) noexcept -> bool {
+                    if constexpr (std::is_copy_constructible_v<T>)
+                    {
+                        single_class_set* set = src_mgr.template get_single_class_set<T>();
+                        if (!set) [[unlikely]] return false;
+                        const T* value = set->template get_ptr<T>(src);
+                        if (!value) [[unlikely]] return false;
+                        return static_cast<bool>(dst_mgr.add(dst, T(*value)));
+                    }
+                    else
+                    {
+                        (void)src_mgr; (void)dst_mgr; (void)src; (void)dst;
+                        return false;
+                    }
+                };
+        }
     }
 
     // def 组件元数据 (懒注册, 首次 add_def 时触发)
@@ -266,6 +372,17 @@ private:
             component_metas_[def_id].clone_component =
                 [](manager& m, int t, entity src, entity dst) noexcept -> bool {
                     return m.clone_def_component_(t, src, dst);
+                };
+        }
+        if (!component_metas_[def_id].transfer_component)
+        {
+            component_metas_[def_id].transfer_component =
+                [](manager& src_mgr, manager& dst_mgr, int t, entity src, entity dst) noexcept -> bool {
+                    single_class_set* set = src_mgr.get_single_class_set_by_id(t);
+                    if (!set) [[unlikely]] return false;
+                    const void* value = set->get_def_ptr(src);
+                    if (!value) [[unlikely]] return false;
+                    return static_cast<bool>(dst_mgr.add_def(dst, t, value));
                 };
         }
     }
@@ -332,7 +449,7 @@ private:
         if (!entity_manager_.is_entity_alive(entitys)) [[unlikely]]
         {
             operating_message fail;
-            fail.write(false, om_err_invalid_entity, "manager::addc(): entity is not alive, index=", entitys.parts_.index_, msg::warn, msg::here());
+            fail.write(false, om_err_invalid_entity, "manager::add(): entity is not alive, index=", entitys.parts_.index_, msg::warn, msg::here());
             error = fail;
             return false;
         }
@@ -372,6 +489,40 @@ private:
         const void* value = set->get_def_ptr(src);
         if (!value) [[unlikely]] return false;
         return static_cast<bool>(add_def(dst, type, value));
+    }
+
+    operating_message clone_payload_(entity source, entity dst) noexcept
+    {
+        bool copied = true;
+        entity_manager_.for_each_set_bit(source.parts_.index_,
+            [&](uint32_t block_idx, uint32_t bit_offset) {
+                if (!copied) return;
+                const int type = type_id::mask_type_of(block_idx, bit_offset);
+                if (type < 0 || type >= static_cast<int>(component_metas_.size())) [[unlikely]]
+                {
+                    copied = false;
+                    return;
+                }
+                const auto clone_fn = component_metas_[type].clone_component;
+                if (!clone_fn || !clone_fn(*this, type, source, dst))
+                {
+                    copied = false;
+                }
+            });
+        if (!copied) [[unlikely]]
+        {
+            return make_error_(om_err_unsupported_operation.code, msg_level::error);
+        }
+        const entity_state& src_state = entity_manager_.get_entity_state(source.parts_.index_);
+        entity_state& dst_state = entity_manager_.get_entity_state(dst.parts_.index_);
+        dst_state.tag = src_state.tag;
+        dst_state.layer = src_state.layer;
+        dst_state.group_id = src_state.group_id;
+        const uint32_t copy_mask = static_cast<uint32_t>(entity_flag::active)
+                                 | static_cast<uint32_t>(entity_flag::disabled)
+                                 | static_cast<uint32_t>(entity_flag::static_entity);
+        dst_state.flags = (dst_state.flags & ~copy_mask) | (src_state.flags & copy_mask);
+        return {};
     }
 
     void remove_all_components_(entity entitys) noexcept
@@ -435,6 +586,36 @@ public:
         return entity_manager_.get_entity();
     }
 
+    operating_message create_entities(size_t count, dense<entity>& out) noexcept
+    {
+        out.increase_capacity(out.size() + count);
+        for (size_t i = 0; i < count; ++i)
+        {
+            entity created = create_entity();
+            if (!created.is_valid()) [[unlikely]]
+            {
+                return make_error_(om_err_capacity_exceeded.code, msg_level::error);
+            }
+            out.emplace_back(created);
+        }
+        return {};
+    }
+
+    template <typename Func>
+    void for_each_alive_entity(Func&& func) noexcept
+    {
+        entity_manager_.for_each_alive_entity(std::forward<Func>(func));
+    }
+
+    void reset() noexcept
+    {
+        clear();
+        entity_manager_.reset();
+        comp_signals_.clear();
+        change_log_.clear();
+        current_frame_ = 0;
+    }
+
     manager(manager&&) noexcept = default;
     manager(manager const&) = delete;
     manager& operator=(manager&&) noexcept = default;
@@ -476,27 +657,60 @@ public:
     bool add_batch_impl(std::span<const entity> entities, std::span<const T> components, operating_message& error) noexcept
     {
         using DecayedT = std::decay_t<T>;
+        if (entities.size() != components.size()) [[unlikely]]
+        {
+            operating_message fail;
+            fail.write(false, om_err_invalid_argument, "manager::add_batch(): entities and components size mismatch", msg::warn, msg::here());
+            error = fail;
+            return false;
+        }
         int type_id = type_id::get_type_id<DecayedT>();
         register_component_meta<DecayedT>();
         ensure_type_exists(type_id);
-        for (const auto& e : entities)
+
+        bool all_alive = true;
+        for (const entity e : entities)
         {
             if (!entity_manager_.is_entity_alive(e)) [[unlikely]]
             {
-                operating_message fail;
-                fail.write(false, om_err_invalid_entity, "manager::add_batch(): entity is not alive, index=", e.parts_.index_, msg::warn, msg::here());
-                error = fail;
-                return false;
+                all_alive = false;
+                break;
             }
         }
-        if (!components_c_[type_id].add_batch_impl(entities, components, error))
+
+        if (all_alive)
         {
-            return false;
+            if (!components_c_[type_id].add_batch_impl(entities, components, error))
+            {
+                return false;
+            }
+            single_class_set& set = components_c_[type_id];
+            for (const entity e : entities)
+            {
+                commit_add(e, type_id, set.sparse_dense_at(e.parts_.index_), set);
+            }
+            return true;
         }
-        single_class_set& set = components_c_[type_id];
-        for (const auto& e : entities)
+
+        // 部分实体无效: 逐项处理, 成功项保留, 返回首个错误
+        operating_message first_error;
+        bool has_error = false;
+        for (size_t i = 0; i < entities.size(); ++i)
         {
-            commit_add(e, type_id, set.sparse_dense_at(e.parts_.index_), set);
+            operating_message item_error;
+            if (!add_impl(entities[i], components[i], item_error))
+            {
+                if (!has_error)
+                {
+                    first_error = item_error;
+                    has_error = true;
+                }
+            }
+        }
+        if (has_error)
+        {
+            error = first_error;
+            return false;
         }
         return true;
     }
@@ -531,32 +745,9 @@ public:
     template <IsEntity EE, typename T>
     LCF_FORCE_INLINE bool add_impl(T&& component, EE entitys, operating_message& error) noexcept
     {
-        return add(entitys, std::forward<T>(component), error);
+        return add_impl(entitys, std::forward<T>(component), error);
     }
 
-    // 正向变参: 单组件 + 多实体  addc(comp, e1, e2, ...)
-    // 一个组件添加到多个实体, 第一个参数为组件, 后续为实体参数包
-    // 同时覆盖 2 参 addc(comp, e) 场景
-    template <typename T, IsEntity... EEs>
-        requires (!IsEntity<std::decay_t<T>>)
-    manager& addc(T&& component, EEs... entities) noexcept
-    {
-        operating_message error;
-        (add_component_without_message_impl(entities, component, error), ...);
-        return *this;
-    }
-
-    // 反向变参: 单实体 + 多组件  addc(e, comp1, comp2, ...)
-    // 多个组件添加到同一实体, 第一个参数为实体, 后续为组件参数包
-    // 同时覆盖 2 参 addc(e, comp) 场景
-    template <IsEntity EE, typename... TT>
-        requires (sizeof...(TT) >= 1)
-    manager& addc(EE entitys, TT&&... components) noexcept
-    {
-        operating_message error;
-        (add_component_without_message_impl(entitys, std::forward<TT>(components), error), ...);
-        return *this;
-    }
     template <typename T>
     [[nodiscard]] T* get_ptr(entity entitys) noexcept
     {
@@ -727,34 +918,6 @@ public:
         return true;
     }
 
-    // 变参: 多类型 × 多实体 笛卡尔积  hard_removec<T1, T2>(e1, e2, ...)
-    // 每个类型 T 从每个实体上移除, 同时覆盖单类型单实体 hard_removec<T>(e) 场景
-    template <typename... TT, IsEntity... EEs>
-        requires (sizeof...(TT) >= 1)
-    manager& hard_removec(EEs... entities) noexcept
-    {
-        auto remove_one = [&](auto&& e) {
-            operating_message error;
-            (void)std::initializer_list<int>{(hard_remove_impl<TT>(e, error), 0)...};
-        };
-        (remove_one(entities), ...);
-        return *this;
-    }
-
-    // 变参: 多类型 × 多实体 笛卡尔积  soft_removec<T1, T2>(e1, e2, ...)
-    // 同时覆盖单类型单实体 soft_removec<T>(e) 场景
-    template <typename... TT, IsEntity... EEs>
-        requires (sizeof...(TT) >= 1)
-    manager& soft_removec(EEs... entities) noexcept
-    {
-        auto remove_one = [&](auto&& e) {
-            operating_message error;
-            (void)std::initializer_list<int>{(soft_remove_impl<TT>(e, error), 0)...};
-        };
-        (remove_one(entities), ...);
-        return *this;
-    }
-
     template <typename T>
     [[nodiscard]] single_class_set* get_single_class_set() noexcept
     {
@@ -790,6 +953,158 @@ public:
     {
         single_class_set* set = get_single_class_set<T>();
         return set ? set->get_typed_pool_ptr<T>() : nullptr;
+    }
+
+    template <typename T>
+    [[nodiscard]] size_t capacity() const noexcept
+    {
+        const single_class_set* set = get_single_class_set<T>();
+        if (!set) return 0;
+        const dense<T>* pool = set->template get_typed_pool_ptr<T>();
+        return pool ? pool->capacity() : 0;
+    }
+
+    [[nodiscard]] size_t reserved_entities() const noexcept
+    {
+        return entity_manager_.reserved_entity_count();
+    }
+
+    [[nodiscard]] size_t memory_usage() const noexcept
+    {
+        size_t total = 0;
+        for (size_t i = 0; i < components_c_.size(); ++i)
+        {
+            const single_class_set& set = components_c_[i];
+            total += set.size() * set.get_component_size();
+        }
+        return total;
+    }
+
+    template <typename T>
+    operating_message compact() noexcept
+    {
+        single_class_set* set = get_single_class_set<T>();
+        if (!set) return make_error_(om_err_not_found.code);
+        return set->compact();
+    }
+
+    operating_message compact_all() noexcept
+    {
+        operating_message first_error;
+        bool has_error = false;
+        for (size_t i = 0; i < components_c_.size(); ++i)
+        {
+            operating_message result = components_c_[i].compact();
+            if (!result && !has_error)
+            {
+                first_error = result;
+                has_error = true;
+            }
+        }
+        return first_error;
+    }
+
+    template <typename T>
+    [[nodiscard]] size_t tombstone_count() const noexcept
+    {
+        const single_class_set* set = get_single_class_set<T>();
+        return set ? set->tombstone_count() : 0;
+    }
+
+    template <typename T>
+    [[nodiscard]] bool has_tombstones() const noexcept
+    {
+        const single_class_set* set = get_single_class_set<T>();
+        return set ? set->has_tombstones() : false;
+    }
+
+    template <typename T>
+    [[nodiscard]] bool contains_entity(entity e) const noexcept
+    {
+        const single_class_set* set = get_single_class_set<T>();
+        return set ? set->contains_entity(e) : false;
+    }
+
+    template <typename T>
+    [[nodiscard]] dense<uint32_t>* get_entity_indices() noexcept
+    {
+        single_class_set* set = get_single_class_set<T>();
+        return set ? &set->get_entity_indices() : nullptr;
+    }
+
+    template <typename T>
+    [[nodiscard]] const dense<uint32_t>* get_entity_indices() const noexcept
+    {
+        const single_class_set* set = get_single_class_set<T>();
+        return set ? &set->get_entity_indices() : nullptr;
+    }
+
+    template <typename T>
+    [[nodiscard]] dense<uint32_t>* get_entity_versions() noexcept
+    {
+        single_class_set* set = get_single_class_set<T>();
+        return set ? &set->get_entity_versions() : nullptr;
+    }
+
+    template <typename T>
+    [[nodiscard]] const dense<uint32_t>* get_entity_versions() const noexcept
+    {
+        const single_class_set* set = get_single_class_set<T>();
+        return set ? &set->get_entity_versions() : nullptr;
+    }
+
+    template <typename T>
+    [[nodiscard]] uint64_t get_pool_version() const noexcept
+    {
+        const single_class_set* set = get_single_class_set<T>();
+        return set ? set->get_pool_version() : 0;
+    }
+
+    template <typename T>
+    [[nodiscard]] uint32_t get_version(uint32_t entity_index) const noexcept
+    {
+        const single_class_set* set = get_single_class_set<T>();
+        return set ? set->get_version(entity_index) : 0;
+    }
+
+    template <typename T>
+    operating_message set_hot_set_capacity(size_t entries) noexcept
+    {
+        single_class_set* set = get_single_class_set<T>();
+        if (!set) return make_error_(om_err_not_found.code);
+        if (entries == 0 || (entries & (entries - 1)) != 0)
+        {
+            return make_error_(om_err_invalid_argument.code);
+        }
+        set->set_hot_set_capacity(entries);
+        return {};
+    }
+
+    template <typename T>
+    [[nodiscard]] size_t hot_set_capacity() const noexcept
+    {
+        const single_class_set* set = get_single_class_set<T>();
+        return set ? set->hot_set_capacity() : 0;
+    }
+
+    template <typename T>
+    void clear_hot_set() noexcept
+    {
+        single_class_set* set = get_single_class_set<T>();
+        if (set) set->clear_hot_set();
+    }
+
+    template <typename T>
+    [[nodiscard]] void* get_raw_pool_data() noexcept
+    {
+        single_class_set* set = get_single_class_set<T>();
+        return set ? set->get_raw_pool_data() : nullptr;
+    }
+
+    template <typename T>
+    [[nodiscard]] int get_type_id() const noexcept
+    {
+        return type_id::get_type_id<T>();
     }
 
     // 组件类型是否已在管理器中注册
@@ -1036,6 +1351,46 @@ public:
         return {};
     }
 
+    operating_message set_entity_state(entity entitys, const entity_state& state) noexcept
+    {
+        if (!entity_manager_.is_entity_alive(entitys)) [[unlikely]]
+        {
+            return make_error_(om_err_invalid_entity.code);
+        }
+        entity_manager_.get_entity_state(entitys.parts_.index_) = state;
+        return {};
+    }
+
+    operating_message set_tag_by_index(uint32_t entity_index, uint32_t tag) noexcept
+    {
+        if (entity_index >= entity_manager_.entity_index_count()) [[unlikely]]
+        {
+            return make_error_(om_err_invalid_entity.code);
+        }
+        entity_manager_.get_entity_state(entity_index).tag = tag;
+        return {};
+    }
+
+    operating_message set_layer_by_index(uint32_t entity_index, uint32_t layer) noexcept
+    {
+        if (entity_index >= entity_manager_.entity_index_count()) [[unlikely]]
+        {
+            return make_error_(om_err_invalid_entity.code);
+        }
+        entity_manager_.get_entity_state(entity_index).layer = layer;
+        return {};
+    }
+
+    operating_message set_group_by_index(uint32_t entity_index, uint32_t group) noexcept
+    {
+        if (entity_index >= entity_manager_.entity_index_count()) [[unlikely]]
+        {
+            return make_error_(om_err_invalid_entity.code);
+        }
+        entity_manager_.get_entity_state(entity_index).group_id = group;
+        return {};
+    }
+
     template <typename T>
     operating_message clear_component_type() noexcept
     {
@@ -1075,15 +1430,51 @@ public:
                                           size_t& deleted_count) noexcept
     {
         deleted_count = 0;
+        operating_message first_error;
+        bool has_error = false;
         for (const entity e : entities)
         {
             if (entity_manager_.is_entity_alive(e))
             {
-                (void)delete_entity(e);
-                ++deleted_count;
+                operating_message result = delete_entity(e);
+                if (result)
+                {
+                    ++deleted_count;
+                }
+                else if (!has_error)
+                {
+                    first_error = result;
+                    has_error = true;
+                }
+            }
+            else if (!has_error)
+            {
+                first_error = make_error_(om_err_invalid_entity.code);
+                has_error = true;
             }
         }
-        return {};
+        return first_error;
+    }
+
+    operating_message delete_entity_batch(const dense<entity>& entities,
+                                          size_t& deleted_count) noexcept
+    {
+        return delete_entity_batch(
+            std::span<const entity>(entities.data(), entities.size()), deleted_count);
+    }
+
+    template <range_container C>
+        requires std::same_as<typename C::value_type, entity>
+    operating_message delete_entity_batch(const C& entities, size_t& deleted_count) noexcept
+    {
+        return delete_entity_batch(
+            std::span<const entity>(entities.data(), entities.size()), deleted_count);
+    }
+
+    operating_message delete_entity_batch(const entity* entities, size_t count,
+                                          size_t& deleted_count) noexcept
+    {
+        return delete_entity_batch(std::span<const entity>(entities, count), deleted_count);
     }
 
     operating_message clear_entity(entity entitys) noexcept
@@ -1149,6 +1540,101 @@ public:
         return error;
     }
 
+    template <typename T>
+    operating_message add_batch(const T& component, std::span<const entity> entities) noexcept
+    {
+        using DecayedT = std::decay_t<T>;
+        const int type = type_id::get_type_id<DecayedT>();
+        register_component_meta<DecayedT>();
+        ensure_type_exists(type);
+
+        bool all_alive = true;
+        for (const entity e : entities)
+        {
+            if (!entity_manager_.is_entity_alive(e)) [[unlikely]]
+            {
+                all_alive = false;
+                break;
+            }
+        }
+
+        if (all_alive)
+        {
+            single_class_set& set = components_c_[type];
+            operating_message error;
+            auto get_component = [&component](size_t) noexcept -> DecayedT {
+                return component;
+            };
+            if (!set.add_batch_impl<DecayedT>(entities, entities.size(), get_component, error))
+            {
+                return error;
+            }
+            for (const entity e : entities)
+            {
+                commit_add(e, type, set.sparse_dense_at(e.parts_.index_), set);
+            }
+            return {};
+        }
+
+        // 部分实体无效: 逐项处理, 成功项保留, 返回首个错误
+        operating_message first_error;
+        bool has_error = false;
+        for (const entity e : entities)
+        {
+            operating_message item_error;
+            if (!add_impl(e, component, item_error))
+            {
+                if (!has_error)
+                {
+                    first_error = item_error;
+                    has_error = true;
+                }
+            }
+        }
+        return first_error;
+    }
+
+    template <typename T>
+    operating_message get_or_add(entity entitys, T&& component, T*& out) noexcept
+    {
+        out = nullptr;
+        if (!entity_manager_.is_entity_alive(entitys)) [[unlikely]]
+        {
+            return make_error_(om_err_invalid_entity.code);
+        }
+        T* existing = get_ptr<T>(entitys);
+        if (existing)
+        {
+            out = existing;
+            return {};
+        }
+        operating_message result = add(entitys, std::forward<T>(component));
+        if (!result) return result;
+        out = get_ptr<T>(entitys);
+        return {};
+    }
+
+    template <typename T, typename... Args>
+    operating_message emplace(entity entitys, T*& out, Args&&... args) noexcept
+    {
+        T component(std::forward<Args>(args)...);
+        return get_or_add(entitys, std::move(component), out);
+    }
+
+    template <typename T>
+    operating_message replace(entity entitys, T&& component) noexcept
+    {
+        if (!entity_manager_.is_entity_alive(entitys)) [[unlikely]]
+        {
+            return make_error_(om_err_invalid_entity.code);
+        }
+        if (!has_component<T>(entitys)) [[unlikely]]
+        {
+            return make_error_(om_err_not_found.code);
+        }
+        return add(entitys, std::forward<T>(component));
+    }
+
     template <typename... Ts>
     operating_message create_with(entity& out, Ts&&... components) noexcept
     {
@@ -1193,52 +1679,59 @@ public:
         out = entity{};
         if (!entity_manager_.is_entity_alive(source)) [[unlikely]]
         {
-            operating_message error;
-            error.write_failure(om_err_invalid_entity.code, msg_level::warn, msg::here());
-            return error;
+            return make_error_(om_err_invalid_entity.code);
         }
         entity created = create_entity();
         if (!created.is_valid()) [[unlikely]]
         {
-            operating_message error;
-            error.write_failure(om_err_capacity_exceeded.code, msg_level::error, msg::here());
-            return error;
+            return make_error_(om_err_capacity_exceeded.code, msg_level::error);
         }
-        bool copied = true;
-        entity_manager_.for_each_set_bit(source.parts_.index_,
-            [&](uint32_t block_idx, uint32_t bit_offset) {
-                if (!copied) return;
-                const int type = type_id::mask_type_of(block_idx, bit_offset);
-                if (type < 0 || type >= static_cast<int>(component_metas_.size())) [[unlikely]]
-                {
-                    copied = false;
-                    return;
-                }
-                const auto clone_fn = component_metas_[type].clone_component;
-                if (!clone_fn || !clone_fn(*this, type, source, created))
-                {
-                    copied = false;
-                }
-            });
-        if (!copied) [[unlikely]]
+        operating_message result = clone_payload_(source, created);
+        if (!result) [[unlikely]]
         {
             (void)delete_entity(created);
-            operating_message error;
-            error.write_failure(om_err_unsupported_operation.code, msg_level::error, msg::here());
-            return error;
+            return result;
         }
-        // 用户状态: 跳过 pending_destroy
-        const entity_state& src_state = entity_manager_.get_entity_state(source.parts_.index_);
-        entity_state& dst_state = entity_manager_.get_entity_state(created.parts_.index_);
-        dst_state.tag = src_state.tag;
-        dst_state.layer = src_state.layer;
-        dst_state.group_id = src_state.group_id;
-        const uint32_t copy_mask = static_cast<uint32_t>(entity_flag::active)
-                                 | static_cast<uint32_t>(entity_flag::disabled)
-                                 | static_cast<uint32_t>(entity_flag::static_entity);
-        dst_state.flags = (dst_state.flags & ~copy_mask) | (src_state.flags & copy_mask);
         out = created;
         return {};
+    }
+
+    operating_message clone_into(entity dst, entity source) noexcept
+    {
+        if (!entity_manager_.is_entity_alive(dst)
+            || !entity_manager_.is_entity_alive(source)) [[unlikely]]
+        {
+            return make_error_(om_err_invalid_entity.code);
+        }
+        if (dst == source) [[unlikely]]
+        {
+            return make_error_(om_err_invalid_argument.code);
+        }
+        (void)clear_entity(dst);
+        return clone_payload_(source, dst);
+    }
+
+    operating_message clone_batch(std::span<const entity> sources, dense<entity>& out) noexcept
+    {
+        out.increase_capacity(out.size() + sources.size());
+        operating_message first_error;
+        bool has_error = false;
+        for (const entity src : sources)
+        {
+            entity dst;
+            operating_message result = clone(src, dst);
+            if (!result)
+            {
+                if (!has_error)
+                {
+                    first_error = result;
+                    has_error = true;
+                }
+                continue;
+            }
+            out.emplace_back(dst);
+        }
+        return first_error;
     }
 
     template <typename T>
@@ -1264,8 +1757,10 @@ public:
         removed_count = 0;
         if (!is_component_type_registered<T>())
         {
-            return {};
+            return make_error_(om_err_not_found.code);
         }
+        operating_message first_error;
+        bool has_error = false;
         for (const entity e : entities)
         {
             operating_message error;
@@ -1273,8 +1768,36 @@ public:
             {
                 ++removed_count;
             }
+            else if (!has_error)
+            {
+                first_error = error;
+                has_error = true;
+            }
         }
-        return {};
+        return first_error;
+    }
+
+    template <typename T>
+    operating_message hard_remove_batch(const dense<entity>& entities,
+                                        size_t& removed_count) noexcept
+    {
+        return hard_remove_batch<T>(
+            std::span<const entity>(entities.data(), entities.size()), removed_count);
+    }
+
+    template <typename T, range_container C>
+        requires std::same_as<typename C::value_type, entity>
+    operating_message hard_remove_batch(const C& entities, size_t& removed_count) noexcept
+    {
+        return hard_remove_batch<T>(
+            std::span<const entity>(entities.data(), entities.size()), removed_count);
+    }
+
+    template <typename T>
+    operating_message hard_remove_batch(const entity* entities, size_t count,
+                                        size_t& removed_count) noexcept
+    {
+        return hard_remove_batch<T>(std::span<const entity>(entities, count), removed_count);
     }
 
     template <typename T>
@@ -1284,8 +1807,10 @@ public:
         removed_count = 0;
         if (!is_component_type_registered<T>())
         {
-            return {};
+            return make_error_(om_err_not_found.code);
         }
+        operating_message first_error;
+        bool has_error = false;
         for (const entity e : entities)
         {
             operating_message error;
@@ -1293,23 +1818,81 @@ public:
             {
                 ++removed_count;
             }
+            else if (!has_error)
+            {
+                first_error = error;
+                has_error = true;
+            }
         }
-        return {};
+        return first_error;
     }
 
     template <typename T>
-    bool has_component_batch(std::span<const entity> entities,
-                             std::span<uint8_t> results) const noexcept
+    operating_message soft_remove_batch(const dense<entity>& entities,
+                                        size_t& removed_count) noexcept
+    {
+        return soft_remove_batch<T>(
+            std::span<const entity>(entities.data(), entities.size()), removed_count);
+    }
+
+    template <typename T, range_container C>
+        requires std::same_as<typename C::value_type, entity>
+    operating_message soft_remove_batch(const C& entities, size_t& removed_count) noexcept
+    {
+        return soft_remove_batch<T>(
+            std::span<const entity>(entities.data(), entities.size()), removed_count);
+    }
+
+    template <typename T>
+    operating_message soft_remove_batch(const entity* entities, size_t count,
+                                        size_t& removed_count) noexcept
+    {
+        return soft_remove_batch<T>(std::span<const entity>(entities, count), removed_count);
+    }
+
+    template <typename T>
+    operating_message has_component_batch(std::span<const entity> entities,
+                                          std::span<uint8_t> results) const noexcept
     {
         if (results.size() < entities.size()) [[unlikely]]
         {
-            return false;
+            return make_error_(om_err_invalid_argument.code);
         }
         for (size_t i = 0; i < entities.size(); ++i)
         {
             results[i] = has_component<T>(entities[i]) ? 1u : 0u;
         }
-        return true;
+        return {};
+    }
+
+    template <typename... Ts>
+    operating_message has_all_components_batch(std::span<const entity> entities,
+                                               std::span<uint8_t> results) const noexcept
+    {
+        if (results.size() < entities.size()) [[unlikely]]
+        {
+            return make_error_(om_err_invalid_argument.code);
+        }
+        for (size_t i = 0; i < entities.size(); ++i)
+        {
+            results[i] = has_all_components<Ts...>(entities[i]) ? 1u : 0u;
+        }
+        return {};
+    }
+
+    template <typename... Ts>
+    operating_message has_any_components_batch(std::span<const entity> entities,
+                                               std::span<uint8_t> results) const noexcept
+    {
+        if (results.size() < entities.size()) [[unlikely]]
+        {
+            return make_error_(om_err_invalid_argument.code);
+        }
+        for (size_t i = 0; i < entities.size(); ++i)
+        {
+            results[i] = has_any_component<Ts...>(entities[i]) ? 1u : 0u;
+        }
+        return {};
     }
 
     LCF_FORCE_INLINE operating_message add_def(entity entitys, int def_id, const void* data) noexcept
@@ -1352,6 +1935,198 @@ public:
         operating_message error;
         (void)soft_remove_def_impl(entitys, name, error);
         return error;
+    }
+
+    operating_message add_def_batch(int def_id, std::span<const entity> entities,
+                                    std::span<const void*> data,
+                                    size_t& added_count) noexcept
+    {
+        added_count = 0;
+        if (!type_id::get_type_def(def_id)) [[unlikely]]
+        {
+            return make_error_(om_err_not_found.code);
+        }
+        if (data.size() != entities.size()) [[unlikely]]
+        {
+            return make_error_(om_err_invalid_argument.code);
+        }
+        operating_message first_error;
+        bool has_error = false;
+        for (size_t i = 0; i < entities.size(); ++i)
+        {
+            operating_message error;
+            if (add_def_impl(entities[i], def_id, data[i], error))
+            {
+                ++added_count;
+            }
+            else if (!has_error)
+            {
+                first_error = error;
+                has_error = true;
+            }
+        }
+        return first_error;
+    }
+
+    operating_message add_def_batch(std::string_view name, std::span<const entity> entities,
+                                    std::span<const void*> data,
+                                    size_t& added_count) noexcept
+    {
+        const int def_id = type_id::get_def_type_id(name);
+        if (def_id < 0) [[unlikely]]
+        {
+            return make_error_(om_err_not_found.code);
+        }
+        return add_def_batch(def_id, entities, data, added_count);
+    }
+
+    operating_message hard_remove_def_batch(int def_id, std::span<const entity> entities,
+                                            size_t& removed_count) noexcept
+    {
+        removed_count = 0;
+        if (!type_id::get_type_def(def_id)) [[unlikely]]
+        {
+            return make_error_(om_err_not_found.code);
+        }
+        operating_message first_error;
+        bool has_error = false;
+        for (const entity e : entities)
+        {
+            operating_message error;
+            if (hard_remove_def_impl(e, def_id, error))
+            {
+                ++removed_count;
+            }
+            else if (!has_error)
+            {
+                first_error = error;
+                has_error = true;
+            }
+        }
+        return first_error;
+    }
+
+    operating_message hard_remove_def_batch(std::string_view name, std::span<const entity> entities,
+                                            size_t& removed_count) noexcept
+    {
+        const int def_id = type_id::get_def_type_id(name);
+        if (def_id < 0) [[unlikely]]
+        {
+            return make_error_(om_err_not_found.code);
+        }
+        return hard_remove_def_batch(def_id, entities, removed_count);
+    }
+
+    operating_message soft_remove_def_batch(int def_id, std::span<const entity> entities,
+                                            size_t& removed_count) noexcept
+    {
+        removed_count = 0;
+        if (!type_id::get_type_def(def_id)) [[unlikely]]
+        {
+            return make_error_(om_err_not_found.code);
+        }
+        operating_message first_error;
+        bool has_error = false;
+        for (const entity e : entities)
+        {
+            operating_message error;
+            if (soft_remove_def_impl(e, def_id, error))
+            {
+                ++removed_count;
+            }
+            else if (!has_error)
+            {
+                first_error = error;
+                has_error = true;
+            }
+        }
+        return first_error;
+    }
+
+    operating_message soft_remove_def_batch(std::string_view name, std::span<const entity> entities,
+                                            size_t& removed_count) noexcept
+    {
+        const int def_id = type_id::get_def_type_id(name);
+        if (def_id < 0) [[unlikely]]
+        {
+            return make_error_(om_err_not_found.code);
+        }
+        return soft_remove_def_batch(def_id, entities, removed_count);
+    }
+
+    [[nodiscard]] bool has_def(entity entitys, int def_id) const noexcept
+    {
+        const single_class_set* set = get_single_class_set_by_id(def_id);
+        return set != nullptr && set->get_type_id_value() == def_id
+            && set->get_def_ptr(entitys) != nullptr;
+    }
+
+    [[nodiscard]] bool has_def(entity entitys, std::string_view name) const noexcept
+    {
+        const int def_id = type_id::get_def_type_id(name);
+        return def_id >= 0 && has_def(entitys, def_id);
+    }
+
+    operating_message has_def_batch(int def_id, std::span<const entity> entities,
+                                    std::span<uint8_t> results) const noexcept
+    {
+        if (results.size() < entities.size()) [[unlikely]]
+        {
+            return make_error_(om_err_invalid_argument.code);
+        }
+        for (size_t i = 0; i < entities.size(); ++i)
+        {
+            results[i] = has_def(entities[i], def_id) ? 1u : 0u;
+        }
+        return {};
+    }
+
+    operating_message set_on_add_def(int def_id,
+                                     void (*fn)(entity, void*, void*) noexcept,
+                                     void* user_data = nullptr) noexcept
+    {
+        if (!type_id::get_type_def(def_id)) [[unlikely]]
+        {
+            return make_error_(om_err_not_found.code);
+        }
+        ensure_type_exists(def_id);
+        single_class_set* set = get_single_class_set_by_id(def_id);
+        if (!set) [[unlikely]] return make_error_(om_err_not_found.code);
+        set->on_add_ = fn;
+        set->on_add_data_ = user_data;
+        return {};
+    }
+
+    operating_message set_on_remove_def(int def_id,
+                                        void (*fn)(entity, void*, void*) noexcept,
+                                        void* user_data = nullptr) noexcept
+    {
+        if (!type_id::get_type_def(def_id)) [[unlikely]]
+        {
+            return make_error_(om_err_not_found.code);
+        }
+        ensure_type_exists(def_id);
+        single_class_set* set = get_single_class_set_by_id(def_id);
+        if (!set) [[unlikely]] return make_error_(om_err_not_found.code);
+        set->on_remove_ = fn;
+        set->on_remove_data_ = user_data;
+        return {};
+    }
+
+    operating_message set_on_modify_def(int def_id,
+                                        void (*fn)(entity, void*, void*) noexcept,
+                                        void* user_data = nullptr) noexcept
+    {
+        if (!type_id::get_type_def(def_id)) [[unlikely]]
+        {
+            return make_error_(om_err_not_found.code);
+        }
+        ensure_type_exists(def_id);
+        single_class_set* set = get_single_class_set_by_id(def_id);
+        if (!set) [[unlikely]] return make_error_(om_err_not_found.code);
+        set->on_modify_ = fn;
+        set->on_modify_data_ = user_data;
+        return {};
     }
 
     // 清空所有组件数据 (用于 load_mode::replace)
@@ -1483,6 +2258,25 @@ public:
             }, this);
     }
 
+    template <typename T>
+    [[nodiscard]] single_view<T> view() const noexcept
+    {
+        manager* self = const_cast<manager*>(this);
+        return single_view<T>(self->template get_single_class_set<T>(), self);
+    }
+
+    template <typename First, typename Second, typename... Rest>
+    [[nodiscard]] multi_view<First, Second, Rest...> view() const noexcept
+    {
+        manager* self = const_cast<manager*>(this);
+        return multi_view<First, Second, Rest...>(
+            std::array<single_class_set*, 2 + sizeof...(Rest)>{
+                self->template get_single_class_set<First>(),
+                self->template get_single_class_set<Second>(),
+                self->template get_single_class_set<Rest>()...
+            }, self);
+    }
+
     template <typename T, typename... ExcludeTypes>
     [[nodiscard]] single_view_without<T, ExcludeTypes...> view(without_t<ExcludeTypes...>) noexcept
     {
@@ -1539,6 +2333,36 @@ public:
         return ecs::reorder_group<First, Rest...>(this, std::array<single_class_set*, 1 + sizeof...(Rest)>{
             get_single_class_set<First>(),
             get_single_class_set<Rest>()...
+        });
+    }
+
+    template <typename First, typename... Rest>
+    [[nodiscard]] LCF_NO_AVX ecs::group<First, Rest...> group() const noexcept
+    {
+        manager* self = const_cast<manager*>(this);
+        return ecs::group<First, Rest...>(self, std::array<single_class_set*, 1 + sizeof...(Rest)>{
+            self->template get_single_class_set<First>(),
+            self->template get_single_class_set<Rest>()...
+        });
+    }
+
+    template <typename First, typename... Rest>
+    [[nodiscard]] LCF_NO_AVX ecs::owning_group<First, Rest...> group(owned_t<First>) const noexcept
+    {
+        manager* self = const_cast<manager*>(this);
+        return ecs::owning_group<First, Rest...>(self, std::array<single_class_set*, 1 + sizeof...(Rest)>{
+            self->template get_single_class_set<First>(),
+            self->template get_single_class_set<Rest>()...
+        });
+    }
+
+    template <typename First, typename... Rest>
+    [[nodiscard]] LCF_NO_AVX ecs::reorder_group<First, Rest...> group(reorder_t<First>) const noexcept
+    {
+        manager* self = const_cast<manager*>(this);
+        return ecs::reorder_group<First, Rest...>(self, std::array<single_class_set*, 1 + sizeof...(Rest)>{
+            self->template get_single_class_set<First>(),
+            self->template get_single_class_set<Rest>()...
         });
     }
 
@@ -1776,13 +2600,44 @@ public:
 
     void set_on_entity_created(void (*fn)(entity, void*) noexcept, void* user_data = nullptr) noexcept
     {
-        entity_manager_.on_entity_created_ = fn;
-        entity_manager_.on_entity_created_data_ = user_data;
+        single_created_fn_ = fn;
+        single_created_data_ = user_data;
+        refresh_entity_callbacks_();
     }
     void set_on_entity_destroyed(void (*fn)(entity, void*) noexcept, void* user_data = nullptr) noexcept
     {
-        entity_manager_.on_entity_destroyed_ = fn;
-        entity_manager_.on_entity_destroyed_data_ = user_data;
+        single_destroyed_fn_ = fn;
+        single_destroyed_data_ = user_data;
+        refresh_entity_callbacks_();
+    }
+
+    operating_message add_entity_listener(entity_event event,
+                                          void (*fn)(entity, void*) noexcept,
+                                          void* user_data, uint32_t& out_id) noexcept
+    {
+        if (!fn) [[unlikely]]
+        {
+            return make_error_(om_err_invalid_argument.code);
+        }
+        entity_listener_entry entry{next_entity_listener_id_++, event, fn, user_data};
+        entity_listeners_.emplace_back(entry);
+        out_id = entry.id;
+        refresh_entity_callbacks_();
+        return {};
+    }
+
+    bool remove_entity_listener(uint32_t listener_id) noexcept
+    {
+        for (size_t i = 0; i < entity_listeners_.size(); ++i)
+        {
+            if (entity_listeners_[i].id == listener_id)
+            {
+                entity_listeners_.erase_unordered(i);
+                refresh_entity_callbacks_();
+                return true;
+            }
+        }
+        return false;
     }
 
     template <typename T>
@@ -1873,6 +2728,159 @@ public:
     [[nodiscard]] const dense<system_context>& get_system_contexts() const noexcept
     {
         return system_contexts_;
+    }
+
+    operating_message remove_system(uint32_t index) noexcept
+    {
+        if (index >= system_contexts_.size()) [[unlikely]]
+        {
+            return make_error_(om_err_invalid_argument.code);
+        }
+        system_contexts_.erase_unordered(index);
+        return {};
+    }
+
+    operating_message query_systems(uint16_t phase, dense<system_context>& out) const noexcept
+    {
+        out.clear();
+        out.increase_capacity(system_contexts_.size());
+        for (size_t i = 0; i < system_contexts_.size(); ++i)
+        {
+            if (system_contexts_[i].phase == phase)
+            {
+                out.emplace_back(system_contexts_[i]);
+            }
+        }
+        return {};
+    }
+
+    operating_message run_systems(uint16_t phase) noexcept
+    {
+        if (phase > 3) [[unlikely]]
+        {
+            return make_error_(om_err_invalid_argument.code);
+        }
+        dense<system_context> selected;
+        selected.increase_capacity(system_contexts_.size());
+        for (size_t i = 0; i < system_contexts_.size(); ++i)
+        {
+            if (system_contexts_[i].phase == phase)
+            {
+                selected.emplace_back(system_contexts_[i]);
+            }
+        }
+        if (!selected.empty())
+        {
+            pdqsort<system_context>(selected.data(), selected.size(),
+                [](const system_context& a, const system_context& b) noexcept {
+                    return a.order < b.order;
+                });
+        }
+        for (size_t i = 0; i < selected.size(); ++i)
+        {
+            if (selected[i].run)
+            {
+                selected[i].run(*this, selected[i].user_data);
+            }
+        }
+        return {};
+    }
+
+    operating_message run_systems() noexcept
+    {
+        for (uint16_t phase = 0; phase < 4; ++phase)
+        {
+            operating_message result = run_systems(phase);
+            if (!result) return result;
+        }
+        return {};
+    }
+
+    void swap(manager& other) noexcept
+    {
+        using std::swap;
+        swap(components_c_, other.components_c_);
+        swap(component_metas_, other.component_metas_);
+        swap(entity_manager_, other.entity_manager_);
+        swap(default_component_capacity_, other.default_component_capacity_);
+        swap(system_contexts_, other.system_contexts_);
+        swap(comp_signals_, other.comp_signals_);
+        swap(track_changes_enabled_default_, other.track_changes_enabled_default_);
+        swap(change_log_, other.change_log_);
+        swap(current_frame_, other.current_frame_);
+        swap(entity_listeners_, other.entity_listeners_);
+        swap(next_entity_listener_id_, other.next_entity_listener_id_);
+        swap(single_created_fn_, other.single_created_fn_);
+        swap(single_created_data_, other.single_created_data_);
+        swap(single_destroyed_fn_, other.single_destroyed_fn_);
+        swap(single_destroyed_data_, other.single_destroyed_data_);
+        refresh_entity_callbacks_();
+        other.refresh_entity_callbacks_();
+    }
+
+    operating_message merge(manager&& other) noexcept
+    {
+        if (&other == this) [[unlikely]]
+        {
+            return make_error_(om_err_invalid_argument.code);
+        }
+        dense<entity> merged_sources;
+        merged_sources.increase_capacity(other.alive_count());
+        operating_message first_error;
+        bool has_error = false;
+        other.for_each_alive_entity([&](entity src) noexcept {
+            entity dst = create_entity();
+            if (!dst.is_valid()) [[unlikely]]
+            {
+                if (!has_error)
+                {
+                    first_error = make_error_(om_err_capacity_exceeded.code, msg_level::error);
+                    has_error = true;
+                }
+                return;
+            }
+            bool ok = true;
+            other.entity_manager_.for_each_set_bit(src.parts_.index_,
+                [&](uint32_t block_idx, uint32_t bit_offset) {
+                    if (!ok) return;
+                    const int type = type_id::mask_type_of(block_idx, bit_offset);
+                    if (type < 0 || type >= static_cast<int>(other.component_metas_.size())) [[unlikely]]
+                    {
+                        ok = false;
+                        return;
+                    }
+                    const auto transfer = other.component_metas_[type].transfer_component;
+                    if (!transfer || !transfer(other, *this, type, src, dst))
+                    {
+                        ok = false;
+                    }
+                });
+            if (!ok) [[unlikely]]
+            {
+                (void)delete_entity(dst);
+                if (!has_error)
+                {
+                    first_error = make_error_(om_err_unsupported_operation.code, msg_level::error);
+                    has_error = true;
+                }
+                return;
+            }
+            const entity_state& src_state = other.entity_manager_.get_entity_state(src.parts_.index_);
+            entity_state& dst_state = entity_manager_.get_entity_state(dst.parts_.index_);
+            dst_state.tag = src_state.tag;
+            dst_state.layer = src_state.layer;
+            dst_state.group_id = src_state.group_id;
+            const uint32_t copy_mask = static_cast<uint32_t>(entity_flag::active)
+                                     | static_cast<uint32_t>(entity_flag::disabled)
+                                     | static_cast<uint32_t>(entity_flag::static_entity);
+            dst_state.flags = (dst_state.flags & ~copy_mask) | (src_state.flags & copy_mask);
+            merged_sources.emplace_back(src);
+        });
+        for (size_t i = 0; i < merged_sources.size(); ++i)
+        {
+            (void)other.delete_entity(merged_sources[i]);
+        }
+        return first_error;
     }
 
     ~manager() = default;

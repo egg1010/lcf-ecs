@@ -12,6 +12,53 @@ window.DOCS_DATA['reflection_usage'] = {
 
 提供类型元数据的注册与查询：字段访问、方法调用、枚举互转、继承转型、比较、哈希、构造、容器遍历。注册与查询都通过 \`reflect::manager\` 实例进行，可失败接口返回 \`operating_message\`。
 
+### 快速上手
+
+注册字段并读写：
+
+\`\`\`cpp
+reflect::manager m;
+
+struct Vec3 { float x, y, z; };
+
+(void)m.add_type<Vec3>();
+(void)m.add_fields<Vec3>(std::tuple{
+    std::pair{"x", &Vec3::x},
+    std::pair{"y", &Vec3::y},
+    std::pair{"z", &Vec3::z},
+});
+
+Vec3 v{1.0f, 2.0f, 3.0f};
+auto q = m.get<Vec3>();
+q.get_by_name<float>(&v, "y") = 20.0f;      // 按名读写字段
+\`\`\`
+
+注册并调用方法：
+
+\`\`\`cpp
+struct Calc { int base; int add(int a, int b) { return a + b + base; } };
+
+(void)m.add_type<Calc>();
+(void)m.add_method<&Calc::add>("add");
+
+Calc c{10};
+int sum = 0;
+(void)m.invoke(sum, c, "add", 1, 2);         // sum == 13
+\`\`\`
+
+### 按任务查接口
+
+| 我想… | 去看 |
+|------|------|
+| 注册类型、字段、方法 | [11.1 manager 注册接口](#111-manager-注册接口) |
+| 查询类型与调用方法 | [11.2 manager 查询接口](#112-manager-查询接口) |
+| 按名 / 按索引读写字段 | [11.3 query_view](#113-query_view-类型视图) |
+| 遍历字段或方法列表 | [11.4 field_view / method_view](#114-field_view--method_view--遍历视图) |
+| 枚举值转名称 | [11.7 enum_view](#117-enum_view-枚举反射) |
+| 继承关系与向上转型 | [11.6 inheritance_view](#116-inheritance_view-继承关系) |
+| 字段属性 | [11.8 attribute_view](#118-attribute_view-字段属性) |
+| 比较、克隆、哈希 | [11.12 compare_view](#1112-compare_view-字段比较克隆) / [11.13 hash_view](#1113-hash_view-字段哈希) |
+
 ### 11.1 manager 注册接口
 
 \`\`\`cpp
@@ -22,7 +69,7 @@ reflect::manager m;
 |------|------|
 | \`add_type<T>()\` | 注册类型元信息，不遍历字段 |
 | \`add_type_as<T>(name)\` | 注册类型并显式指定类型名 |
-| \`add_aggregate_type<T>()\` | 注册类型并遍历聚合字段，字段名为 \`field_0\`、\`field_1\` |
+| \`add_aggregate_type<T>()\` | 注册类型并自动遍历聚合字段，字段名为 \`field_0\`、\`field_1\`；最多 256 个字段 |
 | \`add_field<T>(name, &T::field)\` | 注册字段，标量与数组自动分派 |
 | \`add_fields<T>(tuple)\` | 批量注册字段，接受 \`{名字, 成员指针}\` 元组 |
 | \`add_method<&T::f>(name)\` | 注册成员方法，指针须为编译期常量 |
@@ -305,6 +352,23 @@ chain += m.add_field<Vec3>("x", &Vec3::x);
 chain += m.add_field<Vec3>("y", &Vec3::y);
 \`\`\`
 
+字段数超过 256 时显式注册：
+
+\`\`\`cpp
+struct Wide {
+    int a;
+    int b;
+    // 其余字段按同一形态继续列出
+};
+
+(void)m.add_type<Wide>();                       // 只建类型, 不自动遍历字段
+(void)m.add_fields<Wide>(std::tuple{
+    std::pair{"a", &Wide::a},
+    std::pair{"b", &Wide::b},
+    // 与上方成员一一对应
+});
+\`\`\`
+
 ### 11.15 注意事项
 
 | 用法 | 说明 |
@@ -314,8 +378,9 @@ chain += m.add_field<Vec3>("y", &Vec3::y);
 | \`invoke\` 参数或返回类型不匹配 | 返回 \`om_err_reflect_method_not_found\` |
 | 重复注册同名字段 | 返回 \`om_err_reflect_duplicate\` |
 | 字段名为空 | 返回 \`om_err_reflect_invalid_name\` |
-| 字段数超过 \`MAX_FIELDS_PER_TYPE\` | 返回 \`om_err_reflect_limit\` |
-| 方法数超过 \`MAX_METHODS_PER_TYPE\` | 返回 \`om_err_reflect_limit\` |
+| 字段数超过 256 | 改用 \`add_type<T>()\` 与 \`add_fields<T>(...)\` 显式注册全部字段 |
+| 字段与方法数量 | 按实际注册量增长，不设固定上限 |
+| 存储分配失败 | 返回 \`om_err_out_of_memory\` |
 | 冻结后调用写接口 | 返回 \`om_err_reflect_frozen\` |
 | 未退休就 \`purge_type\` | 返回 \`om_err_reflect_busy\` |
 | \`array_element_ptr\` 越界 | 返回 nullptr |
@@ -340,15 +405,15 @@ chain += m.add_field<Vec3>("y", &Vec3::y);
 
 window.DOCS_DATA['reflection_meta'] = {
   id: 'reflection_meta',
-  title: "reflection — 元数据字段与上限",
+  title: "reflection — 元数据字段与容量",
   category: 'reflection',
   icon: 'R',
   order: 31,
-  content: `## 30. reflection — 元数据字段与上限
+  content: `## 30. reflection — 元数据字段与容量
 
 命名空间 \`reflect\`。
 
-查询接口返回的元数据结构字段，以及模块上限配置。高层接口见 [§ 11. reflection — 反射模块使用](#11-reflection--反射模块使用)。
+查询接口返回的元数据结构字段，以及模块容量配置。高层接口见 [§ 11. reflection — 反射模块使用](#11-reflection--反射模块使用)。
 
 ### 30.1 元数据字段
 
@@ -385,14 +450,13 @@ window.DOCS_DATA['reflection_meta'] = {
 | \`value\` | 枚举值，按底层类型存储 |
 | \`name\` | 枚举项名 |
 
-### 30.2 上限与配置
+### 30.2 容量与配置
 
 | 配置 | 默认值 | 说明 |
 |------|--------|------|
-| \`MAX_FIELDS_PER_TYPE\` | 256 | 单类型字段数上限 |
-| \`MAX_METHODS_PER_TYPE\` | 256 | 单类型方法数上限 |
-| \`MAX_TYPE_ID\` | 65536 | 可注册类型总数上限 |
 | \`REFLECT_MAX_FIELDS\` | 64 | 聚合类型自动遍历的字段数上限，取 16/32/64/128/256 |
+
+字段与方法元数据按实际注册量增长，不设固定数量上限。字段数超过 256 时，用 \`add_type<T>()\` 与 \`add_fields<T>(...)\` 显式注册全部字段，不受自动遍历上限约束。进程级按名类型注册表另有限制，与单类型字段、方法数量无关。
 
 配置在 \`config/reflect_config.hpp\`，可在包含反射头文件前定义同名宏覆盖。
 

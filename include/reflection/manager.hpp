@@ -189,7 +189,7 @@ public:
         store_.register_type_only<T>(name);
         if (store_.get_type(type_id::get_type_id<T>()) == nullptr)
         {
-            return detail::failure(om_err_reflect_limit);
+            return detail::failure(om_err_out_of_memory);
         }
         return operating_message{};
     }
@@ -212,7 +212,7 @@ public:
         store_.register_type<T>(name);
         if (store_.get_type(type_id::get_type_id<T>()) == nullptr)
         {
-            return detail::failure(om_err_reflect_limit);
+            return detail::failure(om_err_out_of_memory);
         }
         return operating_message{};
     }
@@ -239,14 +239,10 @@ public:
         {
             return detail::failure(om_err_reflect_duplicate);
         }
-        if (q.field_count() >= MAX_FIELDS_PER_TYPE)
-        {
-            return detail::failure(om_err_reflect_limit);
-        }
         store_.register_member_runtime<T, M>(q.name(), name, ptr);
         if (q.field_by_name(name) == nullptr)
         {
-            return detail::failure(om_err_reflect_limit);
+            return detail::failure(om_err_out_of_memory);
         }
         return operating_message{};
     }
@@ -303,10 +299,6 @@ public:
         if (!q.valid())
         {
             return detail::failure(om_err_reflect_type_not_found);
-        }
-        if (q.method_count() >= MAX_METHODS_PER_TYPE)
-        {
-            return detail::failure(om_err_reflect_limit);
         }
         store_.register_method<Fn>(name);
         return operating_message{};
@@ -443,7 +435,7 @@ public:
         store_.register_enum<E>(type_name, items);
         if (store_.find_enum<E>() == nullptr)
         {
-            return detail::failure(om_err_reflect_limit);
+            return detail::failure(om_err_out_of_memory);
         }
         return operating_message{};
     }

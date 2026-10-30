@@ -261,6 +261,7 @@ private:
 
         static void release_bytes(char* p, size_t bytes, size_t alignment) noexcept
         {
+            (void)bytes;  // 暂未使用 sized delete, 保留参数以对齐 allocate_bytes 调用
             if (!p) return;
             if (alignment > __STDCPP_DEFAULT_NEW_ALIGNMENT__)
             {

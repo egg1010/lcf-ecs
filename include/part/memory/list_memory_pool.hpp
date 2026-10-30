@@ -1246,7 +1246,6 @@ public:
             big_block_header* next = bh->next;
             if (!bh->from_wilderness)
             {
-                const size_t total = bh->total_size;
                 ::operator delete(bh, std::align_val_t{ CHUNK_ALIGN });
             }
             bh = next;

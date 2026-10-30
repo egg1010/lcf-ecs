@@ -22,6 +22,7 @@
 #include "part/dense.hpp"
 #include "part/fnv1a.hpp"
 #include "part/force_inline.hpp"
+#include "part/stable_array.hpp"
 #include "part/operating_message.hpp"
 #include "part/type/type_id.hpp"
 #include "part/type/void_any.hpp"
@@ -278,11 +279,12 @@ struct type_ops
 };
 
 // 统一操作表注册器: 字段操作表与容器操作表按同一 type_id 索引共存
+// 两张表按需增长, 元素地址稳定
 class ops_registry
 {
 public:
-    std::array<type_ops_table, MAX_TYPE_ID> field_entries_{};
-    std::array<container_ops_table, MAX_TYPE_ID> container_entries_{};
+    stable_array<type_ops_table> field_entries_{};
+    stable_array<container_ops_table> container_entries_{};
 
     ops_registry() noexcept
     {
@@ -303,34 +305,42 @@ public:
     template<typename T>
     void register_type_ops() noexcept
     {
-        int tid = type_id::get_type_id<T>();
-        if (tid >= 0 && tid < static_cast<int>(MAX_TYPE_ID))
+        const int tid = type_id::get_type_id<T>();
+        if (tid <= 0 || !field_entries_.ensure(static_cast<size_t>(tid) + 1))
         {
-            field_entries_[tid] = type_ops<T>::make_table();
+            return;
         }
+        field_entries_[tid] = type_ops<T>::make_table();
     }
 
     template<typename T>
         requires sequential_container<T>
     void register_sequential() noexcept
     {
-        int tid = type_id::get_type_id<T>();
-        if (tid >= 0 && tid < static_cast<int>(MAX_TYPE_ID))
+        const int tid = type_id::get_type_id<T>();
+        if (tid <= 0 || !container_entries_.ensure(static_cast<size_t>(tid) + 1))
         {
-            container_entries_[tid] = container_traits_impl<T>::make_table();
+            return;
         }
+        container_entries_[tid] = container_traits_impl<T>::make_table();
     }
 
     [[nodiscard]] const type_ops_table* get(int tid) const noexcept
     {
-        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID)) return nullptr;
+        if (tid <= 0 || static_cast<size_t>(tid) >= field_entries_.size())
+        {
+            return nullptr;
+        }
         const auto& ops = field_entries_[tid];
         return ops.equal_fn ? &ops : nullptr;
     }
 
     [[nodiscard]] const container_ops_table* get_container(int tid) const noexcept
     {
-        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID)) return nullptr;
+        if (tid <= 0 || static_cast<size_t>(tid) >= container_entries_.size())
+        {
+            return nullptr;
+        }
         return container_entries_[tid].category != container_category::none
             ? &container_entries_[tid] : nullptr;
     }

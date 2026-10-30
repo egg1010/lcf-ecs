@@ -143,5 +143,24 @@ int main()
         }
     }
 
+    t_section(5, "批量单值添加");
+    {
+        ecs::manager mgr;
+        mgr.preallocate_entities(N);
+        dense<ecs::entity> ents;
+        ents.increase_capacity(N);
+        for (uint64_t i = 0; i < N; ++i)
+        {
+            ents.emplace_back(mgr.create_entity());
+        }
+        const std::span<const ecs::entity> ent_span(ents.data(), ents.size());
+
+        double ms = t_bench_best_ms([&]() {
+            mgr.clear_component_type<position>();
+            mgr.add_batch(position{0.0f, 0.0f, 0.0f}, ent_span);
+        }, 3);
+        t_perf("add_batch 单值", N, ms);
+    }
+
     return t_end("manager 性能 ");
 }

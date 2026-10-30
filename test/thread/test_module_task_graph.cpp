@@ -74,12 +74,12 @@ std::atomic<int> g_blocking_done{0};
 std::atomic<int> g_det_done{0};
 std::atomic<int> g_group_done{0};
 std::atomic<int> g_any_done{0};
-thread::task_id g_any_first{};
+std::atomic<thread::task_id> g_any_first{thread::invalid_task};
 std::atomic<int> g_body_a{0};
 std::atomic<int> g_body_b{0};
 std::atomic<int> g_det_worker{0x7FFFFFFF};
 std::atomic<int> g_timeout_seen{0};
-int g_det_workers[4] = {-1, -1, -1, -1};
+std::atomic<int> g_det_workers[4] = {-1, -1, -1, -1};
 
 thread::task<void> switch_body(thread::task_context& ctx)
 {
@@ -195,7 +195,7 @@ thread::task<void> any_wait_body(thread::task_context&)
 thread::task<void> any_parent_body(thread::task_context&)
 {
     const thread::task_id ids[2] = {thread::task_id{0}, thread::task_id{1}};
-    g_any_first = co_await thread::when_any(ids);
+    g_any_first.store(co_await thread::when_any(ids), std::memory_order_relaxed);
     g_any_done.fetch_add(1);
     co_return;
 }
@@ -246,7 +246,7 @@ void det_record_body(thread::task_context& ctx) noexcept
 {
     if (ctx.id_.index_ < 4)
     {
-        g_det_workers[ctx.id_.index_] = static_cast<int>(ctx.worker_);
+        g_det_workers[ctx.id_.index_].store(static_cast<int>(ctx.worker_), std::memory_order_relaxed);
     }
     g_det_done.fetch_add(1);
 }
@@ -335,18 +335,18 @@ void blocking_work(void* arg) noexcept
     *static_cast<int*>(arg) += 41;
 }
 
-int g_trace_events = 0;
+std::atomic<int> g_trace_events{0};
 
 void trace_count_sink(const thread::trace_event*, std::size_t count, void*) noexcept
 {
-    g_trace_events += static_cast<int>(count);
+    g_trace_events.fetch_add(static_cast<int>(count), std::memory_order_relaxed);
 }
 
-int g_wheel_fired = 0;
+std::atomic<int> g_wheel_fired{0};
 
 void wheel_callback(void*, timer_node*) noexcept
 {
-    ++g_wheel_fired;
+    g_wheel_fired.fetch_add(1, std::memory_order_relaxed);
 }
 
 thread::blocking_domain* g_blocking_domain = nullptr;
@@ -366,7 +366,7 @@ thread::task<void> blocking_body(thread::task_context&)
 
 namespace
 {
-int g_trace_kinds[16]{};
+std::atomic<int> g_trace_kinds[16]{};
 
 void trace_kind_sink(const thread::trace_event* events, std::size_t count, void*) noexcept
 {
@@ -375,12 +375,12 @@ void trace_kind_sink(const thread::trace_event* events, std::size_t count, void*
         const std::size_t kind = static_cast<std::size_t>(events[i].kind_);
         if (kind < 16)
         {
-            ++g_trace_kinds[kind];
+            g_trace_kinds[kind].fetch_add(1, std::memory_order_relaxed);
         }
     }
 }
 
-int g_budget_hits = 0;
+std::atomic<int> g_budget_hits{0};
 
 void budget_body(thread::task_context& ctx) noexcept
 {
@@ -395,7 +395,7 @@ void budget_body(thread::task_context& ctx) noexcept
     }
     if (ctx.budget_exceeded())
     {
-        ++g_budget_hits;
+        g_budget_hits.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
@@ -421,7 +421,7 @@ thread::io_result never_read(void*, std::span<std::byte> buffer) noexcept
 
 thread::io_domain* g_never_domain = nullptr;
 thread::data_source g_never_source{};
-int g_cancel_io_done = 0;
+std::atomic<int> g_cancel_io_done{0};
 
 thread::task<void> cancel_io_body(thread::task_context&)
 {
@@ -430,7 +430,7 @@ thread::task<void> cancel_io_body(thread::task_context&)
         co_await thread::read_some(*g_never_domain, g_never_source, std::span<std::byte>(buffer, 8));
     if (result.error_ == om_err_cancelled.code || result.status_ == thread::io_status::cancelled)
     {
-        ++g_cancel_io_done;
+        g_cancel_io_done.fetch_add(1, std::memory_order_relaxed);
     }
     co_return;
 }
@@ -1461,7 +1461,7 @@ int main()
         }
         for (int i = 0; i < 4; ++i)
         {
-            g_det_workers[i] = -1;
+            g_det_workers[i].store(-1, std::memory_order_relaxed);
         }
         g_det_done.store(0);
         mgr.start();
@@ -1473,7 +1473,7 @@ int main()
         bool mapped = true;
         for (int i = 0; i < 4; ++i)
         {
-            mapped = mapped && g_det_workers[i] == (i % 4);
+            mapped = mapped && g_det_workers[i].load(std::memory_order_relaxed) == (i % 4);
         }
         t_check("固定映射 task_id % worker_count", mapped);
         t_check("全部执行", g_det_done.load() == 4);
@@ -1528,13 +1528,13 @@ int main()
         mgr.start();
         (void)mgr.activate(id);
         mgr.drain(2000000);
-        g_trace_events = 0;
+        g_trace_events.store(0, std::memory_order_relaxed);
         thread::trace_recorder& recorder = mgr.trace();
         for (std::uint32_t worker = 0; worker < 2; ++worker)
         {
             (void)recorder.drain(worker, &trace_count_sink, nullptr);
         }
-        t_check("产生追踪事件", g_trace_events > 0);
+        t_check("产生追踪事件", g_trace_events.load(std::memory_order_relaxed) > 0);
         t_check("无丢弃", recorder.dropped_.load() == 0);
         mgr.stop(thread::stop_mode::drain);
     }
@@ -1557,7 +1557,7 @@ int main()
         {
             fired += wheel.advance(static_cast<std::uint64_t>(step) * 1'000'000ull);
         }
-        t_check("全部触发", fired == count && g_wheel_fired == static_cast<int>(count));
+        t_check("全部触发", fired == count && g_wheel_fired.load(std::memory_order_relaxed) == static_cast<int>(count));
         t_check("剩余为空", wheel.size() == 0);
     }
 
@@ -1633,11 +1633,11 @@ int main()
 
         g_body_a.store(0);
         g_any_done.store(0);
-        g_any_first = thread::invalid_task;
+        g_any_first.store(thread::invalid_task, std::memory_order_relaxed);
         t_check("激活父任务", graph.activate(parent_id));
         (void)graph.drain(512);
         t_check("父任务恢复一次", g_any_done.load() == 1);
-        t_check("返回已完成的子任务", g_any_first == child_fast);
+        t_check("返回已完成的子任务", g_any_first.load(std::memory_order_relaxed) == child_fast);
         t_check("父任务完成", graph.state_of(parent_id) == thread::task_state::completed);
     }
 
@@ -1681,10 +1681,10 @@ int main()
         const thread::task_id id = graph.declare("b.task", body);
         t_check("设置预算", graph.set_budget(id, 1'000'000ull));
         t_check("预算可查", graph.budget_of(id) == 1'000'000ull);
-        g_budget_hits = 0;
+        g_budget_hits.store(0, std::memory_order_relaxed);
         (void)graph.activate(id);
         (void)graph.drain(256);
-        t_check("任务体观察到预算超时", g_budget_hits == 1);
+        t_check("任务体观察到预算超时", g_budget_hits.load(std::memory_order_relaxed) == 1);
     }
 
     // ------------------------------------------------------------------
@@ -1707,7 +1707,7 @@ int main()
         g_frame_hits.store(0);
         for (int i = 0; i < 16; ++i)
         {
-            g_trace_kinds[i] = 0;
+            g_trace_kinds[i].store(0, std::memory_order_relaxed);
         }
         (void)graph.activate(id);
         (void)graph.pump_role(thread::role::general, 8);
@@ -1716,12 +1716,12 @@ int main()
         (void)graph.pump_role(thread::role::general, 8);
         (void)recorder.drain(0, &trace_kind_sink, nullptr);
         t_check("记录入队事件",
-                g_trace_kinds[static_cast<int>(thread::trace_kind::enqueue)] >= 1);
-        t_check("记录开始事件", g_trace_kinds[static_cast<int>(thread::trace_kind::start)] >= 1);
+                g_trace_kinds[static_cast<int>(thread::trace_kind::enqueue)].load(std::memory_order_relaxed) >= 1);
+        t_check("记录开始事件", g_trace_kinds[static_cast<int>(thread::trace_kind::start)].load(std::memory_order_relaxed) >= 1);
         t_check("记录等待开始",
-                g_trace_kinds[static_cast<int>(thread::trace_kind::wait_begin)] >= 1);
+                g_trace_kinds[static_cast<int>(thread::trace_kind::wait_begin)].load(std::memory_order_relaxed) >= 1);
         t_check("记录等待结束",
-                g_trace_kinds[static_cast<int>(thread::trace_kind::wait_end)] >= 1);
+                g_trace_kinds[static_cast<int>(thread::trace_kind::wait_end)].load(std::memory_order_relaxed) >= 1);
     }
 
     // ------------------------------------------------------------------
@@ -1837,7 +1837,7 @@ int main()
         body.kind_ = thread::task_body_coroutine_ctx;
         body.invoke_.coro_ctx_ = &cancel_io_body;
         const thread::task_id id = mgr.declare_task("io.cancel", body);
-        g_cancel_io_done = 0;
+        g_cancel_io_done.store(0, std::memory_order_relaxed);
         mgr.start();
         t_check("激活", mgr.activate(id));
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -1846,7 +1846,7 @@ int main()
         {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
-        t_check("取消后任务恢复", g_cancel_io_done == 1);
+        t_check("取消后任务恢复", g_cancel_io_done.load(std::memory_order_relaxed) == 1);
         t_check("任务完成", mgr.state_of(id) == thread::task_state::completed);
         t_check("IO 取消计数", domain.metrics_.cancelled_.load() >= 1);
         domain.stop();

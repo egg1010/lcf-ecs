@@ -478,7 +478,6 @@ void radix_sort_entries_with_cfg(void* entries_data, size_t n,
 
     if (hist_buf)
     {
-        const size_t hist_size = (1 + large_sub_count) * max_buckets_large;
         ::operator delete(hist_buf, std::align_val_t{alignof(size_t)});
     }
     ::operator delete(keys_combined, std::align_val_t{alignof(U)});
@@ -640,7 +639,6 @@ void radix_sort_indices_with_cfg(size_t* indices, const KeyType* keys, size_t n,
 
     if (hist_buf)
     {
-        const size_t hist_size = (1 + large_sub_count) * max_buckets_large;
         ::operator delete(hist_buf, std::align_val_t{alignof(size_t)});
     }
     ::operator delete(keys_combined, std::align_val_t{alignof(U)});

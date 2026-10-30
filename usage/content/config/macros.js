@@ -29,16 +29,12 @@ window.DOCS_DATA['config'] = {
 
 | 宏 | 默认值 | 说明 |
 |------|--------|------|
-| \`REFLECT_MAX_FIELDS\` | \`64\` | 聚合类型字段遍历上限，支持 16/32/64/128/256 |
-| \`MAX_FIELDS_PER_TYPE\` | \`256\` | 单类型字段数组大小 |
-| \`MAX_METHODS_PER_TYPE\` | \`256\` | 单类型方法数组大小 |
-| \`MAX_TYPE_ID\` | \`65536\` | 可注册类型总数上限 |
+| \`REFLECT_MAX_FIELDS\` | \`64\` | 聚合类型自动遍历的字段数上限，支持 16/32/64/128/256 |
+
+字段与方法数量按实际注册量增长，不设固定上限。字段数超过 256 时不使用自动遍历，改用 \`add_type\` 与 \`add_fields\` 显式注册。
 
 \`\`\`cpp
 #define REFLECT_MAX_FIELDS 128
-#define MAX_FIELDS_PER_TYPE 256
-#define MAX_METHODS_PER_TYPE 256
-#define MAX_TYPE_ID 65536
 \`\`\`
 
 ### 13.4 utf8pp 分配器

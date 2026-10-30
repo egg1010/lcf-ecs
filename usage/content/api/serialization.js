@@ -26,6 +26,29 @@ window.DOCS_DATA['serialization'] = {
 | 编码器 | 抽象接口 + JSON / 二进制 / Protobuf / FlatBuffers |
 | 安全工具 | 安全限制、base64 / RLE / CRC32C |
 
+### 快速上手
+
+\`\`\`cpp
+struct item { int id; float weight; };
+
+// 参与序列化的类型与字段需注册到全局反射表
+reflect::global().register_type_only<item>("item");
+reflect::global().register_member_runtime<item>("item", "id", &item::id);
+reflect::global().register_member_runtime<item>("item", "weight", &item::weight);
+
+serialize::manager m;
+m.set_format(archive_format::json);
+
+item one{7, 1.5f};
+std::string out;
+(void)m.save_object(out, one);              // 保存为 JSON 字符串
+
+item back{};
+(void)m.load_object(out, back);             // 还原
+\`\`\`
+
+整存档在构造时绑定 \`ecs::manager\`，随后 \`save_world\` / \`load_world\`；详细用法见 12.3。
+
 ---
 
 # 一、通用对象序列化（不依赖 ECS）

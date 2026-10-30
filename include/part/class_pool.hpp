@@ -95,6 +95,7 @@ private:
 	}
 
 	static void deallocate_bitmap(uint64_t* ptr, size_t num_bits) noexcept {
+		(void)num_bits;  // 暂未使用 sized delete, 保留参数以对齐 allocate_bitmap 调用
 		if (ptr != nullptr) {
 			::operator delete(ptr, std::align_val_t{bitmap_align});
 		}
@@ -178,6 +179,7 @@ private:
 	}
 
 	static void deallocate_data(T* ptr, size_t count) noexcept {
+		(void)count;  // 暂未使用 sized delete, 保留参数以对齐 allocate_data 调用
 		if (ptr != nullptr) {
 			constexpr size_t align = alignof(T) > cache_line ? alignof(T) : cache_line;
 			::operator delete(ptr, std::align_val_t{align});

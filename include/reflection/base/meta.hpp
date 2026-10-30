@@ -21,6 +21,7 @@
 #include "part/dense.hpp"
 #include "part/fnv1a.hpp"
 #include "part/force_inline.hpp"
+#include "part/stable_array.hpp"
 #include "part/operating_message.hpp"
 #include "part/type/type_id.hpp"
 #include "part/type/void_any.hpp"
@@ -137,22 +138,21 @@ struct enum_meta
     bool registered{false};
 };
 
-// 类型槽位上限来自 config/reflect_config.hpp (MAX_TYPE_ID, MAX_FIELDS_PER_TYPE, MAX_METHODS_PER_TYPE)
-
 // 类型元数据
+// 字段与方法存储按需增长, 元素地址稳定; 数量仅受可用内存约束
 struct type_meta
 {
     const char* name = nullptr;                         // 类型名
     std::atomic<uint8_t> state{0};                      // type_state
-    std::atomic<uint16_t> field_count{0};               // 字段数
-    std::atomic<uint16_t> method_count{0};              // 方法数
+    std::atomic<size_t> field_count{0};                 // 字段数
+    std::atomic<size_t> method_count{0};                // 方法数
     size_t size = 0;                                    // sizeof(T)
     size_t align = 0;                                   // alignof(T)
     int type_id = -1;                                   // type_id::get_type_id<T>()
 
-    // 内嵌字段/方法数组
-    std::array<field_meta, MAX_FIELDS_PER_TYPE> fields{};
-    std::array<method_meta, MAX_METHODS_PER_TYPE> methods{};
+    // 分块字段/方法存储
+    stable_array<field_meta> fields{};
+    stable_array<method_meta> methods{};
 
     // #1 构造/销毁
     construct_func default_construct_{nullptr};

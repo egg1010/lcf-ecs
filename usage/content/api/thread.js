@@ -14,6 +14,29 @@ window.DOCS_DATA['thread_manager'] = {
 
 > **并发边界：** 共享同一个 manager 时，只通过已提供的提交与任务接口并发操作；任务体捕获对象的同步由调用方负责。线程与任务图路径由 CI 的 TSan 作业持续检查。
 
+### 快速上手
+
+\`\`\`cpp
+thread::manager mgr;
+const operating_message config_error = mgr.configure(thread::profile::server(4));
+if (!config_error)
+{
+    std::fprintf(stderr, "configure failed: %u\n", config_error.code());
+    return 1;
+}
+mgr.start();
+
+std::uint32_t slot = thread::slot_index_none;
+thread::job* j = mgr.take_job(slot);
+thread::fill_inline_job(j, []() noexcept { /* 任务体 */ });
+mgr.submit(j);
+
+(void)mgr.drain();                          // 等待完成
+mgr.stop();
+\`\`\`
+
+嵌入式（无线程）配置用 \`thread::profile::embedded()\`，由 \`pump\` 驱动执行。
+
 ### 47.1 配置 manager_config
 
 | 字段 | 默认值 | 说明 |

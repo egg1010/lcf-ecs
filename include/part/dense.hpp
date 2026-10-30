@@ -107,6 +107,7 @@ private:
 	}
 
 	static void deallocate_data(T* ptr, size_t count) noexcept {
+		(void)count;  // 暂未使用 sized delete, 保留参数以对齐 allocate_data 调用
 		if (ptr != nullptr) {
 			if constexpr (alignof(T) <= __STDCPP_DEFAULT_NEW_ALIGNMENT__) {
 				// 用 sized delete 与 std::vector 一致, 比 unsized delete 快

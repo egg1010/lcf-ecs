@@ -920,8 +920,8 @@ LCF_FORCE_INLINE void for_each_member(T& obj, F&& f)
     using type = std::remove_cv_t<T>;
     constexpr size_t N = field_count_v<type>;
     static_assert(!exceeds_field_limit_v<type>,
-                  "Field count exceeds REFLECT_MAX_FIELDS, "
-                  "increase REFLECT_MAX_FIELDS before including this header");
+                  "Field count exceeds REFLECT_MAX_FIELDS (max 256): "
+                  "register the type with add_type and map all fields via add_fields");
     if constexpr (N == 0) { return; }
     REFLECT_REPEAT1(REFLECT_MAX_FIELDS, REFLECT_BRANCH, ~)
 }

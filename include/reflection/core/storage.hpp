@@ -21,6 +21,7 @@
 #include "part/dense.hpp"
 #include "part/fnv1a.hpp"
 #include "part/force_inline.hpp"
+#include "part/stable_array.hpp"
 #include "part/operating_message.hpp"
 #include "part/type/type_id.hpp"
 #include "part/type/void_any.hpp"
@@ -138,39 +139,20 @@ constexpr uint8_t field_flags_of(bool is_const, bool is_private) noexcept
 class storage
 {
 public:
-    // 槽位表放堆上: 64K 槽合计约 1MB, 放栈会击穿默认线程栈
-    std::unique_ptr<std::atomic<type_meta*>[]> type_entries_;
+    // 槽位表按需增长: 分块分配, 元素地址稳定
+    stable_array<std::atomic<type_meta*>> type_entries_;
 
-    storage() noexcept
-        : type_entries_(new (std::nothrow) std::atomic<type_meta*>[MAX_TYPE_ID]())
-        , enum_entries_(new (std::nothrow) std::atomic<enum_meta*>[MAX_TYPE_ID]())
-    {
-        if (type_entries_ == nullptr || enum_entries_ == nullptr)
-        {
-            std::abort();
-        }
-        for (size_t i = 0; i < MAX_TYPE_ID; ++i)
-        {
-            type_entries_[i].store(nullptr, std::memory_order_relaxed);
-            enum_entries_[i].store(nullptr, std::memory_order_relaxed);
-        }
-    }
+    storage() noexcept = default;
 
     ~storage() noexcept
     {
-        if (type_entries_ != nullptr)
+        for (size_t i = 0; i < type_entries_.size(); ++i)
         {
-            for (size_t i = 0; i < MAX_TYPE_ID; ++i)
-            {
-                delete type_entries_[i].load(std::memory_order_relaxed);
-            }
+            delete type_entries_[i].load(std::memory_order_relaxed);
         }
-        if (enum_entries_ != nullptr)
+        for (size_t i = 0; i < enum_entries_.size(); ++i)
         {
-            for (size_t i = 0; i < MAX_TYPE_ID; ++i)
-            {
-                delete enum_entries_[i].load(std::memory_order_relaxed);
-            }
+            delete enum_entries_[i].load(std::memory_order_relaxed);
         }
     }
 
@@ -184,7 +166,7 @@ public:
     void register_type(const char* name) noexcept
     {
         const int tid = type_id::get_type_id<T>();
-        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID))
+        if (!ensure_type_slot_index(tid))
         {
             return;
         }
@@ -205,7 +187,7 @@ public:
     void register_type_only(const char* name) noexcept
     {
         const int tid = type_id::get_type_id<T>();
-        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID))
+        if (!ensure_type_slot_index(tid))
         {
             return;
         }
@@ -256,7 +238,7 @@ public:
         const std::source_location& loc = std::source_location::current()) noexcept
     {
         const int tid = type_id::get_type_id<T>();
-        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID))
+        if (!ensure_type_slot_index(tid))
         {
             return;
         }
@@ -268,7 +250,7 @@ public:
                               static_cast<uint32_t>(sizeof(M)),
                               std::is_trivially_copyable_v<M>))
         {
-            detail::abort_with_location("field limit exceeded", loc);
+            detail::abort_with_location("field storage allocation failed", loc);
         }
         detail::ensure_field_ops<std::remove_cv_t<M>>();
     }
@@ -296,7 +278,7 @@ public:
         if (!try_append_field(m, name, offset, field_type_id, field_flag_private,
                               0, 0, {0, 0, 0, 0}, size, trivially_copyable))
         {
-            return detail::failure(om_err_reflect_limit);
+            return detail::failure(om_err_out_of_memory);
         }
         return operating_message{};
     }
@@ -330,7 +312,7 @@ public:
         const std::source_location& loc = std::source_location::current()) noexcept
     {
         const int tid = type_id::get_type_id<T>();
-        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID))
+        if (!ensure_type_slot_index(tid))
         {
             return;
         }
@@ -391,7 +373,7 @@ public:
                               rank, static_cast<uint32_t>(total64), ext, stride,
                               std::is_trivially_copyable_v<element_type>))
         {
-            detail::abort_with_location("field limit exceeded", loc);
+            detail::abort_with_location("field storage allocation failed", loc);
         }
         detail::ensure_field_ops<std::remove_cv_t<element_type>>();
     }
@@ -403,7 +385,7 @@ public:
         const std::source_location& loc = std::source_location::current()) noexcept
     {
         const int tid = type_id::get_type_id<T>();
-        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID))
+        if (!ensure_type_slot_index(tid))
         {
             return;
         }
@@ -433,8 +415,8 @@ public:
         using C = typename traits::class_type;
         using R = typename traits::return_type;
 
-        int tid = type_id::get_type_id<C>();
-        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID))
+        const int tid = type_id::get_type_id<C>();
+        if (!ensure_type_slot_index(tid))
         {
             return;
         }
@@ -442,10 +424,10 @@ public:
         type_meta* m = ensure_type_slot<C>(tid);
 
         detail::spinlock_guard lock(reg_lock_);
-        uint16_t midx = m->method_count.load(std::memory_order_relaxed);
-        if (midx >= MAX_METHODS_PER_TYPE)
+        const size_t midx = m->method_count.load(std::memory_order_relaxed);
+        if (!m->methods.ensure(midx + 1))
         {
-            detail::abort_with_location("method limit exceeded", loc);
+            detail::abort_with_location("method storage allocation failed", loc);
         }
 
         method_meta mm;
@@ -463,7 +445,7 @@ public:
         std::memcpy(mm.fn_storage.data(), &fn_copy, sizeof(fn_copy));
         mm.fn_size = static_cast<uint8_t>(sizeof(fn_copy));
         m->methods[midx] = mm;
-        m->method_count.store(static_cast<uint16_t>(midx + 1), std::memory_order_release);
+        m->method_count.store(midx + 1, std::memory_order_release);
     }
 
     // 注册静态方法
@@ -476,8 +458,8 @@ public:
         using R = typename traits::return_type;
         static_assert(traits::is_static, "Fn must be a free/static function pointer");
 
-        int tid = type_id::get_type_id<C>();
-        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID))
+        const int tid = type_id::get_type_id<C>();
+        if (!ensure_type_slot_index(tid))
         {
             return;
         }
@@ -485,10 +467,10 @@ public:
         type_meta* m = ensure_type_slot<C>(tid);
 
         detail::spinlock_guard lock(reg_lock_);
-        uint16_t midx = m->method_count.load(std::memory_order_relaxed);
-        if (midx >= MAX_METHODS_PER_TYPE)
+        const size_t midx = m->method_count.load(std::memory_order_relaxed);
+        if (!m->methods.ensure(midx + 1))
         {
-            detail::abort_with_location("method limit exceeded", loc);
+            detail::abort_with_location("method storage allocation failed", loc);
         }
 
         method_meta mm;
@@ -506,7 +488,7 @@ public:
         std::memcpy(mm.fn_storage.data(), &fn_copy, sizeof(fn_copy));
         mm.fn_size = static_cast<uint8_t>(sizeof(fn_copy));
         m->methods[midx] = mm;
-        m->method_count.store(static_cast<uint16_t>(midx + 1), std::memory_order_release);
+        m->method_count.store(midx + 1, std::memory_order_release);
     }
 
     // 注册成员方法 (运行期指针): 私有函数在类内取地址后交给此处
@@ -537,9 +519,9 @@ public:
         using R = typename traits::return_type;
 
         const int tid = type_id::get_type_id<C>();
-        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID))
+        if (!ensure_type_slot_index(tid))
         {
-            return detail::failure(om_err_reflect_type_not_found);
+            return detail::failure(om_err_out_of_memory);
         }
         type_meta* m = live_meta<C>();
         if (m == nullptr)
@@ -548,10 +530,10 @@ public:
         }
 
         detail::spinlock_guard lock(reg_lock_);
-        const uint16_t midx = m->method_count.load(std::memory_order_relaxed);
-        if (midx >= MAX_METHODS_PER_TYPE)
+        const size_t midx = m->method_count.load(std::memory_order_relaxed);
+        if (!m->methods.ensure(midx + 1))
         {
-            return detail::failure(om_err_reflect_limit);
+            return detail::failure(om_err_out_of_memory);
         }
 
         method_meta mm;
@@ -566,7 +548,7 @@ public:
         std::memcpy(mm.fn_storage.data(), &ptr, sizeof(ptr));
         mm.fn_size = static_cast<uint8_t>(sizeof(ptr));
         m->methods[midx] = mm;
-        m->method_count.store(static_cast<uint16_t>(midx + 1), std::memory_order_release);
+        m->method_count.store(midx + 1, std::memory_order_release);
         return operating_message{};
     }
 
@@ -597,9 +579,9 @@ public:
         using R = typename traits::return_type;
 
         const int tid = type_id::get_type_id<C>();
-        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID))
+        if (!ensure_type_slot_index(tid))
         {
-            return detail::failure(om_err_reflect_type_not_found);
+            return detail::failure(om_err_out_of_memory);
         }
         type_meta* m = live_meta<C>();
         if (m == nullptr)
@@ -608,10 +590,10 @@ public:
         }
 
         detail::spinlock_guard lock(reg_lock_);
-        const uint16_t midx = m->method_count.load(std::memory_order_relaxed);
-        if (midx >= MAX_METHODS_PER_TYPE)
+        const size_t midx = m->method_count.load(std::memory_order_relaxed);
+        if (!m->methods.ensure(midx + 1))
         {
-            return detail::failure(om_err_reflect_limit);
+            return detail::failure(om_err_out_of_memory);
         }
 
         method_meta mm;
@@ -626,14 +608,14 @@ public:
         std::memcpy(mm.fn_storage.data(), &ptr, sizeof(ptr));
         mm.fn_size = static_cast<uint8_t>(sizeof(ptr));
         m->methods[midx] = mm;
-        m->method_count.store(static_cast<uint16_t>(midx + 1), std::memory_order_release);
+        m->method_count.store(midx + 1, std::memory_order_release);
         return operating_message{};
     }
 
     // 按类型 id 查询 (无锁, acquire)
     [[nodiscard]] const type_meta* get_type(int tid) const noexcept
     {
-        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID))
+        if (!has_type_slot(tid))
         {
             return nullptr;
         }
@@ -666,8 +648,8 @@ public:
         std::initializer_list<std::pair<E, const char*>> values) noexcept
     {
         static_assert(std::is_enum_v<E>, "register_enum requires enum type");
-        int tid = type_id::get_type_id<E>();
-        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID))
+        const int tid = type_id::get_type_id<E>();
+        if (!ensure_enum_slot_index(tid))
         {
             return;
         }
@@ -715,8 +697,8 @@ public:
     void register_enum_type() noexcept
     {
         static_assert(std::is_enum_v<E>, "register_enum_type requires enum type");
-        int tid = type_id::get_type_id<E>();
-        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID))
+        const int tid = type_id::get_type_id<E>();
+        if (!ensure_enum_slot_index(tid))
         {
             return;
         }
@@ -746,7 +728,7 @@ public:
     // #3 获取枚举元数据
     [[nodiscard]] const enum_meta* find_enum(int tid) const noexcept
     {
-        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID))
+        if (!has_enum_slot(tid))
         {
             return nullptr;
         }
@@ -765,8 +747,7 @@ public:
     {
         int did = type_id::get_type_id<Derived>();
         int bid = type_id::get_type_id<Base>();
-        if (did < 0 || did >= static_cast<int>(MAX_TYPE_ID)
-            || bid < 0 || bid >= static_cast<int>(MAX_TYPE_ID))
+        if (!ensure_type_slot_index(did) || !ensure_type_slot_index(bid))
         {
             return;
         }
@@ -785,8 +766,7 @@ public:
         static_assert(std::is_base_of_v<Base, Derived>, "Base must be a base of Derived");
         int did = type_id::get_type_id<Derived>();
         int bid = type_id::get_type_id<Base>();
-        if (did < 0 || did >= static_cast<int>(MAX_TYPE_ID)
-            || bid < 0 || bid >= static_cast<int>(MAX_TYPE_ID))
+        if (!ensure_type_slot_index(did) || !ensure_type_slot_index(bid))
         {
             return;
         }
@@ -810,8 +790,8 @@ public:
     void register_convert() noexcept
     {
         static_assert(std::is_convertible_v<T, U>, "T must be convertible to U");
-        int tid = type_id::get_type_id<T>();
-        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID))
+        const int tid = type_id::get_type_id<T>();
+        if (!ensure_type_slot_index(tid))
         {
             return;
         }
@@ -877,7 +857,7 @@ public:
     operating_message purge_type() noexcept
     {
         const int tid = type_id::get_type_id<T>();
-        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID))
+        if (!has_type_slot(tid))
         {
             return detail::failure(om_err_reflect_type_not_found);
         }
@@ -920,17 +900,17 @@ public:
             return detail::failure(om_err_reflect_invalid_name);
         }
         detail::spinlock_guard lock(reg_lock_);
-        const uint16_t n = m->field_count.load(std::memory_order_relaxed);
-        for (uint16_t i = 0; i < n; ++i)
+        const size_t n = m->field_count.load(std::memory_order_relaxed);
+        for (size_t i = 0; i < n; ++i)
         {
             if (m->fields[i].name != nullptr && std::strcmp(m->fields[i].name, name) == 0)
             {
-                for (uint16_t j = i; static_cast<uint16_t>(j + 1) < n; ++j)
+                for (size_t j = i; j + 1 < n; ++j)
                 {
                     m->fields[j] = std::move(m->fields[j + 1]);
                 }
                 m->fields[n - 1] = field_meta{};
-                m->field_count.store(static_cast<uint16_t>(n - 1), std::memory_order_release);
+                m->field_count.store(n - 1, std::memory_order_release);
                 return operating_message{};
             }
         }
@@ -979,7 +959,7 @@ public:
             return gate;
         }
         const int tid = type_id::get_type_id<E>();
-        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID))
+        if (!has_enum_slot(tid))
         {
             return detail::failure(om_err_reflect_enum_not_found);
         }
@@ -1300,6 +1280,35 @@ public:
 
 
 private:
+    // 槽位表按需增长; 读侧只查已保证范围, 不触发分配
+    bool ensure_type_slot_index(int tid) noexcept
+    {
+        if (tid <= 0)
+        {
+            return false;
+        }
+        return type_entries_.ensure(static_cast<size_t>(tid) + 1);
+    }
+
+    bool ensure_enum_slot_index(int tid) noexcept
+    {
+        if (tid <= 0)
+        {
+            return false;
+        }
+        return enum_entries_.ensure(static_cast<size_t>(tid) + 1);
+    }
+
+    bool has_type_slot(int tid) const noexcept
+    {
+        return tid > 0 && static_cast<size_t>(tid) < type_entries_.size();
+    }
+
+    bool has_enum_slot(int tid) const noexcept
+    {
+        return tid > 0 && static_cast<size_t>(tid) < enum_entries_.size();
+    }
+
     operating_message check_writable() noexcept
     {
         if (frozen())
@@ -1313,7 +1322,7 @@ private:
     type_meta* live_meta() noexcept
     {
         const int tid = type_id::get_type_id<T>();
-        if (tid < 0 || tid >= static_cast<int>(MAX_TYPE_ID))
+        if (!has_type_slot(tid))
         {
             return nullptr;
         }
@@ -1332,8 +1341,8 @@ private:
         {
             return nullptr;
         }
-        const uint16_t n = m->field_count.load(std::memory_order_relaxed);
-        for (uint16_t i = 0; i < n; ++i)
+        const size_t n = m->field_count.load(std::memory_order_relaxed);
+        for (size_t i = 0; i < n; ++i)
         {
             if (m->fields[i].name != nullptr && std::strcmp(m->fields[i].name, name) == 0)
             {
@@ -1349,8 +1358,8 @@ private:
         {
             return false;
         }
-        const uint16_t n = m->field_count.load(std::memory_order_relaxed);
-        for (uint16_t i = 0; i < n; ++i)
+        const size_t n = m->field_count.load(std::memory_order_relaxed);
+        for (size_t i = 0; i < n; ++i)
         {
             if (m->fields[i].name != nullptr && std::strcmp(m->fields[i].name, name) == 0)
             {
@@ -1391,18 +1400,18 @@ private:
             return detail::failure(om_err_reflect_type_not_found);
         }
         detail::spinlock_guard lock(reg_lock_);
-        const uint16_t n = m->method_count.load(std::memory_order_relaxed);
-        for (uint16_t i = 0; i < n; ++i)
+        const size_t n = m->method_count.load(std::memory_order_relaxed);
+        for (size_t i = 0; i < n; ++i)
         {
             const method_meta& mm = m->methods[i];
             if (method_matches(mm, name, fn, fn_ptr, fn_size))
             {
-                for (uint16_t j = i; static_cast<uint16_t>(j + 1) < n; ++j)
+                for (size_t j = i; j + 1 < n; ++j)
                 {
                     m->methods[j] = m->methods[j + 1];
                 }
                 m->methods[n - 1] = method_meta{};
-                m->method_count.store(static_cast<uint16_t>(n - 1), std::memory_order_release);
+                m->method_count.store(n - 1, std::memory_order_release);
                 return operating_message{};
             }
         }
@@ -1429,8 +1438,8 @@ private:
             return detail::failure(om_err_reflect_type_not_found);
         }
         detail::spinlock_guard lock(reg_lock_);
-        const uint16_t n = m->method_count.load(std::memory_order_relaxed);
-        for (uint16_t i = 0; i < n; ++i)
+        const size_t n = m->method_count.load(std::memory_order_relaxed);
+        for (size_t i = 0; i < n; ++i)
         {
             method_meta& mm = m->methods[i];
             if (!method_matches(mm, old_name, fn, fn_ptr, fn_size))
@@ -1443,13 +1452,13 @@ private:
         return detail::failure(om_err_reflect_method_not_found);
     }
 
-    // 单份字段追加 (4 条注册路径共用): 超上限返回 false
+    // 单份字段追加 (4 条注册路径共用): 存储分配失败返回 false
     bool try_append_field(type_meta* m, const char* name, size_t offset, int field_type_id,
                           uint8_t flags, uint8_t rank, uint32_t total_elements,
                           std::array<uint32_t, 4> extents, uint32_t stride, bool trivial) noexcept
     {
-        uint16_t fidx = m->field_count.load(std::memory_order_relaxed);
-        if (fidx >= MAX_FIELDS_PER_TYPE)
+        const size_t fidx = m->field_count.load(std::memory_order_relaxed);
+        if (!m->fields.ensure(fidx + 1))
         {
             return false;
         }
@@ -1460,7 +1469,7 @@ private:
             flags,
             rank, 0, total_elements, extents, stride, trivial, {}
         };
-        m->field_count.store(static_cast<uint16_t>(fidx + 1), std::memory_order_release);
+        m->field_count.store(fidx + 1, std::memory_order_release);
         return true;
     }
 
@@ -1528,6 +1537,10 @@ private:
     template<typename T>
     [[nodiscard]] type_meta* ensure_type_slot(int tid) noexcept
     {
+        if (!ensure_type_slot_index(tid))
+        {
+            std::abort();
+        }
         type_meta* m = type_entries_[tid].load(std::memory_order_acquire);
         if (m != nullptr
             && m->state.load(std::memory_order_acquire) == static_cast<uint8_t>(type_state::live))
@@ -1554,7 +1567,7 @@ private:
     }
 
     std::atomic_flag reg_lock_{};
-    std::unique_ptr<std::atomic<enum_meta*>[]> enum_entries_{};
+    stable_array<std::atomic<enum_meta*>> enum_entries_;
     detail::name_index names_;
     std::atomic<bool> frozen_{false};
     std::atomic<size_t> type_count_{0};
@@ -1573,8 +1586,8 @@ private:
 
     static const char* make_field_name(size_t idx) noexcept
     {
-        static std::array<std::array<char, 16>, MAX_FIELDS_PER_TYPE> names{};
-        if (idx >= MAX_FIELDS_PER_TYPE)
+        static std::array<std::array<char, 16>, REFLECT_MAX_FIELDS> names{};
+        if (idx >= REFLECT_MAX_FIELDS)
         {
             return "field_?";
         }
