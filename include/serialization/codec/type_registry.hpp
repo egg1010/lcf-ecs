@@ -34,6 +34,7 @@ using decrypt_fn = std::string(*)(const std::string&) noexcept;
 struct codec_bridge
 {
     bool enable_checksum = true;
+    bool require_checksum = false;
     transform_fn on_save_cb = nullptr;
     transform_fn on_load_cb = nullptr;
     compress_fn compress_cb = nullptr;
@@ -62,7 +63,7 @@ struct codec_bridge
         return data.size() >= 4 && std::memcmp(data.data(), "LCE1", 4) == 0;
     }
 
-    void wrap_save(std::string& out) noexcept
+    operating_message wrap_save(std::string& out) noexcept
     {
         if (enable_checksum)
         {
@@ -80,6 +81,12 @@ struct codec_bridge
         {
             on_save_cb(out);
         }
+        operating_message error;
+        if (out.empty())
+        {
+            error.write_failure(om_err_io_failed.code, msg_level::warn, msg::here());
+        }
+        return error;
     }
 
     operating_message unwrap_load(std::string& content) noexcept
@@ -88,12 +95,31 @@ struct codec_bridge
         {
             on_load_cb(content);
         }
+        if (content.empty())
+        {
+            operating_message error;
+            error.write_failure(om_err_decode_failed.code, msg_level::warn, msg::here());
+            return error;
+        }
         if (decrypt_cb != nullptr)
         {
             content = decrypt_cb(content);
+            if (content.empty())
+            {
+                operating_message error;
+                error.write_failure(om_err_decode_failed.code, msg_level::warn, msg::here());
+                return error;
+            }
         }
         if (enable_checksum)
         {
+            if (require_checksum && (decompress_cb == nullptr || is_binary_format(content))
+                && (content.size() < 8 || std::memcmp(content.data(), "LCCS", 4) != 0))
+            {
+                operating_message error;
+                error.write_failure(om_err_checksum_failed.code, msg_level::warn, msg::here());
+                return error;
+            }
             operating_message error = strip_checksum(content);
             if (!error)
             {
@@ -103,8 +129,21 @@ struct codec_bridge
         if (decompress_cb != nullptr && !is_binary_format(content))
         {
             content = decompress_cb(content);
+            if (content.empty())
+            {
+                operating_message error;
+                error.write_failure(om_err_decode_failed.code, msg_level::warn, msg::here());
+                return error;
+            }
             if (enable_checksum)
             {
+                if (require_checksum
+                    && (content.size() < 8 || std::memcmp(content.data(), "LCCS", 4) != 0))
+                {
+                    operating_message error;
+                    error.write_failure(om_err_checksum_failed.code, msg_level::warn, msg::here());
+                    return error;
+                }
                 operating_message error = strip_checksum(content);
                 if (!error)
                 {
@@ -164,7 +203,7 @@ namespace detail {
 
 struct entity_field_info {
     int         type_id;
-    const char* field_name;
+    std::string field_name;
     uint32_t    offset;
 };
 
@@ -272,6 +311,10 @@ void register_enum() noexcept {
 
 template<typename T>
 void register_entity_field(const char* field_name) noexcept {
+    if (field_name == nullptr)
+    {
+        return;
+    }
     auto qv = reflect::try_get<T>();
     if (!qv.valid())
     {

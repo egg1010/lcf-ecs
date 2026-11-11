@@ -509,6 +509,53 @@ inline bool write_field_meta(archive_writer& w, const char* name, const char* ba
 
 inline bool read_field_meta(archive_reader& r, char* base, const reflect::field_meta& fm) noexcept;
 
+[[nodiscard]] inline bool field_number_matches(std::string_view key,
+                                                size_t number) noexcept
+{
+    if (number == 0 || key.size() < 2 || key.front() != 'f')
+    {
+        return false;
+    }
+    size_t divisor = 1;
+    while (number / divisor >= 10)
+    {
+        divisor *= 10;
+    }
+    for (size_t i = 1; i < key.size(); ++i)
+    {
+        if (divisor == 0)
+        {
+            return false;
+        }
+        const uint32_t digit = static_cast<uint32_t>((number / divisor) % 10);
+        if (key[i] != static_cast<char>('0' + digit))
+        {
+            return false;
+        }
+        divisor /= 10;
+    }
+    return divisor == 0;
+}
+
+[[nodiscard]] inline size_t find_field_index(reflect::query_view qv,
+                                             std::string_view key, size_t hint) noexcept
+{
+    const size_t n = qv.field_count();
+    if (hint < n && (key == qv.field(hint).name
+                     || field_number_matches(key, hint + 1)))
+    {
+        return hint;
+    }
+    for (size_t i = 0; i < n; ++i)
+    {
+        if (i != hint && (key == qv.field(i).name || field_number_matches(key, i + 1)))
+        {
+            return i;
+        }
+    }
+    return n;
+}
+
 inline bool read_object(archive_reader& r, char* base, reflect::query_view qv) noexcept
 {
     if (!r.enter_object())
@@ -517,19 +564,43 @@ inline bool read_object(archive_reader& r, char* base, reflect::query_view qv) n
     }
     bool ok = true;
     const size_t n = qv.field_count();
-    for (size_t i = 0; i < n; ++i)
+    const bool has_object_end = r.has_object_end();
+    size_t consumed = 0;
+    while (has_object_end || consumed < n)
     {
-        if (r.next_key().empty())
+        const std::string_view key = r.next_key();
+        if (key.empty())
         {
+            if (r.has_error())
+            {
+                ok = false;
+            }
             break;
         }
-        if (!read_field_meta(r, base, qv.field(i)))
+        const size_t index = find_field_index(qv, key, consumed);
+        if (index < n)
+        {
+            if (!read_field_meta(r, base, qv.field(index)))
+            {
+                ok = false;
+            }
+        }
+        else
+        {
+            r.skip_value();
+        }
+        ++consumed;
+        if (r.has_error())
         {
             ok = false;
+            if (!r.recover_value())
+            {
+                break;
+            }
         }
     }
     r.leave_object();
-    return ok;
+    return ok && !r.has_error();
 }
 
 inline bool read_field_meta(archive_reader& r, char* base, const reflect::field_meta& fm) noexcept

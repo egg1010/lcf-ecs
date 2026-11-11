@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <string>
@@ -33,6 +34,55 @@ namespace serialize {
 
 namespace detail {
 
+[[nodiscard]] inline bool valid_json_text(std::string_view text) noexcept
+{
+    if (text.empty())
+    {
+        return false;
+    }
+    json_reader reader(text, true);
+    return reader.skip_value() && reader.at_end() && !reader.has_error();
+}
+
+[[nodiscard]] inline bool write_file_atomic(const std::string& path,
+                                            const std::string& data) noexcept
+{
+    const std::string temp_path = path + ".tmp";
+    std::ofstream file(temp_path, std::ios::binary | std::ios::trunc);
+    if (!file)
+    {
+        (void)std::remove(temp_path.c_str());
+        return false;
+    }
+    file.write(data.data(), static_cast<std::streamsize>(data.size()));
+    file.close();
+    if (!file)
+    {
+        (void)std::remove(temp_path.c_str());
+        return false;
+    }
+    if (std::rename(temp_path.c_str(), path.c_str()) == 0)
+    {
+        return true;
+    }
+
+    const std::string backup_path = path + ".bak";
+    (void)std::remove(backup_path.c_str());
+    if (std::rename(path.c_str(), backup_path.c_str()) != 0)
+    {
+        (void)std::remove(temp_path.c_str());
+        return false;
+    }
+    if (std::rename(temp_path.c_str(), path.c_str()) != 0)
+    {
+        (void)std::rename(backup_path.c_str(), path.c_str());
+        (void)std::remove(temp_path.c_str());
+        return false;
+    }
+    (void)std::remove(backup_path.c_str());
+    return true;
+}
+
 // 载荷规则与组件一致: 用户 to_json > 反射字段 > 原始字节
 template<typename T>
 bool write_object_value(archive_writer& w, const T& v) noexcept
@@ -40,6 +90,10 @@ bool write_object_value(archive_writer& w, const T& v) noexcept
     if constexpr (field_codec::has_json_serialize<T>)
     {
         std::string j = v.to_json();
+        if (!valid_json_text(j))
+        {
+            return false;
+        }
         w.write_raw(j);
         return true;
     }
@@ -67,8 +121,13 @@ bool read_object_value(archive_reader& r, T& v) noexcept
 {
     if constexpr (field_codec::has_json_deserialize<T>)
     {
-        v.from_json(r.read_bytes_view(0));
-        return !r.has_error();
+        const std::string_view text = r.read_bytes_view(0);
+        if (r.has_error() || !valid_json_text(text))
+        {
+            return false;
+        }
+        v.from_json(text);
+        return true;
     }
     else if constexpr (std::is_trivially_copyable_v<T>)
     {
@@ -105,14 +164,15 @@ class object_archive
         operating_message error;
         if (!r.enter_object())
         {
-            if (!r.has_error())
+            if (r.has_error())
             {
-                return error;
+                return r.last_error();
             }
-            return r.last_error();
+            error.write_failure(om_err_decode_failed.code, msg_level::warn, msg::here());
+            return error;
         }
 
-        r.next_key();
+        (void)r.next_key();
         const uint32_t fv = r.read_u32();
         if (fv > format_version)
         {
@@ -120,7 +180,7 @@ class object_archive
             return error;
         }
 
-        r.next_key();
+        (void)r.next_key();
         if (!r.enter_array())
         {
             error.write_failure(om_err_decode_failed.code, msg_level::warn, msg::here());
@@ -144,6 +204,10 @@ class object_archive
         }
         r.leave_array();
         r.leave_object();
+        if (r.has_error())
+        {
+            return r.last_error();
+        }
         return error;
     }
 
@@ -183,6 +247,11 @@ public:
                                  const T* items, size_t count) noexcept
     {
         operating_message error;
+        if (items == nullptr && count != 0)
+        {
+            error.write_failure(om_err_invalid_argument.code, msg_level::warn, msg::here());
+            return error;
+        }
         const archive_codec* codec = codec_bridge::pick(fmt);
         if (codec == nullptr)
         {
@@ -217,7 +286,7 @@ public:
             error.write_failure(om_err_unsupported_operation.code, msg_level::warn, msg::here());
             return error;
         }
-        bridge.wrap_save(out);
+        error = bridge.wrap_save(out);
         return error;
     }
 
@@ -225,7 +294,6 @@ public:
     operating_message load_array(std::string_view data, dense<T>& out) noexcept
     {
         operating_message error;
-        out.clear();
         std::string content(data);
         error = bridge.unwrap_load(content);
         if (!error)
@@ -245,11 +313,20 @@ public:
             {
                 codec->destroy_reader(r);
             }
-            error.write_failure(om_err_checksum_failed.code, msg_level::warn, msg::here());
+            error.write_failure(om_err_decode_failed.code, msg_level::warn, msg::here());
             return error;
         }
-        operating_message body_error = read_body<T>(*r, out);
+        dense<T> loaded;
+        operating_message body_error = read_body<T>(*r, loaded);
+        if (body_error && !r->at_end())
+        {
+            body_error.write_failure(om_err_decode_failed.code, msg_level::warn, msg::here());
+        }
         codec->destroy_reader(r);
+        if (body_error)
+        {
+            out = std::move(loaded);
+        }
         return body_error;
     }
 
@@ -287,14 +364,7 @@ public:
         {
             return error;
         }
-        std::ofstream f(path, std::ios::binary | std::ios::trunc);
-        if (!f)
-        {
-            error.write_failure(om_err_io_failed.code, msg_level::warn, msg::here());
-            return error;
-        }
-        f.write(data.data(), static_cast<std::streamsize>(data.size()));
-        if (!f)
+        if (!detail::write_file_atomic(path, data))
         {
             error.write_failure(om_err_io_failed.code, msg_level::warn, msg::here());
         }
@@ -397,6 +467,10 @@ inline bool write_payload(archive_writer& w, const detail::type_factory_entry& e
     if (entry.has_user_json && entry.json_to_fn != nullptr)
     {
         std::string j = entry.json_to_fn(data);
+        if (!detail::valid_json_text(j))
+        {
+            return false;
+        }
         w.write_raw(j);
         return true;
     }
@@ -437,6 +511,10 @@ bool construct_component(load_context& ctx, ecs::entity e, std::string_view data
 {
     if constexpr (has_json_deserialize<T>)
     {
+        if (!detail::valid_json_text(data_str))
+        {
+            return false;
+        }
         T comp{};
         comp.from_json(data_str);
         remap_component_refs<T>(comp, *ctx.remap);
@@ -531,7 +609,7 @@ bool load_typed_component(archive_reader& r, load_context& ctx, ecs::entity e, i
 template<typename T>
 bool load_one_type(load_context& ctx, archive_reader& r, uint32_t saved_ver) noexcept
 {
-    r.next_key();
+    (void)r.next_key();
     if (!r.enter_array())
     {
         return false;
@@ -552,11 +630,11 @@ bool load_one_type(load_context& ctx, archive_reader& r, uint32_t saved_ver) noe
         {
             break;
         }
-        r.next_key();
+        (void)r.next_key();
         const uint32_t idx = r.read_u32();
-        r.next_key();
+        (void)r.next_key();
         (void)r.read_u32();
-        r.next_key();
+        (void)r.next_key();
 
         ecs::entity e{};
         if (!remap.find(idx, e) || !e.is_valid())
@@ -583,6 +661,7 @@ bool load_one_type(load_context& ctx, archive_reader& r, uint32_t saved_ver) noe
                     {
                         ++ctx.stats->skipped_count;
                     }
+                    r.clear_error();
                 }
                 else
                 {
@@ -604,6 +683,7 @@ bool load_one_type(load_context& ctx, archive_reader& r, uint32_t saved_ver) noe
                     {
                         ++ctx.stats->skipped_count;
                     }
+                    r.clear_error();
                 }
                 else
                 {
@@ -623,6 +703,7 @@ bool load_one_type(load_context& ctx, archive_reader& r, uint32_t saved_ver) noe
                     {
                         ++ctx.stats->skipped_count;
                     }
+                    r.clear_error();
                 }
                 else
                 {
@@ -662,6 +743,7 @@ bool load_one_type(load_context& ctx, archive_reader& r, uint32_t saved_ver) noe
                     {
                         ++ctx.stats->skipped_count;
                     }
+                    r.clear_error();
                 }
                 else
                 {
@@ -682,7 +764,7 @@ bool load_one_type(load_context& ctx, archive_reader& r, uint32_t saved_ver) noe
     {
         ctx.stats->per_type.emplace_back(serialize_stats::type_stats{std::string(get_type_name<T>()), comp_count, 0});
     }
-    return true;
+    return !r.has_error();
 }
 
 template<typename T>
@@ -820,9 +902,11 @@ inline bool write_components(archive_writer& w, ecs::manager& mgr,
 }
 
 inline bool load_def_block(archive_reader& r, ecs::manager& mgr, int tid,
-                           const detail::entity_remap& remap) noexcept
+                           const detail::entity_remap& remap,
+                           load_policy policy = load_policy::strict,
+                           serialize_stats* stats = nullptr) noexcept
 {
-    r.next_key();
+    (void)r.next_key();
     if (!r.enter_array())
     {
         return false;
@@ -838,11 +922,11 @@ inline bool load_def_block(archive_reader& r, ecs::manager& mgr, int tid,
         {
             return false;
         }
-        r.next_key();
+        (void)r.next_key();
         const uint32_t idx = r.read_u32();
-        r.next_key();
+        (void)r.next_key();
         (void)r.read_u32();
-        r.next_key();
+        (void)r.next_key();
         std::string_view bytes = r.read_bytes_view(d->size);
         r.leave_object();
         r.end_element();
@@ -852,18 +936,45 @@ inline bool load_def_block(archive_reader& r, ecs::manager& mgr, int tid,
         }
         if (bytes.size() != d->size)
         {
+            if (policy == load_policy::strict)
+            {
+                return false;
+            }
+            if (stats != nullptr)
+            {
+                ++stats->skipped_count;
+            }
             continue;
         }
         ecs::entity e{};
         if (!remap.find(idx, e) || !e.is_valid())
         {
+            if (policy == load_policy::strict)
+            {
+                return false;
+            }
+            if (stats != nullptr)
+            {
+                ++stats->skipped_count;
+            }
             continue;
         }
         operating_message error;
-        (void)mgr.add_def_impl(e, tid, bytes.data(), error);
+        if (!mgr.add_def_impl(e, tid, bytes.data(), error))
+        {
+            if (policy == load_policy::strict)
+            {
+                return false;
+            }
+            if (stats != nullptr)
+            {
+                ++stats->skipped_count;
+            }
+            r.clear_error();
+        }
     }
     r.leave_array();
-    return true;
+    return !r.has_error();
 }
 
 } // namespace payload_codec

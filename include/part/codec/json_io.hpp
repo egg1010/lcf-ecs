@@ -223,6 +223,7 @@ private:
     const char* end_{src_.data() + src_.size()};
     operating_message err_;
     bool has_err_{false};
+    bool strict_{false};
     int  depth_{0};
     static constexpr int k_max_depth = 256;
     bool obj_comma_[k_max_depth] = {};
@@ -252,7 +253,7 @@ private:
         {
             char c = *p_;
             if (c == ' ' || c == '\t' || c == '\n' || c == '\r') { ++p_; continue; }
-            if (c == '/' && p_ + 1 < end_)
+            if (!strict_ && c == '/' && p_ + 1 < end_)
             {
                 if (p_[1] == '/')
                 {
@@ -297,7 +298,11 @@ private:
     bool parse_string(std::string& decode_buf, std::string_view& out_view) noexcept
     {
         skip_ws();
-        if (p_ >= end_ || (*p_ != '"' && *p_ != '\'')) { set_error("期望字符串"); return false; }
+        if (p_ >= end_ || (*p_ != '"' && (strict_ || *p_ != '\'')))
+        {
+            set_error("期望 JSON 双引号字符串");
+            return false;
+        }
         char quote = *p_;
         ++p_;
         const char* start = p_;
@@ -404,6 +409,11 @@ private:
             }
             else
             {
+                if (strict_ && static_cast<unsigned char>(c) < 0x20)
+                {
+                    set_error("字符串包含未转义控制字符");
+                    return false;
+                }
                 if (has_escape) decode_buf.push_back(c);
                 ++p_;
             }
@@ -416,6 +426,57 @@ private:
     {
         skip_ws();
         const char* start = p_;
+        if (strict_)
+        {
+            if (p_ < end_ && *p_ == '-') ++p_;
+            if (p_ >= end_)
+            {
+                set_error("无效 JSON 数字");
+                return false;
+            }
+            if (*p_ == '0')
+            {
+                ++p_;
+                if (p_ < end_ && *p_ >= '0' && *p_ <= '9')
+                {
+                    set_error("JSON 数字禁止前导零");
+                    return false;
+                }
+            }
+            else if (*p_ >= '1' && *p_ <= '9')
+            {
+                while (p_ < end_ && *p_ >= '0' && *p_ <= '9') ++p_;
+            }
+            else
+            {
+                set_error("无效 JSON 数字");
+                return false;
+            }
+            if (p_ < end_ && *p_ == '.')
+            {
+                ++p_;
+                if (p_ >= end_ || *p_ < '0' || *p_ > '9')
+                {
+                    set_error("JSON 小数点后缺少数字");
+                    return false;
+                }
+                while (p_ < end_ && *p_ >= '0' && *p_ <= '9') ++p_;
+            }
+            if (p_ < end_ && (*p_ == 'e' || *p_ == 'E'))
+            {
+                ++p_;
+                if (p_ < end_ && (*p_ == '+' || *p_ == '-')) ++p_;
+                if (p_ >= end_ || *p_ < '0' || *p_ > '9')
+                {
+                    set_error("JSON 指数缺少数字");
+                    return false;
+                }
+                while (p_ < end_ && *p_ >= '0' && *p_ <= '9') ++p_;
+            }
+            out = std::string_view(start, static_cast<size_t>(p_ - start));
+            return true;
+        }
+
         if (p_ < end_ && (*p_ == '-' || *p_ == '+')) ++p_;
         while (p_ < end_)
         {
@@ -452,11 +513,12 @@ private:
     }
 
 public:
-    explicit json_reader(std::string_view src) noexcept
-        : src_(src), p_(src.data()), end_(src.data() + src.size()) {}
+    explicit json_reader(std::string_view src, bool strict = false) noexcept
+        : src_(src), p_(src.data()), end_(src.data() + src.size()), strict_(strict) {}
 
-    json_reader(std::string_view src, size_t start, size_t len) noexcept
-        : src_(src.substr(start, len)), p_(src_.data()), end_(src_.data() + src_.size()) {}
+    json_reader(std::string_view src, size_t start, size_t len, bool strict = false) noexcept
+        : src_(src.substr(start, len)), p_(src_.data()), end_(src_.data() + src_.size()),
+          strict_(strict) {}
 
     [[nodiscard]] bool has_error() const noexcept { return has_err_; }
     [[nodiscard]] operating_message last_error() const noexcept { return err_; }

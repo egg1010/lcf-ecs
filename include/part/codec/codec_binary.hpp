@@ -61,14 +61,32 @@ public:
     bool enter_object() noexcept override { return !r_.has_error(); }
     void leave_object() noexcept override {}
     bool enter_array() noexcept override {
-        // 二进制数组: 读取元素数, 由调用方迭代
-        array_len_ = r_.read_u32();
-        array_idx_ = 0;
-        return !r_.has_error();
+        const uint32_t len = r_.read_u32();
+        if (r_.has_error())
+        {
+            return false;
+        }
+        arrays_.emplace_back(array_frame{len, 0});
+        return true;
     }
-    void leave_array() noexcept override {}
+    void leave_array() noexcept override {
+        if (!arrays_.empty())
+        {
+            arrays_.pop_back();
+        }
+    }
     bool next_element() noexcept override {
-        return array_idx_++ < array_len_;
+        if (arrays_.empty())
+        {
+            return false;
+        }
+        array_frame& current = arrays_.back();
+        if (current.index >= current.length)
+        {
+            return false;
+        }
+        ++current.index;
+        return true;
     }
     void end_element() noexcept override {}
 
@@ -116,6 +134,8 @@ public:
             "binary 格式不支持 skip_value (无类型信息), 请按字段类型读取");
     }
 
+    [[nodiscard]] bool at_end() noexcept override { return r_.remaining() == 0; }
+
     [[nodiscard]] bool has_error() const noexcept override {
         return r_.has_error() || skip_unsupported_;
     }
@@ -137,8 +157,13 @@ public:
     }
 
 private:
-    uint32_t array_len_ = 0;
-    uint32_t array_idx_ = 0;
+    struct array_frame
+    {
+        uint32_t length;
+        uint32_t index;
+    };
+
+    dense<array_frame> arrays_;
 };
 
 // ============================================================================
@@ -159,81 +184,19 @@ struct binary_codec final : archive_codec
     void destroy_writer(archive_writer* w) const noexcept override { delete w; }
     void destroy_reader(archive_reader* r) const noexcept override { delete r; }
 
-    // 深度结构校验: 遍历所有字段并验证长度边界
+    // 基础容器校验: magic / endian / version / reserved
     [[nodiscard]] bool validate(std::string_view data, operating_message& error) const noexcept override;
 };
 
-// ============================================================================
-// binary_codec::validate — 深度结构校验
-// 遍历存档头 + 元数据 + 实体 + 类型表, 验证长度边界与游标一致性
-// ============================================================================
+// 容器头校验; 无类型标签的载荷结构须由上层 schema 驱动校验
 inline bool binary_codec::validate(std::string_view data, operating_message& error) const noexcept
 {
-    binary_reader r(data);
-    if (r.has_error())
-    {
-        error.write_failure(om_err_checksum_failed.code, msg_level::warn, msg::here());
-        return false;
-    }
-
-    // archive_ver + engine_ver
-    (void)r.read_u32();
-    (void)r.read_u32();
-    if (r.has_error())
-    {
-        error.write_failure(om_err_version_mismatch.code, msg_level::warn, msg::here());
-        return false;
-    }
-
-    // 元数据 (字符串)
-    (void)r.read_string();
-    if (r.has_error())
+    binary_reader reader(data);
+    if (reader.has_error())
     {
         error.write_failure(om_err_decode_failed.code, msg_level::warn, msg::here());
         return false;
     }
-
-    // 实体状态 (字符串)
-    (void)r.read_string();
-    if (r.has_error())
-    {
-        error.write_failure(om_err_decode_failed.code, msg_level::warn, msg::here());
-        return false;
-    }
-
-    // 类型表
-    uint32_t type_count = r.read_u32();
-    if (r.has_error())
-    {
-        error.write_failure(om_err_decode_failed.code, msg_level::warn, msg::here());
-        return false;
-    }
-
-    // 安全上限: 防止恶意 type_count 导致空转
-    if (type_count > 65536)
-    {
-        error.write_failure(om_err_decode_failed.code, msg_level::warn, msg::here());
-        return false;
-    }
-
-    for (uint32_t i = 0; i < type_count; ++i)
-    {
-        (void)r.read_string();  // 类型名
-        (void)r.read_u32();     // 组件版本
-        uint32_t data_len = r.read_u32();
-        if (r.has_error())
-        {
-            error.write_failure(om_err_decode_failed.code, msg_level::warn, msg::here());
-            return false;
-        }
-        r.skip(data_len);
-        if (r.has_error())
-        {
-            error.write_failure(om_err_out_of_range.code, msg_level::warn, msg::here());
-            return false;
-        }
-    }
-
     return true;
 }
 

@@ -575,5 +575,113 @@ int main()
         t_check("写入失败码为 io_failed", write_error.is_code(om_err_io_failed));
     }
 
+    t_section(24, "append/merge 失败回滚");
+    {
+        ecs::manager source;
+        auto e1 = source.create_entity();
+        auto e2 = source.create_entity();
+        (void)source.add(e1, probe_component{1.0f, 10});
+        (void)source.add(e2, probe_component{2.0f, 20});
+
+        serialize::manager writer(source);
+        writer.world()->register_components<probe_component, health>();
+        writer.set_checksum(false).set_format(archive_format::json);
+        (void)writer.set_world_metadata("origin", "archive");
+        (void)writer.set_world_metadata("source_only", "pending");
+        std::string data;
+        t_check("回滚测试存档成功", writer.save_world(data));
+
+        const std::string needle = "\"id\":";
+        const size_t first = data.find(needle);
+        const size_t second = first == std::string::npos
+                            ? std::string::npos : data.find(needle, first + needle.size());
+        const size_t value_begin = second == std::string::npos
+                                 ? std::string::npos : second + needle.size();
+        const size_t value_end = value_begin == std::string::npos
+                               ? std::string::npos : data.find_first_of(",}", value_begin);
+        t_check("定位第二个组件字段", value_end != std::string::npos);
+        std::string corrupted = data;
+        if (value_end != std::string::npos)
+        {
+            corrupted.replace(value_begin, value_end - value_begin, "\"bad\"");
+        }
+
+        const serialize::load_mode modes[] = {
+            serialize::load_mode::append,
+            serialize::load_mode::merge,
+        };
+        const char* names[] = {"append", "merge"};
+        for (size_t i = 0; i < 2; ++i)
+        {
+            ecs::manager target;
+            const auto existing = target.create_entity();
+            (void)target.add(existing, health{77});
+            serialize::manager reader(target);
+            reader.world()->register_components<probe_component, health>();
+            reader.world()->set_load_mode(modes[i]);
+            reader.world()->set_metadata("origin", "original");
+
+            const operating_message result = reader.load_world(corrupted);
+            t_check((std::string(names[i]) + " 中途组件失败").c_str(), !result);
+            t_check((std::string(names[i]) + " 既有实体保留且无新增").c_str(),
+                    target.alive_count() == 1 && target.is_entity_valid(existing)
+                    && target.get_ptr<health>(existing) != nullptr
+                    && target.get_ptr<health>(existing)->hp == 77);
+            t_check((std::string(names[i]) + " 新组件已回滚").c_str(),
+                    target.component_count<probe_component>() == 0);
+            const std::string* origin = reader.world()->get_metadata("origin");
+            t_check((std::string(names[i]) + " 元数据未部分提交").c_str(),
+                    origin != nullptr && *origin == "original"
+                    && reader.world()->get_metadata("source_only") == nullptr);
+        }
+
+        ecs::manager target;
+        (void)target.create_entity();
+        serialize::manager reader(target);
+        reader.world()->register_components<probe_component, health>();
+        reader.world()->set_load_mode(serialize::load_mode::append);
+        const operating_message result = reader.load_world(data);
+        const std::string* origin = reader.world()->get_metadata("origin");
+        t_check("append 成功路径正常提交", result && target.alive_count() == 3
+                && target.component_count<probe_component>() == 2
+                && origin != nullptr && *origin == "archive");
+    }
+
+    t_section(25, "存档与引擎版本检查");
+    {
+        ecs::manager source;
+        const auto e = source.create_entity();
+        (void)source.add(e, probe_component{3.0f, 30});
+        serialize::manager writer(source);
+        writer.world()->register_components<probe_component, health>();
+        writer.world()->set_engine_version(2);
+        writer.set_checksum(false).set_format(archive_format::json);
+        std::string data;
+        t_check("高引擎版本存档成功", writer.save_world(data));
+
+        ecs::manager target;
+        (void)target.create_entity();
+        serialize::manager reader(target);
+        reader.world()->register_components<probe_component, health>();
+        reader.world()->set_engine_version(1);
+        const operating_message rejected = reader.load_world(data);
+        t_check("高引擎版本拒绝且不修改 world",
+                !rejected && rejected.is_code(om_err_version_mismatch)
+                && target.alive_count() == 1
+                && target.component_count<probe_component>() == 0);
+
+        reader.world()->set_engine_version(2);
+        const operating_message accepted = reader.load_world(data);
+        t_check("匹配引擎版本正常加载", accepted && target.alive_count() == 1
+                && target.component_count<probe_component>() == 1);
+
+        writer.world()->set_engine_version(0);
+        writer.world()->set_archive_version(2);
+        t_check("高存档版本保存成功", writer.save_world(data));
+        const operating_message archive_rejected = reader.load_world(data);
+        t_check("高存档版本拒绝", !archive_rejected
+                && archive_rejected.is_code(om_err_version_mismatch));
+    }
+
     return t_end("serialization ");
 }

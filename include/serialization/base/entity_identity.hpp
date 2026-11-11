@@ -196,6 +196,20 @@ inline bool append_entities(ecs::manager& mgr, const saved_entity_set& saved,
     return true;
 }
 
+inline void rollback_appended_entities(ecs::manager& mgr,
+                                       const detail::entity_remap& remap) noexcept
+{
+    ecs::entity_manager& em = mgr.get_entity_manager();
+    for (uint32_t i = 0; i < remap.new_mark.size(); ++i)
+    {
+        if (remap.new_mark[i] == 0 || !em.is_alive(i))
+        {
+            continue;
+        }
+        (void)mgr.delete_entity(ecs::entity(i, em.get_version_at(i)));
+    }
+}
+
 // 读取存档实体表 (i/v/f/t/l/g 固定字段序)
 inline bool read_entities(archive_reader& r, size_t max_entity_count,
                           saved_entity_set& saved) noexcept
@@ -216,23 +230,31 @@ inline bool read_entities(archive_reader& r, size_t max_entity_count,
             return false;
         }
         saved_entity s{};
-        r.next_key(); s.index = r.read_u32();
+        (void)r.next_key(); s.index = r.read_u32();
         // 索引决定 alive_mark / 实体预分配 / 重映射表的规模, 必须在入口设上界
-        if (s.index >= max_entity_count)
+        if (s.index == 0 || s.index >= max_entity_count)
         {
             return false;
         }
-        r.next_key(); s.version = r.read_u32();
-        r.next_key(); s.flags = r.read_u32();
-        r.next_key(); s.tag = r.read_u32();
-        r.next_key(); s.layer = r.read_u32();
-        r.next_key(); s.group_id = r.read_u32();
+        if (s.index < saved.alive_mark.size() && saved.alive_mark[s.index] != 0)
+        {
+            return false;
+        }
+        (void)r.next_key(); s.version = r.read_u32();
+        (void)r.next_key(); s.flags = r.read_u32();
+        (void)r.next_key(); s.tag = r.read_u32();
+        (void)r.next_key(); s.layer = r.read_u32();
+        (void)r.next_key(); s.group_id = r.read_u32();
+        if (r.has_error())
+        {
+            return false;
+        }
         r.leave_object();
         r.end_element();
         saved.add(s);
     }
     r.leave_array();
-    return true;
+    return !r.has_error();
 }
 
 } // namespace entity_identity

@@ -100,8 +100,18 @@ public:
         }
         p_ += 1;
         // version
+        if (static_cast<unsigned char>(*p_) != 1)
+        {
+            err_ = true;
+            return;
+        }
         p_ += 1;
         // reserved
+        if (p_[0] != 0 || p_[1] != 0)
+        {
+            err_ = true;
+            return;
+        }
         p_ += 2;
     }
 

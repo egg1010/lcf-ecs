@@ -47,6 +47,16 @@ public:
         return *this;
     }
 
+    manager& set_checksum_required(bool required) noexcept
+    {
+        objects_.bridge.require_checksum = required;
+        if (world_ != nullptr)
+        {
+            world_->set_checksum_required(required);
+        }
+        return *this;
+    }
+
     manager& set_compression(compress_fn c, decompress_fn d) noexcept
     {
         objects_.bridge.compress_cb = c;

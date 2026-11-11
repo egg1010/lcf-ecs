@@ -45,6 +45,11 @@ inline void write_varint(std::string& buf, uint64_t v) noexcept {
             return 0;
         }
         uint8_t b = static_cast<uint8_t>(*p++);
+        if (i == 9 && (b & 0xFE) != 0)
+        {
+            err = true;
+            return 0;
+        }
         result |= static_cast<uint64_t>(b & 0x7F) << shift;
         if ((b & 0x80) == 0)
         {
@@ -244,7 +249,20 @@ class protobuf_archive_reader final : public archive_reader
         return std::string(buf, static_cast<size_t>(n));
     }
 
+    [[nodiscard]] bool expect_wire(uint32_t expected) noexcept {
+        if (cur_wire_ != expected)
+        {
+            err_ = true;
+            return false;
+        }
+        return true;
+    }
+
     bool push_sub() noexcept {
+        if (!expect_wire(pb_detail::wire_type::length_delimited))
+        {
+            return false;
+        }
         frame& cur = stack_.back();
         uint64_t len = pb_detail::read_varint(cur.p, cur.end, err_);
         if (err_ || len > static_cast<uint64_t>(cur.end - cur.p))
@@ -355,37 +373,48 @@ public:
         {
             return {};
         }
+        if ((tag >> 3) == 0)
+        {
+            err_ = true;
+            return {};
+        }
         cur_wire_ = static_cast<uint32_t>(tag & 0x7);
         cur_key_ = field_name(static_cast<uint32_t>(tag >> 3));
         return cur_key_;
     }
 
     [[nodiscard]] bool read_bool() noexcept override {
+        if (!expect_wire(pb_detail::wire_type::varint)) return false;
         frame& cur = stack_.back();
         return pb_detail::read_varint(cur.p, cur.end, err_) != 0;
     }
 
     [[nodiscard]] int32_t read_i32() noexcept override {
+        if (!expect_wire(pb_detail::wire_type::varint)) return 0;
         frame& cur = stack_.back();
         return static_cast<int32_t>(pb_detail::read_varint(cur.p, cur.end, err_));
     }
 
     [[nodiscard]] uint32_t read_u32() noexcept override {
+        if (!expect_wire(pb_detail::wire_type::varint)) return 0;
         frame& cur = stack_.back();
         return static_cast<uint32_t>(pb_detail::read_varint(cur.p, cur.end, err_));
     }
 
     [[nodiscard]] int64_t read_i64() noexcept override {
+        if (!expect_wire(pb_detail::wire_type::varint)) return 0;
         frame& cur = stack_.back();
         return static_cast<int64_t>(pb_detail::read_varint(cur.p, cur.end, err_));
     }
 
     [[nodiscard]] uint64_t read_u64() noexcept override {
+        if (!expect_wire(pb_detail::wire_type::varint)) return 0;
         frame& cur = stack_.back();
         return pb_detail::read_varint(cur.p, cur.end, err_);
     }
 
     [[nodiscard]] float read_f32() noexcept override {
+        if (!expect_wire(pb_detail::wire_type::fixed32)) return 0.0f;
         frame& cur = stack_.back();
         if (cur.p + 4 > cur.end)
         {
@@ -400,6 +429,7 @@ public:
     }
 
     [[nodiscard]] double read_f64() noexcept override {
+        if (!expect_wire(pb_detail::wire_type::fixed64)) return 0.0;
         frame& cur = stack_.back();
         if (cur.p + 8 > cur.end)
         {
@@ -414,6 +444,7 @@ public:
     }
 
     [[nodiscard]] std::string_view read_string_view() noexcept override {
+        if (!expect_wire(pb_detail::wire_type::length_delimited)) return {};
         frame& cur = stack_.back();
         uint64_t len = pb_detail::read_varint(cur.p, cur.end, err_);
         if (err_ || len > static_cast<uint64_t>(cur.end - cur.p))
@@ -428,6 +459,11 @@ public:
 
     [[nodiscard]] std::string_view read_bytes_view(size_t /*len*/) noexcept override {
         return read_string_view();
+    }
+
+    [[nodiscard]] bool has_object_end() const noexcept override { return true; }
+    [[nodiscard]] bool at_end() noexcept override {
+        return stack_.size() == 1 && stack_[0].p >= stack_[0].end;
     }
 
     void skip_value() noexcept override {

@@ -110,6 +110,14 @@ public:
     // === 跳过当前值 (未知字段/类型) ===
     virtual void skip_value() noexcept = 0;
 
+    // 可恢复格式在字段失败后消费当前值并清除错误; 默认不支持
+    virtual bool recover_value() noexcept { return false; }
+    virtual void clear_error() noexcept {}
+
+    // 是否有可判定的对象结束标记; Binary 旧格式返回 false
+    [[nodiscard]] virtual bool has_object_end() const noexcept { return false; }
+    [[nodiscard]] virtual bool at_end() noexcept { return true; }
+
     // === 状态查询 ===
     [[nodiscard]] virtual bool has_error() const noexcept = 0;
     [[nodiscard]] virtual operating_message last_error() const noexcept = 0;

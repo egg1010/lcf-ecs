@@ -404,7 +404,7 @@ JSON 格式的根结构：
 \`\`\`
 
 - \`version\` / \`engine\`：存档 / 引擎版本，加载时高版本拒绝
-- \`meta\` / \`cv\`：元数据 / 组件版本表（嵌套对象）
+- \`meta\` / \`cv\`：元数据 / 组件版本表（嵌套对象）；\`cv\` 仅记录版本，不自动迁移字段或拒绝组件版本差异，旧数据迁移由业务在加载后处理
 - \`entities\`：实体表；\`i\` 索引、\`v\` 版本、\`f\` / \`t\` / \`l\` / \`g\` 为 flags / tag / layer / group_id
 - \`components\`：组件表，键为类型名，元素为 \`i\` / \`v\` / \`d\`
 - \`d\`：组件载荷（同 12.14）
@@ -457,9 +457,11 @@ JSON 格式的根结构：
 | \`load_mode::append\` | 保留现有实体，追加加载（不保序） |
 | \`load_mode::merge\` | 与 append 一致（预留语义扩展） |
 
+\`append/merge\` 加载失败时，本次新建的实体及其组件会回滚，既有实体保持不变；外部回调产生的副作用不属于回滚范围。\`replace\` 仍会先清空目标 world，不承诺失败时恢复旧 world。
+
 ### 12.22 存档元数据
 
-\`set_metadata(key, value)\` 存入自定义键值对，保存写入 \`meta\`，加载回填；\`get_metadata(key)\` / \`all_metadata()\` 读取。
+\`set_metadata(key, value)\` 存入自定义键值对，保存写入 \`meta\`，完整加载成功后回填；\`get_metadata(key)\` / \`all_metadata()\` 读取。
 
 ### 12.24 加载策略
 

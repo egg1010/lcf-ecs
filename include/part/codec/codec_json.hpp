@@ -53,16 +53,41 @@ class json_archive_reader final : public archive_reader
 {
     json_reader r_;
 public:
-    explicit json_archive_reader(std::string_view data) noexcept : r_(data) {}
+    explicit json_archive_reader(std::string_view data) noexcept : r_(data, true) {}
 
-    bool enter_object() noexcept override { return r_.enter_object(); }
-    void leave_object() noexcept override { (void)r_.exit_object(); }
+    bool enter_object() noexcept override {
+        const bool ok = r_.enter_object();
+        if (ok)
+        {
+            object_closed_.emplace_back(uint8_t{0});
+        }
+        return ok;
+    }
+    void leave_object() noexcept override {
+        if (object_closed_.empty())
+        {
+            return;
+        }
+        const bool closed = object_closed_.back() != 0;
+        object_closed_.pop_back();
+        if (!closed)
+        {
+            (void)r_.exit_object();
+        }
+    }
     bool enter_array() noexcept override { return r_.enter_array(); }
     void leave_array() noexcept override { }
     bool next_element() noexcept override { return r_.next_element(); }
     void end_element() noexcept override { r_.end_element(); }
 
-    [[nodiscard]] std::string_view next_key() noexcept override { return r_.next_key(); }
+    [[nodiscard]] std::string_view next_key() noexcept override {
+        std::string_view key = r_.next_key();
+        if (key.empty() && !object_closed_.empty() && !r_.has_error())
+        {
+            object_closed_.back() = 1;
+        }
+        return key;
+    }
 
     [[nodiscard]] bool read_bool() noexcept override { return r_.read_bool(); }
     [[nodiscard]] int32_t read_i32() noexcept override { return r_.read_int32(); }
@@ -104,7 +129,14 @@ public:
         return std::string_view(*tmp_pool_.back());
     }
 
-    void skip_value() noexcept override { r_.skip_value(); }
+    void skip_value() noexcept override { (void)r_.skip_value(); }
+    bool recover_value() noexcept override {
+        r_.clear_error();
+        return r_.skip_value();
+    }
+    void clear_error() noexcept override { r_.clear_error(); }
+    [[nodiscard]] bool has_object_end() const noexcept override { return true; }
+    [[nodiscard]] bool at_end() noexcept override { return r_.at_end(); }
 
     [[nodiscard]] bool has_error() const noexcept override { return r_.has_error(); }
     [[nodiscard]] operating_message last_error() const noexcept override { return r_.last_error(); }
@@ -116,6 +148,7 @@ public:
 
 private:
     dense<std::unique_ptr<std::string>> tmp_pool_;  // 解码缓冲池 (指针稳定, 视图全生命周期有效)
+    dense<uint8_t> object_closed_;
 };
 
 // ============================================================================
@@ -138,7 +171,7 @@ struct json_codec final : archive_codec
     void destroy_reader(archive_reader* r) const noexcept override { delete r; }
 
     // JSON 检测: 首个非空白字符为 '{' 或 '['
-    [[nodiscard]] bool matches(std::string_view data) const noexcept {
+    [[nodiscard]] bool matches(std::string_view data) const noexcept override {
         for (size_t i = 0; i < data.size() && i < 16; ++i)
         {
             char c = data[i];

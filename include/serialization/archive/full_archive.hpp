@@ -5,7 +5,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -13,6 +15,7 @@
 #include "part/codec/codec_registry.hpp"
 #include "part/codec/json_io.hpp"
 #include "part/dense.hpp"
+#include "part/fnv1a.hpp"
 #include "part/operating_message.hpp"
 #include "ecs/manager.hpp"
 #include "serialization/archive/payload_codec.hpp"
@@ -69,6 +72,46 @@ namespace detail {
         return sanitize_identifier(m->name);
     }
     return "Type";
+}
+
+[[nodiscard]] inline std::string type_message_name(int tid, const dense<int>& ids) noexcept
+{
+    std::string base = type_message_name(tid);
+    bool duplicate = false;
+    for (size_t i = 0; i < ids.size(); ++i)
+    {
+        if (ids[i] != tid && type_message_name(ids[i]) == base)
+        {
+            duplicate = true;
+            break;
+        }
+    }
+    if (!duplicate)
+    {
+        return base;
+    }
+
+    // 清洗后重名统一追加稳定类型 ID
+    const std::string suffix = "_" + std::to_string(tid);
+    std::string out = base + suffix;
+    bool conflict = true;
+    while (conflict)
+    {
+        conflict = false;
+        for (size_t i = 0; i < ids.size(); ++i)
+        {
+            if (ids[i] != tid && out == type_message_name(ids[i]))
+            {
+                conflict = true;
+                break;
+            }
+        }
+        if (conflict)
+        {
+            out += suffix;
+        }
+    }
+    return out;
 }
 
 inline bool append_unique(dense<int>& ids, int tid) noexcept
@@ -145,7 +188,8 @@ inline void collect_reflected_types(int tid, dense<int>& ids) noexcept
     return "bytes";
 }
 
-[[nodiscard]] inline std::string proto_type_of(int tid, bool& is_message) noexcept
+[[nodiscard]] inline std::string proto_type_of(int tid, const dense<int>& ids,
+                                               bool& is_message) noexcept
 {
     is_message = false;
     int enum_tid = lookup_enum_underlying(tid);
@@ -156,19 +200,19 @@ inline void collect_reflected_types(int tid, dense<int>& ids) noexcept
     if (reflect::global().get_type(tid) != nullptr)
     {
         is_message = true;
-        return type_message_name(tid);
+        return type_message_name(tid, ids);
     }
     return proto_scalar(tid);
 }
 
-inline void emit_proto_struct(std::string& out, int tid) noexcept
+inline void emit_proto_struct(std::string& out, int tid, const dense<int>& ids) noexcept
 {
     auto qv = reflect::query_view(reflect::global().get_type(tid));
     if (!qv.valid())
     {
         return;
     }
-    std::string owner = type_message_name(tid);
+    std::string owner = type_message_name(tid, ids);
     out += "message " + owner + " {\n";
     size_t n = qv.field_count();
     for (size_t i = 0; i < n; ++i)
@@ -177,7 +221,7 @@ inline void emit_proto_struct(std::string& out, int tid) noexcept
         std::string fname = sanitize_identifier(fm.name);
         std::string num = std::to_string(static_cast<uint32_t>(i + 1));
         bool is_message = false;
-        std::string ty = proto_type_of(fm.type_id, is_message);
+        std::string ty = proto_type_of(fm.type_id, ids, is_message);
         if (fm.array_rank > 0)
         {
             out += "  " + owner + "_" + fname + "_array " + fname + " = " + num + ";\n";
@@ -197,7 +241,7 @@ inline void emit_proto_struct(std::string& out, int tid) noexcept
             continue;
         }
         bool is_message = false;
-        std::string ty = proto_type_of(fm.type_id, is_message);
+        std::string ty = proto_type_of(fm.type_id, ids, is_message);
         std::string wrap = owner + "_" + sanitize_identifier(fm.name) + "_array";
         out += "message " + wrap + " {\n";
         out += "  repeated " + ty + " f1 = 1";
@@ -209,7 +253,8 @@ inline void emit_proto_struct(std::string& out, int tid) noexcept
     }
 }
 
-[[nodiscard]] inline std::string proto_d_type(const component_desc& c) noexcept
+[[nodiscard]] inline std::string proto_d_type(const component_desc& c,
+                                              const dense<int>& ids) noexcept
 {
     if (c.has_user_json != 0)
     {
@@ -217,21 +262,25 @@ inline void emit_proto_struct(std::string& out, int tid) noexcept
     }
     if (reflect::global().get_type(c.type_id) != nullptr)
     {
-        return type_message_name(c.type_id);
+        return type_message_name(c.type_id, ids);
     }
     return "bytes";
 }
 
 inline void append_proto_component(std::string& entries, std::string& container,
-                                   uint32_t& field, const component_desc& c) noexcept
+                                   uint32_t& field, const component_desc& c,
+                                   const dense<int>& ids) noexcept
 {
-    std::string mname = type_message_name(c.type_id);
+    std::string mname = type_message_name(c.type_id, ids);
     entries += "message " + mname + "Entry {\n";
     entries += "  uint32 i = 1;\n";
     entries += "  uint32 v = 2;\n";
-    entries += "  " + proto_d_type(c) + " d = 3;\n";
+    entries += "  " + proto_d_type(c, ids) + " d = 3;\n";
     entries += "}\n\n";
-    container += "  repeated " + mname + "Entry " + mname + " = "
+    entries += "message " + mname + "Array {\n";
+    entries += "  repeated " + mname + "Entry f1 = 1;\n";
+    entries += "}\n\n";
+    container += "  " + mname + "Array " + mname + " = "
                  + std::to_string(field) + ";\n";
     ++field;
 }
@@ -275,7 +324,8 @@ inline void append_proto_component(std::string& entries, std::string& container,
     return "uint";
 }
 
-[[nodiscard]] inline std::string fbs_field_type(int tid, bool& is_message) noexcept
+[[nodiscard]] inline std::string fbs_field_type(int tid, const dense<int>& ids,
+                                                bool& is_message) noexcept
 {
     is_message = false;
     int enum_tid = lookup_enum_underlying(tid);
@@ -286,25 +336,25 @@ inline void append_proto_component(std::string& entries, std::string& container,
     if (reflect::global().get_type(tid) != nullptr)
     {
         is_message = true;
-        return type_message_name(tid);
+        return type_message_name(tid, ids);
     }
     return fbs_scalar(tid);
 }
 
-inline void emit_fbs_struct(std::string& out, int tid) noexcept
+inline void emit_fbs_struct(std::string& out, int tid, const dense<int>& ids) noexcept
 {
     auto qv = reflect::query_view(reflect::global().get_type(tid));
     if (!qv.valid())
     {
         return;
     }
-    out += "table " + type_message_name(tid) + " {\n";
+    out += "table " + type_message_name(tid, ids) + " {\n";
     size_t n = qv.field_count();
     for (size_t i = 0; i < n; ++i)
     {
         const reflect::field_meta& fm = qv.field(i);
         bool is_message = false;
-        std::string ty = fbs_field_type(fm.type_id, is_message);
+        std::string ty = fbs_field_type(fm.type_id, ids, is_message);
         std::string fname = sanitize_identifier(fm.name);
         if (fm.array_rank > 0)
         {
@@ -318,7 +368,8 @@ inline void emit_fbs_struct(std::string& out, int tid) noexcept
     out += "}\n\n";
 }
 
-[[nodiscard]] inline std::string fbs_d_type(const component_desc& c) noexcept
+[[nodiscard]] inline std::string fbs_d_type(const component_desc& c,
+                                            const dense<int>& ids) noexcept
 {
     if (c.has_user_json != 0)
     {
@@ -326,19 +377,19 @@ inline void emit_fbs_struct(std::string& out, int tid) noexcept
     }
     if (reflect::global().get_type(c.type_id) != nullptr)
     {
-        return type_message_name(c.type_id);
+        return type_message_name(c.type_id, ids);
     }
     return "[ubyte]";
 }
 
 inline void append_fbs_component(std::string& entries, std::string& container,
-                                 const component_desc& c) noexcept
+                                 const component_desc& c, const dense<int>& ids) noexcept
 {
-    std::string mname = type_message_name(c.type_id);
+    std::string mname = type_message_name(c.type_id, ids);
     entries += "table " + mname + "Entry {\n";
     entries += "  i:uint;\n";
     entries += "  v:uint;\n";
-    entries += "  d:" + fbs_d_type(c) + ";\n";
+    entries += "  d:" + fbs_d_type(c, ids) + ";\n";
     entries += "}\n\n";
     container += "  " + mname + ":[" + mname + "Entry];\n";
 }
@@ -364,9 +415,15 @@ inline void append_component_desc(dense<int>& refl, dense<component_desc>& comps
 {
     using namespace detail;
     dense<int> refl;
+    dense<int> ids;
     for (size_t i = 0; i < comps.size(); ++i)
     {
         collect_reflected_types(comps[i].type_id, refl);
+        append_unique(ids, comps[i].type_id);
+    }
+    for (size_t i = 0; i < refl.size(); ++i)
+    {
+        append_unique(ids, refl[i]);
     }
 
     std::string out;
@@ -385,7 +442,7 @@ inline void append_component_desc(dense<int>& refl, dense<component_desc>& comps
 
     for (size_t i = 0; i < refl.size(); ++i)
     {
-        emit_proto_struct(out, refl[i]);
+        emit_proto_struct(out, refl[i], ids);
     }
 
     std::string entries;
@@ -393,7 +450,7 @@ inline void append_component_desc(dense<int>& refl, dense<component_desc>& comps
     uint32_t field = 1;
     for (size_t i = 0; i < comps.size(); ++i)
     {
-        append_proto_component(entries, container, field, comps[i]);
+        append_proto_component(entries, container, field, comps[i], ids);
     }
     out += entries;
     out += "message ComponentsContainer {\n";
@@ -415,9 +472,15 @@ inline void append_component_desc(dense<int>& refl, dense<component_desc>& comps
 {
     using namespace detail;
     dense<int> refl;
+    dense<int> ids;
     for (size_t i = 0; i < comps.size(); ++i)
     {
         collect_reflected_types(comps[i].type_id, refl);
+        append_unique(ids, comps[i].type_id);
+    }
+    for (size_t i = 0; i < refl.size(); ++i)
+    {
+        append_unique(ids, refl[i]);
     }
 
     std::string out;
@@ -433,14 +496,14 @@ inline void append_component_desc(dense<int>& refl, dense<component_desc>& comps
 
     for (size_t i = 0; i < refl.size(); ++i)
     {
-        emit_fbs_struct(out, refl[i]);
+        emit_fbs_struct(out, refl[i], ids);
     }
 
     std::string entries;
     std::string container;
     for (size_t i = 0; i < comps.size(); ++i)
     {
-        append_fbs_component(entries, container, comps[i]);
+        append_fbs_component(entries, container, comps[i], ids);
     }
     out += entries;
     out += "table ComponentsContainer {\n";
@@ -491,7 +554,7 @@ class full_archive
     ecs::manager& mgr_;
     serialize_limits limits_;
     detail::archive_header header_;
-    const serialize_filter* filter_ = nullptr;
+    std::shared_ptr<serialize_filter> filter_;
     load_mode load_mode_ = load_mode::replace;
     load_policy load_policy_ = load_policy::strict;
     serialize_stats stats_;
@@ -515,6 +578,69 @@ class full_archive
             }
         }
         return 0;
+    }
+
+    static void mix_schema_u64(uint64_t& hash, uint64_t value) noexcept
+    {
+        for (size_t i = 0; i < 8; ++i)
+        {
+            hash ^= value & 0xFFu;
+            hash *= FNV_PRIME_64;
+            value >>= 8;
+        }
+    }
+
+    static void mix_schema_text(uint64_t& hash, std::string_view text) noexcept
+    {
+        hash = fnv1a_mix(hash, text.data(), text.size());
+        mix_schema_u64(hash, text.size());
+    }
+
+    [[nodiscard]] static uint32_t schema_fingerprint() noexcept
+    {
+        uint64_t hash = FNV_OFFSET_BASIS_64;
+        entity_source::for_each_registered_type([&](const detail::type_factory_entry& entry) {
+            if (entry.archive_load_fn == nullptr)
+            {
+                return;
+            }
+            mix_schema_text(hash, entry.name);
+            mix_schema_u64(hash, entry.type_size);
+            mix_schema_u64(hash, entry.has_user_json ? 1u : 0u);
+            mix_schema_u64(hash, entry.is_trivially_copyable ? 1u : 0u);
+            const reflect::type_meta* meta = reflect::global().get_type(entry.type_id);
+            if (meta == nullptr)
+            {
+                return;
+            }
+            auto view = reflect::query_view(meta);
+            for (size_t i = 0; i < view.field_count(); ++i)
+            {
+                const reflect::field_meta& field = view.field(i);
+                mix_schema_text(hash, field.name);
+                mix_schema_text(hash, schema_export::detail::type_message_name(field.type_id));
+                const int enum_tid = lookup_enum_underlying(field.type_id);
+                mix_schema_text(hash, schema_export::detail::proto_scalar(
+                    enum_tid >= 0 ? enum_tid : field.type_id));
+                mix_schema_u64(hash, field.offset);
+                mix_schema_u64(hash, field.array_rank);
+                mix_schema_u64(hash, field.total_elements);
+                mix_schema_u64(hash, field.element_stride);
+            }
+        });
+        entity_source::for_each_def_type([&](int tid) {
+            const type_def* def = type_id::get_type_def(tid);
+            if (def == nullptr)
+            {
+                return;
+            }
+            mix_schema_text(hash, type_id::get_def_type_name(tid));
+            mix_schema_u64(hash, def->size);
+            mix_schema_u64(hash, def->alignment);
+            mix_schema_u64(hash, def->trivially_copyable ? 1u : 0u);
+        });
+        const uint32_t folded = static_cast<uint32_t>(hash ^ (hash >> 32));
+        return folded == 0 ? 1u : folded;
     }
 
 public:
@@ -564,9 +690,15 @@ public:
 
     void set_checksum_enabled(bool e) noexcept { bridge_.enable_checksum = e; }
     [[nodiscard]] bool is_checksum_enabled() const noexcept { return bridge_.enable_checksum; }
+    void set_checksum_required(bool required) noexcept { bridge_.require_checksum = required; }
+    [[nodiscard]] bool is_checksum_required() const noexcept { return bridge_.require_checksum; }
 
-    full_archive& set_filter(const serialize_filter* f) noexcept { filter_ = f; return *this; }
-    [[nodiscard]] const serialize_filter* filter() const noexcept { return filter_; }
+    full_archive& set_filter(const serialize_filter* f) noexcept
+    {
+        filter_ = f != nullptr ? std::make_shared<serialize_filter>(*f) : nullptr;
+        return *this;
+    }
+    [[nodiscard]] const serialize_filter* filter() const noexcept { return filter_.get(); }
 
     full_archive& set_load_mode(load_mode m) noexcept { load_mode_ = m; return *this; }
     [[nodiscard]] load_mode get_load_mode() const noexcept { return load_mode_; }
@@ -643,11 +775,11 @@ public:
         w->key("engine");  w->write_u32(header_.engine_version);
         w->key("meta");    w->write_raw(meta_json());
         w->key("cv");      w->write_raw(cv_json());
-        w->key("entities"); w->begin_array(entity_source::count_selected_entities(mgr_, filter_));
-        entity_source::write_entities(*w, mgr_, filter_, stats_.entity_count);
+        w->key("entities"); w->begin_array(entity_source::count_selected_entities(mgr_, filter_.get()));
+        entity_source::write_entities(*w, mgr_, filter_.get(), stats_.entity_count);
         w->end_array();
         w->key("components"); w->begin_object();
-        const bool components_ok = payload_codec::write_components(*w, mgr_, filter_, stats_);
+        const bool components_ok = payload_codec::write_components(*w, mgr_, filter_.get(), stats_);
         w->end_object();
         w->end_object();
 
@@ -659,7 +791,11 @@ public:
             error.write_failure(om_err_unsupported_operation.code, msg_level::warn, msg::here());
             return error;
         }
-        bridge_.wrap_save(out);
+        error = bridge_.wrap_save(out);
+        if (!error)
+        {
+            return error;
+        }
         stats_.total_bytes = out.size();
         stats_.archive_version = header_.archive_version;
         return error;
@@ -673,14 +809,8 @@ public:
         {
             return error;
         }
-        std::ofstream f(path, std::ios::binary | std::ios::trunc);
-        if (!f)
-        {
-            error.write_failure(om_err_io_failed.code, msg_level::warn, msg::here());
-            return error;
-        }
-        f.write(data.data(), static_cast<std::streamsize>(data.size()));
-        if (!f)
+
+        if (!detail::write_file_atomic(path, data))
         {
             error.write_failure(om_err_io_failed.code, msg_level::warn, msg::here());
         }
@@ -689,6 +819,7 @@ public:
 
     operating_message load_from_string(std::string_view data) noexcept
     {
+        stats_.reset();
         operating_message error;
         std::string content(data);
         error = bridge_.unwrap_load(content);
@@ -709,16 +840,29 @@ public:
             {
                 codec->destroy_reader(r);
             }
-            error.write_failure(om_err_checksum_failed.code, msg_level::warn, msg::here());
+            error.write_failure(om_err_decode_failed.code, msg_level::warn, msg::here());
             return error;
         }
         operating_message body_error = load_body(*r);
+        if (body_error && !r->at_end())
+        {
+            body_error.write_failure(om_err_decode_failed.code, msg_level::warn, msg::here());
+        }
         codec->destroy_reader(r);
+        if (!body_error)
+        {
+            stats_.reset();
+        }
+        else
+        {
+            stats_.total_bytes = content.size();
+        }
         return body_error;
     }
 
     operating_message load_from_file(const std::string& path) noexcept
     {
+        stats_.reset();
         operating_message error;
         std::ifstream f(path, std::ios::binary | std::ios::ate);
         if (!f)
@@ -764,6 +908,7 @@ private:
     {
         json_writer jw;
         jw.begin_object();
+        jw.key("@schema").value(schema_fingerprint());
         entity_source::for_each_registered_type([&](const detail::type_factory_entry& entry) {
             if (entry.archive_load_fn == nullptr)
             {
@@ -796,60 +941,78 @@ private:
         operating_message error;
         if (!r.enter_object())
         {
-            if (!r.has_error())
+            if (r.has_error())
             {
-                return error;
+                return r.last_error();
             }
-            error = r.last_error();
+            error.write_failure(om_err_decode_failed.code, msg_level::warn, msg::here());
             return error;
         }
 
-        r.next_key();
+        (void)r.next_key();
         const uint32_t archive_ver = r.read_u32();
+        stats_.archive_version = archive_ver;
         if (archive_ver > header_.archive_version)
         {
             error.write_failure(om_err_version_mismatch.code, msg_level::warn, msg::here());
             return error;
         }
-        r.next_key();
-        (void)r.read_u32();
+        (void)r.next_key();
+        const uint32_t engine_ver = r.read_u32();
+        if (engine_ver > header_.engine_version)
+        {
+            error.write_failure(om_err_version_mismatch.code, msg_level::warn, msg::here());
+            return error;
+        }
 
-        r.next_key();
+        (void)r.next_key();
         std::string meta_json(r.read_string_view());
-        if (load_mode_ == load_mode::replace)
+        dense<detail::metadata_entry> loaded_metadata;
+        json_reader mr(meta_json, true);
+        if (!mr.enter_object())
         {
-            metadata_.clear();
+            error.write_failure(om_err_decode_failed.code, msg_level::warn, msg::here());
+            return error;
         }
-        if (!meta_json.empty())
+        std::string_view mk;
+        while (!(mk = mr.next_key()).empty())
         {
-            json_reader mr(meta_json);
-            if (mr.enter_object())
-            {
-                std::string_view mk;
-                while (!(mk = mr.next_key()).empty())
-                {
-                    set_metadata(std::string(mk), mr.read_string());
-                }
-            }
+            loaded_metadata.emplace_back(
+                detail::metadata_entry{std::string(mk), mr.read_string()});
+        }
+        if (mr.has_error() || !mr.at_end())
+        {
+            error.write_failure(om_err_decode_failed.code, msg_level::warn, msg::here());
+            return error;
         }
 
-        r.next_key();
+        (void)r.next_key();
         dense<cv_pair> cv_list;
         std::string cv_json(r.read_string_view());
-        if (!cv_json.empty())
+        json_reader cr(cv_json, true);
+        if (!cr.enter_object())
         {
-            json_reader cr(cv_json);
-            if (cr.enter_object())
-            {
-                std::string_view ck;
-                while (!(ck = cr.next_key()).empty())
-                {
-                    cv_list.emplace_back(cv_pair{std::string(ck), cr.read_uint32()});
-                }
-            }
+            error.write_failure(om_err_decode_failed.code, msg_level::warn, msg::here());
+            return error;
+        }
+        std::string_view ck;
+        while (!(ck = cr.next_key()).empty())
+        {
+            cv_list.emplace_back(cv_pair{std::string(ck), cr.read_uint32()});
+        }
+        if (cr.has_error() || !cr.at_end())
+        {
+            error.write_failure(om_err_decode_failed.code, msg_level::warn, msg::here());
+            return error;
+        }
+        const uint32_t saved_schema = find_cv(cv_list, "@schema");
+        if (saved_schema != 0 && saved_schema != schema_fingerprint())
+        {
+            error.write_failure(om_err_version_mismatch.code, msg_level::warn, msg::here());
+            return error;
         }
 
-        r.next_key();
+        (void)r.next_key();
         entity_identity::saved_entity_set saved;
         if (!entity_identity::read_entities(r, limits_.max_entity_count, saved))
         {
@@ -869,9 +1032,13 @@ private:
         }
         stats_.entity_count = saved.entries.size();
 
-        r.next_key();
+        (void)r.next_key();
         if (!r.enter_object())
         {
+            if (load_mode_ != load_mode::replace)
+            {
+                entity_identity::rollback_appended_entities(mgr_, remap);
+            }
             error.write_failure(om_err_decode_failed.code, msg_level::warn, msg::here());
             return error;
         }
@@ -921,7 +1088,7 @@ private:
                 {
                     return;
                 }
-                if (!payload_codec::load_def_block(r, mgr_, tid, remap))
+                if (!payload_codec::load_def_block(r, mgr_, tid, remap, load_policy_, &stats_))
                 {
                     ok = false;
                     return;
@@ -935,10 +1102,24 @@ private:
         }
         r.leave_object();
 
-        if (!ok)
+        if (!ok || r.has_error())
         {
+            if (load_mode_ != load_mode::replace)
+            {
+                entity_identity::rollback_appended_entities(mgr_, remap);
+            }
             error.write_failure(om_err_decode_failed.code, msg_level::warn, msg::here());
             return error;
+        }
+
+        r.leave_object();
+        if (load_mode_ == load_mode::replace)
+        {
+            metadata_.clear();
+        }
+        for (size_t i = 0; i < loaded_metadata.size(); ++i)
+        {
+            set_metadata(loaded_metadata[i].key, loaded_metadata[i].value);
         }
         return error;
     }

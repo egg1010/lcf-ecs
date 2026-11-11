@@ -41,10 +41,13 @@ public:
 
     // 注册自定义格式
     void register_codec(const archive_codec* c) noexcept {
-        codecs_.emplace_back(c);
+        if (c != nullptr)
+        {
+            codecs_.emplace_back(c);
+        }
     }
 
-    // 按 magic 头检测格式, 返回对应 codec (无匹配返回 JSON 作为兜底)
+    // 按 magic 头检测格式, 无匹配时显式返回空
     [[nodiscard]] const archive_codec* detect(std::string_view data) const noexcept {
         for (size_t i = 0; i < codecs_.size(); ++i)
         {
@@ -53,8 +56,7 @@ public:
                 return codecs_[i];
             }
         }
-        // 兜底: JSON (首个注册的 codec)
-        return codecs_.size() > 0 ? codecs_[0] : nullptr;
+        return nullptr;
     }
 
     // 按索引获取 (0=JSON, 1=Binary, 2=Protobuf, 3=FlatBuffer)

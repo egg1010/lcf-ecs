@@ -400,7 +400,7 @@ Root structure of the JSON format:
 \`\`\`
 
 - \`version\` / \`engine\`: archive / engine version; a higher version is rejected on load
-- \`meta\` / \`cv\`: metadata / component version table (nested objects)
+- \`meta\` / \`cv\`: metadata / component version table (nested objects); \`cv\` only records versions and does not migrate fields or reject component-version mismatches automatically; applications migrate old data after loading
 - \`entities\`: entity table; \`i\` index, \`v\` version, \`f\` / \`t\` / \`l\` / \`g\` are flags / tag / layer / group_id
 - \`components\`: component table, keys are type names, elements are \`i\` / \`v\` / \`d\`
 - \`d\`: component payload (same as 12.14)
@@ -453,9 +453,11 @@ Multiple conditions are combined with AND, applied via \`m.world()->set_filter(&
 | \`load_mode::append\` | Keeps existing entities and appends the load (order not preserved) |
 | \`load_mode::merge\` | Same as append (reserved for semantic extension) |
 
+If \`append/merge\` loading fails, entities and components created by that attempt are rolled back while existing entities remain unchanged; side effects of external callbacks are outside the rollback scope. \`replace\` still clears the target world first and does not guarantee restoration of the old world on failure.
+
 ### 12.22 Archive metadata
 
-\`set_metadata(key, value)\` stores custom key-value pairs, written into \`meta\` on save and restored on load; \`get_metadata(key)\` / \`all_metadata()\` read them back.
+\`set_metadata(key, value)\` stores custom key-value pairs, written into \`meta\` on save and restored after a fully successful load; \`get_metadata(key)\` / \`all_metadata()\` read them back.
 
 ### 12.24 Load policy
 

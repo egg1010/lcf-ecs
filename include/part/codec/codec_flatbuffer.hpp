@@ -7,7 +7,9 @@
 #include "../operating_message.hpp"
 #include "../dense.hpp"
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <string_view>
 
@@ -170,7 +172,7 @@ class flatbuffer_archive_writer final : public archive_writer
 
         // 计算各字段内联布局
         dense<uint32_t> field_off;
-        for (size_t i = 0; i < fields.size(); ++i) { field_off.emplace_back(0); }
+        for (size_t i = 0; i < fields.size(); ++i) { field_off.emplace_back(uint32_t{0}); }
         uint32_t body = 4;
         for (size_t i = 0; i < fields.size(); ++i)
         {
@@ -224,7 +226,7 @@ public:
         dyn_.increase_capacity(16);
         uint32_t root = new_node(3, 0, 0);
         stack_.emplace_back(root);
-        dyn_.emplace_back(0);
+        dyn_.emplace_back(uint32_t{0});
     }
 
     void begin_object() noexcept override {
@@ -237,7 +239,7 @@ public:
         uint32_t n = new_node(3, 0, fid);
         add_child(stack_.back(), n);
         stack_.emplace_back(n);
-        dyn_.emplace_back(0);
+        dyn_.emplace_back(uint32_t{0});
     }
 
     void end_object() noexcept override {
@@ -253,7 +255,7 @@ public:
         uint32_t n = new_node(4, 0, fid);
         add_child(stack_.back(), n);
         stack_.emplace_back(n);
-        dyn_.emplace_back(0);
+        dyn_.emplace_back(uint32_t{0});
     }
 
     void end_array() noexcept override {
@@ -311,16 +313,24 @@ public:
 class flatbuffer_archive_reader final : public archive_reader
 {
     struct frame {
-        const char* table;
-        uint32_t    vtable;
-        uint32_t    slot_count;
-        uint32_t    iter;
-        bool        is_vec;
-        uint32_t    vec_pos;
-        uint32_t    count;
-        uint32_t    elems_base;
-        uint32_t    elem_size;
+        uint32_t table_pos;
+        uint32_t table_size;
+        uint32_t vtable;
+        uint32_t slot_count;
+        uint32_t iter;
+        bool     is_vec;
+        uint32_t vec_pos;
+        uint32_t count;
+        uint32_t elems_base;
+        uint32_t elem_size;
     };
+    struct table_info {
+        uint32_t pos;
+        uint32_t vtable;
+        uint32_t table_size;
+        uint32_t slot_count;
+    };
+
     const char*                     base_ = nullptr;
     uint32_t                        size_ = 0;
     dense<frame>                    stack_;
@@ -329,61 +339,530 @@ class flatbuffer_archive_reader final : public archive_reader
     uint32_t                        cur_data_ = 0;
     std::string                     cur_key_;
 
-    [[nodiscard]] uint32_t read_u32_at(uint32_t pos) const noexcept {
-        uint32_t v = 0;
-        if (pos + 4 <= size_) { v = detail::read_le<uint32_t>(base_ + pos); }
-        return v;
+    friend struct flatbuffer_codec;
+
+    [[nodiscard]] bool has_bytes(uint32_t pos, uint32_t len) const noexcept {
+        return pos <= size_ && len <= size_ - pos;
     }
-    [[nodiscard]] uint16_t read_u16_at(uint32_t pos) const noexcept {
-        uint16_t v = 0;
-        if (pos + 2 <= size_) { v = detail::read_le<uint16_t>(base_ + pos); }
-        return v;
+
+    [[nodiscard]] bool checked_add(uint32_t a, uint32_t b, uint32_t& out) noexcept {
+        if (b > std::numeric_limits<uint32_t>::max() - a)
+        {
+            err_ = true;
+            return false;
+        }
+        out = a + b;
+        return true;
     }
-    [[nodiscard]] int32_t read_i32_at(uint32_t pos) const noexcept {
-        int32_t v = 0;
-        if (pos + 4 <= size_) { v = detail::read_le<int32_t>(base_ + pos); }
-        return v;
+
+    [[nodiscard]] bool checked_mul(uint32_t a, uint32_t b, uint32_t& out) noexcept {
+        if (a != 0 && b > std::numeric_limits<uint32_t>::max() / a)
+        {
+            err_ = true;
+            return false;
+        }
+        out = a * b;
+        return true;
+    }
+
+    [[nodiscard]] bool require_range(uint32_t pos, uint32_t len) noexcept {
+        if (!has_bytes(pos, len))
+        {
+            err_ = true;
+            return false;
+        }
+        return true;
+    }
+
+    [[nodiscard]] uint32_t read_u32_at(uint32_t pos) noexcept {
+        if (err_)
+        {
+            return 0;
+        }
+        if ((pos & 3u) != 0 || !require_range(pos, 4))
+        {
+            err_ = true;
+            return 0;
+        }
+        return detail::read_le<uint32_t>(base_ + pos);
+    }
+
+    [[nodiscard]] uint16_t read_u16_at(uint32_t pos) noexcept {
+        if (err_)
+        {
+            return 0;
+        }
+        if ((pos & 1u) != 0 || !require_range(pos, 2))
+        {
+            err_ = true;
+            return 0;
+        }
+        return detail::read_le<uint16_t>(base_ + pos);
+    }
+
+    [[nodiscard]] int32_t read_i32_at(uint32_t pos) noexcept {
+        const uint32_t raw = read_u32_at(pos);
+        int32_t value = 0;
+        if (!err_)
+        {
+            std::memcpy(&value, &raw, 4);
+        }
+        return value;
+    }
+
+    [[nodiscard]] uint64_t read_u64_at(uint32_t pos) noexcept {
+        if (err_)
+        {
+            return 0;
+        }
+        if ((pos & 7u) != 0 || !require_range(pos, 8))
+        {
+            err_ = true;
+            return 0;
+        }
+        return detail::read_le<uint64_t>(base_ + pos);
+    }
+
+    [[nodiscard]] bool read_table_info(uint32_t pos, table_info& info) noexcept {
+        if (err_)
+        {
+            return false;
+        }
+        if ((pos & 3u) != 0 || !require_range(pos, 4))
+        {
+            err_ = true;
+            return false;
+        }
+        const int32_t soff = read_i32_at(pos);
+        if (err_ || soff == 0)
+        {
+            err_ = true;
+            return false;
+        }
+        const int64_t vpos = static_cast<int64_t>(pos) - static_cast<int64_t>(soff);
+        if (vpos < 0 || vpos > std::numeric_limits<uint32_t>::max())
+        {
+            err_ = true;
+            return false;
+        }
+
+        info.pos = pos;
+        info.vtable = static_cast<uint32_t>(vpos);
+        if ((info.vtable & 1u) != 0 || !require_range(info.vtable, 4))
+        {
+            err_ = true;
+            return false;
+        }
+        uint32_t table_size_pos = 0;
+        if (!checked_add(info.vtable, 2, table_size_pos))
+        {
+            return false;
+        }
+        const uint32_t vsize = read_u16_at(info.vtable);
+        info.table_size = read_u16_at(table_size_pos);
+        if (err_ || vsize < 4 || (vsize & 1u) != 0
+            || info.table_size < 4 || !require_range(info.vtable, vsize)
+            || !require_range(pos, info.table_size))
+        {
+            err_ = true;
+            return false;
+        }
+        info.slot_count = (vsize - 4) / 2;
+
+        for (uint32_t slot = 0; slot < info.slot_count; ++slot)
+        {
+            uint32_t slot_pos = 0;
+            uint32_t slot_rel = 0;
+            if (!checked_mul(slot, 2, slot_rel)
+                || !checked_add(info.vtable, 4, slot_pos)
+                || !checked_add(slot_pos, slot_rel, slot_pos))
+            {
+                return false;
+            }
+            const uint16_t off = read_u16_at(slot_pos);
+            if (off == 0)
+            {
+                continue;
+            }
+            uint32_t field_pos = 0;
+            if (off < 4 || off >= info.table_size
+                || !checked_add(pos, off, field_pos)
+                || !require_range(field_pos, 1))
+            {
+                err_ = true;
+                return false;
+            }
+        }
+        return !err_;
     }
 
     void push_table(uint32_t pos) noexcept {
-        frame f{};
-        f.table = base_ + pos;
-        int32_t soff = read_i32_at(pos);
-        int64_t vpos = static_cast<int64_t>(pos) - static_cast<int64_t>(soff);
-        if (vpos < 0 || static_cast<uint64_t>(vpos) + 4 > size_)
+        table_info info{};
+        if (!read_table_info(pos, info))
         {
-            err_ = true;
             return;
         }
-        f.vtable = static_cast<uint32_t>(vpos);
-        uint32_t vsize = read_u16_at(f.vtable);
-        f.slot_count = (vsize >= 4) ? (vsize - 4) / 2 : 0;
+        frame f{};
+        f.table_pos = info.pos;
+        f.table_size = info.table_size;
+        f.vtable = info.vtable;
+        f.slot_count = info.slot_count;
         f.iter = 0;
         f.is_vec = false;
         stack_.emplace_back(f);
     }
 
     void push_vector(uint32_t pos) noexcept {
+        if (err_)
+        {
+            return;
+        }
+        if ((pos & 3u) != 0 || !require_range(pos, 4))
+        {
+            err_ = true;
+            return;
+        }
         frame f{};
         f.is_vec = true;
         f.vec_pos = pos;
         f.count = read_u32_at(pos);
-        f.elems_base = pos + 4;
+        if (err_)
+        {
+            return;
+        }
+        if (!checked_add(pos, 4, f.elems_base))
+        {
+            return;
+        }
+        uint32_t min_size = 0;
+        if (!checked_mul(f.count, 1, min_size)
+            || !require_range(f.elems_base, min_size))
+        {
+            return;
+        }
         f.elem_size = 4;
         f.iter = 0;
-        f.table = nullptr;
+        f.table_pos = 0;
+        f.table_size = 0;
         f.vtable = 0;
         f.slot_count = 0;
         stack_.emplace_back(f);
     }
 
-    [[nodiscard]] uint32_t follow_uoffset(uint32_t pos) const noexcept {
-        return pos + read_u32_at(pos);
+    [[nodiscard]] bool validate_vector_region(const frame& f) noexcept {
+        if (f.elem_size == 4 && (f.elems_base & 3u) != 0)
+        {
+            err_ = true;
+            return false;
+        }
+        if (f.elem_size == 8 && (f.elems_base & 7u) != 0)
+        {
+            err_ = true;
+            return false;
+        }
+        uint32_t bytes = 0;
+        return checked_mul(f.count, f.elem_size, bytes)
+               && require_range(f.elems_base, bytes);
+    }
+
+    [[nodiscard]] uint32_t follow_uoffset(uint32_t pos) noexcept {
+        const uint32_t rel = read_u32_at(pos);
+        if (err_)
+        {
+            return 0;
+        }
+        if (rel == 0)
+        {
+            err_ = true;
+            return 0;
+        }
+        uint32_t target = 0;
+        if (!checked_add(pos, rel, target) || !require_range(target, 1))
+        {
+            err_ = true;
+            return 0;
+        }
+        return target;
+    }
+
+    [[nodiscard]] bool field_position(const table_info& info, uint32_t slot,
+                                      uint32_t width, bool required,
+                                      uint32_t& field_pos) noexcept {
+        field_pos = 0;
+        if (slot >= info.slot_count)
+        {
+            if (required)
+            {
+                err_ = true;
+                return false;
+            }
+            return true;
+        }
+        uint32_t slot_pos = 0;
+        uint32_t slot_rel = 0;
+        if (!checked_mul(slot, 2, slot_rel)
+            || !checked_add(info.vtable, 4, slot_pos)
+            || !checked_add(slot_pos, slot_rel, slot_pos))
+        {
+            return false;
+        }
+        const uint16_t off = read_u16_at(slot_pos);
+        if (off == 0)
+        {
+            if (required)
+            {
+                err_ = true;
+                return false;
+            }
+            return true;
+        }
+        return checked_add(info.pos, off, field_pos)
+               && require_range(field_pos, width);
+    }
+
+    [[nodiscard]] bool validate_u32_field(const table_info& info, uint32_t slot) noexcept {
+        uint32_t pos = 0;
+        if (!field_position(info, slot, 4, true, pos))
+        {
+            return false;
+        }
+        (void)read_u32_at(pos);
+        return !err_;
+    }
+
+    [[nodiscard]] bool validate_offset_field(const table_info& info, uint32_t slot,
+                                             uint32_t& target) noexcept {
+        uint32_t pos = 0;
+        if (!field_position(info, slot, 4, true, pos))
+        {
+            return false;
+        }
+        target = follow_uoffset(pos);
+        return !err_;
+    }
+
+    [[nodiscard]] bool validate_blob_at(uint32_t pos) noexcept {
+        if ((pos & 3u) != 0)
+        {
+            err_ = true;
+            return false;
+        }
+        const uint32_t len = read_u32_at(pos);
+        uint32_t data_pos = 0;
+        return !err_ && checked_add(pos, 4, data_pos)
+               && require_range(data_pos, len);
+    }
+
+    [[nodiscard]] bool validate_blob_field(const table_info& info, uint32_t slot) noexcept {
+        uint32_t target = 0;
+        return validate_offset_field(info, slot, target) && validate_blob_at(target);
+    }
+
+    [[nodiscard]] bool validate_entity_table_at(uint32_t pos) noexcept {
+        table_info info{};
+        if (!read_table_info(pos, info))
+        {
+            return false;
+        }
+        for (uint32_t slot = 0; slot < 6; ++slot)
+        {
+            if (!validate_u32_field(info, slot))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    [[nodiscard]] bool validate_payload_at(uint32_t pos) noexcept {
+        const bool old_err = err_;
+        err_ = false;
+        table_info info{};
+        if (read_table_info(pos, info))
+        {
+            return true;
+        }
+        err_ = old_err;
+        return validate_blob_at(pos);
+    }
+
+    [[nodiscard]] bool validate_entry_table_at(uint32_t pos) noexcept {
+        table_info info{};
+        if (!read_table_info(pos, info)
+            || !validate_u32_field(info, 0)
+            || !validate_u32_field(info, 1))
+        {
+            return false;
+        }
+        uint32_t payload = 0;
+        return validate_offset_field(info, 2, payload)
+               && validate_payload_at(payload);
+    }
+
+    [[nodiscard]] bool validate_entity_vector_at(uint32_t pos) noexcept {
+        if ((pos & 3u) != 0)
+        {
+            err_ = true;
+            return false;
+        }
+        const uint32_t count = read_u32_at(pos);
+        uint32_t elems_base = 0;
+        uint32_t bytes = 0;
+        if (err_ || !checked_add(pos, 4, elems_base)
+            || !checked_mul(count, 4, bytes)
+            || !require_range(elems_base, bytes))
+        {
+            err_ = true;
+            return false;
+        }
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            uint32_t rel = 0;
+            uint32_t elem = 0;
+            if (!checked_mul(i, 4, rel) || !checked_add(elems_base, rel, elem))
+            {
+                return false;
+            }
+            const uint32_t table = follow_uoffset(elem);
+            if (err_ || !validate_entity_table_at(table))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    [[nodiscard]] bool validate_entry_vector_at(uint32_t pos) noexcept {
+        if ((pos & 3u) != 0)
+        {
+            err_ = true;
+            return false;
+        }
+        const uint32_t count = read_u32_at(pos);
+        uint32_t elems_base = 0;
+        uint32_t bytes = 0;
+        if (err_ || !checked_add(pos, 4, elems_base)
+            || !checked_mul(count, 4, bytes)
+            || !require_range(elems_base, bytes))
+        {
+            err_ = true;
+            return false;
+        }
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            uint32_t rel = 0;
+            uint32_t elem = 0;
+            if (!checked_mul(i, 4, rel) || !checked_add(elems_base, rel, elem))
+            {
+                return false;
+            }
+            const uint32_t table = follow_uoffset(elem);
+            if (err_ || !validate_entry_table_at(table))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    [[nodiscard]] bool validate_components_at(uint32_t pos) noexcept {
+        table_info info{};
+        if (!read_table_info(pos, info))
+        {
+            return false;
+        }
+        for (uint32_t slot = 0; slot < info.slot_count; ++slot)
+        {
+            uint32_t field = 0;
+            if (!field_position(info, slot, 4, false, field))
+            {
+                return false;
+            }
+            if (field == 0)
+            {
+                continue;
+            }
+            const uint32_t vec = follow_uoffset(field);
+            if (err_ || !validate_entry_vector_at(vec))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    [[nodiscard]] bool validate_archive_at(uint32_t pos) noexcept {
+        table_info info{};
+        if (!read_table_info(pos, info)
+            || !validate_u32_field(info, 0)
+            || !validate_u32_field(info, 1)
+            || !validate_blob_field(info, 2)
+            || !validate_blob_field(info, 3))
+        {
+            return false;
+        }
+        uint32_t entities = 0;
+        uint32_t components = 0;
+        return validate_offset_field(info, 4, entities)
+               && validate_entity_vector_at(entities)
+               && validate_offset_field(info, 5, components)
+               && validate_components_at(components);
+    }
+
+    [[nodiscard]] bool validate_structure() noexcept {
+        if (err_)
+        {
+            return false;
+        }
+        const uint32_t root = read_u32_at(0);
+        if (err_ || root < 8)
+        {
+            err_ = true;
+            return false;
+        }
+        table_info info{};
+        if (!read_table_info(root, info))
+        {
+            return false;
+        }
+        if (info.slot_count < 6)
+        {
+            return true;
+        }
+        return validate_archive_at(root);
+    }
+
+    [[nodiscard]] std::string_view read_blob_view(size_t expected_size) noexcept {
+        const uint32_t pos = follow_uoffset(cur_data_);
+        if (err_ || (pos & 3u) != 0)
+        {
+            err_ = true;
+            return {};
+        }
+        const uint32_t len = read_u32_at(pos);
+        uint32_t data_pos = 0;
+        if (err_ || !checked_add(pos, 4, data_pos)
+            || !require_range(data_pos, len))
+        {
+            err_ = true;
+            return {};
+        }
+        if (expected_size != 0 && len != expected_size)
+        {
+            err_ = true;
+            return {};
+        }
+        return std::string_view(base_ + data_pos, len);
     }
 
 public:
     explicit flatbuffer_archive_reader(std::string_view data) noexcept {
         base_ = data.data();
+        if (data.size() > std::numeric_limits<uint32_t>::max())
+        {
+            err_ = true;
+            return;
+        }
         size_ = static_cast<uint32_t>(data.size());
         if (size_ < 8)
         {
@@ -391,6 +870,12 @@ public:
             return;
         }
         if (!(data[4] == 'L' && data[5] == 'C' && data[6] == 'F' && data[7] == 'B'))
+        {
+            err_ = true;
+            return;
+        }
+        const uint32_t root = read_u32_at(0);
+        if (err_ || root < 8 || root >= size_)
         {
             err_ = true;
             return;
@@ -452,11 +937,20 @@ public:
             return false;
         }
         frame& cur = stack_.back();
-        if (cur.iter >= cur.count)
+        if (!cur.is_vec || cur.iter >= cur.count)
         {
             return false;
         }
-        cur_data_ = cur.elems_base + cur.iter * cur.elem_size;
+        if (!validate_vector_region(cur))
+        {
+            return false;
+        }
+        uint32_t rel = 0;
+        if (!checked_mul(cur.iter, cur.elem_size, rel)
+            || !checked_add(cur.elems_base, rel, cur_data_))
+        {
+            return false;
+        }
         ++cur.iter;
         return true;
     }
@@ -464,10 +958,34 @@ public:
     void end_element() noexcept override {}
 
     void set_element_size(size_t size) noexcept override {
-        if (stack_.size() > 0)
+        if (err_)
         {
-            stack_.back().elem_size = static_cast<uint32_t>(size);
+            return;
         }
+        if (stack_.size() == 0 || !stack_.back().is_vec
+            || (size != 1 && size != 4 && size != 8))
+        {
+            err_ = true;
+            return;
+        }
+        frame& cur = stack_.back();
+        cur.elem_size = static_cast<uint32_t>(size);
+        uint32_t elems_base = 0;
+        if (!checked_add(cur.vec_pos, 4, elems_base))
+        {
+            return;
+        }
+        if (cur.elem_size == 8)
+        {
+            uint32_t rounded = 0;
+            if (!checked_add(elems_base, 7, rounded))
+            {
+                return;
+            }
+            elems_base = rounded & ~7u;
+        }
+        cur.elems_base = elems_base;
+        (void)validate_vector_region(cur);
     }
 
     [[nodiscard]] std::string_view next_key() noexcept override {
@@ -482,16 +1000,34 @@ public:
         }
         while (cur.iter < cur.slot_count)
         {
-            uint32_t slot = cur.iter;
+            const uint32_t slot = cur.iter;
             ++cur.iter;
-            uint16_t off = read_u16_at(cur.vtable + 4 + slot * 2);
+            uint32_t slot_rel = 0;
+            uint32_t slot_pos = 0;
+            if (!checked_mul(slot, 2, slot_rel)
+                || !checked_add(cur.vtable, 4, slot_pos)
+                || !checked_add(slot_pos, slot_rel, slot_pos))
+            {
+                return {};
+            }
+            const uint16_t off = read_u16_at(slot_pos);
+            if (err_)
+            {
+                return {};
+            }
             if (off == 0)
             {
                 continue;
             }
-            cur_data_ = static_cast<uint32_t>(cur.table - base_) + off;
+            if (off < 4 || off >= cur.table_size
+                || !checked_add(cur.table_pos, off, cur_data_)
+                || !require_range(cur_data_, 1))
+            {
+                err_ = true;
+                return {};
+            }
             char buf[16];
-            int nn = std::snprintf(buf, sizeof(buf), "f%u", slot + 1);
+            const int nn = std::snprintf(buf, sizeof(buf), "f%u", slot + 1);
             cur_key_ = std::string(buf, static_cast<size_t>(nn));
             return cur_key_;
         }
@@ -499,54 +1035,54 @@ public:
     }
 
     [[nodiscard]] bool read_bool() noexcept override {
-        if (cur_data_ >= size_) { err_ = true; return false; }
+        if (err_ || !require_range(cur_data_, 1))
+        {
+            err_ = true;
+            return false;
+        }
         return base_[cur_data_] != 0;
     }
     [[nodiscard]] int32_t read_i32() noexcept override { return read_i32_at(cur_data_); }
     [[nodiscard]] uint32_t read_u32() noexcept override { return read_u32_at(cur_data_); }
     [[nodiscard]] int64_t read_i64() noexcept override {
-        if (cur_data_ + 8 > size_) { err_ = true; return 0; }
-        return detail::read_le<int64_t>(base_ + cur_data_);
+        const uint64_t raw = read_u64_at(cur_data_);
+        int64_t value = 0;
+        if (!err_)
+        {
+            std::memcpy(&value, &raw, 8);
+        }
+        return value;
     }
-    [[nodiscard]] uint64_t read_u64() noexcept override {
-        if (cur_data_ + 8 > size_) { err_ = true; return 0; }
-        return detail::read_le<uint64_t>(base_ + cur_data_);
-    }
+    [[nodiscard]] uint64_t read_u64() noexcept override { return read_u64_at(cur_data_); }
     [[nodiscard]] float read_f32() noexcept override {
-        uint32_t raw = read_u32_at(cur_data_);
-        float v;
-        std::memcpy(&v, &raw, 4);
-        return v;
+        const uint32_t raw = read_u32_at(cur_data_);
+        float value = 0.0f;
+        if (!err_)
+        {
+            std::memcpy(&value, &raw, 4);
+        }
+        return value;
     }
     [[nodiscard]] double read_f64() noexcept override {
-        if (cur_data_ + 8 > size_) { err_ = true; return 0.0; }
-        uint64_t raw = detail::read_le<uint64_t>(base_ + cur_data_);
-        double v;
-        std::memcpy(&v, &raw, 8);
-        return v;
+        const uint64_t raw = read_u64_at(cur_data_);
+        double value = 0.0;
+        if (!err_)
+        {
+            std::memcpy(&value, &raw, 8);
+        }
+        return value;
     }
 
     [[nodiscard]] std::string_view read_string_view() noexcept override {
-        uint32_t sp = follow_uoffset(cur_data_);
-        if (sp + 4 > size_)
-        {
-            err_ = true;
-            return {};
-        }
-        uint32_t len = read_u32_at(sp);
-        if (sp + 4 + len > size_)
-        {
-            err_ = true;
-            return {};
-        }
-        return std::string_view(base_ + sp + 4, len);
+        return read_blob_view(0);
     }
 
-    [[nodiscard]] std::string_view read_bytes_view(size_t /*len*/) noexcept override {
-        return read_string_view();
+    [[nodiscard]] std::string_view read_bytes_view(size_t len) noexcept override {
+        return read_blob_view(len);
     }
 
     void skip_value() noexcept override {}
+    [[nodiscard]] bool has_object_end() const noexcept override { return true; }
 
     [[nodiscard]] bool has_error() const noexcept override { return err_; }
     [[nodiscard]] operating_message last_error() const noexcept override {
@@ -591,9 +1127,10 @@ struct flatbuffer_codec final : archive_codec
     }
 
     [[nodiscard]] bool validate(std::string_view data, operating_message& error) const noexcept override {
-        if (!matches(data))
+        flatbuffer_archive_reader reader(data);
+        if (!reader.validate_structure())
         {
-            error.write_failure(om_err_checksum_failed.code, msg_level::warn, msg::here());
+            error.write_failure(om_err_decode_failed.code, msg_level::warn, msg::here());
             return false;
         }
         return true;
